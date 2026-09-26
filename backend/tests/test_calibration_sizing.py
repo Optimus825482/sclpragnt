@@ -81,5 +81,98 @@ class VolatilitySizingMathTests(unittest.TestCase):
         self.assertAlmostEqual(scale_of(0.001), 1.0)           # quiet -> full size
 
 
+class CalibrationLiveWiringTests(unittest.TestCase):
+    """D-11 (2026-09-26): kalibrasyon canlıda ölüydü.
+
+    `build_buckets` `entry_context["candles"]["volumes"]` arıyordu; bu
+    anahtar hiç yazılmıyor → `volume_band` daima "unknown", kova anahtarı
+    canlı yolla hiç eşleşmiyor, `multiplier_for` daima 1.0 döndürüyordu.
+    """
+
+    def test_reads_real_persisted_volume_ratio_key(self):
+        """`entry_context["volume_ratio"]` gerçek şema — kova anahtarı tutmalı."""
+        from app.calibration import build_buckets
+
+        trades = [{"strategy": "CHAT_PREDICTION", "pnl": 5.0,
+                   "entry_time": 1_700_000_000.0,
+                   "entry_context": {"volume_ratio": 1.4}} for _ in range(10)]
+        buckets = build_buckets(trades)
+        key = next(iter(buckets))
+        self.assertEqual(key[2], "normal", "kalıcı volume_ratio okunmadı")
+        self.assertEqual(buckets[key]["samples"], 10)
+
+    def test_chasing_band_is_reachable_from_persisted_ratio(self):
+        from app.calibration import build_buckets
+
+        trades = [{"strategy": "CHAT_PREDICTION", "pnl": -5.0,
+                   "entry_time": 1_700_000_000.0,
+                   "entry_context": {"volume_ratio": 3.0}} for _ in range(10)]
+        self.assertEqual(next(iter(build_buckets(trades)))[2], "chasing")
+
+    def test_liquidity_volume_ratio_still_supported_as_fallback(self):
+        from app.calibration import build_buckets
+
+        trades = [{"strategy": "CHAT_PREDICTION", "pnl": 1.0,
+                   "entry_time": 1_700_000_000.0,
+                   "entry_context": {"liquidity": {"volume_ratio": 0.3}}}
+                  for _ in range(10)]
+        self.assertEqual(next(iter(build_buckets(trades)))[2], "very_low")
+
+    def test_unknown_volume_band_is_fail_safe_not_neutral(self):
+        """Veri yok → nötr 1.0 DEĞİL, fail-safe orta değer (0.85)."""
+        from app.calibration import UNKNOWN_VOLUME_MULTIPLIER, confidence_multiplier
+
+        got = confidence_multiplier({}, strategy="CHAT_PREDICTION", hour=10,
+                                    volume_ratio=None)
+        self.assertEqual(got, UNKNOWN_VOLUME_MULTIPLIER)
+        self.assertLess(got, 1.0, "veri yokken tam boyut açılmasın")
+        self.assertGreater(got, 0.5, "işlem durmasın")
+
+    def test_thin_known_bucket_stays_neutral(self):
+        """Kova VAR ama ince örnekli → 1.0 (veri eksikliği değil, düşük güven)."""
+        from app.calibration import confidence_multiplier
+
+        got = confidence_multiplier({}, strategy="CHAT_PREDICTION", hour=10,
+                                    volume_ratio=1.4)
+        self.assertEqual(got, 1.0)
+
+    def test_bucket_tz_is_utc_plus_3(self):
+        """Kova etiketleri monitoring.py ile aynı sabit UTC+3 tabanını kullanır."""
+        import calendar
+
+        from app.calibration import BUCKET_TZ, build_buckets
+
+        self.assertEqual(BUCKET_TZ.utcoffset(None).total_seconds(), 3 * 3600)
+        # 12:00 UTC = 15:00 UTC+3 → us_overlap bandı (eu_day DEĞİL).
+        noon_utc = calendar.timegm((2026, 9, 20, 12, 0, 0, 0, 0, 0))
+        buckets = build_buckets([{"strategy": "X", "pnl": 1.0,
+                                  "entry_time": noon_utc,
+                                  "entry_context": {"volume_ratio": 1.4}}])
+        key = next(iter(buckets))
+        self.assertEqual(key[1], "us_overlap",
+                         f"UTC+3 kova etiketi uygulanmadı: {key[1]}")
+
+    def test_analyzer_persists_volume_ratio_in_entry_context(self):
+        """`_entry_volume_ratio` canlı yolla aynı 5m penceresini kullanır."""
+        import inspect
+
+        from app.analyzer import ScalpAnalyzer
+
+        source = inspect.getsource(ScalpAnalyzer._entry_volume_ratio)
+        self.assertIn("vols[-21:-1]", source,
+                      "canlı yolla aynı hacim penceresi kullanılmalı")
+        self.assertIn("get_ut_kline", source)
+
+    def test_open_position_writes_volume_ratio_into_entry_context(self):
+        """`entry_context` sözlüğü kalıcı `volume_ratio` alanını içermeli."""
+        import inspect
+
+        from app.analyzer import ScalpAnalyzer
+
+        source = inspect.getsource(ScalpAnalyzer._open_position_unlocked)
+        self.assertIn('entry_context["volume_ratio"]', source,
+                      "volume_ratio entry_context'e yazılmıyor → kova hep unknown")
+
+
 if __name__ == "__main__":
     unittest.main()

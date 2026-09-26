@@ -711,11 +711,16 @@ class D11GlobalRiskGateTests(unittest.IsolatedAsyncioTestCase):
 
         # Yetki denetimi (denetim düzeltmesi): manuel LLM girişi artık admin
         # kapısından geçer; test kapıyı pasifleştirip gate akışını sınar.
+        # DENETİM 2.8: `request=None` ve `source` alanı olmayan çağrı artık
+        # gate'den ÖNCE 403 ile reddedilir (fail-closed). Gate akışını sınayabilmek
+        # için ya gerçek bir admin principal ya da otomasyon içi `source` gerekir;
+        # burada onaylı otomasyon yolunu (`source='llm_after_close'`) kullanıyoruz.
         with patch("app.main.database.get_llm_setting", new=enabled), \
              patch("app.main.daily_loss_guard", new=gate), \
              patch("app.main._require_admin", new=MagicMock(return_value=None)):
             with self.assertRaises(HTTPException):
-                await main.llm_open_paper_trade({"symbol": "BTCTRY"}, request=None)
+                await main.llm_open_paper_trade(
+                    {"symbol": "BTCTRY", "source": "llm_after_close"}, request=None)
         gate.assert_awaited()
 
     async def test_llm_entry_requires_admin(self):
@@ -724,6 +729,19 @@ class D11GlobalRiskGateTests(unittest.IsolatedAsyncioTestCase):
         anonymous = MagicMock(headers={}, cookies={})
         with self.assertRaises(HTTPException):
             await main.llm_open_paper_trade({"symbol": "BTCTRY"}, request=anonymous)
+
+    async def test_llm_entry_rejects_anonymous_tool_call(self):
+        """DENETİM 2.8: tool executor `request=None` ile çağırıyordu ve 500 veriyordu.
+
+        Artık AttributeError yerine AÇIK 403 (veya 401) fırlatılır: yetkisiz
+        paper giriş çağrısı sessizce geçmemeli. `source` (otomasyon içi işaret)
+        taşımayan bu yol her zaman fail-closed reddedilir.
+        """
+        from app import main
+        with self.assertRaises(HTTPException) as ctx:
+            await main.llm_open_paper_trade({"symbol": "BTCTRY", "plan": {}}, request=None)
+        # AttributeError değil, kontrollü bir HTTP hatası dönmeli.
+        self.assertIn(ctx.exception.status_code, (401, 403))
 
     async def test_kill_switch_endpoint_requires_admin(self):
         from app import main

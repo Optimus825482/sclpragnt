@@ -44,6 +44,61 @@ _failed_loops: dict[str, dict] = {}
 # (örn. monitoring) bayat bir görev referansı yerine HER ZAMAN canlı görevi görür.
 _background_registry: dict[str, "asyncio.Task"] = {}
 
+# DENETİM 3.4 #36 (2026-09-26): kapanış sırasında respawn yarışı.
+#
+# `_restart_if_failed` bir done-callback'tir; `shutdown_services` görevleri
+# iptal edip `gather` ile beklerken bu callback `gather` TAMAMLANMADAN
+# çalışabilir. O an `_respawn()` 2-30 sn sonra yeni `market.connect()` /
+# `strategy_loop` görevleri yaratır; bunlar `_background_tasks` kümesine
+# eklendiği için iptal listesinde bulunmaz. Sonuç: `microflow.stop()`,
+# `market.stop()` ve `database.close_db()` ÇALIŞMIŞKEN yeni WS açılır ve
+# kapalı DB havuzu kullanılır; process'in kapanması gecikir.
+#
+# Çözüm: kapanış başladığında bu bayrak `True` yapılır; `_restart_if_failed`
+# erken çıkar, `_respawn` hiç oluşmaz. `begin_shutdown()` /
+# `end_shutdown()` main.py'deki kapanış akışını sarar.
+_shutting_down = False
+
+
+def begin_shutdown() -> None:
+    """Kapanış başladı: supervisor YENİ görev üretmesin (denetim 3.4 #36).
+
+    Idempotenttir. Kapanış sırasında `_start_background` hâlâ çağrılabilir
+    (örn. kapanışta tetiklenen tek seferlik görevler) — bu görevler normalde
+    döngüsel izleme üretmez, bu yüzden burada reddedilmez; yalnızca HATA
+    üzerinden yeniden doğma yolu kapatılır.
+    """
+    global _shutting_down
+    _shutting_down = True
+
+
+def end_shutdown() -> None:
+    """Kapanış bitti (ya da hiç başlamadı): supervisor normale döner.
+
+    Test izolasyonu ve embedding-worker yeniden başlatma gibi "kapanış
+    sonrası süreç devam ediyor" senaryoları için gereklidir.
+    """
+    global _shutting_down
+    _shutting_down = False
+
+
+def is_shutting_down() -> bool:
+    """Kapanış sırasında mıyız? (tanılayıcı/test yüzeyi)"""
+    return _shutting_down
+
+
+def clear_background_registry() -> None:
+    """Kapanış sonunda isim→görev kaydını ve sayaçları temizle.
+
+    Registry `.clear()` olmadan bir sonraki süreç başlangıcında (aynı
+    interpreter içinde yeniden başlatmada) bayat görev referansları kalır ve
+    `get_task(name)` liveness kontrolü YANLIŞ "canlı" der.
+    """
+    _background_registry.clear()
+    _restart_counters.clear()
+    _single_pass_tasks.clear()
+    _failed_loops.clear()
+
 
 def get_task(name: str):
     """İsimle kayıtlı CANLI background görevini döndür (yoksa None).
@@ -189,6 +244,12 @@ def _start_background(coro_factory, name, single_pass=False):
     def _restart_if_failed(task):
         _background_tasks.discard(task)
         if task.cancelled():
+            return
+        # DENETİM 3.4 #36: kapanış sırasında yeniden doğma YASAK. Bu callback
+        # `shutdown_services`'in `gather`'ı bitmeden çalışabilir; devam edersek
+        # iptal listesinde olmayan yeni görevler (market.connect, strategy_loop)
+        # kapanmış WS/DB üzerinde doğar. Önce `discard` edilip burada durulur.
+        if _shutting_down:
             return
         exc = task.exception()
         if not exc:

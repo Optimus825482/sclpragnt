@@ -29,6 +29,49 @@ export function fmtDateTime(ts: number | string | null | undefined): string {
   return new Date(ms).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" });
 }
 
+/**
+ * tr-TR GÜN/SAAT dakika çözünürlüğü: `26/09 14:35`.
+ *
+ * Neden ayrı bir fonksiyon: raporlar sayfası bu biçimi `toLocaleString("tr-TR",
+ * { day, month, hour, minute })` ile kendi içinde yeniden yazıyordu ve
+ * `dateStyle:"short"` kullanan `fmtDateTime`'dan FARKLI çıktı veriyordu (sıra
+ * ve saat çözünürlüğü farklı). Aynı zaman damgası iki sayfada iki biçimde
+ * basılınca hangisinin doğru olduğu belirsizleşiyordu. Artık tek kaynak burada.
+ */
+export function fmtMinute(ts: number | string | null | undefined): string {
+  const ms = toMs(ts);
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString("tr-TR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * Sabit 2 ondalıklı genel sayı (`12.34`). Fiyat olmayan sayılar için
+ * (adet, puan, oran tabanı). Eksik/geçersiz → "—" (0 DEĞİL).
+ */
+export function formatNumber2(value: number | string | null | undefined): string {
+  const n = Number(value);
+  if (value == null || value === "" || !Number.isFinite(n)) return "—";
+  return String(Number(n.toFixed(2)));
+}
+
+/**
+ * Bölünen (0.1234) girdiden yüzde: `%12.3`.
+ *
+ * SINIR: backend bazı uçlarda oranı YÜZDE (12.3), bazılarında ondaklık (0.123)
+ * döndürür. Bu yardımcı **bölünen** sözleşmesini varsayar; yüzde gelen
+ * alanlarda `formatFixed` kullan.
+ */
+export function formatRatioPct(value: number | string | null | undefined, digits = 1): string {
+  const n = Number(value);
+  if (value == null || value === "" || !Number.isFinite(n)) return "—";
+  return `%${(n * 100).toFixed(digits)}`;
+}
+
 /** tr-TR yalnız tarih. */
 export function fmtDate(ts: number | string | null | undefined): string {
   const ms = toMs(ts);
@@ -47,9 +90,15 @@ export function fmtClockTime(ts: number | string | null | undefined): string {
  * Paylaşılan fiyat hassasiyeti: <1 → 6 hane, <100 → 4 hane, <1000 → 3 hane,
  * aksi 2 hane. Grafik ekseni (`chartPriceFormat`) ve tüm fiyat gösterimi bu
  * kuralı kullanır; aynı fiyat farklı sayfalarda farklı yuvarlanmaz.
+ *
+ * `null`/`undefined` 2 haneye düşer. (Eskiden `Math.abs(Number(null))` = 0
+ * olduğu için "veri yok" sessizce EN YÜKSEK kovaya (6 hane) düşüyordu:
+ * eksen 0,000000 basıyordu. `formatPrice` zaten "—" döndürüyor, ama grafik
+ * ekseni doğrudan bu fonksiyonu çağırıyordu.)
  */
 export function pricePrecision(value: number | null | undefined): number {
-  const abs = Math.abs(Number(value));
+  if (value == null) return 2;
+  const abs = Math.abs(value);
   if (!Number.isFinite(abs)) return 2;
   if (abs < 1) return 6;
   if (abs < 100) return 4;

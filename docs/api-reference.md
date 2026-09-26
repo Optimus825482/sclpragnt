@@ -154,9 +154,19 @@ Her aktif sembol için 3 stream:
 
 ---
 
-## Paper Araştırma: SMA Cascade Shadow
+## ⛔ RETIRED — Paper Araştırma: SMA Cascade Shadow
 
-`GET /api/research/ma-cascade-shadow?symbol=PUMPTRY&limit=200` yalnızca gözlem kayıtlarını döndürür; emir açmaz, portföyü değiştirmez ve aktif BB-MFI giriş akışına bağlanmaz.
+> **Durum: RETIRED (2026-09-26).** `SMA_CASCADE_*` sabitleri `config.py` içinden **kaldırıldı** (denetim 2.7). Endpoint artık gözlem toplamaz.
+>
+> Uç (`routers/reports.py:445`) `getattr(config, ..., None)` ile korunduğu için artık **500 vermez**; bunun yerine `200` döner ve şunu bildirir:
+>
+> ```json
+> { "paper_only": true, "enabled": false, "retired": true, "events": [] }
+> ```
+>
+> Önceki hâlinde korumasız `config.SMA_...` erişimi her çağrıda `AttributeError` → `500` üretiyordu. Özellik yeniden etkinleştirilmedikçe bu uçtan **anlamlı veri gelmez**.
+
+`GET /api/research/ma-cascade-shadow?symbol=PUMPTRY&limit=200` *(aşağıdaki açıklama tarihsel kayıttır — strateji 2026-09-04'te kaldırıldı)* yalnızca gözlem kayıtlarını döndürür; emir açmaz, portföyü değiştirmez ve aktif giriş akışına bağlanmaz.
 
 - Kural, **kapanmış 1 dakikalık** mumlarda sırasıyla SMA(7)'nin SMA(25)'i, SMA(99)'u; ardından SMA(25)'in SMA(99)'u yukarı kesmesini bekler.
 - Üç kesişim `SMA_CASCADE_MAX_SEQUENCE_MINUTES` (varsayılan 10) içinde olmazsa önceki aşama sıfırlanır.

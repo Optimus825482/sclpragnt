@@ -133,7 +133,14 @@ class MarketData:
         # Dokümantasyona göre sunucu bağlantıyı 24 saatte bir kapatır ve
         # serverShutdown olayı gönderir. Kod bunu fark edip bilinçli şekilde
         # yeni nesil başlatır; böylece saatlerce sessiz kalan tek soket kalmaz.
-        self.ws_connected_at = 0.0
+        # B-07: bu ALAN TEK DEĞERDI ve TÜM WS grupları arasında paylaşılıyordu;
+        # yaşam süresi kontrolü "son bağlanan grubun" zamanını kullandığı için
+        # gruplar arası hatalar birbirini gizliyordu (bir grup 23 saat, diğeri
+        # 1 saatlikti; kontrol yalnız son bağlanana bakıyordu). Artık
+        # {grup_id: bağlanma zamanı} sözlüğü tutulur ve kontrol grup başına
+        # yapılır. B-01'in "bayrak set edildikten sonra SIFIRLAMA" kuralı
+        # grup sözlüğü temizlenerek korunur.
+        self.ws_connected_at = {}          # {group_id: epoch}
         self.ws_max_lifetime_sec = 24 * 3600
         self.ws_host_index = 0
         self._rest_refresh_task = None
@@ -315,14 +322,16 @@ class MarketData:
                     self.klines[tf][symbol] = history
                     if history["closes"] and symbol not in self.tickers:
                         last_price = history["closes"][-1]
-                        tickers = dict(self.tickers)
-                        tickers[symbol] = {
+                        # B-08: 8 eşzamanlı işçi altında `dict()` kopyası
+                        # KAYIP GÜNCELLEME üretiyordu (okuma → kopya → yazma
+                        # arasında başka işçi yazar, yazma onun yazmasını ezer).
+                        # Atomik tek anahtar ataması hem kopyayı hem yarışı kaldırır.
+                        self.tickers.setdefault(symbol, {
                             "symbol": symbol,
                             "last_price": last_price,
                             "timestamp": int(time.time() * 1000),
                             "source": "binance_tr_public_rest_kline",
-                        }
-                        self.tickers = tickers
+                        })
                     print(
                         f"[MarketData] geçmiş hazır | symbol={symbol} timeframe={tf} "
                         f"closed_candles={len(history['closes'])}", flush=True,
@@ -386,14 +395,15 @@ class MarketData:
                         return False, f"{symbol}/{timeframe}: insufficient_closed_candles={len(history['closes'])}"
                     self.klines[timeframe][symbol] = history
                     if symbol not in self.tickers:
-                        tickers = dict(self.tickers)
-                        tickers[symbol] = {
+                        # B-08: atomik `setdefault` — hem tam kopya hem de
+                        # eşzamanlı hydrate'ler arasındaki kayıp güncelleme
+                        # (lost update) kalkar.
+                        self.tickers.setdefault(symbol, {
                             "symbol": symbol,
                             "last_price": history["closes"][-1],
                             "timestamp": int(time.time() * 1000),
                             "source": "binance_tr_public_rest_kline",
-                        }
-                        self.tickers = tickers
+                        })
                     return True, None
                 except Exception as exc:
                     return False, f"{symbol}/{timeframe}: {exc}"
@@ -658,7 +668,8 @@ class MarketData:
                     f"symbols={len(plan['symbols'])} timeframes={len(plan['timeframes'])}", flush=True,
                 )
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=5) as ws:
-                    self.ws_connected_at = time.time()
+                    # B-07: bağlanma zamanı GRUP BAŞINA kaydedilir.
+                    self.ws_connected_at[group_id] = time.time()
                     attempts = 0  # başarılı bağlantı backoff'u sıfırlar
                     print(f"[MarketData] WS bağlandı generation={generation} grup={group_id} base={base}", flush=True)
                     async for message in ws:
@@ -717,9 +728,14 @@ class MarketData:
                 # bayrağı görüp anında döner, `asyncio.wait(FIRST_COMPLETED)` ilk
                 # tick'te döner ve soketler el sıkışmadan iptal edilir → saniyede
                 # binlerce yarım bağlantı (ölçüldü: ~11.900/sn, 0 tamamlanan).
-                if self.ws_connected_at and (time.time() - self.ws_connected_at) >= self.ws_max_lifetime_sec:
+                # B-07: kontrol artık EN ESKİ grubun yaşı üzerinden yapılır
+                # (eskiden tek alan "son bağlanan grup"u gösteriyordu, yani
+                # diğer grupların ömrü sessizce takip edilmiyordu).
+                now = time.time()
+                oldest = min(self.ws_connected_at.values()) if self.ws_connected_at else None
+                if oldest is not None and (now - oldest) >= self.ws_max_lifetime_sec:
                     print("[MarketData] WS 24s ömrü doldu; yeni nesil başlatılıyor", flush=True)
-                    self.ws_connected_at = 0.0
+                    self.ws_connected_at = {}
                     self.reconnect_requested = True
                 group_tasks = {
                     asyncio.create_task(
@@ -796,14 +812,17 @@ class MarketData:
             symbol = str(data.get("s") or "").upper()
             price = float(data.get("c") or 0)
             if symbol and price and price > 0:
-                tickers = dict(self.tickers)
-                tickers[symbol] = {
+                # B-08: `tickers = dict(self.tickers)` tam kopya her kline
+                # olayında alınıyordu (70 eleman × ~25 olay/sn, hepsi event
+                # loop'ta ≈100 KB/s). Tek event loop'ta `self.tickers[symbol] = …`
+                # ataması ATOMİK'tir; okuyucular yarısı güncellenmiş bir
+                # sözlük göremez (beklemede ya da bu atamadan önce/sonra).
+                self.tickers[symbol] = {
                     "symbol": symbol,
                     "last_price": price,
                     "timestamp": int(data.get("E", time.time() * 1000) or time.time() * 1000),
                     "source": "binance_tr_public_ws:ticker",
                 }
-                self.tickers = tickers
                 self._mark_ws_event()
             return
         if not stream:
@@ -814,16 +833,22 @@ class MarketData:
         sig = stream.split("@")
         if len(sig) == 2 and sig[1] in {"ticker", "miniTicker"} and isinstance(data, dict):
             symbol = str(data.get("s") or sig[0] or "").upper()
-            price = float(data.get("c") or data.get("wrap") or 0)
+            # B-10: `data.get("c") or data.get("wrap")` — Binance şemasında
+            # `wrap` diye bir alan YOK; kopyala-yapıştır artığıydı ve bozuk bir
+            # değerde `float()` tüm WS çerçevesini düşürüyordu. Artık yalnız
+            # gerçek alan okunur, çevrim yerel try/except ile korunur.
+            try:
+                price = float(data.get("c") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
             if symbol and price and price > 0:
-                tickers = dict(self.tickers)
-                tickers[symbol] = {
+                # B-08: tam kopya yerine tek sembol atomik ataması.
+                self.tickers[symbol] = {
                     "symbol": symbol,
                     "last_price": price,
                     "timestamp": int(data.get("E", time.time() * 1000) or time.time() * 1000),
                     "source": f"binance_tr_public_ws:{sig[1]}",
                 }
-                self.tickers = tickers
                 self._mark_ws_event()
             return
         self._process_kline(data)
@@ -862,14 +887,15 @@ class MarketData:
             return
 
         event_ms = int(kline_data.get("E", 0) or time.time() * 1000)
-        tickers = dict(self.tickers)
-        tickers[symbol] = {
+        # B-08: `tickers = dict(self.tickers)` her kline olayında tam kopya
+        # alıyordu; bu yol EN SICAK olanı (70 sembol × 6 ufuk). Tek event
+        # loop'ta tek anahtar ataması atomiktir.
+        self.tickers[symbol] = {
             "symbol": symbol,
             "last_price": close,
             "timestamp": event_ms,
             "source": "binance_tr_public_ws",
         }
-        self.tickers = tickers
         self._mark_ws_event()
 
         # CANLI AKIS (2026-09-16): mumu dinleyicilere ilet — HEM oluşan HEM kapanmış.
@@ -1307,7 +1333,11 @@ class MarketData:
         if ignore_ws_freshness:
             # WS damgası atlanan bileşenler gerçek veriyle dolu olmayabilir;
             # bunları missing_or_stale'den çıkarıp yalnız gerçek eşiklere bak.
-            missing_or_stale = [item for item in missing_or_stale if item != "ticker_24h"] or missing_or_stale
+            # B-10: `... or missing_or_stale` GERİ-DÜŞÜŞÜ temizlemeyi tamamen
+            # etkisiz bırakıyordu: liste boşaldığında `or` sağdaki dolu listeyi
+            # geri döndürüyor, yani "ticker_24h bayat" işareti ASLA kalkmıyordu.
+            # Saf filtre uygulanır.
+            missing_or_stale = [item for item in missing_or_stale if item != "ticker_24h"]
         warmup_bypass = bool(
             allow_warmup and missing_or_stale and time.time() - self.created_at <= self.WARMUP_BYPASS_SEC
         )

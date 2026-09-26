@@ -7,6 +7,22 @@ import { applyCommissionPct } from "./pnl";
 export type LiveMessage<T = unknown> = { type: string; data: T };
 export type LiveStatus = "connecting" | "open" | "closed";
 
+/**
+ * Frontend'te TÜKETİCİSİ OLMAYAN WS mesaj tipleri.
+ *
+ * Denetim #53: backend `ws_broadcast_loop` (`routers/runtime.py:138`) SANİYEDE
+ * BİR `tickers` dizisi yayınlıyor (309 sembol × 6 alan ≈ 50 KB/sn). Hiçbir
+ * frontend sayfası bu tipi dinlemiyor; yani saniyede bir 50 KB JSON parse
+ * + `messageListeners` turu yapılıp sonuç çöpe atılıyordu. Bu liste, tüketicisi
+ * yazılana kadar bu tipleri `onmessage` içinde ELER.
+ */
+export const UNCONSUMED_LIVE_TYPES: ReadonlySet<string> = new Set([
+  "tickers",
+  // NOT: `binance_account_update` ve `trade_repair_completed` bu listeye
+  // eklenmedi — artık tüketicileri var (bkz. `binance-tr/page.tsx`,
+  // `trade-repair/page.tsx`).
+]);
+
 type MessageListener = (message: LiveMessage) => void;
 type StatusListener = (status: LiveStatus) => void;
 
@@ -70,9 +86,18 @@ function connect() {
   };
   instance.onmessage = (event) => {
     if (socket !== instance) return;
+    // `tickers` saniyede bir gelir ve hiçbir tüketiciyi yoktur; `lastMessageAt`
+    // güncellenmesi de yapılmaz (aksi halde "ölü soket" gözlemi bu sahte
+    // trafikle yanlışlıkla canlı görünürdü).
+    const raw = typeof event.data === "string" ? event.data : "";
+    if (raw) {
+      // ucuz ön-eleme: tipi çıkarmadan ayrıştırmadan önce ham metinde ara
+      if (raw.includes('"type":"tickers"') || raw.includes('"type": "tickers"')) return;
+    }
     lastMessageAt = Date.now();
     try {
       const message = JSON.parse(event.data) as LiveMessage;
+      if (UNCONSUMED_LIVE_TYPES.has(message?.type)) return;
       // H-01: komisyon oranı backend'den tek noktadan senkronlanır → tüm
       // sayfalar açık pozisyon K/Z'sini aynı (net) esasla hesaplar.
       if (message?.type === "portfolio") {

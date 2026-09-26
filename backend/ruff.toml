@@ -1,0 +1,61 @@
+# Ruff yapılandırması — CI kalite kapısı (2026-09-26, denetim #89/#99).
+#
+# Bu dosya bilinçli olarak DAR kural kümesi seçer. Ölçüm (2026-09-26,
+# `ruff check --statistics`):
+#   E+F (tam)        → 5019 ihlal  (bunun 4106'sı E501 satır uzunluğu)
+#   F (gerçek hata)  →  325 ihlal
+#   E9 (syntax)      →    0 ihlal
+#   ruff format      → 55 dosyanın 53'i yeniden biçimlendirilir
+#
+# Tam E/F veya `format --check` kapı olarak konulsaydı CI İLK ÇALIŞMADA
+# kırılırdı ve ~5000 ihlali düzeltmek tek seferlik bir iş değil, ayrı bir
+# refactor olurdu (ve diğer ajanların eşzamanlı düzenlemeleriyle çakışır).
+# Bu yüzden:
+#   * SERT KAPI: yalnızca gerçek hataya işaret eden, düzeltilmesi güvenli
+#     kurallar (E9 sözdizimi, F821 tanımsız ad, F811 yeniden tanım).
+#   * DANIŞMA (advisory): `ruff check` ve `ruff format --check` CI'da
+#     `continue-on-error: true` ile koşar, sonucu raporlar, kapı oluşturmaz.
+# Yeni kod yazarken kuralları sıkılaştırmak istenirse E501 ve format
+# aşamalı olarak açılabilir.
+target-version = "py311"
+line-length = 120
+exclude = [
+    ".venv",
+    "venv",
+    "node_modules",
+    "build",
+    "dist",
+    "__pycache__",
+    # Migrasyon/araştırma artefaktları — lint kapsamı dışı
+    "scripts/*.sql",
+]
+
+[lint]
+# SERT KAPI: gerçek hata sınıfları.
+select = [
+    "E9",    # sözdizimi / derleme hataları
+    "F821",  # tanımsız ad (undefined name)
+    "F811",  # yeniden tanımlanmış, kullanılmayan ad
+    "F823",  # yerel kapsamda tanımsız başvuru
+]
+# E9 ailesinin alt kuralı F401/F841 gibi "temizlik" uyarılarıyla gürültü
+# yapmasın; bunlar danışma adımında raporlanır.
+ignore = []
+
+[lint.per-file-ignores]
+# Testler kasıtlı olarak gevşek import kullanır: modül seviyesinde import
+# EYLEMden ÖNCE yapılır (monkeypatch hedefleri için `sys.path`/`app` içe
+# aktarmaları dosya gövdesinde), bazıları yalnızca varlık kontrolü için
+# import eder, bazıları mock için geçici değişken atar.
+# Ölçüm (2026-09-26, bu turda): tests/ altında E402=17, F401=37, F841=8
+# gerçek ihlal. F811 ÖLÇÜLDÜ ve 0 çıktı (test_monitoring.py'deki çift
+# `import time` bu turda silindi) → F811 istisnası KALDIRILDI, artık sert
+# kapı olarak uygulanıyor.
+"tests/*" = ["E402", "F401", "F841"]
+
+# `scripts/` tek seferlik araştırma scriptleri; PEP8 dışı ve bakım dışı.
+# SERT kapı (E9/F821/F811/F823) onlar için de geçerli — yalnız temizlik
+# sınıfları susturulur.
+"scripts/*" = ["E402", "F401", "F841"]
+
+

@@ -267,36 +267,150 @@ class MarketDataCacheTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WebsocketRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_broadcast_fans_out_concurrently_and_removes_failures(self):
-        from app.ws_runtime import ConnectionManager
+    async def test_broadcast_reaches_all_clients_and_removes_failures(self):
+        """BACKPRESSURE (Görev 11): broadcast artık I/O BEKLEMEZ.
 
-        entered = 0
-        all_entered = asyncio.Event()
+        Eski sözleşme `asyncio.gather` ile tüm gönderimlerin bitmesini bekliyordu
+        (yavaş istemci 0.75 sn boyunca döngüyü bloklıyordu). Yeni sözleşme:
+        istemci başına kuyruk + per-istemci drain görevi; `broadcast` yalnız
+        kuyruğa koyar ve ANINDA döner.
+        """
+        from app.ws_runtime import ConnectionManager
 
         class Socket:
             def __init__(self, fail=False):
                 self.fail = fail
                 self.sent = []
+                self.accepted = False
+
+            async def accept(self):
+                # `ConnectionManager.connect()` el sıkışmayı çağırır; gerçek
+                # FastAPI WebSocket'inde bu metot vardır. Test doubles bu
+                # yüzden bağlantı kurmadan önce `accept()` sunmalıdır.
+                self.accepted = True
 
             async def send_json(self, message):
-                nonlocal entered
-                entered += 1
-                if entered == 3:
-                    all_entered.set()
-                await asyncio.wait_for(all_entered.wait(), timeout=0.1)
                 if self.fail:
                     raise RuntimeError("closed")
                 self.sent.append(message)
 
         manager = ConnectionManager()
         healthy_a, healthy_b, failed = Socket(), Socket(), Socket(fail=True)
-        manager.active_connections[:] = [healthy_a, healthy_b, failed]
-        await manager.broadcast({"ok": True})
+        for socket in (healthy_a, healthy_b, failed):
+            await manager.connect(socket)
 
-        self.assertEqual(entered, 3)
+        # `connect()` el sıkışmayı gerçekten yaptı mı?
+        for socket in (healthy_a, healthy_b, failed):
+            self.assertTrue(socket.accepted, "connect() accept() çağırmadı")
+
+        await manager.broadcast({"ok": True})
+        # Kuyruk boşaltıcı görevlerine zaman tanı.
+        for _ in range(20):
+            if healthy_a.sent and healthy_b.sent:
+                break
+            await asyncio.sleep(0.01)
+
         self.assertEqual(healthy_a.sent, [{"ok": True}])
         self.assertEqual(healthy_b.sent, [{"ok": True}])
         self.assertNotIn(failed, manager.active_connections)
+
+    async def test_one_stalled_client_does_not_block_the_others(self):
+        """Yavaş istemci diğerlerini geciktirmemeli — kuyruk bunu sağlar."""
+        from app.ws_runtime import CLIENT_QUEUE_MAXSIZE, ConnectionManager
+
+        release = asyncio.Event()
+
+        class Slow:
+            def __init__(self):
+                self.sent = []
+
+            async def accept(self):
+                return None
+
+            async def send_json(self, message):
+                await release.wait()      # hiç bitmeyen gönderim
+                self.sent.append(message)
+
+        class Fast:
+            def __init__(self):
+                self.sent = []
+
+            async def accept(self):
+                return None
+
+            async def send_json(self, message):
+                self.sent.append(message)
+
+        manager = ConnectionManager()
+        slow, fast = Slow(), Fast()
+        await manager.connect(slow)
+        await manager.connect(fast)
+
+        # D-15 (düzeltme): eski test 20 yayın yapıyordu ve
+        # `dropped_total > 0` diye iddia ediyordu — bu MATEMATİKSEL OLARAK
+        # IMBATILDI: kuyruk derinliği 64, drain bir mesajı askıya alıp
+        # kalan 19'u tutuyor → 64 hiç dolmuyor, drop hiç oluşmuyor, iddia
+        # kalıcı olarak yanlış ölçülüyordu. Önce kuyruk derinliğini AŞAN
+        # sayıda yayın yapılıyor ki taşma gerçekten oluşsun.
+        total = CLIENT_QUEUE_MAXSIZE + 5
+        for index in range(total):
+            await manager.broadcast({"n": index})
+            # Hızlı istemci de kuyruk modeliyle çalışır; ardışık yayınlar
+            # onun kuyruğunu da taşırır. Araya bir tur boşluk koyarak
+            # "hızlı" istemcinin gerçekten hızlı olduğu (kuyruğu boşaltıp
+            # her mesajı alır) ve yavaş istemcinin TÜM mesajları
+            # alamadığı ayrışmış olur.
+            await asyncio.sleep(0)
+
+        for _ in range(200):
+            if len(fast.sent) >= total and manager.queue_stats()["dropped_total"] > 0:
+                break
+            await asyncio.sleep(0.005)
+
+        self.assertEqual(total, len(fast.sent),
+                         f"hızlı istemci {total} mesajın tamamını almalıydı")
+        self.assertEqual(0, len(slow.sent), "yavaş istemci döngüyü bloklamamalı")
+        # Yavaş istemcinin kuyruğu doldu ve en eski mesajları düştü.
+        self.assertGreater(manager.queue_stats()["dropped_total"], 0,
+                           "yavaş istemcinin kuyruğu taşmadı — backpressure ölçülmedi")
+        release.set()
+
+    async def test_full_queue_drops_the_oldest_message(self):
+        """Kuyruk dolunca EN ESKİ mesaj düşer (ticker verisi 'en son' anlamında)."""
+        from app.ws_runtime import CLIENT_QUEUE_MAXSIZE, ConnectionManager
+
+        class Socket:
+            def __init__(self):
+                self.sent = []
+
+            async def accept(self):
+                return None
+
+            async def send_json(self, message):
+                self.sent.append(message)
+
+        manager = ConnectionManager()
+        socket = Socket()
+        await manager.connect(socket)
+
+        # Drain görevi hiç çalışmasın: gönderimi askıya alan bir kilit yerine
+        # doğrudan kuyruğu doldurup taşma davranışını ölçüyoruz.
+        for outbox in manager._outboxes.values():
+            outbox.task.cancel()
+        await asyncio.sleep(0)
+
+        total = CLIENT_QUEUE_MAXSIZE + 10
+        for index in range(total):
+            await manager.broadcast({"n": index})
+
+        stats = manager.queue_stats()
+        self.assertEqual(10, stats["dropped_total"])
+        self.assertEqual(CLIENT_QUEUE_MAXSIZE, stats["pending"])
+        # Kuyrukta en eski değil, EN YENİ mesajlar durmalı.
+        oldest_kept = total - CLIENT_QUEUE_MAXSIZE
+        queued = list(manager._outboxes[id(socket)].queue._queue)
+        self.assertEqual({"n": oldest_kept}, queued[0])
+        self.assertEqual({"n": total - 1}, queued[-1])
 
 
 if __name__ == "__main__":

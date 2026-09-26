@@ -14,6 +14,7 @@ import {
 } from "lightweight-charts";
 import { API_BASE, apiRequest } from "../lib/api";
 import { formatPrice, pricePrecision } from "../lib/format";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 
 export interface ChartIndicators {
     // EMAs
@@ -69,6 +70,15 @@ const INTERVAL_MS: Record<string, number> = {
     "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
     "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
 };
+
+/**
+ * 14 gösterge serisinin tamamını yeniden kurma (`removeSeries` + `addSeries` +
+ * `setData`) en az bu aralıkla yapılır. Mum verisi 6 sn'de bir çekiliyor;
+ * aradaki turlarda yalnız mum serisi tazelenir (fiyat canlı kalır), gösterge
+ * pencereleri bu sürede yeniden kurulmaz. Yeni bir mum KAPANDIĞINDA bekleme
+ * uygulanmaz — gösterge hemen güncellenir.
+ */
+const INDICATOR_REBUILD_MIN_MS = 60_000;
 
 // ─── Math utilities ───────────────────────────────────────────────────────────
 
@@ -376,6 +386,8 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
     const [isDark, setIsDark] = useState(true); // dark varsayılan
     const klineReqIdRef = useRef(0);
     const lastBarsRef = useRef<Bar[]>([]);
+    // Son tam gösterge yeniden kurulumunun zaman damgası (bkz. INDICATOR_REBUILD_MIN_MS).
+    const lastIndicatorRebuildAtRef = useRef(0);
 
     // Fullscreen API handler
     const toggleFullscreen = useCallback(() => {
@@ -441,6 +453,20 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
     }, []);
 
     // ── Fetch klines ──────────────────────────────────────────────────────────
+    //
+    // PERFORMANS (denetim #46): Bu fonksiyon 6 sn'de bir 300 mum çekiyor ve
+    // `rebuildIndicators(bars)` ile 14 indikatörün TAMAMINI baştan hesaplayıp
+    // 14 seriyi kaldırıp yeniden ekliyordu. 4 kart açıkken bu, dakikada ~4 × 14
+    // = 56 kez removeSeries/addSeries demek (pane yerleşimi + canvas yeniden
+    // çizimi dahil) — en pahalı yol.
+    //
+    // Düzeltme iki katmanlı:
+    //   1. Mum penceresi birebir aynıysa `setData` bile hiç çağrılmaz.
+    //   2. Tam indikatör yeniden kurulumu yalnız (a) yeni bir mum KAPANDIĞINDA
+    //      veya (b) en fazla `INDICATOR_REBUILD_MIN_MS` aralıkla yapılır.
+    //      Aradaki turlarda yalnız mum serisi tazelenir (fiyat canlı kalır);
+    //      gösterge son noktası en geç 60 sn'de bir yenilenir.
+    // Aynı pencere = aynı mum sayısı VE aynı son mum zaman damgası.
     const fetchKlines = useCallback(async () => {
         if (!config.symbol) return;
         const reqId = ++klineReqIdRef.current;
@@ -452,8 +478,23 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
             const candlesRaw = payload.candles || [];
             if (!candlesRaw.length || !candleSeriesRef.current || !chartRef.current) return;
             const bars: Bar[] = candlesRaw.map((k: number[]) => ({ time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5] }));
+            const previous = lastBarsRef.current;
+            const previousLast = previous.length ? previous[previous.length - 1] : null;
+            const currentLast = bars[bars.length - 1];
+            const sameWindow = previous.length === bars.length
+                && !!previousLast && !!currentLast
+                && previousLast.time === currentLast.time;
+            const lastBarMoved = !!previousLast && !!currentLast && (
+                previousLast.close !== currentLast.close
+                || previousLast.high !== currentLast.high
+                || previousLast.low !== currentLast.low
+                || previousLast.volume !== currentLast.volume
+            );
             lastBarsRef.current = bars;
-            candleSeriesRef.current.setData(bars.map(b => ({ time: b.time as UTCTimestamp, open: b.open, high: b.high, low: b.low, close: b.close })));
+            // Aynı pencere + son mum değişmemişse mum serisine hiç dokunma.
+            if (!sameWindow || lastBarMoved) {
+                candleSeriesRef.current.setData(bars.map(b => ({ time: b.time as UTCTimestamp, open: b.open, high: b.high, low: b.low, close: b.close })));
+            }
             const last = bars[bars.length - 1];
             if (last) {
                 const precision = pricePrecision(last.close);
@@ -468,12 +509,19 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                 setPriceData({ last: last.close, changePct: dayChangePct });
             }
             // Başlık göstergeleri: seçili TF'nin son mumlarından RSI-14 / ADX-14.
+            // Bunlar ucuz (O(n) tek geçiş) ve her turda görünür oldukları için
+            // yenilemeye devam ediyoruz; pahalı olan 14'lük grafik serisi.
             const rsiSeries = calcRSI(bars, 14);
             setMomentum({
                 rsi14: rsiSeries.length ? rsiSeries[rsiSeries.length - 1].value : null,
                 adx14: calcADXLatest(bars, 14),
             });
-            rebuildIndicators(bars);
+            const nowAt = Date.now();
+            const barClosed = !sameWindow;
+            if (barClosed || nowAt - lastIndicatorRebuildAtRef.current >= INDICATOR_REBUILD_MIN_MS) {
+                lastIndicatorRebuildAtRef.current = nowAt;
+                rebuildIndicators(bars);
+            }
             setLoading(false);
         } catch (err) {
             console.error(`MultiChartCard [${config.symbol}] error:`, err);
@@ -643,7 +691,10 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
 
     useEffect(() => { setLoading(true); fetchKlines().then(() => chartRef.current?.timeScale().fitContent()); }, [fetchKlines]);
     useEffect(() => { if (lastBarsRef.current.length > 0) rebuildIndicators(lastBarsRef.current); }, [config.indicators, rebuildIndicators]);
-    useEffect(() => { const iv = setInterval(() => { if (typeof document !== "undefined" && document.hidden) return; fetchKlines(); }, 6000); return () => clearInterval(iv); }, [fetchKlines]);
+    // Sekme gizliyken 6 sn'de bir kline çekmek (ve 14 göstergeyi kurmaya
+    // çalışmak) anlamsız; repo standardı `useVisibleInterval` (4 kart açıkken
+    // arka planda 4 bağımsız döngü çalışıyordu).
+    useVisibleInterval(() => { void fetchKlines(); }, 6000);
 
     const activeCount = Object.values(config.indicators).filter(Boolean).length;
     const intervalMs = INTERVAL_MS[config.interval] || 60_000;

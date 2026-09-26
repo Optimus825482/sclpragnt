@@ -9,22 +9,43 @@ module closes that loop deterministically:
    (strategy × hour-band × volume-ratio band) and computes win rate / sample
    count per bucket.
 2. ``confidence_multiplier`` maps a new entry's context to [0.5 .. 1.0]:
-   buckets with proven bad expectancy scale size down; unknown contexts stay
-   neutral at 1.0 (no fabricated statistics).
+   buckets with proven bad expectancy scale size down. A bucket whose volume
+   ratio could not be read is treated as *unproven*, not as *proven good*,
+   and gets a fail-safe mid value (``UNKNOWN_VOLUME_MULTIPLIER``).
 3. A weekly refresh job re-reads trades from the database. Buckets need
    >= min samples before they are allowed to influence sizing.
+
+Bucket labels (hour bands) use a single fixed UTC+3 timezone (``BUCKET_TZ``)
+on BOTH the build and the lookup side, so a live entry always lands in the
+same bucket as the historical trades that taught it.
 
 No machine learning, no parameter fitting — plain counting with
 walk-forward-safe semantics (only *past* trades feed today's multiplier).
 """
 import time
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 MIN_BUCKET_SAMPLES = 8
 GOOD_WIN_RATE = 0.55     # >= this wins -> full size (multiplier 1.0)
 BAD_WIN_RATE = 0.35      # <= this wins -> minimum multiplier
 MIN_MULTIPLIER = 0.5
 MAX_MULTIPLIER = 1.0
+#: ``unknown`` hacim bandı çarpanı.
+#: D-11 (2026-09-26 denetimi, YÜKSEK): eski davranış nötr 1.0 idi, yani
+#: hacim oranı okunamayan bir giriş TAM boyutla açılıyordu. "Veri yok"
+#: kanıtlanmış bir kalite değildir; nötr 1.0 fail-OPEN (riskli) yöndeyken
+#: fail-SAFE yön orta değer (0.85) ile temsil edilir: kanıtlanmış kötü
+#: kova MIN_MULTIPLIER'a iner, kanıtlanmış iyi kova 1.0'a çıkar, veri
+#: yoksa boyut bir miktar kısılır ama durmaz.
+UNKNOWN_VOLUME_MULTIPLIER = 0.85
+
+#: Kova saat dilimi. Denetim (2026-09-26): `multiplier_for` UTC, `build_buckets`
+#: de UTC okurken `monitoring.py:2545` rapor/UI kovaları sabit UTC+3 ile
+#: üretiyordu → canlı giriş ile geçmiş işlem farklı saat bandına düşüyor,
+#: kova anahtarı tutmuyordu. TEK doğruluk kaynağı: sabit UTC+3 (Türkiye
+#: saati, yaz saati uygulaması olmayan ülke).
+BUCKET_TZ = timezone(timedelta(hours=3))
 
 # Shared bucket state. Refreshed weekly by the main.py calibration loop and
 # read by the analyzer at entry time; kept here so both sides share one
@@ -44,9 +65,13 @@ def bucket_state() -> dict:
 
 
 def multiplier_for(strategy: str, *, volume_ratio: float | None = None) -> float:
-    """Current confidence multiplier for one entry; neutral before first build."""
-    from datetime import datetime, timezone
-    hour = datetime.now(timezone.utc).hour
+    """Current confidence multiplier for one entry; neutral before first build.
+
+    D-11 (2026-09-26): saat dilimi UTC+3'e (`BUCKET_TZ`) çevrildi — kova
+    etiketleri `build_buckets` ile aynı zaman tabanını paylaşmalıdır, yoksa
+    canlı giriş hiçbir zaman geçmiş işlem kovasıyla eşleşmez.
+    """
+    hour = datetime.now(BUCKET_TZ).hour
     return confidence_multiplier(
         _bucket_state.get("buckets") or {},
         strategy=strategy, hour=hour, volume_ratio=volume_ratio)
@@ -83,6 +108,46 @@ def bucket_key(*, strategy: str | None, hour: int | None,
     return (str(strategy or "unknown"), hour_band(hour), volume_band(volume_ratio))
 
 
+def _trade_volume_ratio(ctx: dict) -> float | None:
+    """Bir işlemin `entry_context`'indeki hacim oranı — GERÇEK şema.
+
+    D-11 (2026-09-26): `build_buckets` önce `ctx["candles"]["volumes"]`
+    diye bir anahtar arıyordu; bu anahtar `analyzer._open_position_unlocked`
+    tarafından HİÇ yazılmıyor. Gerçek şema sırasıyla:
+      1. ``ctx["volume_ratio"]``  → giriş anında hesaplanan kalıcı alan
+         (5m cache: ``vols[-1] / mean(vols[-21:-1])``) — canlı yolun BİREBİR
+         kendisi, `analyzer._entry_volume_ratio` tarafından yazılır.
+      2. ``ctx["candles"]["volumes"]`` → geçmiş/geri-uyum yolu (yoksa atlanır).
+      3. ``ctx["liquidity"]["volume_ratio"]`` → `liquidity_status` çıktısı.
+    Hepsi yoksa ``None`` döner → kova "unknown" bandına düşer.
+    """
+    if not isinstance(ctx, dict):
+        return None
+    for value in (ctx.get("volume_ratio"),):
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                pass
+    candles = ctx.get("candles")
+    if isinstance(candles, dict):
+        vols = candles.get("volumes")
+        if isinstance(vols, (list, tuple)) and len(vols) >= 21:
+            base = float(sum(vols[-21:-1]) / 20)
+            if base > 0:
+                try:
+                    return float(vols[-1]) / base
+                except (TypeError, ValueError):
+                    return None
+    liquidity = ctx.get("liquidity")
+    if isinstance(liquidity, dict) and liquidity.get("volume_ratio") is not None:
+        try:
+            return float(liquidity["volume_ratio"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def build_buckets(trades: list[dict]) -> dict[tuple, dict]:
     """Group closed trades into buckets with win-rate statistics."""
     grouped: dict[tuple, list[float]] = defaultdict(list)
@@ -92,28 +157,12 @@ def build_buckets(trades: list[dict]) -> dict[tuple, dict]:
             hour = None
             ts = float(trade.get("entry_time") or 0)
             if ts > 0:
-                from datetime import datetime, timezone
-                hour = datetime.fromtimestamp(ts, tz=timezone.utc).hour
+                hour = datetime.fromtimestamp(ts, tz=BUCKET_TZ).hour
         except (TypeError, ValueError):
             hour = None
-        # H4: bucket key must use the SAME volume-ratio definition as the
-        # live lookup path (analyzer.py:893-900), otherwise keys never match
-        # and calibration silently stays at 1.0. The live path computes
-        # vols[-1] / mean(vols[-21:-1]) from the 5m candle cache. We rebuild
-        # that from the trade's snapshot candles if available.
-        vr = None
-        ctx = trade.get("entry_context") or {}
-        if isinstance(ctx, dict):
-            # Prefer the same cache-derived ratio the live path would see.
-            candles = ctx.get("candles") or {}
-            vols = candles.get("volumes") if isinstance(candles, dict) else None
-            if isinstance(vols, (list, tuple)) and len(vols) >= 21:
-                base = float(sum(vols[-21:-1]) / 20)
-                if base > 0:
-                    vr = float(vols[-1]) / base
-            # Fallback to the legacy stored liquidity ratio.
-            if vr is None:
-                vr = ((ctx.get("liquidity") or {}).get("volume_ratio"))
+        # H4/D-11: bucket key, canlı yolun (`analyzer._open_position_unlocked`
+        # → `calib_volume_ratio`) BİREBİR aynı hacim oranı tanımını kullanır.
+        vr = _trade_volume_ratio(trade.get("entry_context") or {})
         key = bucket_key(strategy=trade.get("strategy"), hour=hour, volume_ratio=vr)
         grouped[key].append(pnl)
     buckets = {}
@@ -132,13 +181,22 @@ def confidence_multiplier(buckets: dict[tuple, dict], *, strategy: str | None,
                           hour: int | None, volume_ratio: float | None) -> float:
     """Map a new entry's bucket to a size multiplier in [0.5 .. 1.0].
 
-    Unknown or thin-sample buckets are neutral (1.0): absence of evidence is
-    not evidence of quality, but it must not block trading either.
+    D-11 (2026-09-26): "kanıt yok" durumu iki farklı fail yönüne ayrıldı.
+
+      * ``volume_band == "unknown"`` (hacim oranı okunamadı) → ``UNKNOWN_VOLUME_MULTIPLIER``
+        (0.85). Önceden 1.0 idi, yani veri Yok olan girişler TAM boyutla
+        açılıyordu — kalibrasyon "kanıtlanmış riski" ölçemediği için
+        sessizce hiçbir şey yapmıyordu. 0.85 fail-SAFE orta noktadır:
+        kanıtlanmış kötü kova 0.5'e iner, iyi kova 1.0'a çıkar, veri
+        yoksa bir miktar küçülür ama işlem durmaz.
+      * ``samples < MIN_BUCKET_SAMPLES`` (kova var ama ince) → 1.0 korunur:
+        kova mevcut, yalnızca az örnek var; bu bir veri EKSİKLİĞİ değil,
+        düşük güven. Sıfırlamak da şişirmek de doğru değil.
     """
     key = bucket_key(strategy=strategy, hour=hour, volume_ratio=volume_ratio)
     stats = buckets.get(key)
     if not stats or stats["samples"] < MIN_BUCKET_SAMPLES:
-        return MAX_MULTIPLIER
+        return UNKNOWN_VOLUME_MULTIPLIER if key[2] == "unknown" else MAX_MULTIPLIER
     wr = stats["win_rate"]
     if wr >= GOOD_WIN_RATE:
         return MAX_MULTIPLIER

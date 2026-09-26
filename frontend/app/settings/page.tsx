@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { API_BASE, apiRequest } from "../lib/api";
+import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { formatSignedTL, toMs } from "../lib/format";
@@ -129,11 +129,10 @@ function SettingsPageInner() {
       })
       .then(setLlm)
       .catch(() => setError("LLM yapılandırması alınamadı (HTTP hatası)"));
-    apiRequest(`${API_BASE}/api/monitoring/settings`, { cache: "no-store" })
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
+    // `getJSON` 4xx/5xx'te Error fırlatır (4xx detayını `detail` alanından
+    // taşır). Önceki elle `r.ok` deseni de çalışıyordu ama 7 yükleyicinin
+    // tamamında tekrarlanıyordu ve hata mesajı backend detayını hep atıyordu.
+    getJSON<{ min_score?: number | null }>("/api/monitoring/settings")
       .then((d) => {
         const ms = d.min_score ?? 50;
         setMonitoringMinScore(ms);
@@ -143,9 +142,11 @@ function SettingsPageInner() {
     loadMlStatus();
   }, []);
 
+  // Aşağıdaki 6 yükleyicinin tamamı `.then(r => r.json())` deseni kullanıyordu:
+  // 401/500'de hata gövdesi `{}` olarak state'e yazılıyor ve kullanıcı
+  // "boş liste" görüp nedenini bilmiyordu. `getJSON` bunu tek yerde çözer.
   const loadTopGainers = useCallback(() => {
-    apiRequest(`${API_BASE}/api/market/top-gainers`, { cache: "no-store" })
-      .then((r) => r.json())
+    getJSON<Record<string, unknown>>("/api/market/top-gainers")
       .then((d) => setTopGainers(d))
       .catch(() => undefined);
   }, []);
@@ -153,35 +154,41 @@ function SettingsPageInner() {
   useVisibleInterval(loadTopGainers, 60000);
 
   const loadMtf = useCallback(() => {
-    apiRequest(`${API_BASE}/api/historical-mtf-backfill/status`, { cache: "no-store" })
-      .then((r) => r.json()).then((d) => setMtfBackfill(d)).catch(() => undefined);
+    getJSON<Record<string, unknown>>("/api/historical-mtf-backfill/status")
+      .then((d) => setMtfBackfill(d))
+      .catch(() => undefined);
   }, []);
   useEffect(() => { if (mtfBackfillOpen) loadMtf(); }, [mtfBackfillOpen, loadMtf]);
   useVisibleInterval(loadMtf, mtfBackfillOpen ? 1500 : null);
 
   const loadParity = useCallback(() => {
-    apiRequest(`${API_BASE}/api/replay-parity-backfill/status`, { cache: "no-store" })
-      .then((r) => r.json()).then((d) => setParityBackfill(d)).catch(() => undefined);
+    getJSON<Record<string, unknown>>("/api/replay-parity-backfill/status")
+      .then((d) => setParityBackfill(d))
+      .catch(() => undefined);
   }, []);
   useEffect(() => { if (parityBackfillOpen) loadParity(); }, [parityBackfillOpen, loadParity]);
   useVisibleInterval(loadParity, parityBackfillOpen ? 1500 : null);
 
   const loadMl = useCallback(() => {
-    apiRequest(`${API_BASE}/api/velocity-ml-backfill/status`, { cache: "no-store" })
-      .then((r) => r.json()).then((d) => setMlBackfill(d)).catch(() => undefined);
+    getJSON<Record<string, unknown>>("/api/velocity-ml-backfill/status")
+      .then((d) => setMlBackfill(d))
+      .catch(() => undefined);
   }, []);
   useEffect(() => { if (mlBackfillOpen) loadMl(); }, [mlBackfillOpen, loadMl]);
   useVisibleInterval(loadMl, mlBackfillOpen ? 1500 : null);
 
   const loadRadar = useCallback(() => {
-    apiRequest(`${API_BASE}/api/radar-outcomes-backfill/status`, { cache: "no-store" })
-      .then((r) => r.json()).then((d) => setRadarBackfill(d)).catch(() => undefined);
+    getJSON<Record<string, unknown>>("/api/radar-outcomes-backfill/status")
+      .then((d) => setRadarBackfill(d))
+      .catch(() => undefined);
   }, []);
   useEffect(() => { if (radarBackfillOpen) loadRadar(); }, [radarBackfillOpen, loadRadar]);
   useVisibleInterval(loadRadar, radarBackfillOpen ? 1500 : null);
 
   const loadActivity = useCallback(() => {
-    apiRequest(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()).then((d) => setActivity(d.statuses || {})).catch(() => undefined);
+    getJSON<{ statuses?: Record<string, unknown> }>("/api/symbol-activity")
+      .then((d) => setActivity(d.statuses || {}))
+      .catch(() => undefined);
   }, []);
   useEffect(() => { loadActivity(); }, [loadActivity]);
   useVisibleInterval(loadActivity, 60000);

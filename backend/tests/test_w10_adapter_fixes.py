@@ -145,6 +145,179 @@ class PublicRetryPolicyTests(unittest.TestCase):
         self.assertEqual(1, calls["n"])
         self.assertFalse(sleeper.called)
 
+    def test_retry_after_is_not_truncated_to_four_seconds(self):
+        """#31: `Retry-After: 120` 4 sn'ye kırpılınca 418'e tırmanılıyordu."""
+        from app import binance_tr_public as pub
+
+        self.assertEqual(120.0, pub._retry_delay(1, {"Retry-After": "120"}))
+        # Yalnız çok yüksek tavan (5 dk) uygulanır.
+        self.assertEqual(pub.REST_RETRY_AFTER_MAX_SEC,
+                         pub._retry_delay(1, {"Retry-After": "999999"}))
+        # Header yoksa üstel backoff + jitter korunur.
+        self.assertLess(pub._retry_delay(1), pub.REST_BACKOFF_MAX_SEC)
+
+    def test_429_backoff_uses_the_server_retry_after(self):
+        from app import binance_tr_public as pub
+
+        slept = []
+
+        def throttled(*_args, **_kwargs):
+            raise urllib.error.HTTPError("https://api.binance.me", 429, "slow down",
+                                         {"Retry-After": "90"}, None)
+
+        with mock.patch.object(pub, "urlopen", side_effect=throttled), \
+             mock.patch.object(pub.time, "sleep", side_effect=slept.append):
+            with self.assertRaises(RuntimeError):
+                pub._get_json("/api/v3/klines", {})
+        self.assertTrue(slept)
+        self.assertTrue(all(delay >= 90.0 for delay in slept),
+                        f"sunucu 90 sn dedi, istemci {slept} bekledi")
+
+    def test_ban_backoff_is_minutes_not_30_60_90_seconds(self):
+        """#32: 418 dakikalar-günler sürer; 30/60/90 sn banı garanti ederdi."""
+        from app import binance_tr_public as pub
+
+        self.assertGreaterEqual(pub._ban_delay(1), 600)
+        self.assertGreater(pub._ban_delay(2), pub._ban_delay(1))
+        self.assertLessEqual(pub._ban_delay(9), pub.REST_BAN_BACKOFF_MAX_SEC)
+        # Sunucunun ipucu (Retry-After / Ban) varsa esas alınır; ban ipucu
+        # 429 tavanından (5 dk) uzun süre bildirebilir, o yüzden ban tavanı
+        # (1 saat) uygulanır.
+        self.assertEqual(pub.REST_BAN_BACKOFF_MAX_SEC,
+                         pub._ban_delay(1, {"Retry-After": "7200"}))
+        self.assertEqual(1800.0, pub._ban_delay(1, {"Ban": "1800"}))
+
+    def test_418_backoff_uses_the_ban_header(self):
+        from app import binance_tr_public as pub
+
+        slept = []
+
+        def banned(*_args, **_kwargs):
+            raise urllib.error.HTTPError("https://api.binance.me", 418, "banned",
+                                         {"Retry-After": "1200"}, None)
+
+        with mock.patch.object(pub, "urlopen", side_effect=banned), \
+             mock.patch.object(pub.time, "sleep", side_effect=slept.append):
+            with self.assertRaises(RuntimeError):
+                pub._get_json("/api/v3/klines", {})
+        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(slept))
+        # Sunucu 1200 sn dedi → 1200 sn beklendi. 4 sn'e (eskiden kullanılan
+        # tavan) kırpılmadığı gibi 1 saatlik ban tavanına da takılmadı.
+        self.assertTrue(all(delay == 1200.0 for delay in slept),
+                        f"418 geri çekilmesi sunucunun dediğinden saptı: {slept}")
+
+
+# ---------------------------------------------------------------- #32 exchangeInfo cache
+class ExchangeInfoCacheTests(unittest.TestCase):
+    def setUp(self):
+        from app import binance_tr_public as pub
+        self.pub = pub
+        pub._exchange_info_cache.update({"payload": None, "expires": 0.0})
+
+    def tearDown(self):
+        self.pub._exchange_info_cache.update({"payload": None, "expires": 0.0})
+
+    def test_both_symbol_helpers_share_one_fetch(self):
+        import asyncio
+
+        payload = {"symbols": [
+            {"symbol": "BTCTRY", "status": "TRADING", "quoteAsset": "TRY",
+             "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                         {"filterType": "NOTIONAL", "minNotional": "10"}]},
+        ]}
+        calls = {"n": 0}
+
+        def fake_get(path, params):
+            calls["n"] += 1
+            return payload
+
+        with mock.patch.object(self.pub, "_get_json", side_effect=fake_get):
+            symbols = asyncio.run(self.pub.trading_symbols("TRY"))
+            filters = asyncio.run(self.pub.trading_symbols_with_filters("TRY"))
+            # Üçüncü çağrı da (radar döngüsü tekrarı) ağa gitmemeli.
+            again = asyncio.run(self.pub.trading_symbols("TRY"))
+
+        self.assertEqual(1, calls["n"], "exchangeInfo üç kez çekildi")
+        self.assertEqual(["BTCTRY"], symbols)
+        self.assertEqual(10.0, filters["BTCTRY"]["min_notional"])
+        self.assertEqual(again, symbols)
+
+    def test_cache_expires_and_refetches(self):
+        import asyncio
+
+        calls = {"n": 0}
+
+        def fake_get(path, params):
+            calls["n"] += 1
+            return {"symbols": []}
+
+        with mock.patch.object(self.pub, "_get_json", side_effect=fake_get):
+            asyncio.run(self.pub.trading_symbols("TRY"))
+            self.pub._exchange_info_cache["expires"] = 0.0   # TTL doldu
+            asyncio.run(self.pub.trading_symbols("TRY"))
+        self.assertEqual(2, calls["n"])
+
+
+# ---------------------------------------------------------------- #30 radar ticker_24h
+class Ticker24hCacheTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from app import binance_tr_public as pub
+        self.pub = pub
+        pub._ticker_24h_cache.update({"key": None, "rows": None, "expires": 0.0})
+
+    def tearDown(self):
+        self.pub._ticker_24h_cache.update({"key": None, "rows": None, "expires": 0.0})
+
+    async def test_back_to_back_calls_hit_the_network_once(self):
+        """radar_loop 60 sn'de iki kez ticker_24h() çağırıyordu (weight 160)."""
+        calls = {"n": 0}
+
+        def fake(path, params):
+            calls["n"] += 1
+            if path == "/api/v3/exchangeInfo":
+                return {"symbols": [
+                    {"symbol": "BTCTRY", "status": "TRADING", "quoteAsset": "TRY",
+                     "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.001"}]}]}
+            return [{"symbol": "BTCTRY", "priceChangePercent": "1.2",
+                     "quoteVolume": "9000000", "lastPrice": "10", "highPrice": "11",
+                     "lowPrice": "9", "count": "900"}]
+
+        with mock.patch.object(self.pub, "_get_json", side_effect=fake):
+            first = await self.pub.ticker_24h()
+            second = await self.pub.ticker_24h()
+            movers = await self.pub.top_gainers(5)
+            pool = await self.pub.active_movers_pool(5)
+        # 1 × ticker_24hr (weight 80) + 1 × exchangeInfo (önbellekli) = 2 istek.
+        self.assertEqual(2, calls["n"], f"ticker_24h önbelleği atlandı: {calls['n']} istek")
+        self.assertEqual(first, second)
+        self.assertTrue(movers)
+        self.assertTrue(pool)
+
+    async def test_different_symbol_sets_are_not_served_from_the_same_cache(self):
+        calls = {"n": 0}
+
+        def fake(path, params):
+            calls["n"] += 1
+            return [{"symbol": params.get("symbols", "ALL")}]
+
+        with mock.patch.object(self.pub, "_get_json", side_effect=fake):
+            await self.pub.ticker_24h()
+            await self.pub.ticker_24h(["BTCTRY"])
+        self.assertEqual(2, calls["n"])
+
+    async def test_cache_expires_and_refetches(self):
+        calls = {"n": 0}
+
+        def fake(path, params):
+            calls["n"] += 1
+            return []
+
+        with mock.patch.object(self.pub, "_get_json", side_effect=fake):
+            await self.pub.ticker_24h()
+            self.pub._ticker_24h_cache["expires"] = 0.0
+            await self.pub.ticker_24h()
+        self.assertEqual(2, calls["n"])
+
 
 # ---------------------------------------------------------------- B-14
 class PrivateAdapterTests(unittest.TestCase):

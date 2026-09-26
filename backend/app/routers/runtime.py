@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.config import config
 from app import database
-from app.state import market, analyzer
+from app.state import market, analyzer, apply_symbol_universe, extend_stream_universe
 from app.api_common import _start_background, _fresh_public_price
 from app.circuit_breaker import breaker as strategy_breaker
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, top_gainers
@@ -78,18 +78,46 @@ _realized_pnl_cache = {"value": None, "at": 0.0}
 _try_balance_cache = {"value": None, "at": 0.0}
 # ws_broadcast_loop saniyede bir açık auto_paper pozisyonlarını okur; bu da
 # 3 sn TTL cache'e alınır (broadcast döngüsünün DB baskısını azaltır).
-_auto_trades_cache = {"data": [], "at": 0.0}
+#
+# DENETİM (2026-09-26): `error` alanı eklendi. Önceden `list_auto_paper_trades`
+# hata verdiğinde `_auto_trades_cache["data"]` ilk hatadan sonra `[]` kalıyordu
+# ve `at` YİNELENİYORDU: yani 3 sn sonra "başarılı ve boş" sanılıyordu.
+# `ws_broadcast_loop` bu boş listeyi `auto_paper_positions` olarak yayınlıyor,
+# böylece açık otonom pozisyonlar portföyden, equity hesabından ve WS
+# ekranından SESSİZCE kayboluyordu; `invalidate_wallet_caches` devreye girmiyor
+# çünkü kapanış gerçekleşmemişti. Kullanıcı "paramı kaybettim" sanıyordu.
+# Artık: hata halinde `at` yenilenmez (kısa aralıkla yeniden denenir) ve
+# `error` mesajı WS'ye taşınır → UI "hiç pozisyon yok" ile
+# "pozisyonlar okunamadı"yı ayırt edebilir (/api/positions alanı ile aynı
+# sözleşme: `auto_paper_error`).
+_auto_trades_cache = {"data": [], "at": 0.0, "error": None}
+# Hata halinde yeniden deneme aralığı. `_WALLET_TTL_SEC` (3 sn) ile aynı
+# değerde: kullanıcı saniyede bir deneme görür, DB havuzu ezilmez.
+_AUTO_TRADES_RETRY_SEC = 3.0
 
 
 async def _cached_open_auto_trades() -> list:
     now = time.time()
-    if now - _auto_trades_cache["at"] >= _WALLET_TTL_SEC:
-        try:
-            _auto_trades_cache["data"] = await database.list_auto_paper_trades(status="open")
-        except Exception as exc:
-            logger.warning("auto_paper açık pozisyon listesi okunamadı: %s", exc)
+    if now - _auto_trades_cache["at"] < _AUTO_TRADES_RETRY_SEC:
+        return _auto_trades_cache["data"]
+    try:
+        _auto_trades_cache["data"] = await database.list_auto_paper_trades(status="open")
+        _auto_trades_cache["error"] = None
+        # `at` YALNIZCA başarıda ilerletilir. Hata halinde ilerletmek
+        # "okundu ve boş" ile "okunamadı" durumlarını ayırt edilemez hale
+        # getiriyordu (denetim 2026-09-26).
         _auto_trades_cache["at"] = now
+    except Exception as exc:
+        logger.warning("auto_paper açık pozisyon listesi okunamadı: %s", exc, exc_info=True)
+        # Veri KORUNUR (bayat liste yayınlanmaya devam eder — bu, pozisyonların
+        # ekrandan kaybolmasından iyidir); yalnızca hata bayrağı yükselir.
+        _auto_trades_cache["error"] = f"{type(exc).__name__}: {exc}"
     return _auto_trades_cache["data"]
+
+
+def auto_paper_error() -> str | None:
+    """Açık otonom pozisyon listesinin SON okuma hatası (WS/UI gösterimi için)."""
+    return _auto_trades_cache.get("error")
 
 
 async def _cached_realized_pnl() -> float:
@@ -113,15 +141,26 @@ async def _cached_try_balance() -> float:
 def invalidate_wallet_caches():
     """Trade kapanışı/açılışı sonrası önbelleği sıfırla (anında doğru bakiye).
 
-    ⚠️ BAĞLANMAMIŞ KANCA (2026-09-10, Madde 21): hiçbir yerden çağrılmıyor.
-    Önbelleklerin TTL'i ``_WALLET_TTL_SEC`` = 3 sn olduğu için işlem
-    kapanışından sonra en fazla 3 sn bayat değer gösterilir; bu yüzden
-    kaldırmak yerine kayda geçirildi. Anında tazelik gerekirse trade
-    açılış/kapanış noktalarından çağrılmalıdır.
+    DENETİM (2026-09-26): 2026-09-10'un "BAĞLANMAMIŞ KANCA" notu YANLIŞTI;
+    dört çağrı noktası vardır ve dördü de para hareketidir:
+
+    * ``runtime.py:283``  — ``strategy_loop``: bir ``CLOSE*`` sinyali
+      yayınlandığında (analyzer pozisyon kapattı).
+    * ``runtime.py:840``  — ``_close_positions_on_passivation``: pasif
+      semboldeki otonom paper kapanışlarından sonra.
+    * ``main.py:3744``    — manuel/LLM paper kapatma yolu.
+    * ``main.py:3943``    — trade onarımı (repair) sonrası.
+
+    Hepsi 3 sn TTL'yi beklemeden doğru bakiye göstermek için çağırır. Not
+    düzeltildi: kancanın bağlanmamış olması bir eksiklik değil, TTL'nin üstüne
+    konan bilinçli bir aciliyet katmanıdır.
+
+    ``error`` da sıfırlanır: kapanış gerçekleştiğinde önceki DB okuma hatası
+    artık geçerli değildir ve WS'de yanlış uyarı görünmemelidir.
     """
     _realized_pnl_cache.update(value=None, at=0.0)
     _try_balance_cache.update(value=None, at=0.0)
-    _auto_trades_cache.update(data=[], at=0.0)
+    _auto_trades_cache.update(data=[], at=0.0, error=None)
 
 
 async def ws_broadcast_loop():
@@ -204,13 +243,23 @@ async def ws_broadcast_loop():
 
                 reconciliation_expected = config.INITIAL_BALANCE_TRY + realized_pnl + unrealized_pnl
                 reconciliation_delta = total_value - reconciliation_expected
+                # DENETİM (2026-09-26): `auto_paper_error` WS'ye de taşınır.
+                # `/api/positions` bu alanı zaten dönüyordu (main.py) ama broadcast
+                # yolu taşımıyordu; sonuç, DB hatasında UI'ın açık pozisyonları
+                # "kapandı" sanıp portföyden düşürmesidi. Alan adı ve anlamı
+                # REST ile birebir aynıdır.
+                ap_error = _auto_trades_cache.get("error")
                 _ws_snapshot_cache["portfolio"] = {"try": try_bal, "total_value": total_value, "realized_pnl": realized_pnl,
                                                     "unrealized_pnl": unrealized_pnl, "reconciliation_expected": reconciliation_expected,
                                                     "reconciliation_delta": reconciliation_delta, "positions": open_positions,
                                                     "auto_paper_positions": auto_positions,
                                                     # H-01: frontend açık pozisyon K/Z'sini TEK kaynaktan
                                                     # (lib/pnl.ts) ve backend ile aynı komisyonla hesaplasın.
-                                                    "commission_pct": config.COMMISSION_PCT}
+                                                    "commission_pct": config.COMMISSION_PCT,
+                                                    # None = sorun yok. Dolu string = otonom pozisyon
+                                                    # listesi okunamadı; `auto_paper_positions`
+                                                    # BAYAT olabilir, silinmiş sayılmaz.
+                                                    "auto_paper_error": ap_error}
                 # NaN/±Infinity tek bir WS portfolio mesajını da tüketicilerde
                 # bozabilir; /api/positions ile aynı güvenlik uygulanır.
                 await ws_manager.broadcast({"type": "portfolio", "data": _json_safe_positions(_ws_snapshot_cache["portfolio"])})
@@ -345,11 +394,25 @@ async def refresh_top_gainer_symbols():
     """Refresh active TRY symbols from Binance TR's public 24h ticker data."""
     if not config.TOP_GAINERS_AUTO_ACTIVATE:
         return {"ok": False, "enabled": False, "symbols": config.SYMBOLS}
-    # Ağ I/O'su kilit DIŞINDA yapılır. Aksi halde yavaş ya da askıda kalan bir
-    # Binance TR yanıtı _top_gainers_lock'ı tutar; refresh_top_gainer_symbols'i
-    # bekleyen periyodik döngü ve eşzamanlı çağrılar süresiz bloke olurdu.
+    # DENETİM (2026-09-26): `_top_gainers_lock` artık YALNIZCA saf hesaplama
+    # (`ranked`/`selected`/`active` türetimi) boyunca tutulur. Ağ I/O'su
+    # zaten kilit dışındaydı ama `database.load_positions()` ve
+    # `auto_paper._close_trade` DB YAZMA işlemleri kilit İÇİNDE kalmıştı.
+    # Yavaş bir `_close_trade` (veya DB havuzu beklemesi) kilidi 10-30 sn
+    # tutuyordu; bu sırada `top_gainers_status(refresh=True)` ve
+    # `PUT /api/config` → `_apply_config_update` →
+    # `_start_background(refresh_top_gainer_symbols)` bloklanıyordu.
+    # Daha kötüsü: `config.SYMBOLS = active` çalışmış ama persist
+    # (`set_llm_setting`) çalışmamışsa DB eski listeyi tutar ve yeniden
+    # başlatmada evren geri sarılırdı. Aşağıda bu yüzden sıra açıkça
+    # belirlenmiştir: hesap → evren yaz (tek kapı) → yan etkiler (kapanışlar,
+    # hidrasyon, persist, registry). Yan etki hatası EVRENİ GERİ ALMAZ.
     all_tickers = await ticker_24h()
     known_try = set(await trading_symbols("TRY"))
+    # DB okuması da kilit dışında: `load_positions` tek bir SELECT'tir ve
+    # iki eşzamanlı yenilemenin aynı sonucu görmesi sorun değildir —
+    # kilidi tutacak tek şey sonraki saf hesap.
+    open_symbols = set(analyzer.positions) | set((await database.load_positions()).keys())
     async with _top_gainers_lock:
         ranked = []
         for item in all_tickers or []:
@@ -364,69 +427,76 @@ async def refresh_top_gainer_symbols():
             ranked.append({"symbol": symbol, "change_pct": change, "quote_volume": volume})
         ranked.sort(key=lambda row: (row["change_pct"], row["quote_volume"]), reverse=True)
         selected = [row["symbol"] for row in ranked[:config.TOP_GAINERS_LIMIT]]
-        open_symbols = set(analyzer.positions) | set((await database.load_positions()).keys())
         active = list(dict.fromkeys(selected + sorted(open_symbols)))
         previous_active = set(str(symbol).upper() for symbol in market.symbols)
-        if not active:
-            raise RuntimeError("Binance TR top-gainer TRY listesi boş döndü")
-        dropped_symbols = previous_active - set(active)
-        if dropped_symbols:
-            # 2026-09-21 Erkan kararı: Sembol pasife alınırken/listeden düşerken
-            # varsa açık otonom paper pozisyonu kâr/zarara bakılmaksızın kapatılır.
-            try:
-                from app.routers import auto_paper as _ap
-                open_auto_trades = await database.list_auto_paper_trades(status="open")
-                for trade in open_auto_trades:
-                    sym = str(trade.get("symbol") or "").upper()
-                    if sym in dropped_symbols:
-                        trade_id = int(trade["id"])
-                        tk = market.get_ticker(sym)
-                        price = float(tk.get("last_price") or 0) if tk else 0
-                        if not price:
-                            price = float(trade.get("peak_price") or trade.get("entry_price") or 0)
-                        await _ap._close_trade(trade_id, sym, price, time.time(), "symbol_deactivated")
-                        print(f"[Top Gainers] Pasife düşen {sym} için auto_paper pozisyonu ({trade_id}) kapatıldı @ {price}", flush=True)
-            except Exception as exc:
-                print(f"[Top Gainers] auto_paper pasif kapatma hatası: {exc}", flush=True)
-        config.SYMBOLS = active
-        market.symbols = [symbol.lower() for symbol in active]
-        # Newly activated symbols would otherwise wait ~4.6h on the WS alone
-        # to collect enough closed 5m candles; hydrate them up front so MTF
-        # gates are usable from the first scan.
-        new_symbols = sorted(set(active) - previous_active)
-        if new_symbols:
-            try:
-                hydration = await market.ensure_history(
-                    config.PRIORITY_TIMEFRAMES, min_candles=55, candle_limit=120)
-                print(f"[Top Gainers] {len(new_symbols)} yeni sembol hidrasyonu: "
-                      f"{hydration.get('hydrated', 0)} seri dolduruldu", flush=True)
-            except Exception as exc:
-                print(f"[Top Gainers] Yeni sembol hidrasyon hatası: {exc}", flush=True)
-        # 2026-09-16: Sembol seti DEĞİŞMEDİYSE reconnect İSTEME. Eskiden koşulsuz
-        # `True` set ediliyordu → her yenileme turunda (TOP_GAINERS_REFRESH_SEC)
-        # tüm WS grupları yıkılıp yeniden kuruluyordu (log: nesil 1 → nesil 2).
-        # Bu, gereksiz bağlantı kaybı + veri boşluğu + Binance tarafında gereksiz
-        # yeniden abonelik demekti. Yalnızca gerçek bir değişimde yeniden bağlan.
-        if set(active) != previous_active:
-            market.reconnect_requested = True
-        persisted = await database.get_llm_setting("runtime_config", "{}")
+    if not active:
+        raise RuntimeError("Binance TR top-gainer TRY listesi boş döndü")
+    # Evreni güncelle: `config.SYMBOLS` + `market.symbols` TEK kapıdan
+    # (bkz. app/state.py). Boş liste reddedilir; burada zaten kontrol edildi.
+    apply_symbol_universe(active, source="top_gainers")
+    dropped_symbols = previous_active - set(active)
+    if dropped_symbols:
+        # 2026-09-21 Erkan kararı: Sembol pasife alınırken/listeden düşerken
+        # varsa açık otonom paper pozisyonu kâr/zarara bakılmaksızın kapatılır.
+        # DENETİM (2026-09-26): bu DB yazma işlemi KİLİT DIŞINDA. Hata
+        # yakalansa da evren ataması yukarıda tamamlandığı için tutarlı kalır;
+        # kapanmayan pozisyon sonraki turda yeniden denenir.
         try:
-            runtime = json.loads(persisted or "{}")
-        except json.JSONDecodeError:
-            runtime = {}
-        runtime.update({"symbols": active, "ut_symbols": active,
-                        "top_gainers_limit": config.TOP_GAINERS_LIMIT,
-                        "top_gainers_refreshed_at": time.time()})
-        await database.set_llm_setting("runtime_config", json.dumps(runtime, ensure_ascii=False))
-        try:
-            from app import universe_registry
-            await universe_registry.record_universe(active, source="top_gainers")
+            from app.routers import auto_paper as _ap
+            open_auto_trades = await database.list_auto_paper_trades(status="open")
+            for trade in open_auto_trades:
+                sym = str(trade.get("symbol") or "").upper()
+                if sym in dropped_symbols:
+                    trade_id = int(trade["id"])
+                    tk = market.get_ticker(sym)
+                    price = float(tk.get("last_price") or 0) if tk else 0
+                    if not price:
+                        price = float(trade.get("peak_price") or trade.get("entry_price") or 0)
+                    await _ap._close_trade(trade_id, sym, price, time.time(), "symbol_deactivated")
+                    print(f"[Top Gainers] Pasife düşen {sym} için auto_paper pozisyonu ({trade_id}) kapatıldı @ {price}", flush=True)
         except Exception as exc:
-            print(f"[Universe] kayıt hatası: {exc}", flush=True)
-        return {"ok": True, "enabled": True, "limit": config.TOP_GAINERS_LIMIT,
-                "symbols": active, "selected": selected,
-                "preserved_open_positions": sorted(open_symbols),
-                "generated_at": time.time(), "source": "binance_tr_public_24h_ticker"}
+            print(f"[Top Gainers] auto_paper pasif kapatma hatası: {exc}", flush=True)
+    # Newly activated symbols would otherwise wait ~4.6h on the WS alone
+    # to collect enough closed 5m candles; hydrate them up front so MTF
+    # gates are usable from the first scan.
+    new_symbols = sorted(set(active) - previous_active)
+    if new_symbols:
+        try:
+            hydration = await market.ensure_history(
+                config.PRIORITY_TIMEFRAMES, min_candles=55, candle_limit=120)
+            print(f"[Top Gainers] {len(new_symbols)} yeni sembol hidrasyonu: "
+                  f"{hydration.get('hydrated', 0)} seri dolduruldu", flush=True)
+        except Exception as exc:
+            print(f"[Top Gainers] Yeni sembol hidrasyon hatası: {exc}", flush=True)
+    # 2026-09-16: Sembol seti DEĞİŞMEDİYSE reconnect İSTEME. Eskiden koşulsuz
+    # `True` set ediliyordu → her yenileme turunda (TOP_GAINERS_REFRESH_SEC)
+    # tüm WS grupları yıkılıp yeniden kuruluyordu (log: nesil 1 → nesil 2).
+    # Bu, gereksiz bağlantı kaybı + veri boşluğu + Binance tarafında gereksiz
+    # yeniden abonelik demekti. Yalnızca gerçek bir değişimde yeniden bağlan.
+    if set(active) != previous_active:
+        market.reconnect_requested = True
+    # Persist ve registry kaydı da kilit dışında: `set_llm_setting` DB yazma
+    # işlemidir. Hata olursa YUKARIDA atanmış evren geçerli kalır (kısa
+    # süreli yalnız-runtime sapması) ama kullanıcıya gürültü yerine net
+    # hata bildirilir; evren sessizce geri sarılmaz.
+    persisted = await database.get_llm_setting("runtime_config", "{}")
+    try:
+        runtime = json.loads(persisted or "{}")
+    except json.JSONDecodeError:
+        runtime = {}
+    runtime.update({"symbols": active, "ut_symbols": active,
+                    "top_gainers_limit": config.TOP_GAINERS_LIMIT,
+                    "top_gainers_refreshed_at": time.time()})
+    await database.set_llm_setting("runtime_config", json.dumps(runtime, ensure_ascii=False))
+    try:
+        from app import universe_registry
+        await universe_registry.record_universe(active, source="top_gainers")
+    except Exception as exc:
+        print(f"[Universe] kayıt hatası: {exc}", flush=True)
+    return {"ok": True, "enabled": True, "limit": config.TOP_GAINERS_LIMIT,
+            "symbols": active, "selected": selected,
+            "preserved_open_positions": sorted(open_symbols),
+            "generated_at": time.time(), "source": "binance_tr_public_24h_ticker"}
 
 async def top_gainers_refresh_loop():
     await asyncio.sleep(10)
@@ -995,10 +1065,16 @@ async def bootstrap_symbol_activity():
     universe = list(dict.fromkeys(sorted(known_try | open_symbols)))
     if not universe:
         raise RuntimeError("Binance TR TRY sembol evreni boş döndü")
-    # Keep expensive candle/depth WebSocket streams limited to the configured
-    # paper universe and open positions. Full-universe discovery uses 24h REST.
-    hot_symbols = list(dict.fromkeys([*config.SYMBOLS, *sorted(open_symbols)]))
-    market.symbols = [symbol.lower() for symbol in hot_symbols]
+    # DENETİM 3.4 #41 (2026-09-26): bu fonksiyon artık `market.symbols`'u
+    # doğrudan EZMEZ. Eskiden `hot_symbols` listesi `config.SYMBOLS`'u geride
+    # bırakıp akış evrenini sessizce değiştiriyordu; `startup_services`'in
+    # DB'den yüklediği kalıcı evren böylece geri sarılabiliyordu. Doğru
+    # davranış: tarama evreni (`config.SYMBOLS`) KORUNUR, akış evrenine yalnız
+    # AÇIK POZİSYONLAR eklenir (pozisyon kapanana kadar stop/TP akışı lazım).
+    # Boş evren yutulmaz — `extend_stream_universe` reddeder ve hata yukarı
+    # çıkar; startup bu hatayı loglayıp mevcut evrenle devam eder.
+    extend_stream_universe(sorted(open_symbols), source="bootstrap_symbol_activity")
+    hot_symbols = [symbol.upper() for symbol in market.symbols]
     all_tickers = await ticker_24h()
     market.ticker_24h = {str(row.get("symbol", "")).upper(): float(row.get("quoteVolume", 0) or 0) for row in all_tickers or [] if row.get("symbol")}
     semaphore = asyncio.Semaphore(8)
@@ -1085,3 +1161,145 @@ async def llm_idle_trigger_loop():
         except Exception as exc:
             print(f"[LLM idle] tetikleyici hatası: {exc}")
         await asyncio.sleep(15)
+
+
+# ---------------------------------------------------------------------------
+# TÜREV + MAKRO İSTİHBARAT BESLEME DÖNGÜSÜ (2026-09-26 denetimi, bölüm 2.3)
+#
+# DENETİM BULGUSU: `_DERIVATIVES_CACHE` yalnız `get_derivatives_intel()`
+# içinde, `_BTC_COMPASS_CACHE` yalnız `get_btc_compass()` içinde yazılıyordu ve
+# bu iki fonksiyonun TEK çağıranı LLM sohbet aracıydı. `main.py` hiçbir yerden
+# çağırmıyordu. Radar 60 sn'de bir tarıyor ama cache'ler operatör LLM'ye
+# sormadıkça BOŞ kalıyordu → `master_surge` türev (-15 EXTREME_LONG cezası) ve
+# BTC panik kapıları **yapısal olarak hiç uygulanmıyordu**. Kod doğruydu,
+# tetikleyici yoktu.
+#
+# Bu döngü iki cache'i periyodik doldurur. Desen `top_gainers_refresh_loop` /
+# `symbol_activity_loop` ile BİREBİR aynıdır: başta ısınma sleep'i, `while
+# True`, gövde `try/except` (çökerse supervisor yeniden başlatır), sonda
+# `await asyncio.sleep(...)`.
+# ---------------------------------------------------------------------------
+
+# Aralıklar servislerin KENDİ TTL'leriyle hizalanır (derivatives 90 sn,
+# btc compass 30 sn). 60 sn → her iki cache de her turda tazelenir; 90 sn
+# TTL'nin altında kaldığı için effective ölçüm aralığı 90 sn olur.
+DERIVATIVES_REFRESH_SEC = 60.0
+# Türev evreni sembol sayısıyla sınırlıdır: Binance FAPI IP rate limit'i
+# koruması için tur başına en fazla bu kadar sembol çekilir. Radar'ın gerçekten
+# bakabildiği semboller (en likit / radar adayları) önceliklidir; kalanı
+# sırayla döner. Sıfır = sınırsız.
+DERIVATIVES_MAX_SYMBOLS_PER_TICK = 40
+# BTC makro kapısı 30 sn TTL istiyor ama BTC verisi dakikalarca değişmez;
+# 45 sn yeterli ve gereksiz kline çekimini azaltır.
+MACRO_REFRESH_SEC = 45.0
+# _derivatives_cursor: döngü hatasız olduğunda bir sonraki pencereyi açar
+# (module-level, döngü yeniden başlasa da ilerleme korunur).
+_derivatives_cursor = {"idx": 0, "at": 0.0}
+
+
+def _derivatives_refresh_symbols() -> list[str]:
+    """Türev istihbaratı çekilecek sembol listesi — radarın BAKTIĞI evren.
+
+    Sıralama bilinçlidir: radar'ın üst kısmındaki adaylar önce tazelenir,
+    böylece risk kapısı karar açısından ANLAMLI sembollerde taze veriyle
+    çalışır. Kalan TRY çiftleri döngüsel olarak tamamlanır.
+    """
+    # 1) Son radar taramasının adayları (varsa) — en yüksek önem.
+    cands: list[str] = []
+    try:
+        from app.routers import monitoring as _mon
+        for row in (_mon._monitoring_state.get("last_candidates") or []):
+            sym = str(row.get("symbol") or "").upper()
+            if sym and sym not in cands:
+                cands.append(sym)
+    except Exception as exc:
+        logger.debug("derivatives aday listesi okunamadı: %s", exc)
+    # 2) Statik evren (config.SYMBOLS) — radar havuzunun üst kümesi.
+    for sym in (config.SYMBOLS or []):
+        sym = str(sym).replace("_", "").upper()
+        if sym and sym not in cands:
+            cands.append(sym)
+    # 3) Açık pozisyon sembolleri — risk kapısı pozisyon yönetiminde de geçerli.
+    for sym in list(analyzer.positions.keys()):
+        sym = str(sym).replace("_", "").upper()
+        if sym and sym not in cands:
+            cands.append(sym)
+    return cands
+
+
+async def refresh_derivatives_intel(symbols: list[str] | None = None) -> dict:
+    """Verilen semboller için vadeli fonlama/OI istihbaratını cache'e yaz.
+
+    Ayrı döngü/endpoint değil, `derivatives_refresh_loop`'un gövdesi olarak da
+    kullanılabilir; test edilebilirlik için ayrı fonksiyon.
+    """
+    from app.derivatives_service import get_derivatives_intel
+    syms = list(symbols or [])
+    ok = err = 0
+    # Sıralı çekim: Binance FAPI rate limit'i nedeniyle paralel istek güvenli
+    # değil. Sembol sayısı sınırlı (bkz. DERIVATIVES_MAX_SYMBOLS_PER_TICK).
+    for sym in syms:
+        try:
+            data = await get_derivatives_intel(sym)
+            if data.get("fetch_error"):
+                err += 1
+            else:
+                ok += 1
+        except Exception as exc:
+            err += 1
+            logger.debug("derivatives istihbaratı alınamadı %s: %s", sym, exc)
+    return {"ok": ok, "err": err, "total": len(syms)}
+
+
+async def refresh_macro_sentiment() -> dict:
+    """BTC pusulası + Fear&Greed cache'ini tazeler (BTC panik kapısının verisi)."""
+    from app.macro_sentiment_service import get_macro_sentiment
+    data = await get_macro_sentiment()
+    return {
+        "ok": True,
+        "btc_trend_state": data.get("btc_trend_state"),
+        "is_btc_panic": bool(data.get("is_btc_panic")),
+    }
+
+
+async def derivatives_refresh_loop():
+    """Türev + makro cache'lerini periyodik dolduran arka plan döngüsü.
+
+    Neden ayrı iki döngü değil: ikisi de aynı "risk kapısı veri beslemesi"
+    işinin parçası ve ikisi de `master_surge` tüketicisidir. Tek döngü, iki
+    servisin farklı aralıklarını gereksiz görev patlaması olmadan korur
+    (asyncio.gather + iki ayrı sleep, ortak hata izolasyonu gerektirirdi).
+    """
+    # Isınma: startup sırasında WS/REST hazırlanırken ilk tur atlanır.
+    await asyncio.sleep(20)
+    last_macro_at = 0.0
+    while True:
+        try:
+            now = time.time()
+            # ── Türev ───────────────────────────────────────────────────────
+            all_syms = _derivatives_refresh_symbols()
+            if all_syms:
+                limit = int(DERIVATIVES_MAX_SYMBOLS_PER_TICK or 0)
+                if limit > 0 and len(all_syms) > limit:
+                    # Döngüsel pencere: her turda farklı bir dilim, böylece
+                    # tamamı zamanla yenilenir (rate limit koruması).
+                    start = _derivatives_cursor["idx"] % len(all_syms)
+                    window = [all_syms[(start + i) % len(all_syms)] for i in range(limit)]
+                    _derivatives_cursor["idx"] = (start + limit) % len(all_syms)
+                else:
+                    window = all_syms
+                res = await refresh_derivatives_intel(window)
+                if res.get("err"):
+                    logger.info("[Derivatives] %d/%d sembol için istihbarat alınamadı (fail-closed)",
+                                res["err"], res["total"])
+            # ── Makro / BTC pusulası ────────────────────────────────────────
+            if (now - last_macro_at) >= MACRO_REFRESH_SEC:
+                last_macro_at = now
+                await refresh_macro_sentiment()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Supervisor bu döngüyü yeniden başlatır; yine de sebebi görünür
+            # olsun (risk kapısının veri beslemesi sessizce ölmemeli).
+            logger.warning("derivatives/macro yenileme hatası: %s", exc)
+        await asyncio.sleep(DERIVATIVES_REFRESH_SEC)

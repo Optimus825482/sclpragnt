@@ -14,6 +14,7 @@ import {
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
 import { commissionPct } from "../lib/pnl";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 import IndicatorPicker, {
   findIndicatorEntry,
   CUSTOM_INDICATOR_ENTRIES,
@@ -170,6 +171,18 @@ export default function BinancePositionChartModal({
     bestBid: number | null;
     bestAsk: number | null;
   } | null>(null);
+  // Tahta verisinin yaşı (ms). Backend `bookTicker`/`depth` WS mesajı
+  // YAYINLAMIYOR (denetim #53) → panel yalnız REST ile besleniyor. Kullanıcı
+  // "TAHTA" yazısını görüp canlı sandığında yanıltılmamalı: 5 sn'den eski
+  // veri "canlı değil" rozetiyle işaretlenir.
+  const [orderbookUpdatedAt, setOrderbookUpdatedAt] = useState(0);
+  const [nowTick, setNowTick] = useState(0);
+
+  // Tahta verisi 8 sn'den eskiyse "canlı değil" rozeti gösterilir.
+  const ORDERBOOK_STALE_MS = 8_000;
+  const orderbookStale = orderbookUpdatedAt > 0 && nowTick > orderbookUpdatedAt
+    ? (nowTick - orderbookUpdatedAt) > ORDERBOOK_STALE_MS
+    : orderbookUpdatedAt === 0;
 
   // Son Mum Takip Referansı (Anlık iğne / canlı tik güncellemeleri için)
   const lastCandleRef = useRef<CandleBar | null>(null);
@@ -410,8 +423,8 @@ export default function BinancePositionChartModal({
         if (!res.ok || !active) return;
         const data = await res.json();
         if (data && Array.isArray(data.bids) && Array.isArray(data.asks) && data.bids.length > 0 && data.asks.length > 0) {
-          const bidTotal = data.bids.reduce((sum: number, b: any) => sum + Number(b[0]) * Number(b[1]), 0);
-          const askTotal = data.asks.reduce((sum: number, a: any) => sum + Number(a[0]) * Number(a[1]), 0);
+          const bidTotal = data.bids.reduce((sum: number, b: [string, string]) => sum + Number(b[0]) * Number(b[1]), 0);
+          const askTotal = data.asks.reduce((sum: number, a: [string, string]) => sum + Number(a[0]) * Number(a[1]), 0);
           const sum = bidTotal + askTotal;
           const bidPct = sum > 0 ? (bidTotal / sum) * 100 : 50;
           const askPct = 100 - bidPct;
@@ -431,20 +444,32 @@ export default function BinancePositionChartModal({
               bestBid,
               bestAsk,
             });
+            setOrderbookUpdatedAt(Date.now());
           }
         }
       } catch {
-        // Ağ kesintisinde sessiz kal
+        // Ağ kesintisinde sessiz kal (rozet "canlı değil" der)
       }
     };
 
     fetchDepth();
-    const interval = setInterval(fetchDepth, 2500);
+    // Backend `bookTicker`/`depth` WS mesajı YAYINLAMIYOR (denetim #53):
+    // frontend dinliyordu ama veri hiç gelmediği için panel açılışta bir kez
+    // REST çağrısı yapıp DONUYORDU. Bu yüzden REST periyodu 5 sn'e çekildi
+    // (gereksiz 2,5 sn trafiği yerine anlamlı bir tazeleme aralığı) ve
+    // sekme görünürlüğüne duyarlı `useVisibleInterval` kullanılıyor.
+    const interval = setInterval(fetchDepth, 5000);
+    const onVisible = () => { if (!document.hidden) fetchDepth(); };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       active = false;
       clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [symbolConcat]);
+
+  // "Canlı değil" rozeti için 2 sn'de bir yaş tazelemesi (yalnız modal açıkken).
+  useVisibleInterval(() => setNowTick(Date.now()), 2000);
 
   useEffect(() => {
     // TF DEĞİŞİM TEMİZLİĞİ (2026-09-19): eski TF'in candles'ı ve lastCandleRef'i
@@ -925,9 +950,14 @@ export default function BinancePositionChartModal({
           }
         }
 
-        // Fiyat Tik Akışı (binance_price veya price_tick)
+        // Fiyat Tik Akışı.
+        //
+        // Backend fiyatı `binance_price` (tüm tick'ler haritası) olarak
+        // YAYINLAR; `price_tick` tipi hiç yayınlanmıyor (denetim #53). İkisi de
+        // dinleniyor: biri bugün ölü, diğeri etkin. `price_tick` backend'de
+        // eklenirse bu dal kendiliğinden çalışır.
         if (msg.type === "binance_price") {
-          const d = msg.data as any;
+          const d = msg.data as { ticks?: Record<string, { price?: number; price_try?: number }> } | null;
           const tick = d?.ticks?.[holding.asset];
           if (tick) {
             const newPrice = Number(tick.price || tick.price_try);
@@ -936,7 +966,7 @@ export default function BinancePositionChartModal({
             }
           }
         } else if (msg.type === "price_tick") {
-          const d = msg.data as any;
+          const d = msg.data as { symbol?: string; asset?: string; price?: number; price_try?: number } | null;
           if (d && (d.symbol === symbolConcat || d.asset === holding.asset)) {
             const newPrice = Number(d.price || d.price_try);
             if (newPrice > 0) {
@@ -945,9 +975,15 @@ export default function BinancePositionChartModal({
           }
         }
 
-        // Tahta / BookTicker Akışı
+        // Tahta / BookTicker Akışı.
+        //
+        // NOT (denetim #53): backend `bookTicker` ve `depth` WS mesajlarını
+        // YAYINLAMIYOR — bu dal bugün ölü bir dinleyicidir (veri REST'ten gelir,
+        // 5 sn'de bir, "canlı değil" rozetiyle). Yine de tutuluyor: backend
+        // tarafı bu mesajları eklediğinde tahta paneli anında canlı olur ve
+        // REST periyodu yalnız yedek görevi görür.
         if (msg.type === "bookTicker" || msg.type === "depth") {
-          const d = msg.data as any;
+          const d = msg.data as { symbol?: string; s?: string; bid?: number; b?: number; bestBid?: number; ask?: number; a?: number; bestAsk?: number } | null;
           if (d && (d.symbol === symbolConcat || d.s === symbolConcat)) {
             const b = Number(d.bid || d.b || d.bestBid || 0);
             const a = Number(d.ask || d.a || d.bestAsk || 0);
@@ -955,13 +991,15 @@ export default function BinancePositionChartModal({
               setOrderbook((prev) => {
                 const spr = a > b ? a - b : 0;
                 const sprPct = b > 0 ? (spr / b) * 100 : 0;
-                return prev ? {
+                const next = prev ? {
                   ...prev,
                   bestBid: b,
                   bestAsk: a,
                   spread: spr,
                   spreadPct: sprPct,
                 } : null;
+                if (next) setOrderbookUpdatedAt(Date.now());
+                return next;
               });
             }
           }
@@ -1494,6 +1532,15 @@ export default function BinancePositionChartModal({
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 border-b border-bunker-800/80 bg-bunker-950/90 px-3 sm:px-4 py-1.5 font-mono text-[11px]">
             <div className="flex items-center justify-between sm:justify-start gap-2">
               <span className="text-bunker-muted text-[10px] font-bold shrink-0">TAHTA:</span>
+              {orderbookStale ? (
+                // Backend orderbook'u WS ile YAYINLAMIYOR; veri REST'e bağlı ve
+                // 5 sn'de bir tazeleniyor. 8 sn'den eskiyse kullanıcıya
+                // "canlı değil" diyoruz (eskiden panel hiçbir uyarı vermeden
+                // açılış değerini donduruyordu).
+                <span title="Orderbook verisi REST ile 5 sn'de bir tazelenir; backend canlı bookTicker yayınlamıyor" className="shrink-0 rounded border border-yellow-400/40 bg-yellow-400/10 px-1.5 py-0.5 text-[9px] font-bold text-yellow-300">
+                  ⚠ CANLI DEĞİL ({Math.floor((nowTick - orderbookUpdatedAt) / 1000)} sn)
+                </span>
+              ) : null}
               <div className="w-28 sm:w-48 h-2 rounded-full overflow-hidden flex bg-bunker-900 border border-bunker-800 shrink-0">
                 <div
                   className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-300"

@@ -38,6 +38,10 @@ _MAX_AGG_TRADES = 2000
 # yaratır. Kuyruk sınırı ve backoff tek yerde tanımlanır ve raporlanır.
 _WS_MAX_QUEUE = 5000
 _MICROFLOW_BACKOFF_MAX_SEC = 30.0
+# Emir defteri kovasının bayat sayıldığı yaş (2026-09-26, bölüm 2.4). Radar
+# 60 sn'de bir taradığı için 45 sn eşiği her turda yenileme yapar ama
+# sembol listesi uzunsa gereksiz REST yükü oluşturmaz.
+DEPTH_MAX_AGE_SEC = 45.0
 
 
 def _microflow_backoff_sec(attempt: int) -> float:
@@ -118,7 +122,13 @@ class MicroFlow:
         self.trade_flow = defaultdict(_reset_flow)
         self.depth = {}
         self.depth_updated_at = 0.0
-        self.ws_updated_at = 0.0
+        # SEMBOL BAŞINA SÖZLÜK (2026-09-26 denetimi, bölüm 2.4): `ws_updated_at`
+        # tek skalerdi ve sembol değişiminde SIFIRLANMIYORDU → yeni sembole
+        # geçişte `data_ready` hâlâ True dönüyor, "veri yok" durumu gözlenemiyordu.
+        # Artık sembol → son WS mesaj zamanı tutulur; sembol değişiminde o
+        # sembolün girdisi SİLİNİR ve `get_snapshot` yalnız AKTİF sembolün
+        # girdisine bakar.
+        self.ws_updated_at_by_symbol: dict[str, float] = {}
         self.ws_error = None
         # B-16: yeniden bağlanma ve mesaj akışı gözlemlenebilir olsun. Kuyruk
         # taşması kütüphane içinde sessizce mesaj attığı için "soket canlı ama
@@ -134,6 +144,17 @@ class MicroFlow:
         if not symbol:
             return
         if self.symbol == symbol and self.running and self._ws_task and not self._ws_task.done():
+            # Aynı sembol, akış zaten canlı: yalnız BAYATLIK kontrolü yapılır.
+            # Radar 60 sn'de bir taradığı için emir defteri kovası bu yolla
+            # tazelenir (yoksa `start()`'ın erken dönüşü kovayı bir kez çeker ve
+            # sonsuza dek ilk kovayı gösterirdi).
+            if (time.time() - self.depth_updated_at) >= DEPTH_MAX_AGE_SEC:
+                try:
+                    await self.refresh_depth()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("microflow: depth tazeleme atlandı %s: %s", symbol, exc)
             return
         previous = self.symbol
         if previous and previous != symbol:
@@ -157,6 +178,19 @@ class MicroFlow:
                 pass
         self._ws_task = asyncio.create_task(self._run(), name=f"microflow-ws-{symbol.lower()}")
         logger.info("microflow: %s için tekil WS akışı başlatıldı", symbol)
+        # ORDER BOOK BESLEMESİ (2026-09-26 denetimi, bölüm 2.4): `refresh_depth`
+        # yalnız LLM aracından çağrılıyordu; `velocity` radarı yalnız
+        # `start(symbol)` çağırıyor → `bids`/`asks` hep boş kalıyor ve
+        # `get_snapshot` `depth_try`, `wall_bid_try`, `wall_ask_try`,
+        # `ladder_asymmetry` alanlarını hep `None` dönüyordu. Sembol değiştirdiğinde
+        # (ve ilk açılışta) emir defteri kovası burada bir kez çekilir; kovayı
+        # bayatlatmak için `velocity` periyodik olarak yeniden çağırır.
+        try:
+            await self.refresh_depth()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("microflow: başlangıç depth alınamadı %s: %s", symbol, exc)
 
     def _evict(self, symbol: str | None) -> None:
         """Tek sembollük mikro-yapı durumunu bellekten düşür (B-09)."""
@@ -165,6 +199,9 @@ class MicroFlow:
         for tf in ("1s", "5s"):
             self.bars[tf].pop(symbol, None)
         self.trade_flow.pop(symbol, None)
+        # Sembol başına WS damgası da tahliye edilir → sembole geri dönüldüğünde
+        # "taze veri" gibi görünmez.
+        self.ws_updated_at_by_symbol.pop(symbol, None)
 
     async def stop(self):
         self.running = False
@@ -242,17 +279,31 @@ class MicroFlow:
         if not isinstance(data, dict):
             return
         event = data.get("e")
+        # SEMBOL BAŞINA DAMGA (2026-09-26, bölüm 2.4): mesajın taşıdığı sembol
+        # anahtarlanır. Anahtar yoksa aktif sembol kullanılır (`kline_1s` akışı
+        # sembolü payload'da taşır; aggTrade'da `s` da vardır).
+        mark_symbol = None
         if event == "kline":
             candle = data.get("k") or {}
             interval = str(candle.get("i") or "")
             symbol = str(candle.get("s") or self.symbol or "").upper()
             if interval in self.bars and candle.get("x", False) and symbol:
                 self._fold_candle(interval, symbol, candle)
+                mark_symbol = symbol
         elif event in {"aggTrade", "trade"} or ("p" in data and "q" in data):
             symbol = str(data.get("s", "")).upper()
             if symbol:
                 self._accumulate_trade(symbol, data)
-        self.ws_updated_at = time.time()
+                mark_symbol = symbol
+        if mark_symbol:
+            self.ws_updated_at_by_symbol[mark_symbol] = time.time()
+
+    def _ws_updated_at(self, symbol: str | None = None) -> float:
+        """Aktif (veya verilen) sembolün son WS mesaj zamanı — sembol başına."""
+        sym = str(symbol or self.symbol or "").upper()
+        if not sym:
+            return 0.0
+        return float(self.ws_updated_at_by_symbol.get(sym) or 0.0)
 
     def _fold_candle(self, interval: str, symbol: str, candle: dict):
         try:
@@ -323,14 +374,19 @@ class MicroFlow:
     async def refresh_depth(self, limit: int = 20):
         if not self.symbol:
             return None
+        # Sembol sabitlenir: istek sırasında sembol değişirse gelen kova ESKİ
+        # sembolün defteridir ve yeni sembole atfedilmemeli (2026-09-26).
+        target = self.symbol
         try:
-            book = await rest_depth(self.symbol, limit)
+            book = await rest_depth(target, limit)
             bids = book.get("bids") or []
             asks = book.get("asks") or []
             if not bids or not asks:
                 return None
+            if self.symbol != target:
+                return None  # arada sembol değişti → kova geçersiz
             self.depth = {
-                "symbol": self.symbol,
+                "symbol": target,
                 "bids": [[float(row[0]), float(row[1])] for row in bids],
                 "asks": [[float(row[0]), float(row[1])] for row in asks],
                 "source": "binance_tr_public_rest",
@@ -339,7 +395,7 @@ class MicroFlow:
             self.depth_updated_at = time.time()
             return self.depth
         except Exception as exc:
-            logger.warning("microflow: depth %s: %s", self.symbol, exc)
+            logger.warning("microflow: depth %s: %s", target, exc)
             return None
 
     def get_snapshot(self, price: float | None = None) -> dict:
@@ -356,6 +412,9 @@ class MicroFlow:
         bars_1s = bars["1s"].get(symbol, {})
         closes_1s = bars_1s.get("closes", [])
         last_price = closes_1s[-1] if closes_1s else price
+        # Sembol başına WS damgası — sembol değişiminde sıfırlanmış olduğu için
+        # yeni sembol "taze veri" gibi görünmez (2026-09-26, bölüm 2.4).
+        ws_updated_at = self._ws_updated_at(symbol)
         # B-19: `closes_1s[-3]` ile hesaplanan değer aslında 2 SANİYELİK
         # getiriydi ama `ret_1s_pct` olarak raporlanıyordu. Gerçek 1 sn'lik
         # getiri için bir önceki 1s kapanışı kullanılır (en az 2 bar gerekir).
@@ -369,6 +428,14 @@ class MicroFlow:
         # bu yana getiri", yani 5 sn ölçeğinde momentumdur.
         ret_5s = (last_price / closes_5s[-1] - 1) * 100 if last_price and closes_5s else None
         depth = self.depth or {}
+        # Sembol tutarlılığı: `depth` sembole anahtarlı değildir, sembol
+        # değişiminde `start()` tarafından temizlenir. Yine de kova başka bir
+        # sembolün defteriyse hesaba KATAILMAZ (2026-09-26, bölüm 2.4).
+        if depth.get("symbol") and str(depth.get("symbol")).upper() != symbol:
+            depth = {}
+            depth_updated_at = 0.0
+        else:
+            depth_updated_at = self.depth_updated_at
         bids = depth.get("bids") or []
         asks = depth.get("asks") or []
         bid_total = sum(qty for _, qty in bids[:5])
@@ -432,11 +499,11 @@ class MicroFlow:
                 "wall_bid_try": round(wall_bid * mid, 2) if wall_bid and mid else None,
                 "wall_ask_try": round(wall_ask * mid, 2) if wall_ask and mid else None,
                 "ladder_asymmetry": round(ladder_asymmetry, 4) if ladder_asymmetry is not None else None,
-                "updated_age_sec": round(now - self.depth_updated_at, 2) if self.depth_updated_at else None,
+                "updated_age_sec": round(now - depth_updated_at, 2) if depth_updated_at else None,
             },
             "slippage": slippage,
             "freshness": {
-                "ws_age_sec": round(now - self.ws_updated_at, 2) if self.ws_updated_at else None,
+                "ws_age_sec": round(now - ws_updated_at, 2) if ws_updated_at else None,
                 "ws_error": self.ws_error,
                 # B-16: kuyruk taşması kütüphane içinde sessizce mesaj atar;
                 # mesaj sayacı + kopma sayacı bunu dolaylı olarak görünür kılar.
@@ -444,7 +511,7 @@ class MicroFlow:
                 "ws_reconnects": self.ws_reconnects,
                 "ws_queue_max": self.ws_queue_max,
             },
-            "data_ready": bool(self.ws_updated_at),
+            "data_ready": bool(ws_updated_at),
             # B-17: bu sayaçlar KENDİ soketinden beslenir ve
             # `market.get_microstructure` ile bilinçli olarak BAĞIMSIZDIR;
             # iki görünümü karşılaştıran tüketici bunu bilerek yapmalıdır.

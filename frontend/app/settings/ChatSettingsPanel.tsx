@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { inspectTtsSettings, TTS_PERSIST_WARNING } from "../lib/ttsSettings";
 
 const TOOL_GROUPS: [string, string[]][] = [
   ["Veri", ["get_strategy_config", "get_strategy_stats", "get_trades", "get_signals", "get_decision_logs", "query_database", "read_only_sql", "search_memory"]],
@@ -18,6 +19,10 @@ export default function ChatSettingsPanel() {
   const [ttsPitch, setTtsPitch] = useState(0);
   const [saved, setSaved] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // Backend `tts_rate`/`tts_pitch` alanlarını saklıyor mu? Saklamıyorsa
+  // kullanıcı "KAYDEDİLDİ" görür ama ayar sayfa yenilenince 0'a döner —
+  // sessiz veri kaybı. Uyarıyı gösteriyoruz (bkz. `lib/ttsSettings`).
+  const [ttsPersistent, setTtsPersistent] = useState<boolean | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -27,8 +32,10 @@ export default function ChatSettingsPanel() {
       setSkills(cfg.skills || []);
       if (Array.isArray(settings.active_tools)) setActiveTools(Array.from(new Set([...ALL_TOOLS, ...settings.active_tools])));
       if (Array.isArray(settings.active_skills)) setActiveSkills(settings.active_skills);
-      if (Number.isFinite(settings.tts_rate)) setTtsRate(settings.tts_rate);
-      if (Number.isFinite(settings.tts_pitch)) setTtsPitch(settings.tts_pitch);
+      const tts = inspectTtsSettings(settings);
+      setTtsPersistent(tts.supported);
+      if (tts.rate !== null) setTtsRate(tts.rate);
+      if (tts.pitch !== null) setTtsPitch(tts.pitch);
       setLoaded(true);
     }).catch(() => setLoaded(true));
   }, []);
@@ -79,6 +86,11 @@ export default function ChatSettingsPanel() {
       </div>
       <div>
         <p className="eyebrow mb-2">SES (EDGE TTS · Emel)</p>
+        {ttsPersistent === false && (
+          <p role="status" className="mb-2 rounded-lg border border-yellow-400/40 bg-yellow-400/10 px-3 py-2 text-[11px] leading-snug text-yellow-300">
+            ⚠ {TTS_PERSIST_WARNING}
+          </p>
+        )}
         <label className="flex items-center gap-3 text-xs font-mono text-bunker-muted">Hız: {ttsRate > 0 ? "+" : ""}{ttsRate}%<input type="range" min="-30" max="50" value={ttsRate} onChange={e => setTtsRate(Number(e.target.value))} className="flex-1" /></label>
         <label className="flex items-center gap-3 text-xs font-mono text-bunker-muted mt-2">Perde: {ttsPitch > 0 ? "+" : ""}{ttsPitch}Hz<input type="range" min="-20" max="20" value={ttsPitch} onChange={e => setTtsPitch(Number(e.target.value))} className="flex-1" /></label>
       </div>

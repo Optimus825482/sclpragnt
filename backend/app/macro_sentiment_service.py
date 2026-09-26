@@ -66,6 +66,7 @@ async def get_btc_compass() -> dict:
     btc_15m_ret = 0.0
     btc_trend_state = "SIDEWAYS"
     is_panic = False
+    btc_fetch_error = False
 
     try:
         # BTCTRY 5m klines
@@ -88,19 +89,46 @@ async def get_btc_compass() -> dict:
                 btc_trend_state = "MILD_BULLISH"
             else:
                 btc_trend_state = "SIDEWAYS"
+        else:
+            # Veri gelmedi: bilinmeyen durum — fail-closed notu için işaretle.
+            btc_fetch_error = True
     except Exception as exc:
         logger.debug("BTC pusula hesabı hatası: %s", exc)
+        btc_fetch_error = True
 
     result = {
         "btc_symbol": "BTCTRY",
         "btc_5m_change_pct": btc_5m_ret,
         "btc_15m_change_pct": btc_15m_ret,
         "btc_trend_state": btc_trend_state,
+        # ANAHTAR UYUŞMAZLIĞI DÜZELTMESİ (2026-09-26 denetimi, bölüm 2.3):
+        # cache yalnızca `is_panic_dump` taşıyordu, `master_surge.py:541` ise
+        # `is_btc_panic` okuyordu → cache dolu olsa bile BTC panik kapısı
+        # TETİKLENMEZDİ. Artık TEK kanonik anahtar `is_btc_panic`; eski ad
+        # geriye dönük uyum için aynen yazılır (okuyan başka modül varsa
+        # bozulmaz) ama okuma tarafı kanonik anahtara hizalanır.
+        "is_btc_panic": is_panic,
         "is_panic_dump": is_panic,
+        "fetch_error": btc_fetch_error,
         "updated_at": now,
     }
     _BTC_COMPASS_CACHE = (now, result)
     return result
+
+
+def get_cached_btc_compass(max_age_sec: float | None = None) -> dict | None:
+    """Bellekteki son BTC pusulasını senkron döner (TTL'li).
+
+    `unified_signals.enrich_candidates` cache sözlüğüne doğrudan bakmak yerine
+    BUNU çağırır (bulgu #67 ile aynı sınıf: TTL'siz okuma).
+    """
+    if not _BTC_COMPASS_CACHE:
+        return None
+    age = time.time() - _BTC_COMPASS_CACHE[0]
+    ttl = float(max_age_sec if max_age_sec is not None else BTC_CACHE_TTL)
+    if ttl > 0 and age >= ttl:
+        return None
+    return _BTC_COMPASS_CACHE[1]
 
 
 async def get_macro_sentiment() -> dict:
@@ -146,11 +174,13 @@ def get_cached_macro_sentiment() -> dict | None:
         return None
 
     fng_val = _FNG_CACHE[1] if (_FNG_CACHE and (now - _FNG_CACHE[0]) < FNG_CACHE_TTL) else {"score": 50, "classification": "Neutral"}
-    btc_val = _BTC_COMPASS_CACHE[1] if (_BTC_COMPASS_CACHE and (now - _BTC_COMPASS_CACHE[0]) < BTC_CACHE_TTL) else {"btc_trend_state": "SIDEWAYS", "btc_15m_change_pct": 0.0, "is_panic_dump": False}
+    btc_val = _BTC_COMPASS_CACHE[1] if (_BTC_COMPASS_CACHE and (now - _BTC_COMPASS_CACHE[0]) < BTC_CACHE_TTL) else {"btc_trend_state": "SIDEWAYS", "btc_15m_change_pct": 0.0, "is_btc_panic": False, "is_panic_dump": False}
 
     score = fng_val.get("score", 50)
     classification = fng_val.get("classification", "Neutral")
-    is_panic = btc_val.get("is_panic_dump", False)
+    # Kanonik anahtar `is_btc_panic`; eski `is_panic_dump` yalnız geriye dönük
+    # uyum için okunur (2026-09-26 anahtar uyuşmazlığı düzeltmesi).
+    is_panic = bool(btc_val.get("is_btc_panic", btc_val.get("is_panic_dump", False)))
 
     return {
         "fear_and_greed_score": score,

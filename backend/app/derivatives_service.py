@@ -66,8 +66,18 @@ async def get_derivatives_intel(symbol: str) -> dict:
 
     prem_data, oi_data = await asyncio.to_thread(_fetch_sync)
 
+    # AĞ HATASI AYRIMI (2026-09-26 denetimi, bulgu #66): `_fetch_fapi_json`
+    # ağ hatasında `None` döndürür. Eskiden bu, "vadeli piyasada listeli değil"
+    # cevabıyla AYNI 90 sn cache'leniyordu → `master_surge` risk kapısı
+    # fail-OPEN kalıyordu (EXTREME_LONG cezası uygulanmıyordu). Artık
+    # `fetch_error=True` ile ayrılır ve Master Surge bu durumda nötr/kapalı
+    # davranır. Not: `_fetch_fapi_json` sözlük/liste yerine `None` döndüğünde
+    # "listed değil" ile "ağ hatası" AYIRT EDİLEMEZ; bu yüzden liste kontrolü
+    # ikisini de kapsar ve bilinmeyen durumda hata kabul edilir (fail-closed).
+    _transport_failed = prem_data is None or oi_data is None
     if not isinstance(prem_data, dict) or "lastFundingRate" not in prem_data:
-        # Bu coin vadeli piyasada listeli değil veya Binance vadeli kapalı
+        # Bu coin vadeli piyasada listeli değil ya da Binance vadeli kapalı/
+        # erişilemez. İkisi de "veri yok" → fail-closed.
         result = {
             "symbol": symbol.upper(),
             "futures_symbol": futures_sym,
@@ -82,7 +92,14 @@ async def get_derivatives_intel(symbol: str) -> dict:
             "short_squeeze_potential": False,
             "derivatives_bias": "NEUTRAL",
             "surge_score_bonus": 0,
-            "description": f"{futures_sym} vadeli piyasada listeli değil veya veriye ulaşılamadı.",
+            # True → ağ/erişim hatası; False → gerçekten listeli değil.
+            "fetch_error": bool(_transport_failed),
+            "description": (
+                f"{futures_sym} vadeli istihbaratına ulaşılamadı (ağ/erişim hatası); "
+                "risk kapısı fail-closed olarak nötr kabul edildi."
+                if _transport_failed else
+                f"{futures_sym} vadeli piyasada listeli değil."
+            ),
             "updated_at": now,
         }
         _DERIVATIVES_CACHE[futures_sym] = (now, result)
@@ -153,6 +170,7 @@ async def get_derivatives_intel(symbol: str) -> dict:
         "short_squeeze_potential": short_squeeze,
         "derivatives_bias": derivatives_bias,
         "surge_score_bonus": surge_bonus,
+        "fetch_error": False,
         "description": desc,
         "updated_at": now,
     }
@@ -161,10 +179,23 @@ async def get_derivatives_intel(symbol: str) -> dict:
     return result
 
 
-def get_cached_derivatives_intel(symbol: str) -> dict | None:
-    """Bellekteki son vadeli piyasa istihbaratını senkron olarak döner (varsa ve bayat değilse)."""
+def get_cached_derivatives_intel(symbol: str, max_age_sec: float | None = None) -> dict | None:
+    """Bellekteki son vadeli piyasa istihbaratını senkron olarak döner.
+
+    `unified_signals.enrich_candidates` ve `master_surge` BU FONKSİYONU
+    kullanır (eskiden `_DERIVATIVES_CACHE` sözlüğüne doğrudan, TTL kontrolü
+    OLMADAN bakıyordu — bulgu #67: 90 sn bayat kontrolü atlanıyordu).
+
+    `max_age_sec` verilirse daha yaşlı (ama daha taze olmayan) kayıt da
+    döndürülebilir; Master Surge risk kapısı fail-closed olduğu için
+    "taze veri yok ama az önce ölçülmüştür" ayrımı faydalıdır.
+    """
     futures_sym = symbol_to_futures(symbol)
     cached = _DERIVATIVES_CACHE.get(futures_sym)
-    if cached and (time.time() - cached[0]) < CACHE_TTL_SEC:
-        return cached[1]
-    return None
+    if not cached:
+        return None
+    age = time.time() - cached[0]
+    ttl = float(max_age_sec if max_age_sec is not None else CACHE_TTL_SEC)
+    if ttl > 0 and age >= ttl:
+        return None
+    return cached[1]

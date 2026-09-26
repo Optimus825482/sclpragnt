@@ -365,6 +365,114 @@ class ScalpAnalyzer:
             "CHAT_PREDICTION": "1m",
         }.get(strat_name, "5m")
 
+    def _entry_volume_ratio(self, symbol: str, details: dict | None = None) -> float | None:
+        """Giriş anındaki hacim oranı — canlı yolla BİREBİR aynı tanım.
+
+        D-11 (2026-09-26): `multiplier_for` çağrısındaki canlı hesap
+        (`analyzer._open_position_unlocked` → `calib_volume_ratio`) şu tanımı
+        kullanır: 5m cache'ten ``vols[-1] / mean(vols[-21:-1])``. Kalibrasyon
+        kovaları da AYNI sayıyla eşleşmeli, yoksa kova anahtarı hiç tutmaz
+        ve çarpan sessizce 1.0'da kalır.
+
+        Öncelik sırası: (1) 5m cache'ten canlı hesap (canlı yolun birebir
+        kendisi), (2) `liquidity_status` çıktısındaki `volume_ratio`
+        (market_data.get_avg_volume ile aynı pencere), (3) None.
+        """
+        if self.market:
+            try:
+                k5 = self.market.get_ut_kline(symbol, "5m") or {}
+                vols = k5.get("volumes") or []
+                if len(vols) >= 21:
+                    base = float(np.mean(vols[-21:-1]))
+                    if base > 0:
+                        return round(float(vols[-1]) / base, 4)
+            except Exception:
+                pass
+            try:
+                candidate = (details or {}).get("volume_ratio")
+                if candidate is not None:
+                    return round(float(candidate), 4)
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    @staticmethod
+    def _position_runtime(pos: dict) -> dict:
+        """Kalıcı çalışma-zamanı alanlarının okunduğu alt sözlük.
+
+        `positions` tablosunda `system_stop_price` / `velocity_protection_armed`
+        gibi kolonlar YOKTUR; ancak `entry_context` bir JSONB kolonudur ve
+        `database._position_entry_context` içindeki `_runtime` alt sözlüğünü
+        olduğu gibi geri yazar. Restore sırasında `database.load_positions`
+        `entry_context`'i DEĞİŞTİRMEZ (düz `context` döner), yani `_runtime`
+        içeriği analyzer tarafında okunabilir durumdadır.
+        """
+        ctx = pos.get("entry_context") or {}
+        runtime = ctx.get("_runtime")
+        return runtime if isinstance(runtime, dict) else {}
+
+    @classmethod
+    def _lock_armed(cls, pos: dict) -> bool:
+        """Kâr kilidi (breakeven) devrede mi? Bellek + kalıcı kaynak."""
+        if pos.get("velocity_protection_armed"):
+            return True
+        return bool(cls._position_runtime(pos).get("velocity_protection_armed"))
+
+    @classmethod
+    def _lock_stop(cls, pos: dict) -> float | None:
+        """Kâr kilidi stop'u (varsa). Bellek önce, sonra kalıcı `_runtime`."""
+        for value in (pos.get("system_stop_price"),
+                      cls._position_runtime(pos).get("system_stop_price")):
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if number > 0:
+                return number
+        return None
+
+    async def _persist_velocity_lock(self, pos: dict) -> None:
+        """Kâr kilidi bayrağını + stop'unu KALICI yaz.
+
+        D-01/2026-09-26 (KRİTİK): `velocity_protection_armed` ve kilit stop'u
+        yalnızca bellekte tutuluyordu. `database.load_positions` bunları geri
+        yüklemiyor (kolon yok) ve `positions` tablosunda karşılıkları yok →
+        restart sonrası `armed=False` dönüyor, no_initial_stop sözleşmesi tekrar
+        etkinleşiyor ve kalıcı olması gereken kâr zemini kayboluyordu.
+
+        Çözüm: `entry_context` JSONB'nin `_runtime` alt sözlüğü. Bu sözlük
+        zaten `database._position_entry_context` tarafından her `save_position`
+        çağrısında korunur; yeni tablo kolonu istemiyoruz.
+        """
+        context = dict(pos.get("entry_context") or {})
+        runtime = dict(context.get("_runtime") or {})
+        armed = bool(pos.get("velocity_protection_armed") or runtime.get("velocity_protection_armed"))
+        stop = pos.get("system_stop_price")
+        if stop is not None:
+            try:
+                stop_value = float(stop)
+            except (TypeError, ValueError):
+                stop_value = 0.0
+            if stop_value > 0:
+                runtime["system_stop_price"] = stop_value
+        if armed:
+            runtime["velocity_protection_armed"] = True
+        elif runtime.get("velocity_protection_armed"):
+            # Kilit bir kez kurulduysa geri alınmaz (ratchet); bayrak temizlenmez.
+            armed = True
+        else:
+            return
+        context["_runtime"] = runtime
+        pos["entry_context"] = context
+        symbol = str(pos.get("symbol") or "").upper()
+        try:
+            await database.save_position(symbol, pos)
+        except Exception as exc:
+            # Yazma başarısız olursa kâr kilidi yine de bu turda BELLEKTE
+            # geçerlidir; yalnızca restart kalıcılığı kaybolur. Sessizce
+            # yutmak yerine iz bırakılır.
+            print(f"[D-01] velocity kâr kilidi kalıcı yazılamadı ({symbol}): {exc}", flush=True)
+
     @staticmethod
     def _trigger_fill_price(price, trigger, kind):
         """D-08 (2026-09-12): TP/SL dolum fiyatını TETİK fiyatına çek.
@@ -440,7 +548,31 @@ class ScalpAnalyzer:
                 fallback_stop_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
             else:
                 fallback_stop_pct = config.HARD_STOP_LOSS_PCT
-            system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
+            # D-01/2026-09-26 (KRİTİK): kâr kilidi devredeyken stop, orijinal
+            # sert stop'tan DAHA YUKARIDA olmalıdır. `system_stop` tek kaynak
+            # olarak önce kilitliğe göre düzeltilir; aksi halde -%2.5 sert stop
+            # +%0.5'lik kilidi her tick'te ezer ve kâr koruması fiilen ölür.
+            # `velocity_protection_armed` ve kilit stop'u artık hem bellekten
+            # hem kalıcı `entry_context._runtime`'dan okunur (restart sonrası
+            # "stop'suz pozisyon" sözleşmesi bozulmasın).
+            lock_armed = self._lock_armed(pos)
+            lock_stop_persisted = self._lock_stop(pos)
+            # D-01/2026-09-26: restore edilen pozisyonda bellek alanları yoktur
+            # (kolon yok) ama `_runtime` taşır. İlk tick'te bu değerler belleğe
+            # geri yazılır: aksi halde rapor/izleme yüzeyleri stop'suz görür,
+            # `stop_price` None kalır ve kilit bloğu atlanırken stop hiç
+            # uygulanmazdı.
+            if lock_armed:
+                pos.setdefault("velocity_protection_armed", True)
+                if pos.get("system_stop_price") is None and lock_stop_persisted is not None:
+                    pos["system_stop_price"] = lock_stop_persisted
+                    if pos.get("stop_price") is None:
+                        pos["stop_price"] = lock_stop_persisted
+            raw_stop = float(pos.get("system_stop_price") or pos.get("stop_price")
+                             or entry * (1 - fallback_stop_pct))
+            if lock_armed and lock_stop_persisted is not None:
+                raw_stop = max(raw_stop, lock_stop_persisted)
+            system_stop = raw_stop
             # Otonom hız avcısı no-initial-stop modu: açılışta sert stop yok.
             # entry_context'taki no_initial_stop bayrağıyla başlangıç stopu
             # etkisiz kılınır (system_stop_price=None + burada -inf); +%0.5
@@ -455,8 +587,9 @@ class ScalpAnalyzer:
             # geçersiz kılma yalnızca kilitten ÖNCE uygulanır: "açılışta sert
             # stop yok" sözleşmesi korunur, kilitlendikten sonra zemin kalıcı
             # olur.
-            if pos.get("strategy") == "CHAT_PREDICTION" and not pos.get("velocity_protection_armed") and \
-                    bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
+            no_initial_stop = pos.get("strategy") == "CHAT_PREDICTION" and not lock_armed and \
+                bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop"))
+            if no_initial_stop:
                 system_stop = float("-inf")
             # Otonom hız avcısı güvenlik stopu (kâr kilidi tetiklenmeden ÖNCE):
             # stopsuz açılış, fiyat +%0.5'i hiç görmezse sınırsız zarar demek
@@ -464,8 +597,7 @@ class ScalpAnalyzer:
             # düşerse acil kapat; kâr kilidi devreye girince bu stop zaten
             # anlamsızlaşır (kâr kilidi daha yukarıda). Backtest: -%3 stop
             # EV +0.182%, max kayıp -%3.
-            if pos.get("strategy") == "CHAT_PREDICTION" and not pos.get("velocity_protection_armed") and \
-                    bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
+            if no_initial_stop:
                 emg_stop = entry * (1 - config.VELOCITY_EMERGENCY_STOP_PCT / 100.0)
                 if price <= emg_stop:
                     return await self.close_position(
@@ -477,7 +609,7 @@ class ScalpAnalyzer:
             #    (target_pct → system_take_profit_price) göre TP'de yapılır;
             #    kâr kilidi stop'u sabit tutar (tepeyi takip etmez).
             # 3) Sert/acil stop: -%3 emergency stop + max-hold (30dk) korur.
-            if pos.get("strategy") == "CHAT_PREDICTION" and not pos.get("velocity_protection_armed"):
+            if pos.get("strategy") == "CHAT_PREDICTION" and not lock_armed:
                 lock_trigger = entry * (1 + config.VELOCITY_TRAIL_TRIGGER_PCT / 100.0)
                 if float(pos.get("max_price") or entry) >= lock_trigger:
                     pos["velocity_protection_armed"] = True
@@ -500,8 +632,22 @@ class ScalpAnalyzer:
                     lock_fraction = max(config.VELOCITY_PROFIT_LOCK_PCT / 100.0,
                                         config.min_net_exit_pct(qty_value))
                     lock_stop = entry * (1 + lock_fraction)
-                    pos["system_stop_price"] = max(system_stop, lock_stop)
+                    # D-01/2026-09-26: kilit stop'u daima en yüksek stop'tur —
+                    # `max(system_stop, lock_stop)` yerine sert stop düşük,
+                    # kilit yüksek olduğunda TAVAN kilittir. no_initial_stop
+                    # modunda `system_stop` -inf olduğu için `max` inf'i
+                    # yutmaz; burada atlanması gereken negatif-sonsuz değeri
+                    # normalleştiriyoruz.
+                    base_stop = raw_stop if raw_stop > float("-inf") else lock_stop
+                    pos["system_stop_price"] = max(base_stop, lock_stop)
                     system_stop = pos["system_stop_price"]
+                    # KİLİT + STOP KALICILIĞI: `positions` tablosunda bu
+                    # kolonlar yok; `entry_context` JSONB'nin `_runtime`
+                    # alt sözlüğü `database._position_entry_context` tarafından
+                    # otomatik taşınır. Restart sonrası `load_positions`
+                    # bu alanları geri yükler → stop'suz pozisyon sözleşmesi
+                    # korunur.
+                    await self._persist_velocity_lock(pos)
             if price <= system_stop:
                 # Kâr kilidi stop'u bir trailing değil, kârı koruyan sabit bir
                 # zemindir; normal stop-loss çıkışı olarak işlenir.
@@ -1095,30 +1241,28 @@ class ScalpAnalyzer:
                                                 "reason": "insufficient_balance_for_minimum_order", "strategy": strat_name, "timestamp": time.time()})
                     return None
             # S3 calibration multiplier: historically weak context buckets take
-            # a proportionally smaller position (bounded 0.5..1.0); unknown or
-            # thin-sample buckets stay neutral at 1.0. Callers may override via
-            # entry_context_extra; otherwise the shared bucket state decides.
+            # a proportionally smaller position (bounded 0.5..1.0). D-11
+            # (2026-09-26): "unknown" hacim bandı artık NÖTR 1.0 değil,
+            # fail-safe `UNKNOWN_VOLUME_MULTIPLIER` (0.85) alır — hacim oranı
+            # okunamayan giriş tam boyutla açılmaz. İnce örnekli kova yine 1.0.
+            # Callers may override via entry_context_extra; otherwise the shared
+            # bucket state decides.
             calib_multiplier = float((entry_context_extra or {}).get("calibration_multiplier") or 1.0) \
                 if isinstance(entry_context_extra, dict) else 1.0
             if config.CALIBRATION_SIZING_ENABLED and calib_multiplier == 1.0:
                 try:
                     # S3 bucket'ları saat + hacim rejimine göre ayrılır; hacim
-                    # oranını canlı 5m cache'ten besle. Cache eksikse unknown
-                    # bandına düşer ve nötr (1.0) kalır.
-                    calib_volume_ratio = None
-                    if self.market:
-                        k5 = self.market.get_ut_kline(symbol, "5m") or {}
-                        vols = k5.get("volumes") or []
-                        if len(vols) >= 21:
-                            base = float(np.mean(vols[-21:-1]))
-                            if base > 0:
-                                calib_volume_ratio = float(vols[-1] / base)
+                    # oranı canlı 5m cache'ten beslenir ve AYNI değer
+                    # `entry_context["volume_ratio"]` olarak kalıcı yazılır
+                    # (TEK hesap: `_entry_volume_ratio`).
                     calib_multiplier = calibration_service.multiplier_for(
-                        strat_name, volume_ratio=calib_volume_ratio)
+                        strat_name,
+                        volume_ratio=self._entry_volume_ratio(symbol, None))
                 except Exception:
                     calib_multiplier = 1.0
             if config.CALIBRATION_SIZING_ENABLED and calib_multiplier != 1.0:
-                order_value = max(config.MIN_PARTIAL_ORDER_TRY, order_value * min(1.0, max(0.5, calib_multiplier)))
+                order_value = max(config.MIN_PARTIAL_ORDER_TRY,
+                                  order_value * min(1.0, max(0.5, calib_multiplier)))
             # S4 regime-gated sizing: mean-reversion shrinks in trending
             # regimes; continuation shrinks in confirmed dead ranges.
             regime_info = {}
@@ -1282,6 +1426,21 @@ class ScalpAnalyzer:
                          "max_hold_sec": planned_max_hold_sec,
                          "order_value_try": order_value,
                          "partial_order": order_value < config.DEFAULT_ORDER_USDT}
+        # D-11 (2026-09-26 denetimi, YÜKSEK) — kalibrasyon canlıda ÖLÜYDÜ.
+        # `calibration.build_buckets` hacim oranını önce
+        # `entry_context["candles"]["volumes"]` listesinden, olmazsa
+        # `entry_context["liquidity"]["volume_ratio"]` alanından okuyordu.
+        # İlk anahtar HİÇ yazılmıyordu; `liquidity` sözlüğünde
+        # `volume_ratio` anahtarı da güvenilir biçimde bulunmuyordu
+        # (`liquidity_status` çıktısı birkaç katman içinde saklanabiliyor /
+        # details boş dönebiliyor) → `volume_band` DAİMA "unknown" ve
+        # `multiplier_for` DAİMA 1.0 çıkıyordu: kova anahtarları hiç
+        # eşleşmiyor, S3 kalibrasyonu sıfır etkiyle çalışıyordu.
+        # Düzeltme: canlı yol ile BİREBİR aynı tanım
+        # (`vols[-1] / mean(vols[-21:-1])`, 5m cache) burada da hesaplanıp
+        # KALICI alan olarak yazılır. DB'ye yeni kolon gerekmez —
+        # `entry_context` JSONB'dir.
+        entry_context["volume_ratio"] = self._entry_volume_ratio(symbol, details)
         # Observation only: preserve the exact symbol-activity context used at
         # entry so later capital-lock research never has to infer it from a
         # newer market state.  This is intentionally not an eligibility gate.

@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { API_BASE, apiRequest } from "../lib/api";
 import { fmtDateTime, formatPrice, toMs } from "../lib/format";
 import { useAuth } from "../lib/auth";
 import { useLiveMessages } from "../lib/liveSocket";
+import { useModalA11y } from "../lib/useModalA11y";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
 import AppLoader from "../components/AppLoader";
 
@@ -155,12 +157,10 @@ const relativeLabel = (ms: number, nowMs: number): string => {
 
 const RelativeTime = ({ ts, tickMs = 30_000 }: { ts: number | null | undefined; tickMs?: number }) => {
   const [now, setNow] = useState(0);
-  useEffect(() => {
-    const tick = () => setNow(Date.now());
-    tick();
-    const timer = setInterval(tick, tickMs);
-    return () => clearInterval(timer);
-  }, [tickMs]);
+  // Sekme arka plandayken "x dk önce" sayacı boşuna render edip dakikalarca
+  // uyuyordu; `useVisibleInterval` döngüyü görünürlüğe bağlar.
+  useVisibleInterval(() => setNow(Date.now()), tickMs);
+  useEffect(() => { setNow(Date.now()); }, [ts]);
   const ms = toMs(ts);
   if (!ms || !now) return null;
   return <span className="text-bunker-muted"> · {relativeLabel(ms, now)}</span>;
@@ -188,12 +188,8 @@ const HealthChip = ({ label, value, onText, offText, onTone, offTone }: {
 
 const LivenessBadge = ({ lastScanAt, loading }: { lastScanAt: number | null; loading?: boolean }) => {
   const [now, setNow] = useState(0);
-  useEffect(() => {
-    const tick = () => setNow(Date.now());
-    tick();
-    const timer = setInterval(tick, 10_000);
-    return () => clearInterval(timer);
-  }, []);
+  useVisibleInterval(() => setNow(Date.now()), 10_000);
+  useEffect(() => { setNow(Date.now()); }, [lastScanAt]);
   if (loading) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-400/40 bg-sky-400/10 px-2.5 py-0.5 font-mono text-[10px] font-bold text-sky-300">
@@ -299,40 +295,19 @@ const CandidateDetail = ({ c, kind, onClose }: { c: Candidate; kind: "radar" | "
   const validTarget = Number.isFinite(targetPct) && targetPct > 0 && Number.isFinite(price) && price > 0;
   const expected = validTarget ? price * (1 + targetPct / 100) : null;
   const { sl, rr } = computeTpSlRr(c);
-  const dialogRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    const previous = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
-    dialogRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      previous?.focus?.();
-    };
-  }, [onClose]);
-
-  const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key !== "Tab") return;
-    const nodes = dialogRef.current?.querySelectorAll<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    );
-    if (!nodes || nodes.length === 0) return;
-    const first = nodes[0];
-    const last = nodes[nodes.length - 1];
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-  };
+  // Escape + odak tuzağı + geri odak: `lib/useModalA11y` ile paylaşılan tek
+  // doğruluk kaynağı (binance-tr'ın gerçek para modalları da bunu kullanır).
+  const a11y = useModalA11y(true, onClose, `${kind === "radar" ? "Radar adayı" : "İzlenen sembol"} — ${c.symbol}`);
 
   const isUnifiedPass = c.unified_pass === true;
   const score = isUnifiedPass && c.unified_score != null ? Number(c.unified_score) : panelScore(c);
 
   return (
-    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="candidate-detail-title">
+    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="candidate-detail-title" aria-label={a11y.label}>
       <section
-        ref={dialogRef}
+        ref={a11y.ref}
         tabIndex={-1}
-        onKeyDown={trapFocus}
+        onKeyDown={a11y.onKeyDown}
         className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl border border-neon-green/40 bg-bunker-950 shadow-2xl outline-none"
         onClick={(e) => e.stopPropagation()}
       >

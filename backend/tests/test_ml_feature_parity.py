@@ -153,5 +153,106 @@ class AroonDefinitionTests(unittest.TestCase):
             self.assertAlmostEqual(canonical["down"], legacy_named["down"], places=9)
 
 
+class MfiParityTests(unittest.TestCase):
+    """D-10 (2026-09-26) — MFI eğitim/çıkarım sapması.
+
+    ``ml_forecast.build_symbol_dataset`` MFI'yı ``neg_sum == 0`` iken NaN
+    üretiyordu; çıkarımda aynı özellik (``technical_analysis._mfi`` ve
+    ``routers/velocity._velocity_mfi``) 100.0 / 50.0 dönüyordu. Aynı ad,
+    iki farklı dağılım: modelin öğrendiği "MFI yok" deseni çıkarımda hiç
+    üretilmiyor, çıkarımdaki nötr/extrem değerler eğitimde hiç görünmüyordu.
+
+    Bu test GERÇEK referans dizilerle eğitim sütununu kanonik skaler MFI'ye
+    karşı karşılaştırır (parity listesinde MFI kolonu yoktu).
+    """
+
+    def _series(self, n, seed):
+        rng = np.random.default_rng(seed)
+        close = 100 * np.exp(np.cumsum(rng.normal(0, 0.002, n)))
+        high = close * (1 + np.abs(rng.normal(0, 0.001, n)))
+        low = close * (1 - np.abs(rng.normal(0, 0.001, n)))
+        volume = np.abs(rng.normal(1000, 250, n))
+        open_time = (np.arange(n, dtype=np.int64) * 300_000) + 1_700_000_000_000
+        return open_time, high, low, close, volume
+
+    def test_mfi_vectorized_matches_canonical_scalar_on_real_data(self):
+        from app.technical_analysis import _mfi
+
+        n = 800
+        ot, h, l, c, v = self._series(n, seed=11)
+        feats = build_symbol_dataset(ot, h, l, c, v, 0, bar_minutes=5)["features"]
+        col = feats[:, 6]  # mfi14
+        checked = 0
+        for t in range(20, n, 7):
+            ref = _mfi(list(h[:t + 1]), list(l[:t + 1]), list(c[:t + 1]), list(v[:t + 1]), 14)
+            if ref is None:
+                continue
+            got = float(col[t])
+            self.assertTrue(np.isfinite(got), f"eğitim MFI'si NaN üretti t={t} (çıkarımda değil)")
+            # Özellik matrisi float32; tolerans float32 hassasiyetine göre.
+            self.assertAlmostEqual(ref, got, places=4,
+                                   msg=f"MFI parity bozuldu t={t} (kanonik={ref}, eğitim={got})")
+            checked += 1
+        self.assertGreater(checked, 60, "yeterli örnek karşılaştırılmadı")
+
+    def test_mfi_never_emits_nan_after_warmup(self):
+        """neg_sum == 0 iken NaN yerine 100.0 (pozitif akış) / 50.0 (yok)."""
+        n = 400
+        ot, h, l, c, v = self._series(n, seed=12)
+        feats = build_symbol_dataset(ot, h, l, c, v, 0, bar_minutes=5)["features"]
+        col = feats[:, 6]
+        warm = col[14:]
+        self.assertTrue(np.isfinite(warm).all(),
+                        f"ısınma sonrası MFI NaN üretti: {int((~np.isfinite(warm)).sum())} bar")
+        self.assertGreaterEqual(float(np.nanmin(warm)), 0.0)
+        self.assertLessEqual(float(np.nanmax(warm)), 100.0)
+
+    def test_monotonic_uptrend_is_mfi_100_and_downtrend_is_0(self):
+        """Tek yönlü akış: yalnız yükseliş → 100.0, yalnız düşüş → ~0.0."""
+        n = 60
+        up_c = 100 + np.arange(n) * 0.5
+        up_h, up_l = up_c + 0.2, up_c - 0.2
+        up_v = np.full(n, 1000.0)
+        ot = (np.arange(n, dtype=np.int64) * 300_000) + 1_700_000_000_000
+        up = build_symbol_dataset(ot, up_h, up_l, up_c, up_v, 0, bar_minutes=5)["features"][:, 6]
+        self.assertAlmostEqual(float(up[-1]), 100.0, places=6,
+                               msg="tek yönlü yükselişte MFI 100 olmalı (NaN değil)")
+
+        dn_c = 200 - np.arange(n) * 0.5
+        dn_h, dn_l = dn_c + 0.2, dn_c - 0.2
+        dn = build_symbol_dataset(ot, dn_h, dn_l, dn_c, up_v, 0, bar_minutes=5)["features"][:, 6]
+        self.assertAlmostEqual(float(dn[-1]), 0.0, places=6,
+                               msg="tek yönlü düşüşte MFI 0 olmalı")
+
+    def test_flat_prices_give_neutral_50_not_nan(self):
+        """Düz fiyat + sıfır hacim → akış yok → kanonik nötr 50.0."""
+        n = 40
+        c = np.full(n, 100.0)
+        h, l = c + 0.1, c - 0.1
+        v = np.zeros(n)
+        ot = (np.arange(n, dtype=np.int64) * 300_000) + 1_700_000_000_000
+        got = build_symbol_dataset(ot, h, l, c, v, 0, bar_minutes=5)["features"][:, 6]
+        self.assertAlmostEqual(float(got[-1]), 50.0, places=6,
+                               msg="akış yokken nötr 50.0 beklenir (NaN değil)")
+
+    def test_velocity_mfi_matches_canonical_on_real_data(self):
+        """velocity'nin kendi MFI kopyası kanonikle aynı olmalı (eşik kayması)."""
+        from app.routers.velocity import _velocity_mfi
+        from app.technical_analysis import _mfi
+
+        n = 500
+        ot, h, l, c, v = self._series(n, seed=13)
+        checked = 0
+        for t in range(20, n, 11):
+            ref = _mfi(list(h[:t + 1]), list(l[:t + 1]), list(c[:t + 1]), list(v[:t + 1]), 14)
+            got = _velocity_mfi(list(h[:t + 1]), list(l[:t + 1]), list(c[:t + 1]), list(v[:t + 1]))
+            if ref is None or got is None:
+                continue
+            self.assertAlmostEqual(ref, float(got), places=4,
+                                   msg=f"velocity MFI kanonikten saptı t={t}")
+            checked += 1
+        self.assertGreater(checked, 20, "yeterli örnek karşılaştırılmadı")
+
+
 if __name__ == "__main__":
     unittest.main()

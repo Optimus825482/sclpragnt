@@ -1,3 +1,21 @@
 # Geliştirme/test bağımlılıkları. CI ve yerel test koşuları bunları kullanır;
 # runtime bağımlılıkları requirements.txt'tedir.
 pytest==9.1.1
+
+# 2026-09-26 denetim (#99): `pytest-timeout` yoktu → sonsuza kadar bekleyen
+# bir test CI işini ASILI TUTAR (job timeout'a kadar). Test başına üst sınır
+# `pytest.ini:timeout = 120` ile veriliyor.
+pytest-timeout==2.4.0
+
+# 2026-09-26 denetim (#14, #99): CI'da coverage ölçümü yoktu. Ölçülen
+# gerçek oran (2026-09-26, `pytest --cov=app`): %57. CI eşiği %55'e
+# çekildi — mevcut oranı ANIDEN yükseltmek CI'yı kırardı. Eşik yavaş
+# yükseltilerek taban aşağı düşmez.
+pytest-cov==6.2.1
+
+# 2026-09-26 denetim (#89, #14): lint kapısı yoktu. Yapılandırma
+# `backend/ruff.toml` içinde; kural kümesi BİLEREK dar tutuldu
+# (E9/F821/F811/F823) çünkü tam E/F ~5000 ihlal veriyor ve kapı olarak
+# konulsaydı CI ilk çalışmada kırılırdı.
+ruff==0.16.9
+

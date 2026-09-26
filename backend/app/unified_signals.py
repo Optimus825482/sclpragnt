@@ -270,13 +270,16 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
         try:
             from app import master_surge
             from app.surge_learning import get_cached_surge_biases
-            from app.derivatives_service import symbol_to_futures, _DERIVATIVES_CACHE
-            from app.macro_sentiment_service import _BTC_COMPASS_CACHE
+            from app.derivatives_service import get_cached_derivatives_intel
+            from app.macro_sentiment_service import get_cached_btc_compass
             _biases = get_cached_surge_biases()
             _sym_bias = _biases.get(sym)   # None ise bias uygulanmaz
-            _fsym = symbol_to_futures(sym)
-            _deriv = _DERIVATIVES_CACHE.get(_fsym)[1] if _DERIVATIVES_CACHE.get(_fsym) else None
-            _macro = _BTC_COMPASS_CACHE[1] if _BTC_COMPASS_CACHE else None
+            # TTL'SİZ DOĞRUDAN SÖZLÜK OKUMASI YOK (bulgu #67): accessor'lar
+            # 90 sn/30 sn bayatlık kontrolünü uygular. Ağ hatası durumunda
+            # fail-closed olabilmesi için türev tarafı 2×TTL'e kadar bayata
+            # toleranslı okunur.
+            _deriv = get_cached_derivatives_intel(sym, max_age_sec=180.0)
+            _macro = get_cached_btc_compass(max_age_sec=60.0)
             surge_eval = master_surge.evaluate_master_surge(
                 sym, velocity_candidate=candidate, surge_bias=_sym_bias,
                 derivatives_intel=_deriv, macro_sentiment=_macro
@@ -284,7 +287,13 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
             candidate["master_surge"] = surge_eval
             if surge_eval.get("block_reason"):
                 candidate["block_reason"] = surge_eval["block_reason"]
-            if surge_eval.get("confluence_4way"):
+            # KAPI YÖNÜ DÜZELTMESİ (2026-09-26 denetimi, bölüm 2.2): 4'lü teyit
+            # bonusu ESKİDEN yalnız `confluence_4way` doğruysa uygulanıyordu —
+            # yani risk nedeniyle elenmesi gereken aday 4'lü teyit taşıyorsa
+            # skoru ARTIRIYORDU (kapı ters yönde çalışıyordu). Artık bloklanmış
+            # adaya 4'lü teyit skoru yazılmaz.
+            _blocked = bool(surge_eval.get("block_reason")) or surge_eval.get("passed") is False
+            if surge_eval.get("confluence_4way") and not _blocked:
                 candidate["confluence_4way"] = True
                 # 4'lü teyit durumunda kompozit indeks skoru güçlendirir
                 comp_idx = float(surge_eval.get("composite_index") or 0)
@@ -354,12 +363,11 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
         try:
             from app import master_surge
             from app.surge_learning import get_cached_surge_biases
-            from app.derivatives_service import symbol_to_futures, _DERIVATIVES_CACHE
-            from app.macro_sentiment_service import _BTC_COMPASS_CACHE
+            from app.derivatives_service import get_cached_derivatives_intel
+            from app.macro_sentiment_service import get_cached_btc_compass
             _biases = get_cached_surge_biases()
-            _fsym = symbol_to_futures(sym)
-            _deriv = _DERIVATIVES_CACHE.get(_fsym)[1] if _DERIVATIVES_CACHE.get(_fsym) else None
-            _macro = _BTC_COMPASS_CACHE[1] if _BTC_COMPASS_CACHE else None
+            _deriv = get_cached_derivatives_intel(sym, max_age_sec=180.0)
+            _macro = get_cached_btc_compass(max_age_sec=60.0)
             surge_eval = master_surge.evaluate_master_surge(
                 sym, velocity_candidate=cand_dict, macd_row=row,
                 surge_bias=_biases.get(sym),
@@ -371,7 +379,10 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
             cand_dict["master_surge"] = surge_eval
             if surge_eval.get("block_reason"):
                 cand_dict["block_reason"] = surge_eval["block_reason"]
-            if surge_eval.get("confluence_4way"):
+            # Aynı kapı yönü düzeltmesi (bkz. yukarıdaki radar adayı bloğu):
+            # bloklanmış adaya 4'lü teyit skoru yazılmaz.
+            _blocked = bool(surge_eval.get("block_reason")) or surge_eval.get("passed") is False
+            if surge_eval.get("confluence_4way") and not _blocked:
                 cand_dict["confluence_4way"] = True
                 comp_idx = float(surge_eval.get("composite_index") or 0)
                 if comp_idx > score:
@@ -451,12 +462,20 @@ def build_fusion_candidate(symbol: str, kind: str,
     try:
         from app import master_surge
         from app.surge_learning import get_cached_surge_biases
+        from app.derivatives_service import get_cached_derivatives_intel
+        from app.macro_sentiment_service import get_cached_btc_compass
         _biases = get_cached_surge_biases()
         surge_eval = master_surge.evaluate_master_surge(
-            sym, velocity_candidate=velocity_candidate, surge_bias=_biases.get(sym)
+            sym, velocity_candidate=velocity_candidate, surge_bias=_biases.get(sym),
+            derivatives_intel=get_cached_derivatives_intel(sym, max_age_sec=180.0),
+            macro_sentiment=get_cached_btc_compass(max_age_sec=60.0),
         )
         cand_dict["master_surge"] = surge_eval
-        if surge_eval.get("confluence_4way"):
+        if surge_eval.get("block_reason"):
+            cand_dict["block_reason"] = surge_eval["block_reason"]
+        # Aynı kapı yönü düzeltmesi: bloklanmış adaya 4'lü teyit skoru yazılmaz.
+        _blocked = bool(surge_eval.get("block_reason")) or surge_eval.get("passed") is False
+        if surge_eval.get("confluence_4way") and not _blocked:
             cand_dict["confluence_4way"] = True
             comp_idx = float(surge_eval.get("composite_index") or 0)
             if comp_idx > score:

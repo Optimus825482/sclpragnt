@@ -352,6 +352,33 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             if sym and sym not in _pool_set:
                 pool.append(sym)
                 _pool_set.add(sym)
+
+    # ---- N+1 ELİMİNASYONU (KRİTİK PERFORMANS) ---------------------------
+    # Sembol başına AYRI `get_symbol_target_state` çağrısı, tarama havuzu
+    # (~100-125 sembol) kadar DB round-trip demekti. `_run_scan` bunu 5dk ve
+    # 15dk profilleri için PARALEL çalıştırıyor → 60 sn'lik tur başına ~220
+    # ayrı sorgu. Psycopg havuzu `max_size=8` olduğu için bu sorgular
+    # `strategy_loop` (5 sn'de bir stop/TP) ve `auto_paper_management_loop`
+    # (5 sn) ile AYNı havuzu paylaşıyor ve pozisyon yönetimini bloklıyor —
+    # paper botun tek işi pozisyon yönetimi olduğu için doğrudan PnL riski.
+    #
+    # `get_all_symbol_target_states` TEK sorguda tüm tabloyu çeker; sonuç
+    # seans içi sözlüğe konur ve `scan_one` oradan okur. 220 tur → 2 tur.
+    # Kalibrasyon seansları boyunca tablo DEĞİŞMEZ (taramalar salt okur);
+    # yine de okuma başarısız olursa boş sözlüğe düşeriz (learned_target None),
+    # yani eski "sorgu patlarsa hedefsiz tara" davranışı korunur.
+    target_states: dict[str, dict] = {}
+    if config.MONITORING_TARGET_ADAPTIVE:
+        try:
+            rows_states = await database.get_all_symbol_target_states()
+            target_states = {
+                str(row.get("symbol") or "").strip().upper(): row
+                for row in (rows_states or []) if row.get("symbol")
+            }
+        except Exception as exc:
+            logger.warning("velocity scan: sembol hedef durumu ön yüklemesi: %s", exc)
+            target_states = {}
+
     sem = asyncio.Semaphore(6)
 
     async def scan_one(symbol: str) -> dict | None:
@@ -655,12 +682,19 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             learned_count = 0
             if config.MONITORING_TARGET_ADAPTIVE:
                 try:
-                    state = await database.get_symbol_target_state(symbol)
+                    # Sembol durumu seans başında TEK sorguda yüklendi
+                    # (`target_states`); sembol başına DB turu YOK.
+                    # Satır yoksa `None` → hedefsiz tara (eski `get_*` davranışı
+                    # ile aynı sonuç, sadece bedava).
+                    state = target_states.get(str(symbol or "").strip().upper())
                     if state:
                         val = float(state.get("target_pct") or 0)
                         learned_target = val if val > 0 else None
                         learned_count = int(state.get("total_count") or 0)
-                except Exception:
+                except (TypeError, ValueError) as exc:
+                    # Bozuk satır (NaN/string target_pct) TEK sembolü etkiler,
+                    # taramayı düşürmez.
+                    logger.debug("velocity hedef durumu bozuk (%s): %s", symbol, exc)
                     learned_target = None
                     learned_count = 0
             # R2-01/R3-03 (P0): hedef bantları PANEL (0-100) ölçeğinde tanımlı;
@@ -773,16 +807,54 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     # Mikro-yapı anlık görüntüsü: aday satırına eklenir (sıralama çarpanı +
     # journal kaydı aynı kaynaktan beslenir; başarısızlık sıralamayı düşürmez).
     def _micro_for(r: dict) -> dict | None:
+        """Adayın KENDİ sembolüne ait mikro-yapıyı getir (yabancı sembol yok).
+
+        D-14 (2026-09-26 denetimi, KRİTİK): `microflow.get_snapshot` sembol
+        parametrik DEĞİLse GLOBAL aktif sembolü okur. Tarama sırasında taranan
+        TÜM adaylara aynı sembolün mikro-yapısı yükleniyordu ve sıralama anahtarı
+        `velocity_score × micro_mult` olduğu için YANLIŞ aday seçilebiliyordu
+        (bir sembolün whale cezası diğerlerine de uygulanıyordu).
+
+        Savunma (fail-safe, iki yönlü uyum):
+          1. Sembol-parametrik API varsa (`get_snapshot(symbol=...)`) o kullanılır.
+          2) Değilse mevcut imza denenir.
+          3. Dönen snapshot'ın `symbol` alanı aday sembolüyle UYUŞMUYORSA
+             veri YOK sayılır → `None` (fail-open 1.0 yerine "veri yok" işareti;
+             `micro_structure_multiplier(None)` nötr 1.0 döner, yani sıralama
+             etkilenmez ama yanlış veri de bulaşmaz).
+        """
+        target = str(r.get("symbol") or "").upper()
+        micro = None
         try:
-            micro = microflow.get_snapshot(price=r["price"])
-            flow = (micro.get("trade_flow") or {})
-            activity = (flow.get("whale_activity") or {})
-            return {"whale_verdict": activity.get("verdict"),
-                    "whale_count": activity.get("whale_count"),
-                    "cvd_try": flow.get("cvd_try"),
-                    "trade_rate_per_min": flow.get("trade_rate_per_min")}
+            try:
+                # Parametrik API (microflow.py ayrı ajan tarafından
+                # `symbol=` destekleyecek şekilde düzeltiliyor).
+                micro = microflow.get_snapshot(symbol=target, price=r["price"])
+            except TypeError:
+                try:
+                    micro = microflow.get_snapshot(symbol=target)
+                except TypeError:
+                    # Eski, global-sembol imzası: yalnızca aktif sembol
+                    # adayınkiyle örtüşüyorsa anlamlıdır.
+                    micro = microflow.get_snapshot(price=r["price"])
         except Exception:
             return None
+        if not isinstance(micro, dict):
+            return None
+        got = str(micro.get("symbol") or "").upper()
+        if got and target and got != target:
+            # Yabancı sembolün verisi — kullanmak yanlış aday seçimine yol açar.
+            return None
+        flow = (micro.get("trade_flow") or {})
+        activity = (flow.get("whale_activity") or {})
+        if not flow and not activity and not micro.get("data_ready"):
+            return None
+        return {"symbol": target,
+                "whale_verdict": activity.get("verdict"),
+                "whale_count": activity.get("whale_count"),
+                "cvd_try": flow.get("cvd_try"),
+                "trade_rate_per_min": flow.get("trade_rate_per_min"),
+                "data_ready": bool(micro.get("data_ready"))}
     for r in results:
         if r:
             r["microstructure"] = _micro_for(r)
@@ -1049,29 +1121,24 @@ async def velocity_learning_loop():
                     continue
 
                 target_pct = float(candidate["target_pct"])
-                sl_pct = float(getattr(config, "AUTO_PAPER_SL_PCT", 1.5))
+                # D-15 (2026-09-26): config'te `AUTO_PAPER_SL_PCT` ADI YOK;
+                # yalnızca `AUTO_PAPER_SL_PCT_DEFAULT` var. getattr sessizce
+                # varsayılan 1.5'e düşüyordu, yani env ile ayarlanan SL
+                # (örn. %3.0) journal ölçümünde HİÇ kullanılmıyordu ve
+                # `velocity_calibrate` yanlış geometriye göre optimize ediyordu.
+                sl_pct = float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5))
                 cost_pct = round_trip_cost_pct()
 
                 # Gerçekçi işlem yaşam döngüsü: Mum bazlı sıralı TP ve SL kontrolü
-                hit_target = False
-                hit_stop = False
-                touch_bar = None
-                stop_bar = None
-
-                for r in window:
-                    bar_high = float(r[2])
-                    bar_low = float(r[3])
-                    high_gain = (bar_high / entry - 1) * 100
-                    low_dd = (bar_low / entry - 1) * 100
-
-                    if high_gain >= target_pct:
-                        hit_target = True
-                        touch_bar = r
-                        break
-                    elif low_dd <= -sl_pct:
-                        hit_stop = True
-                        stop_bar = r
-                        break
+                # D-16 (2026-09-26): bar içi sıra bilinmediği için belirsiz
+                # barda worst-case (SL) kabul edilir — `passing_hit_rate`
+                # artık sistematik olarak şişmez.
+                first_hit, hit_bar = _first_stop_or_target_bar(
+                    window, entry, target_pct, sl_pct)
+                hit_target = (first_hit == "take_profit")
+                hit_stop = (first_hit == "stop_loss")
+                touch_bar = hit_bar if hit_target else None
+                stop_bar = hit_bar if hit_stop else None
 
                 expired = (now_ms >= due_ms)
 
@@ -1081,6 +1148,10 @@ async def velocity_learning_loop():
 
                 mfe_pct = _mfe_from_window(window, entry) or 0.0
                 touched = hit_target
+                # D-16: belirsiz barda (TP+SL aynı mum) SL kabul edildiği
+                # için `touched=False`; kayıt nedenini saklar.
+                ambiguous = bool(hit_stop and stop_bar is not None
+                                 and (float(stop_bar[2]) / entry - 1) * 100 >= target_pct)
 
                 if hit_target:
                     exit_pct = target_pct
@@ -1092,7 +1163,8 @@ async def velocity_learning_loop():
                         "target_pct": target_pct,
                         "touch_sec": touch_sec,
                         "touched_at_minute": round((touch_sec or 0) / 60, 1),
-                        "status_reason": "TARGET_HIT"
+                        "status_reason": "TARGET_HIT",
+                        "intrabar_ambiguous": False
                     }
                 elif hit_stop:
                     exit_pct = -sl_pct
@@ -1104,7 +1176,8 @@ async def velocity_learning_loop():
                         "target_pct": target_pct,
                         "stop_sec": stop_sec,
                         "stopped_at_minute": round((stop_sec or 0) / 60, 1),
-                        "status_reason": "STOPPED_OUT"
+                        "status_reason": "STOPPED_OUT",
+                        "intrabar_ambiguous": ambiguous
                     }
                 else:  # expired
                     exit_pct = _exit_pct_from_window(window, entry)
@@ -1294,7 +1367,9 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
         raise HTTPException(status_code=409, detail=f"pencere mumları yetersiz: {len(window)}")
     entry = float(candidate["price"])
     target_pct = float(candidate["target_pct"])
-    sl_pct = float(getattr(config, "AUTO_PAPER_SL_PCT", 1.5))
+    # D-15 (2026-09-26): gerçek config alanı `AUTO_PAPER_SL_PCT_DEFAULT`
+    # (yukarıdaki ölçüm döngüsüyle aynı düzeltme).
+    sl_pct = float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5))
     cost_pct = round_trip_cost_pct()
 
     hit_target = False
@@ -1302,20 +1377,14 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
     touch_bar = None
     stop_bar = None
 
-    for r in window:
-        bar_high = float(r[2])
-        bar_low = float(r[3])
-        high_gain = (bar_high / entry - 1) * 100
-        low_dd = (bar_low / entry - 1) * 100
-
-        if high_gain >= target_pct:
-            hit_target = True
-            touch_bar = r
-            break
-        elif low_dd <= -sl_pct:
-            hit_stop = True
-            stop_bar = r
-            break
+    # D-16 (2026-09-26): yeniden ölçüm de AYNI belirsizlik kuralını kullanır
+    # (`_first_stop_or_target_bar`) — aksi halde "hepsini yeniden ölç" işlemi
+    # ölçüm döngüsünün düzelttiği iyimserliği geri getirirdi.
+    first_hit, hit_bar = _first_stop_or_target_bar(window, entry, target_pct, sl_pct)
+    hit_target = (first_hit == "take_profit")
+    hit_stop = (first_hit == "stop_loss")
+    touch_bar = hit_bar if hit_target else None
+    stop_bar = hit_bar if hit_stop else None
 
     mfe_pct = _mfe_from_window(window, entry) or 0.0
     touch_sec = int((int(touch_bar[0]) + 59_999 - created_ms) / 1000) if hit_target and touch_bar else None
@@ -1334,6 +1403,11 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
         net_pct = exit_pct - cost_pct
         reason = "MAX_HORIZON_EXPIRED"
 
+    # D-16: belirsiz barda hem TP hem SL eşiği aşılmıştı; kayıt bunu
+    # açıkça taşır ki yeniden ölçüm/analiz "neden SL?" sorusunu cevaplayabilsin.
+    ambiguous = bool(hit_bar is not None and hit_stop
+                     and (float(hit_bar[2]) / entry - 1) * 100 >= target_pct)
+
     await database.mark_velocity_candidate_evaluated(
         candidate_id, mfe_pct=round(mfe_pct, 4), touched_target=hit_target,
         exit_pct=round(exit_pct, 4), net_pct=round(net_pct, 4),
@@ -1341,12 +1415,14 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
                  "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
                  "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
                  "entry": entry, "target_pct": candidate["target_pct"], "touch_sec": touch_sec,
-                 "stop_sec": stop_sec, "status_reason": reason},
+                 "stop_sec": stop_sec, "status_reason": reason,
+                 "intrabar_ambiguous": ambiguous},
         force=True)
     return {"ok": True, "paper_only": True, "mfe_pct": round(mfe_pct, 3),
             "touched_target": hit_target, "window_bars": len(window),
             "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
             "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
+            "intrabar_ambiguous": ambiguous,
             "touch_sec": touch_sec}
 
 
@@ -1404,22 +1480,45 @@ async def manual_velocity_scan():
     """Manuel hız avcısı taraması: 5dk-%2 + 15dk-%3 profillerini tarar,
     en yüksek skorlu adaya (GEÇTİ veya İZLEME) paper pozisyon açar.
 
-    Otonom döngüyle aynı kapılardan geçer; buton bunu anında tetikler.
+    Otonom döngüyle AYNI kapılardan geçer; buton bunu anında tetikler.
+    D-13 (2026-09-26): otonom döngünün iki filtresi burada EKSİKTİ:
+      1) havuz filtresi — `analyzer.positions`'ta olan semboller havuzdan
+         çıkarılır (otonom döngü `velocity.py:2219`), aksi halde manuel
+         tarama açık pozisyonu olan bir adaya basar ve `_open_velocity_position`
+         ancak en sonda `acik_pozisyon_var` diyerek boşa döner; kullanıcı
+         aday görür ama hiçbir açılış olmaz.
+      2) yönlendirme bayrağı — `RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER`
+         açıkken otonom döngü `_route_velocity_through_auto_paper` çağırır;
+         manuel tarama bunu yok sayıp doğrudan analyzer'a gidiyordu, yani
+         iki yol aynı anda iki farklı defter kullanabiliyordu (tek defter
+         sözleşmesi ihlali).
     """
     scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
     scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
-    pool = (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
-            + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []))
+    raw_pool = (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
+                + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []))
+    # (1) Havuz filtresi — otonom döngüyle birebir aynı.
+    pool = [c for c in raw_pool
+            if str(c.get("symbol") or "").upper() not in analyzer.positions]
+    filtered_out = [str(c.get("symbol") or "").upper() for c in raw_pool
+                    if str(c.get("symbol") or "").upper() in analyzer.positions]
     # Sıralama: ham skor × sembol kalite çarpanı (otonom döngüyle aynı kapılar).
     touch_rates = await _journal_touch_rates()
     pool.sort(key=lambda c: -_rank_score(c, touch_rates))
     if not pool:
         return {"ok": True, "paper_only": True, "opened": False,
-                "message": "Şu an koşulları geçen aday yok; yüksek salınım rejimi bekleniyor.",
+                "message": ("Şu an koşulları geçen aday yok; yüksek salınım rejimi bekleniyor."
+                            if not filtered_out else
+                            "Adaylar tarandı ama tümü zaten açık pozisyon taşıyor."),
+                "filtered_open_positions": filtered_out,
                 "scan5": {"candidates": scan5.get("candidates", []), "watchlist": scan5.get("watchlist", [])},
                 "scan15": {"candidates": scan15.get("candidates", []), "watchlist": scan15.get("watchlist", [])}}
     best = pool[0]
-    outcome = await _open_velocity_position(best)
+    # (2) Yönlendirme bayrağı — otonom döngüyle aynı karar.
+    if getattr(config, "RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER", False):
+        outcome = await _route_velocity_through_auto_paper(best)
+    else:
+        outcome = await _open_velocity_position(best)
     _velocity_auto_state["last_open"] = outcome
     if outcome.get("status") == "PAPER_OPENED":
         _velocity_auto_state["total_opened"] += 1
@@ -1431,6 +1530,8 @@ async def manual_velocity_scan():
     return {"ok": True, "paper_only": True,
             "opened": outcome.get("status") == "PAPER_OPENED",
             "best_candidate": best, "outcome": outcome,
+            "filtered_open_positions": filtered_out,
+            "routed_via": "auto_paper" if getattr(config, "RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER", False) else "analyzer",
             "scan5": {"candidates": scan5.get("candidates", []), "watchlist": scan5.get("watchlist", [])},
             "scan15": {"candidates": scan15.get("candidates", []), "watchlist": scan15.get("watchlist", [])}}
 
@@ -1562,6 +1663,78 @@ _VELOCITY_AUTO_LOOP_STARTED = False
 _VELOCITY_AUTO_TASK_NAME = "velocity-autonomous"
 #: Döngü ~5 sn'de bir tur atar; 120 sn'den uzun sessizlik = ölü.
 _VELOCITY_LOOP_HEARTBEAT_TIMEOUT_SEC = 120.0
+
+#: D-13 (2026-09-26 denetimi, KRİTİK) — TOCTOU. Pozisyon limiti kontrolü
+#: bellek içi `analyzer.positions` sayımı yapıyordu ve KİLIT DIŞINDAydı:
+#: `open_position` birçok await noktası içerdiği (guard, bakiye, likidite,
+#: DB commit) iki eşzamanlı görev aynı sayımı yapıp İKİSİ DE limitin
+#: altında görünce ikisini de açabiliyordu. `VELOCITY_AUTO_MAX_OPEN_POSITIONS`
+#: default 0 (sınırsız) olduğunda bu görünmez, cap>0 iken limit gerçekte
+#: iki katına çıkabiliyordu.
+#: Çözüm: sayım + "rezervasyon" TEK kilit altında. Uyarı: `analyzer.positions`
+#: yalnızca `open_position` SONUNDA güncellenir; bu yüzden kilit altında
+#: sayılan pozisyonlara ek olarak uçuşta (in-flight) rezervasyonlar da
+#: sayılır. Rezervasyon `try/finally` ile HER ZAMAN serbest bırakılır.
+_velocity_open_lock = asyncio.Lock()
+#: Şu an açılış sürecinde olan işlem sayısı (kilit altında artırılır/azaltılır).
+_velocity_open_inflight = 0
+
+
+def _velocity_open_count() -> int:
+    """Şu an açık velocity_auto pozisyonu + uçuşta açılış sayısı."""
+    opened = sum(
+        1 for pos in analyzer.positions.values()
+        if ((pos.get("entry_context") or {}).get("signal_context") or {}).get("source") == "velocity_auto")
+    return opened + _velocity_open_inflight
+
+
+def velocity_open_position_slots() -> int:
+    """Kalan açılış yuvası (çoklu çağıranlar için TEK doğruluk kaynağı)."""
+    vel_max = int(getattr(config, "VELOCITY_AUTO_MAX_OPEN_POSITIONS", 0) or 0)
+    if vel_max <= 0:
+        return -1  # sınırsız
+    return max(0, vel_max - _velocity_open_count())
+
+
+class _VelocitySlotReservation:
+    """Async context manager: açılış yuvasını rezerve eder (TOCTOU koruması).
+
+    Kullanım::
+
+        async with _VelocitySlotReservation(symbol) as res:
+            if not res.ok:
+                return res.result
+            ... await-heavy açılış işi ...
+
+    Rezervasyon yalnızca ``VELOCITY_AUTO_MAX_OPEN_POSITIONS > 0`` iken
+    anlamlıdır; sınırsız ayarda (0) kilitleme yapılmaz.
+    """
+
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+        self.ok = True
+        self.result = None
+
+    async def __aenter__(self):
+        global _velocity_open_inflight
+        if int(getattr(config, "VELOCITY_AUTO_MAX_OPEN_POSITIONS", 0) or 0) <= 0:
+            return self
+        async with _velocity_open_lock:
+            if _velocity_open_count() >= int(config.VELOCITY_AUTO_MAX_OPEN_POSITIONS):
+                self.ok = False
+                self.result = {"symbol": self.symbol, "status": "SKIPPED",
+                               "reason": "pozisyon_limiti_dolu"}
+            else:
+                _velocity_open_inflight += 1
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        global _velocity_open_inflight
+        if int(getattr(config, "VELOCITY_AUTO_MAX_OPEN_POSITIONS", 0) or 0) <= 0:
+            return False
+        async with _velocity_open_lock:
+            _velocity_open_inflight = max(0, _velocity_open_inflight - 1)
+        return False
 
 
 def velocity_loop_running() -> bool:
@@ -1881,6 +2054,48 @@ def round_trip_cost_pct() -> float:
     return float(config.round_trip_cost()) * 100
 
 
+def _first_stop_or_target_bar(window, entry: float, target_pct: float,
+                              sl_pct: float) -> tuple[str | None, object | None]:
+    """Pencere içinde İLK TP/SL temasını bulur — bar içi sıra BİLİNMEZ.
+
+    D-16 (2026-09-26 denetimi): 1 dakikalık mumda high VE low eşiği aynı anda
+    aşabiliyor (ör. hedef +%2, stop -%1.5, mum 100→102→98.5 gerçekleşti).
+    Gerçek bar içi sıra 1m verisinden bilinemez. Eski kod `if high ... elif
+    low` yazdığı için belirsiz barda DAIMA TP sayıyordu → sistematik İYİMSER
+    yanlılık (look-ahead bias): `passing_hit_rate` şişer, `velocity_calibrate`
+    bu şişik oranı optimize eder, sembol bazlı hedef öğrenmesi yanlış yönde
+    öğrenir.
+
+    Sözleşme (worst-case, iyimserlik yok):
+      - Yalnız TP eşiği aşıldı  → "take_profit"
+      - Yalnız SL eşiği aşıldı  → "stop_loss"
+      - İKİSİ DE aşıldı        → "stop_loss" (belirsizlik lehine EN KÖTÜ
+        senaryo kabul edilir; TP ihtimali ölçüme YANSITILMAZ)
+      - Hiçbiri                 → (None, None)
+
+    Bu TEK tanımdır; hem `velocity_learning_loop` (öğrenme döngüsü) hem
+    `remeasure_velocity_candidate` (yeniden ölçüm) ve `calibration.py` bu
+    sözleşmeyi paylaşır. `touched`/`hit_target` yalnızca "stop_loss" DEĞİLse
+    True olur → belirsiz barda dokunuş SAYILMAZ.
+    """
+    if entry is None or float(entry) <= 0:
+        return None, None
+    for r in (window or []):
+        bar_high = float(r[2])
+        bar_low = float(r[3])
+        high_gain = (bar_high / float(entry) - 1) * 100
+        low_dd = (bar_low / float(entry) - 1) * 100
+        hit_tp = high_gain >= target_pct
+        hit_sl = low_dd <= -abs(sl_pct)
+        if hit_tp and hit_sl:
+            return "stop_loss", r     # belirsiz → worst-case
+        if hit_tp:
+            return "take_profit", r
+        if hit_sl:
+            return "stop_loss", r
+    return None, None
+
+
 def dynamic_target_pct(score: float, base_target_pct: float,
                        learned_pct: float | None = None,
                        learned_count: int = 0,
@@ -2009,8 +2224,23 @@ async def _route_velocity_through_auto_paper(candidate: dict) -> dict:
 
 
 async def _open_velocity_position(candidate: dict) -> dict:
-    """En iyi hız adayına serbest TL'nin %50'si ile paper pozisyon açar."""
+    """En iyi hız adayına serbest TL'nin %50'si ile paper pozisyon açar.
+
+    D-13 (2026-09-26): pozisyon limiti TOCTOU koruması. Sınır kontrolü +
+    "rezervasyon" `_velocity_open_lock` altında TEK atomik adımda yapılır;
+    gövvenin tamamı (guard/bakiye/likidite/DB commit) rezervasyon altında
+    çalışır. Eşzamanlı iki görev limiti aynı anda geçemez.
+    """
     symbol = str(candidate["symbol"] or "").upper()
+    async with _VelocitySlotReservation(symbol) as reservation:
+        if not reservation.ok:
+            return reservation.result
+        return await _open_velocity_position_reserved(candidate, symbol)
+
+
+async def _open_velocity_position_reserved(candidate: dict, symbol: str) -> dict:
+    """Rezervasyon ALINMIŞ halde açılış gövdesi (limit kontrolü burada TEKRAR
+    edilmez — `_VelocitySlotReservation` zaten uçuşta sayımı yaptı)."""
     # Minimum skor eşiği: düşük skorlu adaylarda dokunuş oranının üçte biri
     # (journal analizi: <10 → %16.7, ≥10 → ~%50). Eşik altında tur pas geçilir.
     # Düzeltme (2026-09-12): eşik PANEL (0-100) ölçeğinde tanımlıdır ve ham
@@ -2023,27 +2253,13 @@ async def _open_velocity_position(candidate: dict) -> dict:
         return {"symbol": symbol, "status": "SKIPPED",
                 "reason": f"skor_esigi_alti:{score:.2f}<{min_score:g}"}
     # M5 momentum+volatilite deseni (7g replay: %66.8 başarı). Filtre açıkken
-    # desen karşılanmayan adaylar açılmaz — yalnızca journal'da kalır.
+    # desen karşılanmayan adaylar açılmaz — yalnız journal'da kalır.
     if config.VELOCITY_PATTERN_FILTER_ENABLED:
         if not candidate.get("m5_pattern_ok"):
             return {"symbol": symbol, "status": "SKIPPED",
                     "reason": "m5_pattern_reddet", "m5_pattern": candidate.get("m5_pattern")}
     if symbol in analyzer.positions:
         return {"symbol": symbol, "status": "SKIPPED", "reason": "acik_pozisyon_var"}
-    # Velocity positions are stored under CHAT_PREDICTION (shared management
-    # ladder), so they are identified by their signal_context.source marker.
-    # This enforces a dedicated velocity cap instead of silently sharing the
-    # chat-prediction cap (H2).
-    vel_max = int(config.VELOCITY_AUTO_MAX_OPEN_POSITIONS)
-    # D-12 (2026-09-12): sihirli üst sınır (eski kod: `0 < vel_max <= 9_999`)
-    # KALDIRILDI. 10.000 ve üzeri bir ayarda koşul False oluyor ve pozisyon
-    # limiti SESSİZCE uygulanmıyordu. 0 = sınırsız; pozitif her değer cap'tir.
-    if vel_max > 0:
-        vel_open = sum(
-            1 for pos in analyzer.positions.values()
-            if ((pos.get("entry_context") or {}).get("signal_context") or {}).get("source") == "velocity_auto")
-        if vel_open >= vel_max:
-            return {"symbol": symbol, "status": "SKIPPED", "reason": "pozisyon_limiti_dolu"}
     guard = await database.get_llm_symbol_guard(symbol)
     guard_reason = _llm_guard_block_reason(guard)
     if guard_reason:

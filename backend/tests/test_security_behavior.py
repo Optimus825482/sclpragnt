@@ -9,9 +9,19 @@ class SecurityBehavior(unittest.TestCase):
         from app import security
 
         with patch.dict(os.environ, {"SCALPER_SESSION_SECRET": "test-secret"}):
-            token = security.create_session_token(60)
+            # DENETİM 3.3 #21 (2026-09-26): token üretmek KAYITLI olmayan bir
+            # kullanıcı için artık geçerli değildir — `_decode_session` bilinmeyen
+            # `sub` için `None` döner (fail-closed). Önceden `sv` kontrolü
+            # atlanıyordu, böylece silinmiş/askıya alınmış kullanıcının token'ı
+            # süresi dolana kadar geçerli kalıyordu. Test, imza/süre sözleşmesini
+            # ölçmek için KAYITLI ("admin") kullanıcıyla token üretir.
+            security.set_user_session_version("admin", 0)
+            token = security.create_session_token("admin", "admin", ttl_seconds=60)
             self.assertTrue(security.verify_session_token(token))
             self.assertFalse(security.verify_session_token(token + "x"))
+            # Kayıtsız kullanıcı (sözlükte yok) → reddedilir.
+            unknown = security.create_session_token("yok-boyle-bir-kullanici", "admin", ttl_seconds=60)
+            self.assertFalse(security.verify_session_token(unknown))
             # Negatif ttl_seconds token'ı üretildiği anda geçersiz kılar.
             # (Konumsal -1 username'e gider; ttl anahtar kelimeyle verilmeli.)
             expired = security.create_session_token(ttl_seconds=-1)

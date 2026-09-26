@@ -128,8 +128,18 @@ def _decode_session(token, client_fingerprint: str = "") -> dict | None:
         if not (secret and hmac.compare_digest(signature, expected)
                 and int(data.get("exp", 0)) > time.time()):
             return None
+        # Oturum sürümü (sv) kontrolü — DENETİM 3.3 #21 (2026-09-26):
+        # Eskiden `expected_version is None` (kullanıcı sözlükte YOK) iken bu blok
+        # ATLANIYORDU; böylece silinmiş/askıya alınmış kullanıcının token'ı (payload'da
+        # imzalı `sub` olduğu için) üretimde 12 saat geçerli kalıyordu. Artık bilinmeyen
+        # kullanıcı da geçersizdir (fail-closed): `sub` sözlükte yoksa token reddedilir.
+        # Not: `load_user_session_versions` DB'deki tüm kullanıcıları startup'ta yükler;
+        # silinen kullanıcı listeden düştüğü için token'ı bir sonraki doğrulamada
+        # (veya logout'ta `remove_user_session_version`) geçersizleşir.
         expected_version = _user_session_versions.get(username)
-        if expected_version is not None and int(data.get("sv", -1)) != expected_version:
+        if expected_version is None:
+            return None
+        if int(data.get("sv", -1)) != expected_version:
             return None
         # Fingerprint varsa eşleşmayı kontrol et
         stored_fp = str(data.get("fp", ""))

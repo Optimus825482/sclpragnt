@@ -60,20 +60,43 @@ class ScoreGateRawTests(unittest.TestCase):
         from app.config import config
         self.assertAlmostEqual(config.MONITORING_MIN_RAW_SCORE, 1400.0)
 
-    def test_default_gate_is_raw_constant_independent_of_cap(self):
+    def test_default_gate_is_derived_from_panel_default(self):
+        """TEK EŞİK (2026-09-26, #8): ham kapı daima panel eşiğinin tersidir.
+
+        ESKİ SÖZLEŞME: admin panel eşiği yoksa kapı MUTLAK `1400` idi
+        (`MONITORING_MIN_RAW_SCORE`), panel eşiği ise 71.5 → ham 1730 idi.
+        Bu İKİ kapı çelişiyordu ve 1400-1730 bandı panel listesinde görünüyor
+        ama bildirilmiyordu. Artık ham kapı da `_raw_from_panel(
+        MONITORING_MIN_SCORE_DEFAULT)` ile türetilir, yani `_notify` ve
+        `_run_scan` aynı eşiği uygular.
+        """
         from app.routers import monitoring
         from app.config import config
-        # Admin panel eşiği set etmemişse kapı MUTLAK ham skordur.
-        self.assertAlmostEqual(monitoring._effective_min_raw_score({"min_score_explicit": False}),
-                               config.MONITORING_MIN_RAW_SCORE)
-        orig = config.MONITORING_SCORE_NORM_CAP
+        expected = round(monitoring._raw_from_panel(
+            float(config.MONITORING_MIN_SCORE_DEFAULT)), 4)
+        self.assertAlmostEqual(
+            monitoring._effective_min_raw_score({"min_score_explicit": False}),
+            expected)
+        # VE ham kapı panel eşiğinin ters çevrimiyle BİREBİR aynı olmalı
+        # (aksi halde liste süzgeci ile bildirim kapısı ayrışır).
+        self.assertAlmostEqual(
+            monitoring._effective_min_raw_score({"min_score_explicit": False}),
+            round(monitoring._raw_from_panel(
+                monitoring._effective_min_score({"min_score_explicit": False})), 4),
+            msg="ham ve panel kapıları aynı sayıya türemeli (TEK EŞİK)")
+
+    def test_default_gate_tracks_panel_default(self):
+        """Panel varsayılanı değişirse ham kapı da ONUNLA değişir."""
+        from app.routers import monitoring
+        from app.config import config
+        orig = config.MONITORING_MIN_SCORE_DEFAULT
         try:
-            config.MONITORING_SCORE_NORM_CAP = 1000.0  # cap değişse bile kapı KAYMAZ
-            self.assertAlmostEqual(monitoring._effective_min_raw_score({"min_score_explicit": False}),
-                                   1400.0)
-            # Eski panel-türetimli mantık 70/100*1000 = 700 verirdi → geri alma yakalanır.
+            config.MONITORING_MIN_SCORE_DEFAULT = 80.0
+            self.assertAlmostEqual(
+                monitoring._effective_min_raw_score({"min_score_explicit": False}),
+                round(monitoring._raw_from_panel(80.0), 4))
         finally:
-            config.MONITORING_SCORE_NORM_CAP = orig
+            config.MONITORING_MIN_SCORE_DEFAULT = orig
 
     def test_explicit_admin_panel_overrides_default_raw(self):
         from app.routers import monitoring
@@ -106,7 +129,10 @@ class ScoreGateRawTests(unittest.TestCase):
         from app.routers import monitoring
         src = __import__("inspect").getsource(monitoring._run_scan)
         self.assertIn("effective_min_raw_score", src, "aday kapısı ham skordan seçilmeli (R2-01)")
-        self.assertIn('float(c.get("velocity_score", 0) or 0) >= effective_min_raw_score', src)
+        # #9 (2026-09-26): korumasız `float(c.get(...) or 0)` yerine `_num`
+        # kullanılmalı — tek bozuk satır turu düşürmesin.
+        self.assertIn('_num(c.get("velocity_score", 0), 0.0)', src)
+        self.assertNotIn('float(c.get("velocity_score", 0) or 0) >= effective_min_raw_score', src)
 
 
 class NotifyRawGateTests(unittest.IsolatedAsyncioTestCase):

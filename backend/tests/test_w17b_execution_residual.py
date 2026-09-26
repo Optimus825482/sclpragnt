@@ -46,6 +46,7 @@ from app.routers import velocity  # noqa: E402
 _BACKEND = ROOT
 _VELOCITY_SRC = (_BACKEND / "app" / "routers" / "velocity.py").read_text(encoding="utf-8")
 _AUTO_PAPER_SRC = (_BACKEND / "app" / "routers" / "auto_paper.py").read_text(encoding="utf-8")
+_LLM_CHAT_SRC = (_BACKEND / "app" / "routers" / "llm_chat.py").read_text(encoding="utf-8")
 
 
 def _coro(value):
@@ -532,9 +533,102 @@ class VelocityCapTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("SKIPPED", result["status"])
         self.assertEqual("pozisyon_limiti_dolu", result["reason"])
 
+    def test_cap_counts_every_limit_value_not_only_below_9999(self):
+        """D-12 — limit DEĞERİ NE OLURSA OLSUN sayılmalı (sihirli üst sınır yok).
+
+        Eski kilit `inspect.getsource` ile `"9999"` kelimesinin kaynakta
+        bulunmamasını ve `"if vel_max > 0:"` metnini arıyordu. İkisi de kırılgan
+        sözleşmeydi: yeniden yazılan velocity.py `vel_max <= 0 → sınırsız`
+        formülü kullandığı için metin eşleşmiyordu, oysa DAVRANIŞ aynıydı.
+        Burada davranış ÖLÇÜLÜYOR: 9999'un hemen üstündeki limit de
+        uygulanmalı. `velocity_open_position_slots()` sıfıra dönerse limit
+        doludur; `>=0` dönüyorsa en az bir yuva kalmıştır.
+        """
+        fake_analyzer = MagicMock()
+        fake_analyzer.positions = {
+            "OTHERTRY": {"entry_context": {"signal_context": {"source": "velocity_auto"}}}
+        }
+        with patch.object(velocity, "analyzer", fake_analyzer):
+            # 1 velocity_auto pozisyon açık.
+            with patch.object(config, "VELOCITY_AUTO_MAX_OPEN_POSITIONS", 10000):
+                self.assertEqual(
+                    9999, velocity.velocity_open_position_slots(),
+                    "10000 limiti 9999 sihirli tavanı gibi devre dışı kalmamalı")
+            with patch.object(config, "VELOCITY_AUTO_MAX_OPEN_POSITIONS", 1):
+                self.assertEqual(
+                    0, velocity.velocity_open_position_slots(),
+                    "dolu limit 0 yuva dönmeli")
+            # 0 = sınırsız (negatif yuva sözleşmesi).
+            with patch.object(config, "VELOCITY_AUTO_MAX_OPEN_POSITIONS", 0):
+                self.assertEqual(-1, velocity.velocity_open_position_slots(),
+                                 "0 sınırsız olmalı")
+
     def test_magic_9999_removed(self):
-        self.assertNotIn("9999", _VELOCITY_SRC)
-        self.assertIn("if vel_max > 0:", _VELOCITY_SRC)
+        """Sihirli sabit, YÜRÜTÜLEN kodda hiçbir tüketicide kalmamalı.
+
+        D-12 `velocity.py` içindeki kalıbı kaldırmıştı; aynı kalıp daha sonra
+        `llm_chat._chat_auto_trade_open`'a (chat stratejisi limiti) TAŞINMIŞTI
+        ve orada sessizce limiti devre dışı bırakıyordu.
+
+        ÖNEMLİ: kaba bir `"9999" not in source` taraması YORUM satırlarını
+        da kapsar; bir düzeltmenin gerekçesini yazan yorum ("eskiden `<= 9999`
+        idi") kilidi kırıyordu. Bu yüzden tarama AST üzerinden yapılır:
+        yalnızca ifadelerdeki sayı sabitlerine bakılır, yorumlar hariç.
+        Davranış doğrulaması `ChatCapTests` ve `velocity_open_position_slots`
+        çağrılarında yapılır.
+        """
+        for name, src in (("velocity", _VELOCITY_SRC), ("llm_chat", _LLM_CHAT_SRC)):
+            literals = [node.value for node in ast.walk(ast.parse(src))
+                        if isinstance(node, ast.Constant)
+                        and isinstance(node.value, int)
+                        and not isinstance(node.value, bool)
+                        and node.value == 9999]
+            self.assertEqual([], literals,
+                             f"{name}.py çalıştırılan kodunda 9999 sabiti kaldı")
+
+
+class ChatCapTests(unittest.IsolatedAsyncioTestCase):
+    """D-12 — chat stratejisi pozisyon limiti de sihirli tavan taşımamalı.
+
+    `_chat_auto_trade_open` eskiden `if 0 < chat_max <= 9999:` diyordu;
+    10000 kullanan bir operatör limiti sessizce KAPALI bırakmış oluyordu
+    (sınırsız giriş). `config.py` değeri zaten `max(0, int(...))` ile 0'a
+    çektiği için üst sınırın hiçbir anlamı yoktur: `>0` = istenen limit.
+    """
+
+    async def _open(self, chat_max, open_positions):
+        from app.routers import llm_chat
+
+        fake_analyzer = MagicMock()
+        fake_analyzer.positions = open_positions
+        with patch.object(llm_chat, "analyzer", fake_analyzer), \
+             patch.object(config, "CHAT_PREDICTION_MAX_OPEN_POSITIONS", chat_max), \
+             patch.object(config, "SYMBOLS", ["TESTTRY"]), \
+             patch.object(llm_chat.database, "get_llm_symbol_guard",
+                          new=AsyncMock(return_value={})), \
+             patch.object(llm_chat, "_llm_guard_block_reason", return_value=None):
+            return await llm_chat._chat_auto_trade_open({"symbol": "TESTTRY"})
+
+    async def test_cap_blocks_when_limit_reached_above_magic_value(self):
+        positions = {"A": {"strategy": "CHAT_PREDICTION"},
+                     "B": {"strategy": "CHAT_PREDICTION"}}
+        # Limit 2, açık 2 → limit dolu. 10000 değerinin de DAVRANIŞI farklı
+        # olmalıydı: eski `<= 9999` kalıbı 10000'ı sınırsız sayardı.
+        result = await self._open(2, positions)
+        self.assertEqual("SKIPPED", result["status"])
+        self.assertEqual("chat_pozisyon_limiti_dolu", result["reason"])
+
+    async def test_zero_means_unlimited(self):
+        """0 = sınırsız: limit kapısı tetiklenmez (guard'a kadar akıtır)."""
+        positions = {"A": {"strategy": "CHAT_PREDICTION"}}
+        result = await self._open(0, positions)
+        self.assertNotEqual("chat_pozisyon_limiti_dolu", result.get("reason"))
+
+    async def test_limit_above_9999_still_enforced(self):
+        """Sihirli tavan kaldırıldı: 10000 limiti de doluysa bloklar."""
+        positions = {str(index): {"strategy": "CHAT_PREDICTION"} for index in range(10000)}
+        result = await self._open(10000, positions)
+        self.assertEqual("chat_pozisyon_limiti_dolu", result.get("reason"))
 
 
 # ---------------------------------------------------------------------------

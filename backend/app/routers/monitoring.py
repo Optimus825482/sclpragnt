@@ -40,6 +40,11 @@ _monitoring_state = {
     "notified_prices": {},
     "refire_blocked": 0,          # D-07: fiyat değişmediği için bastırılan yeniden tetikleme
     "rr_blocked": 0,              # A4: R/R kapısı yüzünden bastırılan aday sayısı (ölçüm)
+    # 2026-09-26 (bölüm 2.2): Master Surge risk kapısı (EXTREME_LONG / BTC panik)
+    # sayacı ve sembol→neden rozeti. Kapı artık karar yoluna bağlı olduğu için
+    # "kaç aday elendi ve neden" gözlenebilir olmalı.
+    "surge_blocked": 0,
+    "surge_blocked_symbols": {},  # symbol -> {"reason": str, "at": epoch}
     "rising_notified": 0,         # R3: bu oturumda bildirilen yükseliş/erken sinyali
     "risk_off": False,            # piyasa rejimi RISK_OFF
     "risk_off_unknown": False,    # F-14: referans verisi yetersiz → rejim BİLİNMİYOR
@@ -82,6 +87,49 @@ async def _locked_state():
 # sayacı / bildirim cooldown kaybolmasın diye her tarama sonunda JSON olarak
 # yazılır, loop başlarken geri yüklenir (2026-09-04, hibrit sistem).
 _STATE_SETTING_KEY = "monitoring_runtime_state"
+
+
+def _num(value, default: float | None = None) -> float | None:
+    """Sayısal alan güvenli okuma — `combined_radar._num` ile AYNı davranış.
+
+    2026-09-26 denetimi (bulgu #9): `float(c.get("velocity_score", 0) or 0)`
+    korumasızdı — TEK bozuk satır (`None`, `"abc"`, `NaN`) 60 saniyelik turun
+    TAMAMINI `ValueError` ile düşürüyordu, yani bir sembolün bozuk verisi
+    tüm aday listesini susturuyordu. `combined_radar._num` aynı durumda NaN'ı
+    ve dönüş hatasını doğru eliyor; burada da o kontrat kullanılır.
+    """
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    if out != out:            # NaN
+        return default
+    return out
+
+
+def _prune_notified_scores(limit: int = 500, keep: int = 250) -> int:
+    """`notified_scores` sözlüğünü sınırla (GÖREV 5 — bellek budama).
+
+    2026-09-26: bu sözlük MACD histerezis kapısı için sembol→skor tutar ve
+    `notified_symbols`/`notified_prices` gibi 500/250 sınırıyla budanırken o
+    HİÇ budanmıyordu — sembol evreni büyüdükçe kalıcı büyüme. `restore_runtime_state`
+    bu sözlüğü geri yüklediği için sınır aynı zamanda kalıcılık katmanını da
+    tutarlı kılar.
+
+    Budama ölçütü: en eski yazılan girdiler (Python dict ekleme sırası) atılır —
+    histerezis kapısı yalnızca YAKIN zamanda bildirilmiş semboller için
+    anlamlıdır, eski kayıt zaten cooldown'u aşmış durumdadır.
+    """
+    scores = _monitoring_state.get("notified_scores")
+    if not isinstance(scores, dict):
+        return 0
+    if len(scores) <= int(limit):
+        return 0
+    removed = 0
+    for key in list(scores)[:len(scores) - int(keep)]:
+        scores.pop(key, None)
+        removed += 1
+    return removed
 
 
 def _score_is_saturated(row: dict) -> bool:
@@ -194,12 +242,19 @@ async def _persist_runtime_state() -> None:
             "pending_targets": _monitoring_state["pending_targets"],
             # F-07: bellek monotonik → kalıcı katman duvar saati (tek noktada dönüşüm).
             "notified_symbols": _notified_wall_from_mono(_monitoring_state["notified_symbols"]),
+            # #10: hızlı-yol cooldown haritası da kalıcılaştırılır. Aynı
+            # monotonik→duvar saati dönüşümü kullanılır (restart'ta cooldown
+            # sıfırlanmasın).
+            "unified_fast_last": _notified_wall_from_mono(_unified_fast_last),
             "watchlist_seen_at": _monitoring_state["watchlist_seen_at"],
             "candidate_streak": _monitoring_state["candidate_streak"],
             "notified_prices": _monitoring_state["notified_prices"],
             "refire_blocked": int(_monitoring_state.get("refire_blocked", 0)),
             "refire_min_move_pct": MONITORING_REFIRE_MIN_MOVE_PCT,
             "rr_blocked": int(_monitoring_state.get("rr_blocked", 0)),
+            # 2026-09-26: Master Surge risk kapısı ölçümü de kalıcı olur.
+            "surge_blocked": int(_monitoring_state.get("surge_blocked", 0)),
+            "surge_blocked_symbols": _monitoring_state.get("surge_blocked_symbols", {}),
             # P1-5.10: MACD histerezis kapısının restart sonrası çalışması için
             # son bildirim skorları kalıcılaştırılır (eskiden kayboluyordu →
             # restart sonrası tüm semboller "yeni" sayılıp tekrar bildirim üretiyordu).
@@ -230,14 +285,22 @@ async def restore_runtime_state() -> None:
                 # F-07: kalıcı duvar saati → bellek monotonik (tek noktada dönüşüm).
                 _monitoring_state["notified_symbols"] = _notified_mono_from_wall(
                     payload.get("notified_symbols"))
+                # #10: hızlı-yol cooldown haritası da geri yüklenir.
+                _unified_fast_last.clear()
+                _unified_fast_last.update(
+                    _notified_mono_from_wall(payload.get("unified_fast_last")))
                 _monitoring_state["watchlist_seen_at"] = payload.get("watchlist_seen_at") or {}
                 _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
                 _monitoring_state["notified_prices"] = payload.get("notified_prices") or {}
                 _monitoring_state["refire_blocked"] = int(payload.get("refire_blocked", 0) or 0)
                 _monitoring_state["rr_blocked"] = int(payload.get("rr_blocked", 0) or 0)
+                _monitoring_state["surge_blocked"] = int(payload.get("surge_blocked", 0) or 0)
+                _monitoring_state["surge_blocked_symbols"] = (
+                    payload.get("surge_blocked_symbols") or {})
                 # P1-5.10: MACD histerezis kapısının restart sonrası çalışması için
                 # son bildirim skorları geri yüklenir.
                 _monitoring_state["notified_scores"] = payload.get("notified_scores") or {}
+                _prune_notified_scores()
                 _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
                 # M1/P2 (R4-11): BİLİNMİYOR bayrağı geri yüklenir (restart sonrası
                 # ilk taramaya kadar "rejim biliniyor" yanılsaması olmasın).
@@ -308,31 +371,31 @@ def _effective_min_score(settings) -> float:
 def _effective_min_raw_score(settings) -> float:
     """Aday KAPISI için HAM velocity_score eşiği (M1/P0 — R2-01/R2-02/R3-01).
 
-    Öncelik sırası (dokümante):
-      1. **Açık admin panel eşiği** (`min_score`, 0-100) verilmişse → ham eşik
-         AKTİF ölçeğin TERS haritasıyla türetilir (`_raw_from_panel`; A3 sonrası
-         log modda `expm1(panel/100 × log1p(REF))`). Admin panel ölçeğinde
-         düşünür; ölçek/mode değişse de bu türetme tutarlıdır.
-      2. Aksi halde → `config.MONITORING_MIN_RAW_SCORE` (varsayılan 1400). Bu mutlak
-         ham eşik ölçekten BAĞIMSIZDIR; böylece ölçek haritası ileride değişse bile
-         aday kapısı sessizce kaymaz.
+    Öncelik sırası (denetimi 2026-09-26, bölüm 3.2 #8 ile GÜNCELLENDİ):
+
+    **TEK EŞİK.** Aday kapısı artık daima panel eşiğinin TERS haritasıyla
+    türetilir: `min_raw = _raw_from_panel(_effective_min_score(settings))`.
+    Eskiden iki AYRI kapı vardı:
+      * açık admin panel eşiği varsa → `_raw_from_panel(min_score)`  ✔ tutarlı
+      * yoksa → `config.MONITORING_MIN_RAW_SCORE` (sabit 1400)
+    Varsayılanda panel eşiği `MONITORING_MIN_SCORE_DEFAULT` (71.5) → ham 1730
+    idi. Sonuç: **1400-1730 bandı panel listesinde GÖRÜNÜYOR ama bildirilmiyor**
+    (iki kapı çelişiyordu, "TEK EŞİK" ilkesi varsayılanda sağlanmıyordu).
+    Artık iki kapı aynı sayıya türer ve bant ortadan kalkar.
+
+    `MONITORING_MIN_RAW_SCORE` okunmaya devam eder ama yalnız **gösterim/
+    geriye dönük uyum** alanıdır; karar yoluna girmez. Ham eşiğin ölçekten
+    bağımsız kalması isteniyorsa `MONITORING_MIN_SCORE_DEFAULT` değiştirilmelidir
+    (tek kapı ilkesi bozulmadan).
 
     "Açık" belirleme: settings'te `min_score_explicit` işareti varsa o kullanılır
     (DB'den gelen ayarlar bu işareti taşır); yoksa `min_score` anahtarının
     VAR OLUP None OLMADIĞINA bakılır (B6: `min_score: null` → açık eşik YOK,
-    varsayılan ham eşik devreye döner; testlerin/manuel sözlüklerin geriye
+    varsayılan PANEL eşiği devreye döner; testlerin/manuel sözlüklerin geriye
     dönük uyumu korunur).
     """
-    explicit = settings.get("min_score_explicit")
-    if explicit is None:
-        explicit = settings.get("min_score") is not None
-    if explicit:
-        raw_panel = settings.get("min_score")
-        panel = max(0.0, min(100.0, float(
-            raw_panel if raw_panel is not None else config.MONITORING_MIN_SCORE_DEFAULT)))
-        # A3: panel → ham dönüşümü AKTİF ölçeğin tersi olmalı (log modda expm1).
-        return round(_raw_from_panel(panel), 4)
-    return float(config.MONITORING_MIN_RAW_SCORE)
+    # Tek kaynak: panel eşiği (F-14 RISK_OFF çarpanı uygulanmaz).
+    return round(_raw_from_panel(_effective_min_score(settings)), 4)
 
 
 def _threshold_fields(settings) -> dict:
@@ -351,6 +414,13 @@ def _threshold_fields(settings) -> dict:
         "rr_min": float(getattr(config, "MONITORING_RR_MIN", 0.6)),
         "rr_sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 3.0)),
         "rr_blocked": int(_monitoring_state.get("rr_blocked", 0)),
+        # 2026-09-26: Master Surge risk kapısı ölçümü.
+        "surge_blocked": int(_monitoring_state.get("surge_blocked", 0)),
+        "surge_blocked_reasons": sorted({
+            str(v.get("reason"))
+            for v in (_monitoring_state.get("surge_blocked_symbols") or {}).values()
+            if isinstance(v, dict) and v.get("reason")
+        }),
         # YAZMA doğrulamasının sınırları yayınlanır: istemci aynı aralığı
         # uygulayabilsin (eskiden istemci yalnız `val < 0` kontrol ediyordu;
         # aralık dışı bir değer kaydedilmeye çalışılınca sunucu 422 dönüyordu ve
@@ -794,6 +864,33 @@ TICKER_MAX_AGE_SEC = float(getattr(config, "MONITORING_TICKER_MAX_AGE_SEC", 60))
 TICKER_DIVERGENCE_WARN_PCT = 25.0
 
 
+def _outcome_window_minutes(horizon_minutes) -> int:
+    """Bir bildirimin değerlendirme penceresi (dk) — UFUK-DUYARLI.
+
+    2026-09-26 denetimi (bulgu #19): pencere SABİT 60 dakikaydı. 5dk ufuklu
+    bir bildirim 60 dk boyunca "BEKLİYOR" sayılıp 15dk sonra fiyat hedefe
+    vurduğunda hâlâ "BEKLİYOR" görünüyor ve ancak 60. dakikada kapatılıyordu;
+    yani 15dk/uzun-ufuk sinyaller sistematik olarak dezavantajlı sayılıyordu.
+    Tersi de bozuktu: 60dk ufuklu bir bildirim 60dk'da kapanıyordu ama ufku
+    henüz dolmamış olabiliyordu.
+
+    Kural: pencere = `clamp(MONITORING_OUTCOME_WINDOW_MINUTES, ufuk, 4 × ufuk)`
+    + 2 dk tolerans. Yani 5dk/15dk ufuklu bildirimler kendi ufuklarında
+    (en geç 4×ufuk) değerlendirilir — 15dk sinyal artık 60dk bekletilmez —
+    ama 60dk ufuklu bir bildirim de 60dk'dan erken kapatılmaz.
+    2dk tolerans `_notify`'deki "ufuk doldu" tanımıyla AYNI (bkz.
+    `get_pending_monitoring_notifications` yorumu).
+    """
+    base = int(getattr(config, "MONITORING_OUTCOME_WINDOW_MINUTES", 60) or 60)
+    try:
+        horizon = int(horizon_minutes or 0)
+    except (TypeError, ValueError):
+        horizon = 0
+    if horizon <= 0:
+        return base
+    return max(horizon, min(base, horizon * 4)) + 2
+
+
 def _ticker_price(symbol: str) -> float | None:
     """Tazeligi DOGRULANMIS ticker fiyati; degilse None (bayat fiyat dondurmez)."""
     if not market:
@@ -829,6 +926,60 @@ def _rr_ratio(target_pct: float) -> float | None:
     if sl_pct <= 0:
         return None
     return float(target_pct) / sl_pct
+
+
+def _master_surge_block_reason(c: dict) -> str | None:
+    """Adayın Master Surge risk kapısı nedeniyle elenip elenmediğini döndürür.
+
+    2026-09-26 denetimi (bölüm 2.2): `evaluate_master_surge()` `block_reason`
+    üretiyor ve `passed=False` yapıyordu ama `_notify` /
+    `_unified_fast_notify_impl` bu alanlara HİÇ BAKMIYORDU → EXTREME_LONG
+    fonlamasında veya BTC panik döküşünde radar 100 puan üretse bile bildirim
+    gidiyor ve `auto_paper` pozisyon açabiliyordu.
+
+    Dönüş `None` → kapı yok (bildirim akışı devam eder). Dönüş metin → blok
+    nedeni; bildirim üretilmez, neden `_monitoring_state["surge_blocked_symbols"]`
+    içinde gözlenebilir olur ve `_build_notification` rozetine taşınır.
+
+    Kural: `block_reason` doluysa O, yoksa `passed is False` ise `gate`
+    nedeni (skor/4'lü teyit kapısı) blok sebebi sayılır.
+
+    Katman 1 (likidite) erken elemesi KAPSAM DIŞIDIR: fusion-only aday
+    üretiminde zaten `failed_layer == 1` ile eleniyor.
+
+    `MONITORING_MASTER_SURGE_GATE` (varsayılan AÇIK) bu kapıyı kapatabilir;
+    acil geri dönüş için, risk kapıları kapatılınca EXTREME_LONG/BTC panik
+    koruması da devre dışı kalır — bu yüzden `block_reason` yolu kapı
+    bayrağından BAĞIMSIZ olarak her zaman uygulanır.
+    """
+    surge = c.get("master_surge")
+    if not isinstance(surge, dict):
+        return None
+    if surge.get("failed_layer"):
+        # Katman erken elemesi: bu aday zaten liste üretiminde elendi.
+        return None
+    block = surge.get("block_reason")
+    if block:
+        return str(block)
+    if surge.get("passed") is False:
+        if not _master_surge_gate_enabled():
+            return None
+        return str(surge.get("gate") or "MASTER_SURGE_GATE")
+    return None
+
+
+def _master_surge_gate_enabled() -> bool:
+    """Master Surge skOR/4'lü-teyit kapısı karar yolunda uygulansın mı?
+
+    Acil geri dönüş anahtarı. `config.MONITORING_MASTER_SURGE_GATE` varsa o,
+    yoksa `MONITORING_MASTER_SURGE_GATE` env'i, yoksa AÇIK (varsayılan).
+    Kapı kapatılırsa EXTREME_LONG/BTC panik `block_reason` koruması da
+    devre dışı kalır — bu yüzden varsayılan açıktır.
+    """
+    if hasattr(config, "MONITORING_MASTER_SURGE_GATE"):
+        return bool(getattr(config, "MONITORING_MASTER_SURGE_GATE"))
+    raw = str(os.getenv("MONITORING_MASTER_SURGE_GATE", "true")).strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _rr_gate_blocks(price: float, target_pct: float) -> bool:
@@ -890,8 +1041,13 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     ml_prob = c.get("ml_hit_probability")
     ml_pct_str = f" | ML %{ml_prob * 100:.0f}" if ml_prob is not None else ""
     is_4way = bool(c.get("confluence_4way") or len(sources) >= 4)
+    # 2026-09-26 (bölüm 2.2): bloklanmış aday zaten bildirim üretmez; bu alan
+    # yalnızca geçmiş/rapor okunurken kapının neden çalıştığını gösterir.
+    _surge_block = _master_surge_block_reason(c)
     prefix_str = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
     title_prefix = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
+    if _surge_block:
+        prefix_str = title_prefix = f"⛔ RİSK KAPISI ({_surge_block}) · "
     message = (
         f"{prefix_str}{sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str} | "
         f"Anlık: {base_price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
@@ -910,6 +1066,7 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         "unified": bool(sources),
         "confluence_4way": is_4way,
         "master_surge": c.get("master_surge"),
+        "surge_block_reason": _surge_block,
         "tp1_scalp_pct": c.get("tp1_scalp_pct"),
         "tp2_runner_pct": c.get("tp2_runner_pct"),
         "target_pct": target,
@@ -1029,8 +1186,12 @@ async def _notify(candidates_list, settings) -> list:
     """
     if not settings.get("enabled", True):
         return []
-    # Tek eşik: aday kapısı HAM velocity_score üzerinden (M1/P0 — R2-01/R2-02/R3-01).
-    # Panel (0-100) yalnızca gösterim ölçeğidir; cap değişince kapı kaymaz.
+    # TEK EŞİK (2026-09-26, #8): `min_raw` artık `eff_min_score`'nin ters
+    # haritasıdır, yani ikisi AYNI kapıdır. İkisini birden uygulamak iki
+    # AYRI kapı üretiyordu (ham 1400 vs panel 71.5→ham 1730) ve 1400-1730
+    # bandını "görünür ama bildirilmez" yapıyordu. `min_raw` geriye dönük
+    # uyum ve ham ölçek gözlemi için korunur ama karar yalnız panel eşiğinden
+    # verilir; radar adayı için ikisi zaten aynı sayıya türer.
     min_raw = _effective_min_raw_score(settings)
     eff_min_score = _effective_min_score(settings)
     quiet = _in_quiet_hours(settings)
@@ -1066,11 +1227,13 @@ async def _notify(candidates_list, settings) -> list:
         unified_pass = bool(c.get("unified_pass"))
         # normalize_score'a geçilir (2026-09-04 teşhis). upside_rank yalnızca
         # SIRALAMA anahtarıdır (dk-başı yükseliş × kalite × mikro-yapı).
-        raw = float(c.get("velocity_score", 0) or 0)
-        score = (float(c.get("unified_score") or 0) if unified_pass
-                 else normalize_score(raw))
-        target = float(c.get("target_pct") or 2.0)
-        min_target = float(settings.get("min_target_pct") or 0)
+        # #9 (2026-09-26): `_num` koruması — tek bozuk satır turu düşürmez.
+        raw = _num(c.get("velocity_score", 0), 0.0) or 0.0
+        unified_score = _num(c.get("unified_score"), 0.0) or 0.0
+        score = unified_score if unified_pass else normalize_score(raw)
+        target = _num(c.get("target_pct"), 2.0)
+        target = 2.0 if target is None else target
+        min_target = _num(settings.get("min_target_pct"), 0.0) or 0.0
         # EŞİK KONTROLÜ (2026-09-21): Kullanıcının belirlediği panel eşiği (eff_min_score)
         # tüm adaylar için bağlayıcıdır. Skor altındaki hiçbir zayıf fırsat bildirilmez.
         # Normal radar adayları ayrıca ham skor kapısını (min_raw) da geçmelidir.
@@ -1084,13 +1247,29 @@ async def _notify(candidates_list, settings) -> list:
                 continue
         if min_target > 0 and target < min_target:
             continue
+        # MASTER SURGE RİSK KAPISI (2026-09-26 denetimi, bölüm 2.2): türev
+        # (EXTREME_LONG fonlaması) ve BTC panik döküşü kapıları karar yoluna
+        # BAĞLANDI. Bloklanan aday bildirim üretmez, otonom paper denemesine
+        # girmez; neden rozet olarak taşınır (panel/rapor görebilsin).
+        _surge_block = _master_surge_block_reason(c)
+        if _surge_block:
+            _monitoring_state["surge_blocked"] = int(
+                _monitoring_state.get("surge_blocked", 0)) + 1
+            # Neden rozeti: bildirim ÜRETİLMEZ ama panel/rapor blok nedenini
+            # görebilsin (sessiz eleme olmaz). Sınırlı tutulur (GÖREV 5 deseni).
+            _sb = _monitoring_state.setdefault("surge_blocked_symbols", {})
+            _sb[sym] = {"reason": _surge_block, "at": now}
+            if len(_sb) > 250:
+                for k in sorted(_sb, key=lambda s: _sb[s].get("at", 0))[:len(_sb) - 250]:
+                    _sb.pop(k, None)
+            continue
 
         sources = c.get("sources") or c.get("unified_sources")
         # Bu sembol icin ufku dolmamis (sonucu bekleyen) bildirim var mi kontrol et.
         # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
         # ayni kayit guncellenir. (monitoring_notifications'ta status kolonu yok;
         # bekliyor tanimi okuma tarafindaki window_closed ile ayni olmalidir.)
-        horizon_min = int(c.get("horizon_minutes", 5) or 5)
+        horizon_min = int(_num(c.get("horizon_minutes", 5), 5) or 5)
         existing_pending = pending_by_symbol.get(sym)
         if existing_pending and (
             now - float(existing_pending.get("detected_at") or 0)
@@ -1159,10 +1338,10 @@ async def _notify(candidates_list, settings) -> list:
         # bu "yeni sinyal" değil, aynı sinyalin tekrarıdır (donmuş fiyat /
         # likit olmayan sembol). Taban fiyat aynı kuraldan: taze ticker,
         # yoksa adayın kendi fiyatı (D-05 ile aynı tek taban).
-        cand_px = float(c.get("price") or 0)
+        cand_px = _num(c.get("price"), 0.0) or 0.0
         tick_px = _ticker_price(sym)
         base_px = tick_px if tick_px else cand_px
-        last_px = float(_monitoring_state["notified_prices"].get(sym) or 0)
+        last_px = _num(_monitoring_state["notified_prices"].get(sym), 0.0) or 0.0
         if last_px > 0 and base_px > 0 and (
                 abs(base_px - last_px) / last_px * 100 < MONITORING_REFIRE_MIN_MOVE_PCT):
             _monitoring_state["refire_blocked"] = int(_monitoring_state.get("refire_blocked", 0)) + 1
@@ -1189,19 +1368,24 @@ async def _notify(candidates_list, settings) -> list:
         notified.append(notif)
         _monitoring_state["notified_symbols"][sym] = now_mono
         _monitoring_state.setdefault("notified_scores", {})[sym] = score
+        _prune_notified_scores()
         if base_px > 0:
             _monitoring_state["notified_prices"][sym] = base_px
         _monitoring_state["candidate_streak"].pop(sym, None)
-        expected_price = float(notif.get("expected_price") or 0)
-        horizon_minutes = int(c.get("horizon_minutes") or 5)
-        entry_price = float(notif.get("price") or base_px or 0)
+        expected_price = _num(notif.get("expected_price"), 0.0) or 0.0
+        horizon_minutes = int(_num(c.get("horizon_minutes"), 5) or 5)
+        entry_price = _num(notif.get("price"), 0.0) or base_px or 0.0
         # `target_pct` pending'e YAZILMAZ: hedef EMA'sı bu yoldan beslenmez
         # (gerçekleşen MFE ölçülemiyor) — 2026-09-17 denetimi.
         if expected_price > 0:
             _monitoring_state["pending_targets"][sym] = {
                 "expected": expected_price,
                 "entry_price": entry_price,
-                "sl_pct": float(getattr(config, "AUTO_PAPER_SL_PCT", 1.5)),
+                # 2026-09-26 (#7 sınıfı): config'te `AUTO_PAPER_SL_PCT` YOK;
+                # yalnız `AUTO_PAPER_SL_PCT_DEFAULT` var. `getattr(config,
+                # "AUTO_PAPER_SL_PCT", 1.5)` her zaman 1.5 dönüyordu ve
+                # env'deki `AUTO_PAPER_SL_PCT` sessizce yok sayılıyordu.
+                "sl_pct": float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5)),
                 "horizon_minutes": horizon_minutes,
                 "set_at": now,
             }
@@ -1355,6 +1539,28 @@ async def _deliver_scan_notifications(notified: list) -> None:
 _unified_fast_last: dict[str, float] = {}   # symbol → son hızlı-yol zamanı (monotonik)
 
 
+def _unified_fast_prune(ttl_sec: float | None = None) -> None:
+    """`_unified_fast_last` haritasını TTL + boyut sınırıyla budar.
+
+    2026-09-26 denetimi (bulgu #10): harita ne persist ediliyor ne restore
+    ediliyor ne de budanıyordu — restart sonrası tüm sembollerde cooldown
+    sıfırdan başlıyordu ve uzun süreli çalışmada sözlük sınırsız büyüyordu.
+    Aynı desen `notified_symbols`/`notified_prices` ile (500/250) kullanılır.
+    """
+    if not _unified_fast_last:
+        return
+    ttl = float(ttl_sec if ttl_sec is not None
+                else getattr(config, "UNIFIED_FAST_COOLDOWN_SEC", 1800))
+    now_mono = time.monotonic()
+    if ttl > 0:
+        for sym in [s for s, ts in _unified_fast_last.items()
+                    if (now_mono - float(ts)) > (ttl * 2 + 300.0)]:
+            _unified_fast_last.pop(sym, None)
+    if len(_unified_fast_last) > 500:
+        for sym in sorted(_unified_fast_last, key=_unified_fast_last.get)[:-250]:
+            _unified_fast_last.pop(sym, None)
+
+
 async def unified_fast_notify(symbol: str, kind: str, score: float) -> dict | None:
     """MACD tetiklemesinden birleşik TEK bildirim üret (veya sessizce atla).
 
@@ -1385,6 +1591,15 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     # Çapraz tekilleştirme: radar/yükseliş yakın zamanda bildirdiyse YENİ push yok.
     if unified_signals.recently_notified(sym, ttl_sec=cooldown):
         return None
+    # RADAR COOLDOWN'U DA UYGULA (2026-09-26 denetimi, bulgu #10): buraya kadar
+    # `notified_symbols`'a YAZILIYOR ama OKUNMUYORDU → iki ayrı zaman dünyası
+    # vardı ve radar ile hızlı yol arasında 5-30 dk bandında mükerrer bildirim
+    # üretilebiliyordu. `_notify` ile AYNI cooldown kuralı: `NOTIFY_COOLDOWN_SEC`
+    # içinde radar bu sembolü bildirdiyse hızlı yol da susar.
+    _last_radar_mono = _monitoring_state["notified_symbols"].get(sym)
+    if _last_radar_mono is not None and now_mono - _last_radar_mono < NOTIFY_COOLDOWN_SEC:
+        return None
+    _unified_fast_prune(cooldown)
     # Kullanıcı bildirimleri kapalıysa veya sessiz saatse radar gibi davran:
     # kayıt yapılmaz (erteleme kuyruğu radar turunun işidir; burada atlanır).
     settings = await get_user_notification_settings()
@@ -1418,6 +1633,13 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     min_target = float(settings.get("min_target_pct") or 0)
     if min_target > 0 and float(candidate.get("target_pct") or 0) < min_target:
         return None
+    # MASTER SURGE RİSK KAPISI (2026-09-26 denetimi, bölüm 2.2): hızlı yol da
+    # radar ile AYNI kapıdan geçer. EXTREME_LONG fonlaması veya BTC panik
+    # döküşünde hızlı yol push atmaz, otonom paper açmaz.
+    _surge_block = _master_surge_block_reason(candidate)
+    if _surge_block:
+        logger.info("BİRLEŞİK SİNYAL bastırıldı: %s master_surge kapısı=%s", sym, _surge_block)
+        return None
 
 
     # Radar kuralı D-05: tazeliği doğrulanmış ticker yoksa adayın fiyatı.
@@ -1438,17 +1660,26 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     _unified_fast_last[sym] = now_mono
     _monitoring_state["notified_symbols"][sym] = now_mono
     _monitoring_state.setdefault("notified_scores", {})[sym] = float(notif.get("score") or 0)
-    base_px = float(notif.get("price") or 0)
+    _prune_notified_scores()
+    base_px = _num(notif.get("price"), 0.0) or 0.0
     if base_px > 0:
         _monitoring_state["notified_prices"][sym] = base_px
-    expected = float(notif.get("expected_price") or 0)
-    if expected > 0:
+    # #4 (2026-09-26): "HEDEF İLK GİRİŞTEN ÇAPALANIR" kuralı radar yolunda
+    # (`_notify`) mevcut kaydın `price`/`entry_price` değerini KORUYARAK
+    # uygulanıyordu; hızlı yol ise kaydı EZİYORDU. Artık mevcut `pending_targets`
+    # kaydının giriş fiyatı korunur ve yalnız hedef yüzdesi tazelenir.
+    _existing_pending = _monitoring_state["pending_targets"].get(sym) or {}
+    _entry_px = (_num(_existing_pending.get("entry_price"), 0.0)
+                 or _num(_existing_pending.get("price"), 0.0) or 0.0) or base_px
+    _target_pct = _num(candidate.get("target_pct"), 0.0) or 0.0
+    _expected = _entry_px * (1 + _target_pct / 100) if _entry_px > 0 else 0.0
+    if _expected > 0:
         _monitoring_state["pending_targets"][sym] = {
-            "expected": expected,
-            "entry_price": base_px,
-            "sl_pct": float(getattr(config, "AUTO_PAPER_SL_PCT", 1.5)),
+            "expected": _expected,
+            "entry_price": _entry_px,
+            "sl_pct": float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5)),
             "horizon_minutes": int(candidate.get("horizon_minutes") or 5),
-            "set_at": time.time(),
+            "set_at": float(_existing_pending.get("set_at") or time.time()),
         }
     unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
     # Kalıcı kayıt (rapor/günlük takip sayfası buradan okur).
@@ -1679,10 +1910,15 @@ async def _rising_deliver(notified: list) -> None:
                 notif["push_success"] = ok
                 if ok:
                     notif["sent_via_push"] = True
-                    # Terfi push'ları da son bildirim skorunu tazelesin —
-                    # yoksa aynı güçlü sinyal tekrar tekrar "terfi" sayılır.
-                    unified_signals.note_notified(symbol=notif.get("symbol") or "",
-                                                  score=float(notif.get("score") or 0))
+                # #71 (2026-09-26): `note_notified` push BAŞARISIZ OLSA BİLE
+                # yazılır. Radar yolu (`:1294-1298`) bu davranışı zaten doğru
+                # uyguluyor ve gerekçesi geçerli: bildirim WS ile yayınlanır,
+                # geçmişe kaydedilir ve otonom paper pozisyon açabilir; yani
+                # teslimden bağımsız olarak "bu sembol için sinyal işlendi"
+                # demektir. Push başarısızlığında yazılmadığı için aynı sembol
+                # tekrar tekrar push edilebiliyordu.
+                unified_signals.note_notified(symbol=notif.get("symbol") or "",
+                                              score=float(notif.get("score") or 0))
                 alert_id = notif.get("alert_id")
                 if alert_id:
                     try:
@@ -2006,11 +2242,11 @@ async def _check_pending_targets():
     if not pending:
         return
     now = time.time()
-    max_eval_minutes = int(getattr(config, "MONITORING_OUTCOME_WINDOW_MINUTES", 60))
     resolved = []
     for sym, info in list(pending.items()):
-        max_sec = max_eval_minutes * 60
-        set_at = float(info.get("set_at", 0))
+        # #19: pencere ufuk-duyarlı (kısa ufuk 60 dk beklemek zorunda değil).
+        max_sec = _outcome_window_minutes(info.get("horizon_minutes")) * 60
+        set_at = _num(info.get("set_at"), 0.0) or 0.0
         expired = (now - set_at) >= max_sec
         price = None
         # D-05: bayat ticker ile yanlis "hedefe ulasildi" uretme.
@@ -2018,9 +2254,11 @@ async def _check_pending_targets():
             price = _ticker_price(sym)
         except Exception:
             price = None
-        expected = float(info.get("expected") or 0)
-        entry_price = float(info.get("entry_price") or 0)
-        sl_pct = float(info.get("sl_pct") or getattr(config, "AUTO_PAPER_SL_PCT", 1.5))
+        expected = _num(info.get("expected"), 0.0) or 0.0
+        entry_price = _num(info.get("entry_price"), 0.0) or 0.0
+        sl_pct = _num(info.get("sl_pct"), None)
+        if sl_pct is None:
+            sl_pct = float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5))
         sl_price = entry_price * (1.0 - sl_pct / 100.0) if entry_price > 0 else 0
 
         hit = price is not None and price > 0 and expected > 0 and price >= expected
@@ -2193,17 +2431,19 @@ async def _run_scan() -> dict:
     _monitoring_state["risk_off_unknown"] = risk_off_unknown
 
     settings = await get_user_notification_settings()
-    # M1/P0 (R2-01/R2-02/R3-01): aday kapısı HAM velocity_score ile karşılaştırılır —
-    # panel skoru yalnızca GÖSTERİM ölçeğidir. Cap değişse bile kapı sessizce kaymaz.
+    # TEK EŞİK (2026-09-26, #8): aday kapısı panel eşiğinin TERS haritasıyla
+    # türetilen HAM eşiktir (`_effective_min_raw_score` = `_raw_from_panel(
+    # _effective_min_score)`). Eskiden liste filtresi sabit ham 1400'ü,
+    # bildirim ise panel 71.5'i (→ ham 1730) uyguluyordu; 1400-1730 bandı
+    # "listede var, bildirilmiyor" bant olarak yaşıyordu. Artık İKİSİ DE aynı
+    # sayıya türer. `_num` koruması: bozuk satır tüm turu düşürmez (#9).
     effective_min_raw_score = _effective_min_raw_score(settings)
     effective_min_score = _effective_min_score(settings)
-    # Admin eşiği altındaki adaylar listede GÖSTERILMEZ (2026-09-04 kullanıcı
-    # kararı; RISK_OFF çarpanı kaldırıldı — _effective_min_raw_score aynen uygulanır).
-    # _notify aynı eşiği zaten uyguladığından bildirim davranışı değişmez; yalnız
-    # radar listesi temiz kalır.
+    # Admin eşiği altındaki adaylar listede GÖSTERİLMEZ (2026-09-04 kullanıcı
+    # kararı; RISK_OFF çarpanı kaldırıldı). _notify aynı eşiği uygular.
     candidates_list = sorted(
         (c for c in filtered_candidates.values()
-         if float(c.get("velocity_score", 0) or 0) >= effective_min_raw_score),
+         if (_num(c.get("velocity_score", 0), 0.0) or 0.0) >= effective_min_raw_score),
         key=lambda x: x.get("upside_rank", 0), reverse=True)
     watchlist_list = sorted(all_watchlist.values(), key=lambda x: x.get("upside_rank", 0), reverse=True)
 
@@ -2614,8 +2854,9 @@ async def report_notifications(
         mfe_pct = float(mfe) if mfe is not None else None
         touched = row.get("touched_target")
         candidate_status = str(row.get("candidate_status") or "")
-        horizon = int(row.get("horizon_minutes") or 0)
-        max_outcome_min = int(getattr(config, "MONITORING_OUTCOME_WINDOW_MINUTES", 60))
+        horizon = int(_num(row.get("horizon_minutes"), 0) or 0)
+        # #19: değerlendirme penceresi ufuk-duyarlı (radar ile AYNI kural).
+        max_outcome_min = _outcome_window_minutes(horizon)
         window_closed = bool(detected_at and (now - detected_at) >= max_outcome_min * 60)
         # M1/P0 (R3-04): TAMAMEN BAŞARILI YALNIZCA hedefe GERÇEKTEN dokunulduysa.
         if candidate_status == "evaluated" and mfe_pct is not None:
@@ -3033,6 +3274,8 @@ async def reset_monitoring_notifications(request: Request):
         _monitoring_state["candidate_streak"].clear()
         _monitoring_state.get("notified_scores", {}).clear()  # MACD refire gate temizle
         _monitoring_state.get("notified_prices", {}).clear()  # fiyat değişim gate temizle
+        _unified_fast_last.clear()        # #10: hızlı-yol cooldown haritası
+        _monitoring_state.get("surge_blocked_symbols", {}).clear()  # Master Surge rozeti
         _deferred_push.clear()
         await _persist_runtime_state()
     await log_user_action(None, None, "monitoring", "MONITORING_NOTIFICATIONS_RESET",

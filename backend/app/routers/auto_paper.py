@@ -557,7 +557,15 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
                 return await _update_existing_trade(open_trade, notification, current_price)
             return None
         if status == "already_traded":
-            logger.info("auto_paper %s: bildirim %s zaten işlendi — açılmadı", symbol, notification_id)
+            # R3-09 sonrası düzeltme: burada `notification_id` ADI KULLANILMAZDI —
+            # R3-09 `notification_id_val` (bigint'e yazılabilir) ve
+            # `notification_key` (TEXT, string id) olarak ikiye ayırdı, bu satır
+            # eski adda kaldı → dal çalışınca NameError, sessizce yutuluyordu.
+            # Log, DB'ye yazılan değeri (`notification_id_val`) ve string id'yi
+            # (`notification_key`) birlikte gösterir: string id'de sadece key
+            # doludur, tam sayı id'de sadece notification_id_val.
+            logger.info("auto_paper %s: bildirim id=%s key=%s zaten işlendi — açılmadı",
+                        symbol, notification_id_val, notification_key)
             return None
         if status == "max_open":
             # Advisory-lock'lu op içindeki ikinci savunma: arada başka tarama
@@ -705,10 +713,43 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     take_profit = float(trade["take_profit"]) if trade.get("take_profit") else None
     quantity = float(trade["quantity"])
     commission_pct = config.COMMISSION_PCT
+    # D-01 (2026-09-26 denetimi): kâr kilidi stop'u HER ZAMAN orijinal
+    # stop_loss'tan daha yukarıdadır; bu yüzden `stop_loss` kontrolü kâr
+    # kilidi kontrolünden ÖNCE çalışırsa, kâr kilidi aktifken daha düşük
+    # fiyattan kapanılır ve kâr kilidi fiilen devre dışı kalır. Etkin stop
+    # = max(stop_loss, breakeven_stop) olmalı; bu değer aşağıdaki SL
+    # kontrolünde VE (breakeven/trailing bloklarındaki) kâr koruma
+    # kontrolünde tek kaynak olarak kullanılır.
+    _breakeven_stop_db = float(trade.get("breakeven_stop") or 0)
+    _breakeven_activated_db = bool(trade.get("breakeven_activated", False))
+    effective_stop_loss = stop_loss
+    if _breakeven_activated_db and _breakeven_stop_db > 0:
+        effective_stop_loss = max(stop_loss, _breakeven_stop_db) if stop_loss is not None else _breakeven_stop_db
+    elif _breakeven_stop_db > 0:
+        # Breakeven fiyatı yazılmış ama bayrak henüz set edilmemişse de
+        # (DB yazma sırası/yarış durumu) kâr koruması geçerlidir.
+        effective_stop_loss = max(stop_loss, _breakeven_stop_db) if stop_loss is not None else _breakeven_stop_db
 
     # Güncel fiyat
     ticker = market.get_ticker(symbol)
     current_price = float(ticker.get("last_price") or 0) if ticker else 0
+
+    # D-02 (2026-09-26 denetimi): TAZELİK KAPISI TÜM ÇIKIŞ YOLLARININ
+    # ÖNÜNE alınır. Bayat/eksik ticker fiyatıyla kapanmak (aşağıdaki
+    # max_hold ve symbol_deactivated yolları) gerçekleşmeyen bir fill fiyatı
+    # yazar. Aynı desen SL/TP yollarında zaten uygulanıyordu; bu iki erken
+    # çıkışta eksikti.
+    # NOT: `ticker` hiç yoksa veya timestamp boşsa fiyat KULLANILAMAZ; ancak
+    # bu turda hiçbir kâr/zarar muhasebesi yapmadan "veri yok" diye bir
+    # sonraki turda yeniden denemek yerine pozisyon dokunulmadan bırakılır
+    # (süre/sembol çıkışı da aynı turda ertelenir — en kötü halde bir sonraki
+    # turlarda taze fiyatla kapanır).
+    ticker_ts = float((ticker or {}).get("timestamp") or 0)
+    price_is_fresh = bool(current_price > 0 and ticker_ts
+                          and (now * 1000 - ticker_ts) <= config.MAX_TICKER_AGE_SEC * 1000)
+    if current_price > 0 and not price_is_fresh:
+        logger.warning("auto_paper %s: ticker BAYAT (yaş=%.1fs > %ss) — bu tur kâr/zarar muhasebesi yapılmıyor",
+                       symbol, (now * 1000 - ticker_ts) / 1000.0, config.MAX_TICKER_AGE_SEC)
 
     # 1. SÜRE KONTROLÜ (2026-09-21 Erkan kararı: Maksimum 60 dk):
     # Fiyat bayat veya ticker boş olsa bile 60 dk dolmuşsa pozisyon kâr/zarara bakılmaksızın kapatılır.
@@ -716,6 +757,13 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     hold_minutes = (now - entry_time) / 60.0 if entry_time > 0 else 0.0
     max_hold_minutes = float((settings or {}).get("max_hold_minutes", getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 60.0)))
     if max_hold_minutes > 0 and hold_minutes >= max_hold_minutes:
+        # D-02: bayat/eksik fiyatla KAPANMA YAPILMAZ. Pozisyon bir sonraki
+        # tazelik turunda kapatılır (gerekirse peak_price fallback'i ile
+        # bilinçli olarak).
+        if not price_is_fresh:
+            logger.info("auto_paper %s: max_hold doldu ama fiyat bayat — kapanış ertelendi (%.1f dk)",
+                        symbol, hold_minutes)
+            return
         exit_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
         logger.info("auto_paper %s: MAKSİMUM SÜRE DOLDU (%.1f dk >= %.1f dk) — pozisyon kapatılıyor (çıkış=%.6f)",
                     symbol, hold_minutes, max_hold_minutes, exit_price)
@@ -735,18 +783,18 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
             is_dropped = True
 
     if is_passive or is_dropped:
+        # D-02: aynı tazelik kuralı — bayat fiyatla kapatma yapılmaz.
+        if not price_is_fresh:
+            logger.info("auto_paper %s: sembol pasif ama fiyat bayat — kapanış ertelendi (passive=%s, dropped=%s)",
+                        symbol, is_passive, is_dropped)
+            return
         exit_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
         logger.info("auto_paper %s: SEMBOL PASİFE ALINMIŞ (passive=%s, dropped=%s) — açık pozisyon kapatılıyor (çıkış=%.6f)",
                     symbol, is_passive, is_dropped, exit_price)
         await _close_trade(trade_id, symbol, exit_price, now, "symbol_deactivated")
         return
 
-    if current_price <= 0:
-        return
-    # Bayat fiyatla TP/SL değerlendirmesi yanlış fill fiyatı üretir; analyzer
-    # yolundaki MAX_TICKER_AGE_SEC tazelik kapısı burada da uygulanır.
-    ticker_ts = float((ticker or {}).get("timestamp") or 0)
-    if not ticker_ts or now * 1000 - ticker_ts > config.MAX_TICKER_AGE_SEC * 1000:
+    if not price_is_fresh:
         return
 
     # B1: TP is PRIMARY exit — evaluated before any trailing/breakeven logic.
@@ -762,8 +810,12 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         await database.update_auto_paper_peak(trade_id, peak_price)
 
     # SL kontrolü — D-08: dolum tetik fiyatından (gap-through: max(price, sl)).
-    if stop_loss is not None and current_price <= stop_loss:
-        await _close_trade(trade_id, symbol, max(current_price, stop_loss), now, "stop_loss")
+    # D-01 (2026-09-26): burada ARTık `stop_loss` değil `effective_stop_loss`
+    # kullanılır — kâr kilidi aktifken orijinal stop'tan daha yüksekte
+    # kapanış olur (aşağıdaki breakeven korumasıyla aynı mantık).
+    if effective_stop_loss is not None and current_price <= effective_stop_loss:
+        await _close_trade(trade_id, symbol, max(current_price, effective_stop_loss), now,
+                           "breakeven_stop" if (effective_stop_loss != stop_loss) else "stop_loss")
         return
 
     # Kâr ve TP oranları

@@ -1,11 +1,13 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, apiRequest } from "../lib/api";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { toMs } from "../lib/format";
+import { inspectTtsSettings, TTS_PERSIST_WARNING } from "../lib/ttsSettings";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 import MarkdownMessage from "../components/MarkdownMessage";
 import SymbolLink from "../components/SymbolLink";
-import { streamChat } from "../lib/streamChat";
+import { streamChat, numOrNull } from "../lib/streamChat";
 import { useLiveMessages } from "../lib/liveSocket";
 import Link from "next/link";
 import { Badge, Button, Card } from "../components/ui";
@@ -287,6 +289,8 @@ function ChatPageInner() {
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const [ttsRate, setTtsRate] = useState(0);
   const [ttsPitch, setTtsPitch] = useState(0);
+  // Backend TTS ayarlarını saklıyor mu? (null = henüz bilinmiyor)
+  const [ttsPersistent, setTtsPersistent] = useState<boolean | null>(null);
   const chatSettingsReady = useRef(false);
 
   useEffect(() => {
@@ -480,21 +484,29 @@ function ChatPageInner() {
   };
 
   useEffect(() => {
+    // `getJSON` res.ok kontrol eder ve 4xx/5xx gövdesini "veri" diye yorumlamaz.
+    // Önceki desen (`r.json()` + `.catch(() => undefined)`) 401/500'de boş bir
+    // liste gösteriyor, kullanıcı nedeni bilmiyordu.
     Promise.all([
-      apiRequest(`${API_BASE}/api/llm/config`).then((r) => r.json()),
-      apiRequest(`${API_BASE}/api/llm/chat-settings`).then((r) => r.json()),
+      getJSON<{ skills?: Skill[] }>("/api/llm/config"),
+      getJSON<Record<string, unknown>>("/api/llm/chat-settings"),
     ])
       .then(([data, settings]) => {
         setSkills(data.skills || []);
         if (Array.isArray(settings.active_tools))
-          setActiveTools(Array.from(new Set([...ALL_TOOLS, ...settings.active_tools])));
+          setActiveTools(Array.from(new Set([...ALL_TOOLS, ...settings.active_tools as string[]])));
         if (Array.isArray(settings.active_skills))
-          setActiveSkills(settings.active_skills);
-        if (Number.isFinite(settings.tts_rate)) setTtsRate(settings.tts_rate);
-        if (Number.isFinite(settings.tts_pitch)) setTtsPitch(settings.tts_pitch);
+          setActiveSkills(settings.active_skills as string[]);
+        // Backend TTS alanlarını saklıyor mu? Saklamıyorsa varsayılanı (0)
+        // kullanıcıya YANLIŞ bir kalıcı ayar gibi göstermemek için sabit tutuyoruz
+        // ve uyarıyı panelden veriyoruz (bkz. `lib/ttsSettings`).
+        const tts = inspectTtsSettings(settings);
+        setTtsPersistent(tts.supported);
+        if (tts.rate !== null) setTtsRate(tts.rate);
+        if (tts.pitch !== null) setTtsPitch(tts.pitch);
         chatSettingsReady.current = true;
       })
-      .catch(() => undefined);
+      .catch(() => { chatSettingsReady.current = true; });
   }, []);
 
   useEffect(() => {
@@ -514,40 +526,35 @@ function ChatPageInner() {
     return () => window.clearTimeout(timer);
   }, [activeTools, activeSkills, ttsRate, ttsPitch]);
 
-  useEffect(() => {
-    const load = () => {
-      if (document.hidden) return;
-      apiRequest(`${API_BASE}/api/llm/tool-logs?limit=24`)
-        .then((r) => r.json())
-        .then((data) => setLogs(data.logs || []))
-        .catch(() => undefined);
-    };
-    load();
-    const timer = window.setInterval(load, 3000);
-    return () => window.clearInterval(timer);
+  // Sekme gizliyken yapılan yoklama anlamsız (veri zaten görünmüyor) ve pil/CPU
+  // israfıdır → repo standardı `useVisibleInterval`. İlk yükleme ayrıca
+  // effect ile tetiklenir (hook yalnız periyodik döngüyü kurar).
+  const loadToolLogs = useCallback(() => {
+    getJSON<{ logs?: ToolLog[] }>("/api/llm/tool-logs?limit=24")
+      .then((data) => setLogs(data.logs || []))
+      .catch(() => undefined);
   }, []);
 
-  useEffect(() => {
-    const load = () => {
-      if (document.hidden) return;
-      Promise.all([
-        apiRequest(`${API_BASE}/api/llm/evaluations?limit=8`).then((r) => r.json()),
-        apiRequest(`${API_BASE}/api/llm/instincts?status=active&limit=6`).then((r) =>
-          r.json(),
-        ),
-        apiRequest(`${API_BASE}/api/llm/agent-traces?limit=8`).then((r) => r.json()),
-      ])
-        .then(([evaluationData, instinctData, traceData]) => {
-          setEvaluations(evaluationData.evaluations || []);
-          setInstincts(instinctData.instincts || []);
-          setTraces(traceData.traces || []);
-        })
-        .catch(() => undefined);
-    };
-    load();
-    const timer = window.setInterval(load, 5000);
-    return () => window.clearInterval(timer);
+  const loadSidePanels = useCallback(() => {
+    Promise.all([
+      getJSON<{ evaluations?: AgentEvaluation[] }>("/api/llm/evaluations?limit=8"),
+      getJSON<{ instincts?: unknown[] }>("/api/llm/instincts?status=active&limit=6"),
+      getJSON<{ traces?: AgentTrace[] }>("/api/llm/agent-traces?limit=8"),
+    ])
+      .then(([evaluationData, instinctData, traceData]) => {
+        setEvaluations(evaluationData.evaluations || []);
+        setInstincts(instinctData.instincts || []);
+        setTraces(traceData.traces || []);
+      })
+      // Promise.all: biri reddederse diğerleri de düşer. Bileşenler null-korumalı
+      // olduğu için mevcut veri korunur; en kötü ihtimalle liste eski kalır.
+      .catch(() => undefined);
   }, []);
+
+  useEffect(() => { loadToolLogs(); }, [loadToolLogs]);
+  useVisibleInterval(loadToolLogs, 3000);
+  useEffect(() => { loadSidePanels(); }, [loadSidePanels]);
+  useVisibleInterval(loadSidePanels, 5000);
 
   useEffect(() => {
     const checkLastResponse = () => {
@@ -655,20 +662,28 @@ function ChatPageInner() {
         {
           signal: controller.signal,
           onEvent: ({ event, data }) => {
+            // `data` artık `any` değil: `streamChat` olayı şemaya göre
+            // daraltıyor (bkz. `lib/streamChat.ts`, `StreamDataMap`). Backend
+            // alan adını değiştirirse buradaki `as` daraltması derleme hatası
+            // verir; `numOrNull` de eksik/NaN alanı `null` yapar (UI "—").
             if (event === "watch_started") {
-              setLivePriceWatch({ symbol: String(data.symbol || ""), status: "connecting" });
+              setLivePriceWatch({ symbol: String((data as { symbol?: unknown }).symbol || ""), status: "connecting" });
             } else if (event === "price") {
+              const p = data as {
+                symbol?: unknown; price?: unknown; start_price?: unknown;
+                change_pct?: unknown; high?: unknown; low?: unknown; samples?: unknown;
+              };
               setLivePriceWatch({
-                symbol: String(data.symbol || ""),
-                price: Number(data.price),
-                startPrice: Number(data.start_price),
-                changePct: Number(data.change_pct),
-                high: Number(data.high),
-                low: Number(data.low),
-                samples: Number(data.samples),
+                symbol: String(p.symbol || ""),
+                price: numOrNull(p.price) ?? 0,
+                startPrice: numOrNull(p.start_price) ?? 0,
+                changePct: numOrNull(p.change_pct) ?? 0,
+                high: numOrNull(p.high) ?? 0,
+                low: numOrNull(p.low) ?? 0,
+                samples: numOrNull(p.samples) ?? 0,
                 status: "live",
               });
-            } else if (event === "done" && data.watch_completed) {
+            } else if (event === "done" && (data as { watch_completed?: unknown }).watch_completed) {
               setLivePriceWatch((current) => current ? { ...current, status: "completed" } : current);
             }
           },
@@ -1209,6 +1224,11 @@ function ChatPageInner() {
           </button>
 
           <div id="chat-controls-body" className="chat-controls-body">
+            {ttsPersistent === false && (
+              <p role="status" className="mb-2 rounded-lg border border-yellow-400/40 bg-yellow-400/10 px-2.5 py-1.5 text-[10px] leading-snug text-yellow-300">
+                ⚠ {TTS_PERSIST_WARNING}
+              </p>
+            )}
             <div className="chat-log-panel">
               <div className="flex items-center justify-between mb-2">
                 <p className="eyebrow">CANLI ETKİNLİK AKIŞI</p>

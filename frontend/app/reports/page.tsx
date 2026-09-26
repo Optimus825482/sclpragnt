@@ -1,21 +1,32 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, apiRequest } from "../lib/api";
+import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
-import { formatSignedTL, formatTL, toMs, localDateInput } from "../lib/format";
+import {
+  formatSignedTL,
+  formatTL,
+  formatNumber2 as num,
+  formatRatioPct as pct,
+  fmtMinute as fmtDt,
+  fmtClockTime as fmtClock,
+  localDateInput,
+  toMs,
+} from "../lib/format";
+
+// NOT (denetim #48): `num` / `pct` / `fmtDt` artık `lib/format.ts`'ten geliyor.
+// Bu sayfa kendi kopyalarını taşıyordu ve `fmtDt`, `format.ts`'teki
+// `fmtDateTime`'dan farklı çıktı veriyordu (saniye/çözünürlük farkı).
 
 const money = (v?: number | null) => formatSignedTL(v);
 const plainMoney = (v?: number | null) => formatTL(v);
 
-const num = (v?: number | null) => (v == null || !Number.isFinite(v) ? "—" : String(Number(v).toFixed(2)));
-const pct = (v?: number | null, digits = 1) => (v == null || !Number.isFinite(v) ? "—" : `%${(Number(v) * 100).toFixed(digits)}`);
-const fmtDt = (ts: number | null) => {
-  if (!ts) return "—";
-  return new Date(toMs(ts)).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-};
 const rl = (v: number | null | undefined) => (v == null ? 0 : v);
+
+/** `Promise.allSettled` reddi → kısa, insan-okunur neden (`getJSON` mesajını taşır). */
+const reasonOf = (reason: unknown): string =>
+  reason instanceof Error ? reason.message : "bilinmeyen hata";
 
 const STRATEGY_META: Record<string, string> = {
   VELOCITY: "Hız Avcısı",
@@ -123,24 +134,34 @@ function OverviewTab({ day }: { day?: string }) {
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    try {
-      const dayParam = day ? (day === "all" ? "?day=all" : `?day=${encodeURIComponent(day)}`) : "";
-      const dayNotif = day ? `&day=${encodeURIComponent(day)}` : "";
-      const [ovRes, ntRes, apRes] = await Promise.all([
-        apiRequest(`${API_BASE}/api/reports/overview${dayParam}`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/reports/notifications?limit=500${dayNotif}`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/auto-paper/stats${dayParam}`, { cache: "no-store" }),
-      ]);
-      const [ov, nt, ap] = await Promise.all([ovRes.json(), ntRes.json(), apRes.json()]);
-      if (ovRes.ok) setOverview(ov);
-      if (ntRes.ok) { setNotifications(nt.notifications || []); setBreakdown(nt.breakdown || null); setOverall(nt.overall || null); }
-      if (apRes.ok) setAutoPaperStats(ap.stats || null);
-      if (!ovRes.ok) setError(ov.detail || "Özet verisi alınamadı");
-    } catch {
-      setError("Rapor verisi alınamadı");
-    } finally {
-      setLoading(false);
-    }
+    const dayParam = day ? (day === "all" ? "?day=all" : `?day=${encodeURIComponent(day)}`) : "";
+    const dayNotif = day ? `&day=${encodeURIComponent(day)}` : "";
+    // Denetim #47: `Promise.all([...]).json()` deseni biri 500 dönünce TÜM
+    // yüklemeyi düşürüyordu ve hangi uçtan geldiği belli olmuyordu. `getJSON`
+    // (res.ok + `detail` taşıyan hata) üç uç için bağımsız sonuç döndürüyor;
+    // `allSettled` ile biri başarısız olsa bile diğer ikisi ekrana basılıyor.
+    const [ov, nt, ap] = await Promise.allSettled([
+      getJSON<any>(`/api/reports/overview${dayParam}`),
+      getJSON<any>(`/api/reports/notifications?limit=500${dayNotif}`),
+      getJSON<any>(`/api/auto-paper/stats${dayParam}`),
+    ]);
+
+    const failures: string[] = [];
+    if (ov.status === "fulfilled") setOverview(ov.value);
+    else failures.push(`özet (${reasonOf(ov.reason)})`);
+    if (nt.status === "fulfilled") {
+      setNotifications(nt.value.notifications || []);
+      setBreakdown(nt.value.breakdown || null);
+      setOverall(nt.value.overall || null);
+    } else failures.push(`bildirimler (${reasonOf(nt.reason)})`);
+    if (ap.status === "fulfilled") setAutoPaperStats(ap.value.stats || null);
+    else failures.push(`otonom istatistik (${reasonOf(ap.reason)})`);
+
+    // Kısmi başarı da bilgidir: yalnızca hepsi düştüyse tam hata göster.
+    if (failures.length === 3) setError(`Rapor verisi alınamadı: ${failures.join(", ")}`);
+    else if (failures.length) setError(`Kısmi yükleme hatası — ${failures.join(", ")}`);
+    else setError("");
+    setLoading(false);
   }, [day]);
 
   useEffect(() => { load(); }, [load]);
@@ -696,8 +717,7 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
-    apiRequest(`${API_BASE}/api/monitoring/settings`, { cache: "no-store" })
-      .then((r) => r.json())
+    getJSON<{ effective_min_score?: number | null; min_score?: number | null }>("/api/monitoring/settings")
       .then((d) => setMinScore(d.effective_min_score != null ? Number(d.effective_min_score) : (d.min_score != null ? Number(d.min_score) : null)))
       .catch(() => undefined);
   }, []);
@@ -1459,8 +1479,15 @@ function VelocityTab() {
               <tr><th>Zaman</th><th>Sembol</th><th>Hedef</th><th>MFE</th><th>Dokundu</th></tr>
             </thead>
             <tbody>
-              {recent.map((c: any) => (
-                <tr key={c.candidate_id}>
+              {recent.map((c: any, rowIndex: number) => (
+                // Denetim #52: backend `velocity_candidates` satırı `id` döndürüyor
+                // (`SELECT *` → `_velocity_row`, `database.py:3480`); `candidate_id`
+                // bu yanıtta YOK. Eski `key={c.candidate_id}` her zaman `undefined`
+                // üretiyordu (React duplicate key uyarısı, eylemlerin yanlış
+                // satırı hedeflemesi). Karşılaştırılabilir taraf MACD paneli
+                // `key={c.id}` kullanıyor. `id` yoksa sembol+konum fallback'i:
+                // en az `undefined` key olmasın.
+                <tr key={c.id != null ? `vc-${c.id}` : `${c.symbol || "?"}-${rowIndex}`}>
                   <td className="font-mono text-xs text-bunker-muted">{fmtDt(c.created_at)}</td>
                   <td><SymbolLink symbol={c.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                   <td className="font-mono text-xs text-neon-green">{c.target_pct != null ? `+${Number(c.target_pct).toFixed(2)}%` : "—"}</td>

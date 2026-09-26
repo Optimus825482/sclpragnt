@@ -19,6 +19,7 @@ fail-fast olmak içindi ve canlı overlap senaryosunda ters tekiyordu.
 import asyncio
 import hashlib
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -31,21 +32,64 @@ _LOCK_TIMEOUT_MS = 30_000
 _RETRY_SLEEP_SEC = 10.0
 _SHA_MARKER_KEY = "schema_sha256"
 
+# Migration dosyaları TEK KAYNAKTAN (bu dizin) glob ile sırayla okunur.
+# 2026-09-26 denetim düzeltmesi (#72): liste burada SABİT iki dosyayla
+# (`001`, `002`) hard-code'lanmıştı, `database.init_db()` ise beş dosyayı
+# (001-005) okuyup FARKLI bir sha hesaplıyordu. Sonuç: entrypoint her
+# konteyner açılışında 001+002'nin sha'sını yazıyor, `init_db()` marker'ı
+# eşleşmediği için beş dosyanın tamamını yeniden DDL olarak koşuyordu →
+# her restart tam DDL + ACCESS EXCLUSIVE kilit yarışı, ayrıca
+# `004_bloat_prevention.sql` (autovacuum) ve `005_user_binance_keys.sql`
+# (tablo) YALNIZCA ikinci yolda oluşuyordu.
+#
+# Artık iki koşucu da aynı dosya kümesini, aynı sırayla, aynı ayraçla
+# birleştirir → sha'lar birebir aynı. Yeni migration eklendiğinde burada
+# hiçbir şey güncellenmeye gerekmez.
+_MIGRATION_GLOB = "*.sql"
+
+
+def _iter_migration_files(migrations_dir: Path):
+    """Migration SQL dosyalarını ada göre sıralı üretir.
+
+    `database.init_db()` ile AYNI küme ve AYNI sıra üretmelidir; sha eşleşmesi
+    buna dayanır. Yalnız sıra numarası + `_` ile başlayan dosyaları kabul eder
+    (`001_…`); sıra numarası taşımayan yardımcı/geri dönüş dosyaları şemaya
+    girmez.
+    """
+    pattern = re.compile(r"^\d+_.+\.sql$")
+    return sorted(
+        p for p in migrations_dir.glob(_MIGRATION_GLOB)
+        if pattern.match(p.name) and p.is_file()
+    )
+
+
+def build_schema_sql(migrations_dir: Path) -> str:
+    """Tüm migration'ları tek string'de birleştirir (sha girdisi)."""
+    parts = []
+    for path in _iter_migration_files(migrations_dir):
+        parts.append(path.read_text(encoding="utf-8") + "\n")
+    if not parts:
+        raise SystemExit(f"Migration bulunamadı: {migrations_dir}")
+    return "".join(parts)
+
 
 async def main():
     url = os.getenv("DATABASE_URL")
     if not url:
         raise SystemExit("DATABASE_URL gerekli")
-    # V-03: 001 ile birlikte 002 de uygulanır; sha ikisinin birleşimidir ki
-    # `database.init_db()` ile aynı işareti üretsin (yoksa her restart'ta DDL
-    # yeniden koşar veya 002 hiç uygulanmaz).
+    # 2026-09-26 (#72): dosya listesi artık hard-code değil; `build_schema_sql`
+    # migrations/ dizinini sırayla tarar. `database.init_db()` ile birebir aynı
+    # küme/sıra/ayraç kullanıldığı için iki koşucunun sha'sı eşleşir ve
+    # marker tutarlı kalır.
     migrations_dir = Path(__file__).resolve().parents[1] / "migrations"
-    sql = "".join(
-        (migrations_dir / filename).read_text(encoding="utf-8") + "\n"
-        for filename in ("001_pgvector_schema.sql", "002_macd_evidence_lift.sql")
-        if (migrations_dir / filename).exists()
-    )
+    sql = build_schema_sql(migrations_dir)
     schema_sha = hashlib.sha256(sql.encode("utf-8")).hexdigest()
+    print(
+        f"Uygulanacak migration dosyaları: {len(_iter_migration_files(migrations_dir))}"
+        f" (sha256={schema_sha[:12]}…)",
+        flush=True,
+    )
+
     last_error = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         conn = None
