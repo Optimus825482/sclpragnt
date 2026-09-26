@@ -851,14 +851,27 @@ async def backfill_missing_active_history():
     kontrolü" ve "arka plan backfill başladı" satırlarından SONRA
     "Application startup complete" geliyor, arada backfill'ler sürüyordu.
 
-    Çözüm: backfill'ler startup'ı bekletmez. Önce sembolleri tara (hızlı
-    SELECT'ler), sonra backfill işlerini ARKA PLANA bırak. Healthcheck
-    anında yanıt verebilir.
+    Çözüm iki katmanlıdır:
+
+    1. Backfill'ler startup'ı BEKLETMER (aşağıdaki `_start_background`).
+    2. Backfill'ler kontrollü sırayla çalışır. İlk denemede her eksik
+       sembol için ayrı `_start_background` çağrısı yapılmıştı; bu 70
+       PARALEL görev demek ve hepsi aynı `max_size=8` bağlantı havuzunu
+       kullanıyordu. Log kanıtı: onlarca "backfill başladı" satırı
+       vardı, "backfill tamamlandı" HİÇ yoktu — hepsi kuyrukta
+       sıkışmıştı. 8 GB sunucuda bu, event loop'un her isteği
+       geciktiriyor, `/api/*` istekleri 499 alıyor ve backend
+       `unhealthy` oluyordu.
     """
     symbols = list(config.SYMBOLS)
     now_ms = int(time.time() * 1000)
     stale_ms = 30 * 60 * 1000
     print(f"[History] başlangıç historical kontrolü | symbols={len(symbols)} timeframe=5m", flush=True)
+
+    # Tarama: DB havuzuna gider ama YALNIZCA SELECT yapar. Backfill ile
+    # aynı anda çalışmaması için havuzun TAMAMINI bırakmıyoruz.
+    scan_semaphore = asyncio.Semaphore(4)
+    stale_symbols: list[str] = []
 
     async def inspect(symbol):
         try:
@@ -868,28 +881,44 @@ async def backfill_missing_active_history():
             # kalır ve eski tarihli 2016+ satır "taze" sanılır. Mumlar 30 dakikadan
             # eskiyse de backfill çalışsın.
             if len(rows) < 2016 or newest < now_ms - stale_ms:
-                # `_start_background` sıfır argümanlı callable bekler; sembolü
-                # `partial` ile bağla. single_pass=True: backfill kendi hatasını
-                # yakalıyor, supervisor yeniden denemeye gerek yok.
-                _start_background(
-                    partial(backfill_symbol_history, symbol, 7),
-                    f"history-backfill-{symbol}",
-                    single_pass=True,
-                )
+                stale_symbols.append(symbol)
         except Exception as exc:
             print(f"[History] eksik veri kontrolü başarısız | symbol={symbol} error={exc}", flush=True)
-
-    # Tarama kendisi de DB havuzuna gider ama YALNIZCA SELECT yapar ve
-    # her sembol için tek sorgudur; backfill'in zincirleme yükü yoktur.
-    # Yine de sınırlı eşzamanlılık: 8 bağlantılı havuzu tüketmemeli.
-    scan_semaphore = asyncio.Semaphore(8)
 
     async def scan(symbol):
         async with scan_semaphore:
             await inspect(symbol)
 
     await asyncio.gather(*(scan(symbol) for symbol in symbols))
-    print("[History] başlangıç historical kontrolü tamamlandı (backfill arka planda)", flush=True)
+    print(
+        f"[History] başlangıç historical kontrolü tamamlandı | "
+        f"backfill_gereken={len(stale_symbols)} (kuyruğa alındı)",
+        flush=True,
+    )
+
+    if not stale_symbols:
+        return
+
+    # Backfill işleri: TEK döngü, sınırlı eşzamanlılık. Her biri REST
+    # (klines) + DB (upsert) yapıyor; ikisi de aynı 8 bağlantılı havuzu
+    # ve thread havuzunu kullanıyor. Sınırsız paralellik bu ikisini
+    # tüketir.
+    async def drain_backfills():
+        semaphore = asyncio.Semaphore(2)
+
+        async def one(symbol):
+            async with semaphore:
+                await backfill_symbol_history(symbol, 7)
+
+        for chunk_start in range(0, len(stale_symbols), 8):
+            chunk = stale_symbols[chunk_start:chunk_start + 8]
+            await asyncio.gather(*(one(symbol) for symbol in chunk))
+            # 8'lik gruplar arasında nefes: REST rate limit'i ve DB havuzu
+            # diğer döngülere (strategy, alert, broadcast) dönsün.
+            await asyncio.sleep(1.0)
+        print(f"[History] backfill kuyruğu tamamlandı | toplam={len(stale_symbols)}", flush=True)
+
+    _start_background(drain_backfills, "history-backfill-drain", single_pass=True)
 
 
 # ---------------------------------------------------------------------------
