@@ -837,25 +837,59 @@ async def download_combined_radar_replay_sweep_csv(request: Request = None):
 
 
 async def backfill_missing_active_history():
-    """At startup, queue active symbols whose persisted 5m history is missing or stale."""
-    semaphore = asyncio.Semaphore(8)
+    """At startup, queue active symbols whose persisted 5m history is missing or stale.
+
+    2026-09-26 (deploy düzeltmesi): bu fonksiyon `_start_background` ile
+    BAŞLATILIYOR ama gövdesi `asyncio.gather` ile TÜM sembolleri bekliyordu
+    (70 sembol × [get_market_candles + historical_klines + upsert]). Her
+    `database._run_db` çağrısı `run_in_executor` ile varsayılan thread
+    havuzuna, her bağlantı ise `max_size=8` havuzuna gidiyordu. Sonuç:
+    açılışta bu döngü dakikalarca event loop'u meşgul ediyor, uvicorn
+    bağlantı kabul ediyor ama `/health` YANIT VERMIYOR (TimeoutError,
+    bağlantı reddi değil) → container healthcheck başarısız → Coolify
+    deploy'u başarısız sayıyordu. Log kanıtı: "başlangıç historical
+    kontrolü" ve "arka plan backfill başladı" satırlarından SONRA
+    "Application startup complete" geliyor, arada backfill'ler sürüyordu.
+
+    Çözüm: backfill'ler startup'ı bekletmez. Önce sembolleri tara (hızlı
+    SELECT'ler), sonra backfill işlerini ARKA PLANA bırak. Healthcheck
+    anında yanıt verebilir.
+    """
+    symbols = list(config.SYMBOLS)
     now_ms = int(time.time() * 1000)
     stale_ms = 30 * 60 * 1000
+    print(f"[History] başlangıç historical kontrolü | symbols={len(symbols)} timeframe=5m", flush=True)
+
     async def inspect(symbol):
         try:
             rows = await database.get_market_candles(symbol, "5m")
             newest = max((int(r.get("open_time") or 0) for r in rows), default=0)
-            # Satır sayısı tek başına yetmez: yazıcı döngüsü olmadan sayı sabit
+            # Satır sayısı tek başına yetmez: yazıcı döngü olmadan sayı sabit
             # kalır ve eski tarihli 2016+ satır "taze" sanılır. Mumlar 30 dakikadan
             # eskiyse de backfill çalışsın.
             if len(rows) < 2016 or newest < now_ms - stale_ms:
-                async with semaphore:
-                    await backfill_symbol_history(symbol, 7)
+                # `_start_background` sıfır argümanlı callable bekler; sembolü
+                # `partial` ile bağla. single_pass=True: backfill kendi hatasını
+                # yakalıyor, supervisor yeniden denemeye gerek yok.
+                _start_background(
+                    partial(backfill_symbol_history, symbol, 7),
+                    f"history-backfill-{symbol}",
+                    single_pass=True,
+                )
         except Exception as exc:
             print(f"[History] eksik veri kontrolü başarısız | symbol={symbol} error={exc}", flush=True)
-    print(f"[History] başlangıç historical kontrolü | symbols={len(config.SYMBOLS)} timeframe=5m", flush=True)
-    await asyncio.gather(*(inspect(symbol) for symbol in list(config.SYMBOLS)))
-    print("[History] başlangıç historical kontrolü tamamlandı", flush=True)
+
+    # Tarama kendisi de DB havuzuna gider ama YALNIZCA SELECT yapar ve
+    # her sembol için tek sorgudur; backfill'in zincirleme yükü yoktur.
+    # Yine de sınırlı eşzamanlılık: 8 bağlantılı havuzu tüketmemeli.
+    scan_semaphore = asyncio.Semaphore(8)
+
+    async def scan(symbol):
+        async with scan_semaphore:
+            await inspect(symbol)
+
+    await asyncio.gather(*(scan(symbol) for symbol in symbols))
+    print("[History] başlangıç historical kontrolü tamamlandı (backfill arka planda)", flush=True)
 
 
 # ---------------------------------------------------------------------------
