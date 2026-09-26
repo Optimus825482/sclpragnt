@@ -57,7 +57,9 @@ SECOND_EYE_PROMPT = FAST_SYSTEM_PROMPT = (
     "uydurma, aritmetik yapma. Kanıtlar ÇELİŞİYORSA (fiyat yükseliyor ama CVD/trade_imbalance "
     "negatif, whale satıyor, ladder_asymmetry negatif, funding EXTREME_LONG, BTC panik) "
     "FAKE ihtimali GÜÇLENİR; kanıtlar hemfikirse DEVAM'a eğil; yeterli kanıt yoksa BELIRSIZ. "
-    "Yanıt YALNIZCA JSON olur, JSON dışında tek karakter yazma. Şema TAM OLARAK: "
+    "ÖNEMLİ: verdict değeri TAM OLARAK şu üç kelimeden biri olmalı: DEVAM, FAKE, BELIRSIZ. "
+    "'GERÇEK', 'REAL', 'YÜKSELİŞ' gibi eş anlamlı kelime YAZMA. Yanıt YALNIZCA JSON olur, "
+    "JSON dışında tek karakter yazma. Şema TAM OLARAK: "
     + VERDICT_SCHEMA_HINT
 )
 
@@ -260,7 +262,14 @@ async def build_evidence(notif: dict) -> dict:
 
 
 def parse_verdict(text) -> dict | None:
-    """LLM yanıtından şemalı kararı çıkarır; toleranslı ayrıştırma, şema dışına izin yok."""
+    """LLM yanıtından şemalı kararı çıkarır; toleranslı ayrıştırma, şema dışına izin yok.
+
+    Canlıda görülen arızalar için bağışıklık (2026-09-26, rozet SCHEMA gösteriyordu):
+    - Eş anlamlı verdict kelimeleri (GERÇEK/REAL/YÜKSELİŞ → DEVAM vb.) eşlenir.
+    - Sarmalanmış JSON ({"result": {...}}) içine inilir.
+    - JSON'un cümle içine gömüldüğü yanıtlarda `"verdict":"..."` regex ile kurtarılır
+      (serbest metin taraması YOK — "gerçek değil" tuzağına düşmemek için).
+    """
     if not text:
         return None
     raw = str(text).strip()
@@ -270,17 +279,30 @@ def parse_verdict(text) -> dict | None:
             raw = raw[4:]
         raw = raw.strip()
     decoded = _json_load_lenient(raw)
-    if not isinstance(decoded, dict):
-        return None
-    verdict_raw = str(decoded.get("verdict") or "").strip().upper()
+    if isinstance(decoded, dict) and not decoded.get("verdict"):
+        # Tek dict-valued anahtar sarmalanmış olabilir → verdict taşıyan katmana in.
+        for value in decoded.values():
+            if isinstance(value, dict) and value.get("verdict"):
+                decoded = value
+                break
+    verdict_raw = str((decoded or {}).get("verdict") or "").strip().upper() if isinstance(decoded, dict) else ""
+    if not verdict_raw:
+        # Son çare: yapılandırılmış kurtarma — yalnız "verdict": "..." kalıbı.
+        import re as _re
+        match = _re.search(r'"verdict"\s*:\s*"([^"]{2,24})"', raw, _re.IGNORECASE)
+        if match:
+            verdict_raw = match.group(1).strip().upper()
     aliases = {"DEVAM": "DEVAM", "CONTINUE": "DEVAM", "ONAY": "DEVAM",
+               "GERÇEK": "DEVAM", "GERCEK": "DEVAM", "REAL": "DEVAM",
+               "YÜKSELİŞ": "DEVAM", "YUKSELIS": "DEVAM", "BULLISH": "DEVAM",
                "FAKE": "FAKE", "TUZAK": "FAKE", "TRAP": "FAKE", "SAHTE": "FAKE",
-               "BELIRSIZ": "BELIRSIZ", "UNCERTAIN": "BELIRSIZ", "NEUTRAL": "BELIRSIZ"}
+               "BELIRSIZ": "BELIRSIZ", "BELİRSİZ": "BELIRSIZ", "UNCERTAIN": "BELIRSIZ",
+               "NEUTRAL": "BELIRSIZ", "UNKNOWN": "BELIRSIZ", "BİLİNMİYOR": "BELIRSIZ"}
     verdict = aliases.get(verdict_raw)
     if not verdict:
         return None
     try:
-        confidence = max(0.0, min(100.0, float(decoded.get("confidence") or 0)))
+        confidence = max(0.0, min(100.0, float((decoded or {}).get("confidence") or 0)))
     except (TypeError, ValueError):
         confidence = 0.0
 
@@ -298,8 +320,8 @@ def parse_verdict(text) -> dict | None:
     return {
         "verdict": verdict,
         "confidence": round(confidence),
-        "reasons": _str_list(decoded.get("reasons")),
-        "trap_evidence": _str_list(decoded.get("trap_evidence")),
+        "reasons": _str_list((decoded or {}).get("reasons") if isinstance(decoded, dict) else None),
+        "trap_evidence": _str_list((decoded or {}).get("trap_evidence") if isinstance(decoded, dict) else None),
         "summary": str(decoded.get("summary") or "").strip()[:300] or None,
     }
 
@@ -392,10 +414,22 @@ async def _fast_llm_call(evidence: dict) -> dict:
                "Authorization": "Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}
 
     def _extract(body) -> str | None:
+        """choices[0].message içinden metni çıkarır (sağlayıcı biçimlerine dayanıklı).
+
+        - content parça listesi olabilir (OpenAI-compatible bazı gateway'ler).
+        - reasoning modelleri nihai cevabı `reasoning_content`'e düşürebilir.
+        """
         try:
-            content = body["choices"][0]["message"]["content"]
-            return str(content or "")
-        except (KeyError, IndexError, TypeError):
+            message = body["choices"][0]["message"]
+            content = message.get("content")
+            if isinstance(content, list):
+                content = "".join(str(p.get("text") or "")
+                                  for p in content if isinstance(p, dict))
+            text = str(content or "").strip()
+            if not text:
+                text = str(message.get("reasoning_content") or "").strip()
+            return text or None
+        except (KeyError, IndexError, TypeError, AttributeError):
             return None
 
     def _send() -> Request:
@@ -483,7 +517,7 @@ async def evaluate(notif: dict) -> dict | None:
     text = result.get("text") or result.get("content")
     verdict = parse_verdict(text)
     if not verdict:
-        _record_error("schema", f"yanıt karar şemasına uymadı: {str(text)[:120]}", sym)
+        _record_error("schema", f"yanıt karar şemasına uymadı: {str(text)[:200]}", sym)
         return None
     _state["last_error"] = None
     _state["last_error_kind"] = None

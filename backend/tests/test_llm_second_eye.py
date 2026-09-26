@@ -52,6 +52,72 @@ class ParseVerdictTests(unittest.TestCase):
         self.assertEqual(parsed["reasons"], ["iyi", "5", "cvd"])
         self.assertEqual(parsed["trap_evidence"], [])
 
+    def test_synonym_verdicts_mapped(self):
+        # Canlıda rozet SCHEMA gösteriyordu: model eş anlamlı kelime yazıyordu.
+        self.assertEqual(llm_second_eye.parse_verdict('{"verdict":"GERÇEK","confidence":70}')["verdict"], "DEVAM")
+        self.assertEqual(llm_second_eye.parse_verdict('{"verdict":"REAL","confidence":70}')["verdict"], "DEVAM")
+        self.assertEqual(llm_second_eye.parse_verdict('{"verdict":"SAHTE","confidence":70}')["verdict"], "FAKE")
+        self.assertEqual(llm_second_eye.parse_verdict('{"verdict":"BİLİNMİYOR","confidence":50}')["verdict"], "BELIRSIZ")
+
+    def test_wrapped_json_unwrapped(self):
+        parsed = llm_second_eye.parse_verdict(
+            '{"result": {"verdict": "FAKE", "confidence": 66, "reasons": ["whale_satis"]}}')
+        self.assertEqual(parsed["verdict"], "FAKE")
+        self.assertEqual(parsed["reasons"], ["whale_satis"])
+
+    def test_prose_embedded_json_salvaged_by_regex(self):
+        # JSON cümle içine gömülmüş: lenient parser başarısızsa regex kurtarır.
+        text = 'Piyasa karışık görünüyor. Sonuç: {"verdict": "DEVAM", "confidence": 72} — kanıtlar hemfikir.'
+        parsed = llm_second_eye.parse_verdict(text)
+        self.assertEqual(parsed["verdict"], "DEVAM")
+        self.assertEqual(parsed["confidence"], 72)
+
+    def test_free_prose_without_verdict_pattern_rejected(self):
+        # Serbest metin taraması YOK: "gerçek değil" tuzağına düşülmemeli.
+        self.assertIsNone(llm_second_eye.parse_verdict("Bu kırılım gerçek değil, fake olabilir gibi."))
+
+    def test_extract_content_list_and_reasoning_fallback(self):
+        # content parça listesi biçimi
+        body_list = {"choices": [{"message": {"content": [{"type": "text", "text": '{"verdict":'},
+                                                          {"type": "text", "text": '"FAKE"}'}]}}]}
+        # _extract _fast_llm_call içinde tanımlı; aynı mantığı taşan fonksiyondan test edilemez
+        # → davranışı _fast_llm_call üzerinden doğrula:
+        cfg = {"model": {"name": "m", "temperature": 0.3},
+               "provider": {"base_url": "https://gw.example/v1", "api_key_encrypted": "e"}}
+
+        async def _fake_open(req, timeout=None):
+            class _Resp:
+                def read(self):
+                    return json.dumps(body_list).encode()
+            return _Resp()
+
+        with patch("app.database.get_active_llm_config", AsyncMock(return_value=cfg)), \
+             patch("app.security.validate_provider_url", AsyncMock(return_value="https://gw.example/v1")), \
+             patch("app.llm_analysis.decrypt_key", lambda *_a, **_k: "k"), \
+             patch("app.security.safe_provider_open", _fake_open):
+            result = asyncio.run(llm_second_eye._fast_llm_call({}))
+        self.assertIn("FAKE", result["text"])
+
+    def test_extract_empty_content_falls_back_to_reasoning(self):
+        cfg = {"model": {"name": "m", "temperature": 0.3},
+               "provider": {"base_url": "https://gw.example/v1", "api_key_encrypted": "e"}}
+        body_reasoning = {"choices": [{"message": {
+            "content": "", "reasoning_content": 'Kanıtlar hemfikir. {"verdict": "DEVAM", "confidence": 80}'}}]}
+
+        async def _fake_open(req, timeout=None):
+            class _Resp:
+                def read(self):
+                    return json.dumps(body_reasoning).encode()
+            return _Resp()
+
+        with patch("app.database.get_active_llm_config", AsyncMock(return_value=cfg)), \
+             patch("app.security.validate_provider_url", AsyncMock(return_value="https://gw.example/v1")), \
+             patch("app.llm_analysis.decrypt_key", lambda *_a, **_k: "k"), \
+             patch("app.security.safe_provider_open", _fake_open):
+            result = asyncio.run(llm_second_eye._fast_llm_call({}))
+        parsed = llm_second_eye.parse_verdict(result["text"])
+        self.assertEqual(parsed["verdict"], "DEVAM")
+
 
 class EligibleTests(unittest.TestCase):
     def setUp(self):
