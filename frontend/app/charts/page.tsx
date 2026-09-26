@@ -423,11 +423,13 @@ export default function ChartsPage() {
         }
     }, [symbol, interval]);
 
-    // BİRİNCİL: HTTP ile sık tazelama (WS erişilebilirliğinden bağımsız, güvenilir).
-    // Sekme gizliyken durur. WS açık olsa da HTTP yedek olarak çalışır — WS anlık
-    // `update()` yapar, HTTP ise 10 sn'de bir tam seriyi tazeler (WS gecikmeli/
-    // düşük yoğunluklu olursa grafik hep taze kalır).
-    useVisibleInterval(reloadKlines, 10_000);
+    // BİRİNCİL: HTTP ile tazelama (WS erişilebilirliğinden bağımsız, güvenilir).
+    // Sekme gizliyken durur. PERFORMANS (2026-09-26): WS açıkken backend mum
+    // başına canlı günceller; 10 sn'de bir 200 mumluk tam seri çekip `setData`
+    // ile sıfırdan basmak gereksiz ağ + gösterge yeniden hesabıydı → HTTP
+    // fallback aralığı WS sağlıklıyken 60 sn'e seyreltilir. WS kapalıysa 10 sn
+    // kalır (grafik donmaz).
+    useVisibleInterval(reloadKlines, liveStatus === "open" ? 60_000 : 10_000);
     useEffect(() => { void reloadKlines(); }, [reloadKlines]);
 
     // İSTEĞE BAĞLI İYİLEŞTİRME: Binance WS — yalnız erişilebilir ağlarda çalışır.

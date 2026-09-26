@@ -506,10 +506,17 @@ class _RecordingLock:
 
 
 class RestScanStateLockTests(unittest.IsolatedAsyncioTestCase):
-    async def test_rest_scan_holds_state_lock(self):
+    async def test_rest_scan_does_not_hold_state_lock_during_scan(self):
+        """PERFORMANS revizyonu (2026-09-26, F-15 kararının tersine çevrilmesi):
+        tarama ~52 sn'ye kadar süren ağ+DB işi içerir; `_state_lock` tarama
+        BOYUNCA tutulursa GET /state onlarca saniye bloke olur. REST tarama yolu
+        `_run_scan` sırasında kilidi TUTMAMALI; yalnız sonucun okunduğu kısa
+        bölümlerde girebilir."""
         lock = _RecordingLock()
+        held_during_scan = {}
 
         async def fake_run():
+            held_during_scan["entered"] = lock.entered
             return {"settings": {"min_score": 50.0}, "candidates": [], "watchlist": [],
                     "new_notifications": []}
 
@@ -518,8 +525,10 @@ class RestScanStateLockTests(unittest.IsolatedAsyncioTestCase):
              patch.object(monitoring, "_run_scan", side_effect=fake_run), \
              patch("app.main._require_admin", return_value=None):
             await monitoring.monitoring_scan(request=None)
+        self.assertEqual(held_during_scan.get("entered", 0), 0,
+                         "`_run_scan` sırasında state kilidi TUTULMAMALI (GET /state bloklanır)")
         self.assertGreaterEqual(lock.entered, 1,
-                                "REST tarama `_locked_state()` almalı (F-15)")
+                                "REST tarama sonucu okunurken kısa süreli kilit girişi olabilir")
 
 
 # ---------------------------------------------------------------------------

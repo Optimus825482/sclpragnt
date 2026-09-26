@@ -80,17 +80,25 @@ def _json_safe_dumps(value, **kwargs):
     kwargs.setdefault("default", str)
     return json.dumps(_json_safe(value), **kwargs)
 
+# PERFORMANS (2026-09-26): bu kalıplar HER statement'ta yeniden derleniyordu
+# (scan döngüsü saniyede birden çok statement üretir) — bir kez derle, tekrar kullan.
+_RE_PG_ENABLED_QUALIFIED = re.compile(r"\b([mp])\.enabled\s*=\s*1\b", re.I)
+_RE_PG_ENABLED_PLAIN = re.compile(r"\benabled\s*=\s*1\b", re.I)
+_RE_PG_INSERT_IGNORE = re.compile(r"INSERT OR IGNORE INTO", re.I)
+_RE_PG_INSERT_REPLACE_POSITIONS = re.compile(r"INSERT OR REPLACE INTO positions", re.I)
+_RE_PG_INSERT_REPLACE_SKILLS = re.compile(r"INSERT OR REPLACE INTO llm_skills", re.I)
+
 class _PostgresCompat:
     def __init__(self, conn): self.conn = conn
     def execute(self, sql, params=()):
         sql = sql.replace("?", "%s")
-        sql = re.sub(r"\b([mp])\.enabled\s*=\s*1\b", r"\1.enabled=TRUE", sql, flags=re.I)
-        sql = re.sub(r"\benabled\s*=\s*1\b", "enabled=TRUE", sql, flags=re.I)
-        was_ignore = bool(re.search(r"INSERT OR IGNORE INTO", sql, flags=re.I))
-        sql = re.sub(r"INSERT OR IGNORE INTO", "INSERT INTO", sql, flags=re.I)
+        sql = _RE_PG_ENABLED_QUALIFIED.sub(r"\1.enabled=TRUE", sql)
+        sql = _RE_PG_ENABLED_PLAIN.sub("enabled=TRUE", sql)
+        was_ignore = bool(_RE_PG_INSERT_IGNORE.search(sql))
+        sql = _RE_PG_INSERT_IGNORE.sub("INSERT INTO", sql)
         if was_ignore and "ON CONFLICT" not in sql.upper(): sql += " ON CONFLICT DO NOTHING"
-        sql = re.sub(r"INSERT OR REPLACE INTO positions", "INSERT INTO positions", sql, flags=re.I)
-        sql = re.sub(r"INSERT OR REPLACE INTO llm_skills", "INSERT INTO llm_skills", sql, flags=re.I)
+        sql = _RE_PG_INSERT_REPLACE_POSITIONS.sub("INSERT INTO positions", sql)
+        sql = _RE_PG_INSERT_REPLACE_SKILLS.sub("INSERT INTO llm_skills", sql)
         if "INSERT INTO llm_skills" in sql.upper() and "ON CONFLICT" not in sql.upper(): sql += " ON CONFLICT(name) DO UPDATE SET instructions=EXCLUDED.instructions,enabled=EXCLUDED.enabled,created_at=EXCLUDED.created_at"
         if "INSERT INTO positions" in sql.upper() and "ON CONFLICT" not in sql.upper():
             sql += " ON CONFLICT(symbol) DO UPDATE SET side=EXCLUDED.side,entry_price=EXCLUDED.entry_price,stop_price=EXCLUDED.stop_price,take_profit=EXCLUDED.take_profit,peak_price=EXCLUDED.peak_price,breakeven_hit=EXCLUDED.breakeven_hit,quantity=EXCLUDED.quantity,entry_time=EXCLUDED.entry_time,strategy=EXCLUDED.strategy,entry_context=EXCLUDED.entry_context,trade_id=EXCLUDED.trade_id"
@@ -294,6 +302,10 @@ async def init_db():
         # idempotent; her açılışta çalışır (şema sha'sına bağlı değildir).
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_trade_id ON signals(trade_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_decision_logs_decision ON decision_logs(decision, timestamp DESC)")
+        # PERFORMANS (2026-09-26): kapalı-işlem gün filtreleri (list_auto_paper_trades
+        # day=..., get_auto_paper_stats) exit_time ile filtreliyor; mevcut
+        # (status, entry_time) index'i bunu karşılamıyordu ve tablo budanmıyor.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_auto_paper_status_exit ON auto_paper_trades(status, exit_time)")
         # TAH-01: tahmin satırının ölçüm çapası (fiyatın gözlendiği an). Şema
         # dosyası tek başına yeterli değil — koşan dağıtımlarda da idempotent eklenir.
         conn.execute("ALTER TABLE llm_forecasts ADD COLUMN IF NOT EXISTS decided_at DOUBLE PRECISION")
@@ -1100,8 +1112,20 @@ async def list_macd_monitor_alerts_since(since: float, until: float,
 # ---------------------------------------------------------------------------
 # Yükseliş sinyalleri kanıt katmanı (R2, 2026-09-14) — `rising_alerts`
 # ---------------------------------------------------------------------------
+_RISING_EVIDENCE_SCHEMA_READY = False
+
+
 def _ensure_rising_evidence_schema(conn) -> None:
-    """Koşan dağıtımda tabloyu idempotent hazırla (migration sha'sına bağımlı kalma)."""
+    """Koşan dağıtımda tabloyu idempotent hazırla (migration sha'sına bağımlı kalma).
+
+    PERFORMANS (2026-09-26): memoize edilmemişti — `record_rising_alert` gibi
+    sıcak yazma yolunda HER çağrıda CREATE TABLE IF NOT EXISTS DDL'i (katalog
+    erişimi + kilit) koşuyordu. MACD muadilindeki `_MACD_EVIDENCE_SCHEMA_READY`
+    deseni ile tek seferde bayrağa bağlandı.
+    """
+    global _RISING_EVIDENCE_SCHEMA_READY
+    if _RISING_EVIDENCE_SCHEMA_READY:
+        return
     conn.execute("""
         CREATE TABLE IF NOT EXISTS rising_alerts (
           id BIGSERIAL PRIMARY KEY,
@@ -1128,6 +1152,7 @@ def _ensure_rising_evidence_schema(conn) -> None:
           mae_pct DOUBLE PRECISION,
           peak_at DOUBLE PRECISION
         )""")
+    _RISING_EVIDENCE_SCHEMA_READY = True
 
 
 async def record_rising_alert(item: dict) -> int | None:

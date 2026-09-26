@@ -699,10 +699,22 @@ export default function MonitoringPage() {
     }
   }, []);
 
+  // PERFORMANS (2026-09-26): her `monitoring_alert` çerçevesi anında 2 HTTP
+  // isteği tetikliyordu (loadState + loadHistory); çok bildirimli turlarda
+  // istek fırtınası oluşuyordu. 2.5 sn'lik kuyruklu (trailing) debounce:
+  // turun SON çerçevesinden sonra tek reload.
+  const alertReloadTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (alertReloadTimerRef.current != null) window.clearTimeout(alertReloadTimerRef.current);
+  }, []);
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "monitoring_alert") {
-      void loadState();
-      void loadHistory();
+      if (alertReloadTimerRef.current != null) return;
+      alertReloadTimerRef.current = window.setTimeout(() => {
+        alertReloadTimerRef.current = null;
+        void loadState();
+        void loadHistory();
+      }, 2500);
     }
   }, [loadState, loadHistory]);
   useLiveMessages(onLiveMessage);
