@@ -90,6 +90,15 @@ _scan_lock = asyncio.Lock()
 # yarisini onler (2026-09-07).
 _state_lock = asyncio.Lock()
 
+# Olay güdümlü hızlı tarama durumu (2026-09-26, "daha erken"): keşif
+# (early_discovery) güçlü bir fiyat+hacim patlaması gördüğünde bir sonraki
+# 30 sn'lik turu BEKLEMEDEN `_run_scan` koşar → warm/teyit değerlendirmesi ve
+# bildirim yolu saniyeler içinde tetiklenir. Kapılar: sembol başına cooldown,
+# global min gap, çakışma kilidi (`running`) ve DISCOVERY_FAST_SCAN_ENABLED.
+# ÖNEMLİ: fast scan mevcut kapıları (boot grace, bildirim cooldown, eşikler,
+# RISK_OFF) BYPASS ETMEZ — aynı `_run_scan` yolundan geçer.
+_fast_scan: dict = {"last_started": 0.0, "running": False, "symbol_last": {}}
+
 @asynccontextmanager
 async def _locked_state():
     """_monitoring_state ve _deferred_push guvenli erisim icin."""
@@ -2670,6 +2679,110 @@ async def monitoring_scan_trigger(request: Request):
                 "error": str(exc), "candidates": [], "watchlist": []}
 
 
+def _discovery_pulse() -> list[dict]:
+    """Keşif nabzı (pulse): HAM early_discovery adaylarının anlık yayını.
+
+    PULSE BİLDİRİM DEĞİLDİR: kapanmış mum, velocity teyidi veya scan turu
+    GEREKTİRMEZ — `!miniTicker@arr` saniyelik örnekleminin ham çıktısıdır
+    (2026-09-26, "daha erken"). Kullanıcı yükselişin İLK saniyelerinde görür;
+    aday ancak sonraki scan turunda warm/teyit/bildirim yoluna girer. Keşif
+    modülü yoksa/patlarsa state kırılmaz: boş liste döner.
+    """
+    try:
+        # Fonksiyon içi import: import döngüsü riski (early_discovery → config,
+        # monitoring → çok modül) ve keşif modülünün opsiyonelliği.
+        from app.early_discovery import top_candidates
+        rows = top_candidates(config.DISCOVERY_PULSE_LIMIT)
+    except Exception as exc:
+        logger.warning("discovery pulse okunamadı: %s", exc)
+        return []
+    pulse: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        # Frontend sözleşmesi — alan adları BİREBİR:
+        pulse.append({
+            "symbol": row.get("symbol"),
+            "price": row.get("price"),
+            "return_1m_pct": row.get("return_1m_pct"),
+            "return_20s_pct": row.get("return_20s_pct"),
+            "volume_burst": row.get("volume_burst"),
+            "sample_age_sec": row.get("sample_age_sec"),
+            "detected_at": time.time(),
+        })
+    return pulse
+
+
+async def _maybe_run_fast_scan() -> bool:
+    """Keşif patlaması görürse tek seferlik hızlı tarama koşturur.
+
+    RETURN: tetiklendi mi. `DISCOVERY_FAST_SCAN_ENABLED=false` ise erken
+    çıkar (keşif okuması DAHİL hiçbir iş yapmaz — sıfır ek yük). Kapı
+    sırası: ENABLED → running çakışması → keşif okuması → eşik + sembol
+    cooldown → global min gap → tetik.
+
+    `_run_scan` kendi kilidini İÇERMEZ; kilitleri ÇAĞIRAN alır (arka plan
+    döngüsü ve POST /scan aynen böyle). Fast scan de aynı sırayla
+    (`_scan_lock` → `_locked_state`) alır: mevcut korumaya saygı, çifte
+    kilitleme yok. Boot grace / bildirim cooldown / eşikler fast scan'de
+    GEÇERLİDİR — `_run_scan` zaten bunları uygular.
+    """
+    if not bool(getattr(config, "DISCOVERY_FAST_SCAN_ENABLED", True)):
+        return False
+    if _fast_scan["running"]:
+        return False
+    try:
+        from app.early_discovery import top_candidates  # import döngüsü riski
+        rows = top_candidates(config.DISCOVERY_PULSE_LIMIT)
+    except Exception as exc:
+        logger.warning("fast scan keşif okuması: %s", exc)
+        return False
+    ret_gate = float(getattr(config, "DISCOVERY_FAST_SCAN_RETURN_20S", 0.5))
+    burst_gate = float(getattr(config, "DISCOVERY_FAST_SCAN_BURST", 3.0))
+    cooldown = float(getattr(config, "DISCOVERY_FAST_SCAN_COOLDOWN_SEC", 90))
+    now_mono = time.monotonic()
+    trigger_sym = None
+    trigger_ret20 = trigger_burst = 0.0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        # _num koruması: bozuk satır tüm tetik kontrolünü düşürmez (dosya kuralı).
+        ret20 = _num(row.get("return_20s_pct"), None)
+        burst = _num(row.get("volume_burst"), 0.0) or 0.0
+        if ret20 is None or ret20 < ret_gate or burst < burst_gate:
+            continue
+        sym = str(row.get("symbol") or "").upper()
+        if not sym:
+            continue
+        if now_mono - float(_fast_scan["symbol_last"].get(sym, 0.0)) < cooldown:
+            continue  # sembol cooldown'u: aynı sembolü geri geri tarama
+        trigger_sym, trigger_ret20, trigger_burst = sym, float(ret20), burst
+        break
+    if trigger_sym is None:
+        return False
+    min_gap = float(getattr(config, "DISCOVERY_FAST_SCAN_MIN_GAP_SEC", 15))
+    if now_mono - float(_fast_scan["last_started"]) < min_gap:
+        return False  # global min gap: fast scan tarama frekansını sınırlar
+    # Tetik: başlangıç damgası `last_started` (min gap bunun üzerinden ölçülür),
+    # sembol cooldown'u işaretlenir; bayat kayıtlar budanır (sızıntı yok).
+    _fast_scan["running"] = True
+    _fast_scan["last_started"] = now_mono
+    _fast_scan["symbol_last"][trigger_sym] = now_mono
+    stale = [s for s, ts in _fast_scan["symbol_last"].items()
+             if now_mono - float(ts) >= max(cooldown, 3600.0)]
+    for s in stale:
+        _fast_scan["symbol_last"].pop(s, None)
+    print(f"[Monitoring] hızlı tarama tetiklendi | sembol={trigger_sym} "
+          f"ret20s={trigger_ret20:.2f} burst={trigger_burst:.2f}", flush=True)
+    try:
+        async with _scan_lock:
+            async with _locked_state():
+                await _run_scan()
+    finally:
+        _fast_scan["running"] = False
+    return True
+
+
 @router.get("/api/monitoring/state")
 async def monitoring_state():
     """Get current monitoring state (last scan results + notification history)."""
@@ -2697,6 +2810,10 @@ async def monitoring_state():
             # Warm listesi yayını (2026-09-26): "ısınıyor" adayları frontend'e
             # buradan gider. Geçicidir; persist edilmez.
             "warm": _monitoring_state.get("warm") or [],
+            # Keşif nabzı (2026-09-26, "daha erken"): HAM early_discovery
+            # adayları — kapanmış mum/scan turu beklemeden. PULSE BİLDİRİM
+            # DEĞİLDİR; aday sonraki scan turunda warm/teyit yoluna girer.
+            "pulse": _discovery_pulse(),
             "settings": settings,
             "scope": "global_admin",
             "risk_off": _monitoring_state["risk_off"],
@@ -3448,6 +3565,19 @@ async def monitoring_background_loop():
                 logger.warning("surge_learning bias yenileme hatası: %s", _bias_exc)
 
         await asyncio.sleep(SCAN_INTERVAL_SEC)
+        # Olay güdümlü hızlı tarama (2026-09-26, "daha erken"): keşif güçlü
+        # fiyat+hacim patlaması gördüyse bir sonraki 30 sn'lik turu beklemeden
+        # tarama koşar → warm/teyit ve bildirim yolu saniyeler içinde hızlanır.
+        # Kapılar `_maybe_run_fast_scan` içinde (ENABLED / çakışma / sembol
+        # cooldown / min gap); mevcut tarama yapısı (surge bias refresh dahil)
+        # AYNEN korunur. Fast scan boot grace / bildirim cooldown'ları BYPASS
+        # ETMEZ — `_run_scan` aynı kapılardan geçer.
+        try:
+            await _maybe_run_fast_scan()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("hızlı tarama turu başarısız: %s", exc)
 
 
 def start_monitoring_loop() -> bool:
