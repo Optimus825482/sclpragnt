@@ -218,6 +218,15 @@ async def build_evidence(notif: dict) -> dict:
     micro = microstructure_evidence(sym)
     if micro:
         evidence["microstructure"] = micro
+    # MACD MTF konfluans (kullanıcının grafik metodu): kesişim durumu/yaşı +
+    # eğimler + paralel yukarı — LLM artık "MTF MACD bakışını" görerek karar verir.
+    try:
+        from app.macd_mtf import compute as _macd_mtf_compute
+        mtf = await _macd_mtf_compute(sym)
+        if isinstance(mtf, dict) and mtf.get("coverage"):
+            evidence["macd_mtf"] = mtf
+    except Exception:
+        pass
     signals = notif.get("signals")
     if isinstance(signals, dict) and signals:
         evidence["rising_signals"] = {
