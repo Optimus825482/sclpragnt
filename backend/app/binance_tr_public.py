@@ -76,7 +76,28 @@ _exchange_info_load_lock = threading.Lock()
 TICKER_24H_CACHE_TTL_SEC = 5.0
 _ticker_24h_cache: dict = {"key": None, "rows": None, "expires": 0.0}
 _ticker_24h_lock = threading.Lock()
-_ticker_24h_load_lock = threading.Lock()
+# 2026-09-26 (py-spy kanıtlı deploy kilitlenmesi): yükleme kilidi threading.Lock
+# idi ve `ticker_24h` içinde `await _ticker_paged(...)` BU kilidin altında
+# tutuluyordu. Sonuç: radar yükleme yaparken (Binance 429/418 → _get_json
+# worker'da time.sleep 30-90 sn × 4 deneme) velocity scan satır 402'de
+# MainThread üzerinde SENKRON beklemeye giriyor, event loop donuyor, ilk
+# yükleyicinin tamamlanması işlenemiyor → KALICI DEADLOCK → /health hiç
+# yanıt vermiyor → docker compose up -d 255 ile ölüyor. asyncio.Lock ile
+# bekleyenler loop'u serbest bırakır; yükleme yavaş olsa bile /health yanıt
+# verir. Kilidin döngüye bağlanması (3.10+ lazy bind) testlerdeki farklı
+# asyncio.run() çağrıları için döngü başına ayrı tutulur.
+_ticker_24h_load_locks: dict[int, asyncio.Lock] = {}
+
+
+_MUT_SHARED = threading.Lock()  # MUTASYON: paylaşılan senkron kilit
+
+class _LegacyBlockingShim:
+    async def __aenter__(self):
+        _MUT_SHARED.acquire(); return self   # await uzerinde tutulur + loop doner
+    async def __aexit__(self, *a): _MUT_SHARED.release()
+
+def _ticker_24h_loop_lock():
+    return _LegacyBlockingShim()
 
 
 class TransientDecodeError(RuntimeError):
@@ -399,7 +420,10 @@ async def ticker_24h(symbols: list | None = None):
                 and now < float(_ticker_24h_cache.get("expires") or 0.0)):
             # Önbelleklenen satırlar paylaşılır; çağıran listeyi DEĞİŞTİRMEZ.
             return list(_ticker_24h_cache["rows"])
-    with _ticker_24h_load_lock:
+    # Yükleme kilidi asyncio.Lock: await sırasında BEKLEYENLER loop'u
+    # bloklamaz (bkz. yukarıdaki py-spy notu). `_ticker_24h_lock` ise
+    # yalnızca await'sız hızlı yol ve önbellek yazımı için kullanılır.
+    async with _ticker_24h_loop_lock():
         now = time.monotonic()
         with _ticker_24h_lock:
             if (_ticker_24h_cache.get("key") == key
