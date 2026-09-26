@@ -57,6 +57,10 @@ DEFAULT_QUOTE_SUFFIX = "TRY"
 SAMPLE_WINDOW_SEC = 120.0   # sembol başına örnek ufku (2 dk × ~1 sn)
 SAMPLES_MAXLEN = 120
 RETURN_WINDOW_SEC = 60.0    # momentum + hacim penceresi
+# 20 sn getiri penceresi (2026-09-26, "daha erken"): 1 dakikalık momentum'un
+# daha kısa ufku — pump'ın ilk saniyelerindeki ivmeyi gösterir. Pulse (ham keşif
+# yayını) ve fast-scan tetikleyicisi bu alanı okur; eşik monitoring/config'tedir.
+RETURN_20S_WINDOW_SEC = 20.0
 SAMPLE_AGE_MAX_SEC = 15.0   # son örnek bundan yaşlıysa aday gösterilmez
 MINUTES_MAXLEN = 15         # dakikalık hacim geçmişi (dk)
 MINUTE_MEDIAN_WINDOW = 10   # medyan taban son ~10 dk'dan alınır
@@ -179,8 +183,14 @@ def top_candidates(limit: int = 10) -> list[dict]:
     volume_burst >= DISCOVERY_MIN_VOLUME_BURST (2.0) ve son örnek yaşı
     <= 15 sn. 2 dk'dır örnek gelmeyen sembolün durumu tamamen düşürülür.
 
-    DÖNÜŞ: [{"symbol", "return_1m_pct", "volume_burst", "price",
-             "sample_age_sec"}, ...] — en fazla `limit` adet.
+    return_20s_pct (2026-09-26, "daha erken"): son fiyatın 20 sn önceki fiyata
+    göre yüzdesi — pump'ın İLK saniyelerindeki ivme. `RETURN_20S_WINDOW_SEC`
+    penceresinin solundaki örnek yoksa (sembol 20 sn'den genç / örnek aralığı
+    seyrek) None döner; mevcut alanlar (return_1m_pct, volume_burst, ...)
+    değişmeden kalır.
+
+    DÖNÜŞ: [{"symbol", "return_1m_pct", "return_20s_pct", "volume_burst",
+             "price", "sample_age_sec"}, ...] — en fazla `limit` adet.
     """
     min_return = float(getattr(config, "DISCOVERY_MIN_RETURN_1M_PCT", DEFAULT_MIN_RETURN_1M_PCT))
     min_burst = float(getattr(config, "DISCOVERY_MIN_VOLUME_BURST", DEFAULT_MIN_VOLUME_BURST))
@@ -209,6 +219,19 @@ def top_candidates(limit: int = 10) -> list[dict]:
         if ref_price <= 0 or last_price <= 0:
             continue
         return_pct = (last_price / ref_price - 1.0) * 100.0
+        # 20 sn getiri penceresi: aynı `_reference_sample` mantığıyla, pencere
+        # SOLUNDAKİ örnek baz, son örnek pay. `_reference_sample` seyrek
+        # örneklemede EN ESKİ örneğe düşer; bu ufukta fallback istenmez —
+        # 20 sn'lik sol örnek gerçekten yoksa (sembol pencereden genç /
+        # örnekleme seyrek) alan None yayınlanır, eski örnekten yapay getiri
+        # üretilmez.
+        cutoff20 = now - RETURN_20S_WINDOW_SEC
+        ref20 = _reference_sample(samples, cutoff20)
+        if ref20 is not None and ref20[0] > cutoff20:
+            ref20 = None
+        return_20s = None
+        if ref20 is not None and ref20[1] > 0:
+            return_20s = round((last_price / ref20[1] - 1.0) * 100.0, 4)
         volume_1m = max(0.0, last_q - reference[2])
         baseline = _baseline_minutes(entry, now)
         median = statistics.median(baseline) if baseline else 0.0
@@ -219,6 +242,7 @@ def top_candidates(limit: int = 10) -> list[dict]:
         results.append({
             "symbol": symbol,
             "return_1m_pct": round(return_pct, 4),
+            "return_20s_pct": return_20s,
             "volume_burst": round(burst, 4),
             "price": last_price,
             "sample_age_sec": round(age, 3),

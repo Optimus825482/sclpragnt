@@ -70,12 +70,24 @@ type WarmCandidate = {
   detected_at: number | null;      // epoch sn
 };
 
+/** Akıştan gelen ham keşif nabzı — backend `state.pulse` sözleşmesi (EN ERKEN katman, saniyeler). */
+type PulseCandidate = {
+  symbol: string;
+  price: number | null;
+  return_1m_pct: number | null;   // yüzde
+  return_20s_pct: number | null;  // yüzde
+  volume_burst: number | null;    // medyan hacme oran
+  sample_age_sec: number | null;
+  detected_at: number | null;     // epoch sn
+};
+
 type MonitoringState = {
   last_scan_at: number | null;
   scan_count: number;
   candidates: Candidate[];
   watchlist: Candidate[];
   warm?: WarmCandidate[];
+  pulse?: PulseCandidate[];
 };
 
 type ServerHealth = {
@@ -188,6 +200,34 @@ const parseWarmCandidates = (raw: unknown): WarmCandidate[] => {
   }
   return list;
 };
+
+/** `state.pulse` listesini savunmacı biçimde PulseCandidate[]'e normalize eder. */
+const parsePulseCandidates = (raw: unknown): PulseCandidate[] => {
+  if (!Array.isArray(raw)) return [];
+  const list: PulseCandidate[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const v = item as Record<string, unknown>;
+    if (typeof v.symbol !== "string" || !v.symbol) continue;
+    list.push({
+      symbol: v.symbol,
+      price: numOrNull(v.price),
+      return_1m_pct: numOrNull(v.return_1m_pct),
+      return_20s_pct: numOrNull(v.return_20s_pct),
+      volume_burst: numOrNull(v.volume_burst),
+      sample_age_sec: numOrNull(v.sample_age_sec),
+      detected_at: numOrNull(v.detected_at),
+    });
+  }
+  return list;
+};
+
+/** Pulse getiri değeri → `+0.62%` biçimi (null → "—"). */
+const formatPulseReturn = (v: number | null): string =>
+  v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+
+const pulseReturnColor = (v: number | null): string =>
+  v == null ? "text-bunker-muted" : v >= 0 ? "text-neon-green" : "text-neon-red";
 
 type NotificationRow = {
   symbol?: string;
@@ -448,7 +488,7 @@ const CandidateDetail = ({ c, kind, onClose }: { c: Candidate; kind: "radar" | "
 export default function MonitoringPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
-  const [state, setState] = useState<MonitoringState>({ last_scan_at: null, scan_count: 0, candidates: [], watchlist: [], warm: [] });
+  const [state, setState] = useState<MonitoringState>({ last_scan_at: null, scan_count: 0, candidates: [], watchlist: [], warm: [], pulse: [] });
   const [effectiveMinScore, setEffectiveMinScore] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
   const [, setSettings] = useState<NotificationSettings | null>(null);
@@ -500,6 +540,7 @@ export default function MonitoringPage() {
       candidates: Array.isArray(data?.candidates) ? data.candidates : [],
       watchlist: Array.isArray(data?.watchlist) ? data.watchlist : [],
       warm: parseWarmCandidates(data?.warm),
+      pulse: parsePulseCandidates(data?.pulse),
     });
     setHealth({
       loop_active: boolOrNull(data?.loop_active),
@@ -716,6 +757,9 @@ export default function MonitoringPage() {
   // Backend yakınlığa göre desc sıralı ve max 12 gönderir; sıralamaya dokunulmaz,
   // yalnızca savunmacı kırpma yapılır.
   const warmList = (state.warm ?? []).slice(0, 12);
+  // Backend |getiri| büyükten küçüğe sıralı ve max 15 gönderir; sıralamaya dokunulmaz,
+  // yalnızca savunmacı kırpma yapılır. (pulse undefined gelebilir — [] kabul eder.)
+  const pulseList = (state.pulse ?? []).slice(0, 15);
 
   const filteredCandidates = useMemo(() => {
     let list = [...candidates];
@@ -1239,6 +1283,54 @@ export default function MonitoringPage() {
               <span>Durumlar: <b className="text-neon-green">HEDEFE ULAŞTI</b> · <b className="text-yellow-300">KISMI</b> · <b className="text-bunker-muted">BEKLİYOR</b></span>
             </div>
           )}
+        </section>
+      )}
+
+      {/* BÖLÜM 1.4: 💙 CANLI NABIZ — HAM KEŞİF (akıştan ham momentum; warm'ın ÜSTÜNDE — daha erken katman.
+          Sadece backend pulse verisi doluysa render edilir; undefined/boşsa kart hiç çıkmaz.) */}
+      {(activeTab === "candidates" || activeTab === "overview") && pulseList.length > 0 && (
+        <section aria-labelledby="pulse-panel-title" className="card p-5 rounded-2xl border border-sky-400/40 bg-bunker-950/60 shadow-xl space-y-3">
+          <div className="border-b border-bunker-800/80 pb-3">
+            <h2 id="pulse-panel-title" className="font-mono text-lg font-black text-sky-300 flex flex-wrap items-center gap-2">
+              <span>💙</span> CANLI NABIZ — HAM KEŞİF
+              <span className="rounded-md border border-sky-400/60 bg-sky-400/15 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-sky-300">
+                ONAYLANMADI
+              </span>
+            </h2>
+            <p className="mt-1 text-xs text-bunker-muted">
+              Akıştan ham momentum. Tarama/teyit beklenmeden gösterilir — gürültülü olabilir.
+            </p>
+          </div>
+
+          <ul className="space-y-1.5">
+            {pulseList.map((p) => {
+              // Bayat örnek: 20 sn'den eski akış örneği soluk gösterilir.
+              const stale = p.sample_age_sec != null && p.sample_age_sec > 20;
+              return (
+                <li
+                  key={p.symbol}
+                  title={stale ? "Bayat örnek — akış verisi eski" : undefined}
+                  className={`flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded-lg border border-bunker-800 bg-bunker-900/40 px-3 py-1.5 font-mono text-xs leading-tight ${stale ? "opacity-40" : ""}`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`w-1.5 h-1.5 shrink-0 rounded-full ${stale ? "bg-bunker-600" : "bg-sky-400 animate-pulse"}`}
+                  />
+                  <span className="font-mono text-sm font-black text-white truncate">{p.symbol}</span>
+                  <span className={pulseReturnColor(p.return_20s_pct)}>
+                    20s: <b className="font-bold">{formatPulseReturn(p.return_20s_pct)}</b>
+                  </span>
+                  <span className={pulseReturnColor(p.return_1m_pct)}>
+                    1dk: <b className="font-bold">{formatPulseReturn(p.return_1m_pct)}</b>
+                  </span>
+                  <span className="text-bunker-muted">
+                    {p.volume_burst != null ? `${p.volume_burst.toFixed(1)}× hacim` : "— hacim"}
+                  </span>
+                  <span className="ml-auto text-white">{p.price != null && p.price > 0 ? `₺${formatPrice(p.price)}` : "—"}</span>
+                </li>
+              );
+            })}
+          </ul>
         </section>
       )}
 

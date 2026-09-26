@@ -679,6 +679,18 @@ class Config:
     DISCOVERY_MIN_RETURN_1M_PCT = float(os.getenv("DISCOVERY_MIN_RETURN_1M_PCT", "0.4"))
     DISCOVERY_MIN_VOLUME_BURST = float(os.getenv("DISCOVERY_MIN_VOLUME_BURST", "2.0"))
     DISCOVERY_POOL_INJECT_LIMIT = max(1, int(os.getenv("DISCOVERY_POOL_INJECT_LIMIT", "8")))
+    # Keşif nabzı (pulse) + olay güdümlü hızlı tarama (2026-09-26, "daha erken").
+    # Pulse: GET /state ham keşif adaylarını (kapanmış mum/scan turu beklemeden)
+    # yayınlar. Fast scan: keşif güçlü fiyat+hacim patlaması görürse 30 sn'lik
+    # tarama turunu beklemeden _run_scan koşar → warm/teyit ve bildirim yolu
+    # saniyeler içinde hızlanır. Kapılar: sembol cooldown'u + global min gap
+    # (tarama frekansı sınırsız büyümesin) + running kilidi + ENABLE anahtarı.
+    DISCOVERY_PULSE_LIMIT = max(1, int(os.getenv("DISCOVERY_PULSE_LIMIT", "15")))
+    DISCOVERY_FAST_SCAN_RETURN_20S = float(os.getenv("DISCOVERY_FAST_SCAN_RETURN_20S", "0.5"))
+    DISCOVERY_FAST_SCAN_BURST = float(os.getenv("DISCOVERY_FAST_SCAN_BURST", "3.0"))
+    DISCOVERY_FAST_SCAN_COOLDOWN_SEC = max(30, int(os.getenv("DISCOVERY_FAST_SCAN_COOLDOWN_SEC", "90")))
+    DISCOVERY_FAST_SCAN_MIN_GAP_SEC = max(10, int(os.getenv("DISCOVERY_FAST_SCAN_MIN_GAP_SEC", "15")))
+    DISCOVERY_FAST_SCAN_ENABLED = os.getenv("DISCOVERY_FAST_SCAN_ENABLED", "true").lower() == "true"
 
     @classmethod
     def round_trip_cost(cls) -> float:
