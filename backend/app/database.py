@@ -311,6 +311,11 @@ async def init_db():
         # ör. ["velocity","jump","early"]). Rapor/günlük takibi "hangi algoritma
         # yakaladı" sorusunu bu kolonla yanıtlar; NULL = eski kayıt (tek kaynak radar).
         conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS sources TEXT")
+        # LLM İKİNCİ GÖZ (2026-09-26): şemalı LLM onay kararı — satırda karar
+        # (DEVAM/TUZAK/BELIRSIZ), güven (0-100) ve gerekçe paketi (JSON) taşınır.
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS llm_verdict TEXT")
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS llm_confidence DOUBLE PRECISION")
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS llm_reasons TEXT")
         # M4 (R3-09): koruma kapanışı sonrası aynı bildirimin yeniden açılışı için
         # kalıcı "reopen" anahtarı. `notification_id` (bigint) string id taşıyamaz;
         # bu TEXT kolon reopen churn korumasını taşır.
@@ -3942,8 +3947,9 @@ async def save_monitoring_notifications(entries):
             row = conn.execute(
                 "INSERT INTO monitoring_notifications"
                 "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at,"
-                "ml_target_pct,ml_hit_probability,candidate_id,norm_cap,norm_version,sources)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                "ml_target_pct,ml_hit_probability,candidate_id,norm_cap,norm_version,sources,"
+                "llm_verdict,llm_confidence,llm_reasons)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
                 (
                     str(e.get("symbol") or "?"),
                     str(e.get("message") or ""),
@@ -3958,6 +3964,10 @@ async def save_monitoring_notifications(entries):
                     e.get("ml_target_pct"), e.get("ml_hit_probability"),
                     _candidate_id_value(e), _norm_cap_value(e), _norm_version_value(e),
                     _sources_value(e),
+                    # LLM İKİNCİ GÖZ (2026-09-26): karar rozeti alanları (opsiyonel).
+                    e.get("llm_verdict") or None,
+                    e.get("llm_confidence"),
+                    e.get("llm_reasons") or None,
                 ),
             ).fetchone()
             if row is not None and e.get("id") is None:
@@ -4247,13 +4257,18 @@ async def list_monitoring_notifications(limit=50):
     def op(conn):
         rows = conn.execute(
             "SELECT id,symbol,message,title,score,target_pct,price,expected_price,"
-            "horizon_minutes,mode,detected_at,sent_via_push FROM monitoring_notifications"
+            "horizon_minutes,mode,detected_at,sent_via_push,"
+            "llm_verdict,llm_confidence,llm_reasons FROM monitoring_notifications"
             " ORDER BY detected_at DESC LIMIT ?", (max(1, min(int(limit), 500)),)
         ).fetchall()
         result = []
         for row in rows:
             item = dict(row)
             item["detected_at"] = _epoch_value(item.get("detected_at"))
+            # LLM İKİNCİ GÖZ: gerekçe paketi JSON string olarak saklanır;
+            # okuma tarafında sözlüğe çözülür (bozuk JSON → None).
+            raw_reasons = item.get("llm_reasons")
+            item["llm_reasons"] = _json_value(raw_reasons, None) if raw_reasons else None
             result.append(item)
         return result
     return await _run_db(op)

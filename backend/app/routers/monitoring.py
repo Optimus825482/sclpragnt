@@ -15,6 +15,7 @@ from app import database
 from app.api_common import log_user_action, _background_tasks, _start_background, get_task
 from app.state import market, analyzer
 from app import unified_signals
+from app import llm_second_eye
 from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
 from app.alerting import deliver_web_push
@@ -1556,6 +1557,55 @@ async def _deliver_scan_notifications(notified: list) -> None:
         await ws_manager.broadcast({"type": "monitoring_alert", "data": notified})
     except Exception as exc:
         logger.warning("Monitoring WS broadcast hatasi: %s", exc)
+    # LLM İKİNCİ GÖZ (2026-09-26): teslim edilen yeni bildirimler şemalı LLM
+    # onayına gönderilir; karar ayrı bir bildirim olarak ekrana düşer.
+    _maybe_llm_second_eye(new_notifs)
+
+
+async def _llm_second_eye_task(notif: dict) -> None:
+    """Tek bildirim için LLM ikinci-göz değerlendirmesi + sonuç bildirimi.
+
+    Fire-and-forget çağrılır: LLM gecikmesi/aşımı tarama döngüsünü ASLA
+    bloklamaz. Karar zaman duyarlı olduğundan sessiz saatte değerlendirme
+    tamamen atlanır (saatler sonra pushlamak değerini yok eder).
+    """
+    sym = str(notif.get("symbol") or "?")
+    try:
+        envelope = await llm_second_eye.evaluate(notif)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.debug("LLM ikinci göz %s: %s", sym, exc)
+        return
+    if not isinstance(envelope, dict):
+        return
+    try:
+        if await quiet_hours_active():
+            return
+    except Exception:
+        pass
+    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    if vapid_configured:
+        ok = await _send_push(envelope)
+        envelope["push_success"] = ok
+        envelope["sent_via_push"] = ok
+    await _record_history([envelope])
+    try:
+        await ws_manager.broadcast({"type": "monitoring_alert", "data": [envelope]})
+    except Exception as exc:
+        logger.debug("LLM ikinci göz WS yayını %s: %s", sym, exc)
+
+
+def _maybe_llm_second_eye(notified) -> None:
+    """Uygun bildirimleri LLM ikinci-göz değerlendirmesine görev olarak gönderir."""
+    if not notified:
+        return
+    for notif in notified:
+        if not llm_second_eye.eligible(notif):
+            continue
+        task = asyncio.create_task(_llm_second_eye_task(notif))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
 
 # ---------------------------------------------------------------------------
@@ -1763,6 +1813,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     logger.info("BİRLEŞİK SİNYAL: %s tetik=%s füzyon=%.1f kaynak=%s",
                 sym, kind, float(candidate.get("unified_score") or 0),
                 "+".join(notif.get("sources") or []))
+    _maybe_llm_second_eye([notif])
     return notif
 
 
@@ -2033,6 +2084,8 @@ async def _rising_deliver(notified: list) -> None:
             await ws_manager.broadcast({"type": "rising_alert", "data": notified})
         except Exception as exc:
             logger.warning("Yükseliş WS broadcast hatası: %s", exc)
+    # LLM İKİNCİ GÖZ: birincil (bastırılmamış) yükseliş bildirimleri değerlendirmeye girer.
+    _maybe_llm_second_eye(primary if unified else notified)
 
 
 async def _run_rising_scan() -> dict:
