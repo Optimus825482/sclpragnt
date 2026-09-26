@@ -127,45 +127,113 @@ class EvaluateGuardTests(unittest.TestCase):
     def _patch_db(self, setting="1"):
         return patch("app.database.get_llm_setting", AsyncMock(return_value=setting))
 
+    def _patch_fast(self, result):
+        # DİKKAT: mock'u testin gördüğü referansla AYNI nesne yapmalı; yoksa
+        # await_count/claim'ler gerçek patch'e değil ölü kopyaya bakar.
+        self._fast_mock = AsyncMock(return_value=result)
+        return patch.object(llm_second_eye, "_fast_llm_call", self._fast_mock)
+
     def test_db_setting_off_skips_llm(self):
-        chat = AsyncMock(return_value={})
-        with self._patch_db("0"), patch("app.llm_analysis.chat", chat):
+        with self._patch_db("0"), self._patch_fast({}):
             result = asyncio.run(llm_second_eye.evaluate(_notif()))
         self.assertIsNone(result)
-        chat.assert_not_awaited()
+        self._fast_mock.assert_not_awaited()
 
     def test_provider_missing_sets_backoff(self):
-        chat = AsyncMock(return_value={"enabled": False, "status": "disabled", "text": None})
-        with self._patch_db("1"), patch("app.llm_analysis.chat", chat):
+        with self._patch_db("1"), self._patch_fast({"enabled": False, "status": "disabled", "text": None}):
             first = asyncio.run(llm_second_eye.evaluate(_notif()))
             self.assertIsNone(first)
             # backoff penceresi içinde ikinci çağrı LLM'e HİÇ gitmez
             second = asyncio.run(llm_second_eye.evaluate(_notif(score=95.0)))
         self.assertIsNone(second)
-        self.assertEqual(chat.await_count, 1)
+        self.assertEqual(self._fast_mock.await_count, 1)
         self.assertGreater(llm_second_eye._state["provider_missing_until"], 0)
 
     def test_successful_verdict_then_cooldown(self):
         good = {"enabled": True, "text": json.dumps(
             {"verdict": "DEVAM", "confidence": 77, "reasons": ["cvd_pozitif"], "trap_evidence": [],
              "summary": "akış destekliyor"})}
-        chat = AsyncMock(return_value=good)
-        with self._patch_db("1"), patch("app.llm_analysis.chat", chat):
+        with self._patch_db("1"), self._patch_fast(good):
             envelope = asyncio.run(llm_second_eye.evaluate(_notif()))
             self.assertIsNotNone(envelope)
             self.assertEqual(envelope["llm_verdict"], "DEVAM")
             again = asyncio.run(llm_second_eye.evaluate(_notif(score=95.0)))
         self.assertIsNone(again)  # sembol cooldown'u
-        self.assertEqual(chat.await_count, 1)
+        self.assertEqual(self._fast_mock.await_count, 1)
         self.assertEqual(llm_second_eye._state["evaluated"], 1)
 
     def test_schema_violation_returns_none(self):
         bad = {"enabled": True, "text": "karar veremedim ama JSON da yazmadım"}
-        chat = AsyncMock(return_value=bad)
-        with self._patch_db("1"), patch("app.llm_analysis.chat", chat):
+        with self._patch_db("1"), self._patch_fast(bad):
             result = asyncio.run(llm_second_eye.evaluate(_notif()))
         self.assertIsNone(result)
         self.assertIn("şemasına uymadı", str(llm_second_eye._state["last_error"]))
+
+
+class FastLlmCallTests(unittest.TestCase):
+    """Hızlı kanal sözleşmesi: 2 mesaj, ≤250 token, json_object, text çıkarımı."""
+
+    def _patch_provider(self, body: bytes):
+        cfg = {"model": {"name": "test-model", "temperature": 0.3},
+               "provider": {"base_url": "https://gw.example/v1", "api_key_encrypted": "enc"}}
+
+        captured = {}
+
+        async def _fake_open(req, timeout=15):
+            captured["payload"] = json.loads(req.data.decode())
+            captured["timeout"] = timeout
+
+            class _Resp:
+                def read(self):
+                    return body
+
+            return _Resp()
+
+        return (patch("app.database.get_active_llm_config", AsyncMock(return_value=cfg)),
+                patch("app.security.validate_provider_url", AsyncMock(return_value="https://gw.example/v1")),
+                patch("app.llm_analysis.decrypt_key", lambda *_a, **_k: "test-key"),
+                patch("app.security.safe_provider_open", _fake_open),
+                captured)
+
+    def test_lean_payload_and_text_extraction(self):
+        body = json.dumps({"choices": [{"message": {"content": '{"verdict":"DEVAM"}'}}]}).encode()
+        patches = self._patch_provider(body)
+        with patches[0], patches[1], patches[2], patches[3]:
+            result = asyncio.run(llm_second_eye._fast_llm_call({"symbol": "HEMITRY"}))
+        self.assertTrue(result["enabled"])
+        self.assertIn("DEVAM", result["text"])
+        payload = patches[4]["payload"]
+        self.assertEqual(len(payload["messages"]), 2)
+        self.assertEqual(payload["max_tokens"], llm_second_eye.FAST_MAX_TOKENS)
+        self.assertLessEqual(payload["max_tokens"], 250)
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertIn("HEMITRY", payload["messages"][1]["content"])
+        self.assertEqual(patches[4]["timeout"], 15)
+
+    def test_gateway_refusing_json_mode_retries_without_response_format(self):
+        from urllib.error import HTTPError
+        cfg = {"model": {"name": "test-model", "temperature": 0.3},
+               "provider": {"base_url": "https://gw.example/v1/chat/completions", "api_key_encrypted": "enc"}}
+        calls = {"n": 0}
+
+        async def _fake_open(req, timeout=15):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise HTTPError(req.full_url, 400, "no json mode", None, None)
+
+            class _Resp:
+                def read(self):
+                    return json.dumps({"choices": [{"message": {"content": '{"verdict":"FAKE"}'}}]}).encode()
+
+            return _Resp()
+
+        with (patch("app.database.get_active_llm_config", AsyncMock(return_value=cfg)),
+              patch("app.security.validate_provider_url", AsyncMock(return_value="https://gw.example/v1/chat/completions")),
+              patch("app.llm_analysis.decrypt_key", lambda *_a, **_k: "test-key"),
+              patch("app.security.safe_provider_open", _fake_open)):
+            result = asyncio.run(llm_second_eye._fast_llm_call({"symbol": "X"}))
+        self.assertIn("FAKE", result["text"])
+        self.assertEqual(calls["n"], 2)
 
 
 class VerdictNotificationTests(unittest.TestCase):
