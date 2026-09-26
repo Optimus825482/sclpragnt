@@ -1075,6 +1075,8 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     ml_prob = c.get("ml_hit_probability")
     ml_pct_str = f" | ML %{ml_prob * 100:.0f}" if ml_prob is not None else ""
     is_4way = bool(c.get("confluence_4way") or len(sources) >= 4)
+    # MACD MTF konfluans snapshot'ı — senkron önbellek okuması (bloklamaz).
+    mtf_compact = macd_mtf.cached_compact(sym)
     # 2026-09-26 (bölüm 2.2): bloklanmış aday zaten bildirim üretmez; bu alan
     # yalnızca geçmiş/rapor okunurken kapının neden çalıştığını gösterir.
     _surge_block = _master_surge_block_reason(c)
@@ -1120,6 +1122,10 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         # doğru haritayı uygular (etiket yoksa kayıt lineer kabul edilir).
         "norm_version": MONITORING_SCORE_NORM_VERSION,
         "norm_cap": float(getattr(config, "MONITORING_SCORE_NORM_CAP", 2000) or 0),
+        # MACD MTF konfluans snapshot'ı (bildirim ANI — ölçüm raporu için;
+        # önbellek okumasıdır, hesap scan turundaki fire-and-forget görevde).
+        "macd_mtf_verdict": (mtf_compact or {}).get("verdict"),
+        "macd_mtf_confluence": (mtf_compact or {}).get("confluence"),
         "settings_applied": {
             "min_score": settings.get("min_score"),
             "min_target_pct": settings.get("min_target_pct"),
@@ -1422,6 +1428,11 @@ async def _notify(candidates_list, settings) -> list:
                 "sl_pct": float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5)),
                 "horizon_minutes": horizon_minutes,
                 "set_at": now,
+                # MACD MTF ölçüm takipçileri: pencere içi zirve/dip + DB satır
+                # bağlantısı (`_check_pending_targets` çözümleyince yazar).
+                "max_price": entry_price,
+                "min_price": entry_price,
+                "notification_id": None,
             }
         if len(_monitoring_state["notified_symbols"]) > 500:
             for k in sorted(_monitoring_state["notified_symbols"], key=_monitoring_state["notified_symbols"].get)[:-250]:
@@ -1440,6 +1451,15 @@ async def _notify(candidates_list, settings) -> list:
         _s_t0 = time.time()
         # M1/P2 (R2-15): ölü `_record_history` artık burada KULLANILIYOR (tek yol).
         await _record_history(new_entries)
+        # MACD MTF ölçüm kablosu: DB satır id'sini pending hedefe bağla →
+        # `_check_pending_targets` sonucu (dokunma/MFE/MAE) o satıra yazılır.
+        for n in new_entries:
+            _nid = n.get("id")
+            if _nid is None:
+                continue
+            _pt = _monitoring_state["pending_targets"].get(str(n.get("symbol") or ""))
+            if _pt is not None and _pt.get("notification_id") is None:
+                _pt["notification_id"] = _nid
         _s_t1 = time.time()
         _db_lat = (_s_t1 - _s_t0) * 1000
         _monitoring_state.setdefault("_db_latencies", []).append(_db_lat)
@@ -1757,12 +1777,19 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     _target_pct = _num(candidate.get("target_pct"), 0.0) or 0.0
     _expected = _entry_px * (1 + _target_pct / 100) if _entry_px > 0 else 0.0
     if _expected > 0:
+        _prev_max = _num(_existing_pending.get("max_price"), 0.0) or 0.0
+        _prev_min = _num(_existing_pending.get("min_price"), 0.0) or 0.0
         _monitoring_state["pending_targets"][sym] = {
             "expected": _expected,
             "entry_price": _entry_px,
             "sl_pct": float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5)),
             "horizon_minutes": int(candidate.get("horizon_minutes") or 5),
             "set_at": float(_existing_pending.get("set_at") or time.time()),
+            # Ölçüm takipçileri KORUNUR: mevcut bildirim bağlantısı ve pencere
+            # içi zirve/dip ezilirse MFE/MAE ölçümü sıfırlanır (2026-09-26).
+            "max_price": max(_prev_max, _entry_px),
+            "min_price": min(_prev_min, _entry_px) if _prev_min > 0 else _entry_px,
+            "notification_id": _existing_pending.get("notification_id"),
         }
     unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
     # Kalıcı kayıt (rapor/günlük takip sayfası buradan okur).
@@ -1942,6 +1969,9 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
         "notification_key": f"rising-{kind}-{symbol}-{int(now // 3600)}",
         "updated": False,
         "source": "rising",
+        # MACD MTF konfluans snapshot'ı (bildirim ANI — ölçüm raporu için).
+        "macd_mtf_verdict": (macd_mtf.cached_compact(symbol) or {}).get("verdict"),
+        "macd_mtf_confluence": (macd_mtf.cached_compact(symbol) or {}).get("confluence"),
     }
 
 
@@ -2350,25 +2380,41 @@ async def _check_pending_targets():
         hit = price is not None and price > 0 and expected > 0 and price >= expected
         stopped = price is not None and price > 0 and sl_price > 0 and price <= sl_price
 
+        # MACD MTF ölçüm takipçileri: pencere içi zirve/dip her turda güncellenir
+        # (taze fiyat varsa). Çözümleme anında MFE/MAE bunlardan hesaplanır.
+        if price is not None and price > 0 and entry_price > 0:
+            info["max_price"] = max(_num(info.get("max_price"), 0.0) or 0.0, price)
+            prev_min = _num(info.get("min_price"), 0.0) or 0.0
+            info["min_price"] = min(prev_min, price) if prev_min > 0 else price
+
+        status = None
         if hit:
-            resolved.append((sym, True))
-            try:
-                await database.record_symbol_target_outcome(sym, success=True)
-            except Exception:
-                logger.debug("pending target öğrenme kaydedilemedi %s", sym, exc_info=True)
+            status = "HEDEFE_ULTI"
         elif stopped:
-            resolved.append((sym, False))
-            try:
-                await database.record_symbol_target_outcome(sym, success=False)
-            except Exception:
-                logger.debug("pending target öğrenme kaydedilemedi %s", sym, exc_info=True)
+            status = "STOP"
         elif expired:
-            resolved.append((sym, False))
+            status = "SURE_DOLDU"
+
+        if status:
+            resolved.append((sym, status))
             try:
-                await database.record_symbol_target_outcome(sym, success=False)
+                await database.record_symbol_target_outcome(sym, success=(status == "HEDEFE_ULTI"))
             except Exception:
                 logger.debug("pending target öğrenme kaydedilemedi %s", sym, exc_info=True)
-    for sym, _hit in resolved:
+            # MACD MTF ölçümü: sonucu bildirim satırına kalıcı yaz (grup
+            # karşılaştırması rapor sekmesinde). Bayat/kapısı olmayan satırlar
+            # (notification_id yok) atlanır — öğrenme kaydı yukarıda yapıldı.
+            nid = info.get("notification_id")
+            if nid:
+                try:
+                    mfe_pct = ((max(_num(info.get("max_price"), 0.0) or 0.0, entry_price) / entry_price) - 1.0) * 100.0
+                    prev_min = _num(info.get("min_price"), 0.0) or 0.0
+                    min_px = min(prev_min, entry_price) if prev_min > 0 else entry_price
+                    mae_pct = ((min_px / entry_price) - 1.0) * 100.0
+                    await database.update_monitoring_notification_outcome(nid, status, mfe_pct, mae_pct)
+                except Exception:
+                    logger.debug("bildirim sonucu yazılamadı %s (id=%s)", sym, nid, exc_info=True)
+    for sym, _status in resolved:
         _monitoring_state["pending_targets"].pop(sym, None)
 
 
