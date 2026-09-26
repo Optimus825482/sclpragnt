@@ -406,11 +406,13 @@ class WebsocketRuntimeTests(unittest.IsolatedAsyncioTestCase):
         stats = manager.queue_stats()
         self.assertEqual(10, stats["dropped_total"])
         self.assertEqual(CLIENT_QUEUE_MAXSIZE, stats["pending"])
-        # Kuyrukta en eski değil, EN YENİ mesajlar durmalı.
+        # Kuyrukta en eski değil, EN YENİ mesajlar durmalı. (PERFORMANS 2026-09-26:
+        # broadcast artık bir kez serileştirilmiş `_Prepared` nesnesi koyar;
+        # `.data` orijinal sözlüğü taşır.)
         oldest_kept = total - CLIENT_QUEUE_MAXSIZE
         queued = list(manager._outboxes[id(socket)].queue._queue)
-        self.assertEqual({"n": oldest_kept}, queued[0])
-        self.assertEqual({"n": total - 1}, queued[-1])
+        self.assertEqual({"n": oldest_kept}, getattr(queued[0], "data", queued[0]))
+        self.assertEqual({"n": total - 1}, getattr(queued[-1], "data", queued[-1]))
 
 
 if __name__ == "__main__":

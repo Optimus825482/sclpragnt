@@ -376,7 +376,8 @@ def _warm_list_build(candidates: list[dict], watchlist: list[dict]) -> list[dict
 
 
 async def detect_velocity_candidates(args: dict | None = None, *, horizon_minutes: int = 5,
-                                      extra_symbols: list | None = None):
+                                      extra_symbols: list | None = None,
+                                      kline_cache: dict | None = None):
     """Belirli ufukta (5dk/15dk) en az hedef % (2/3) yükselme potansiyeli taşıyan en hızlı 3 aday.
 
     v2 — forensics kalibrasyonu: Bollinger genişliği + ATR + (RSI iki ucu) +
@@ -385,6 +386,12 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     Yalnızca kapanmış 1m mumlar; tahmin/garanti değildir, paper-only.
     extra_symbols: top-gainer havuzuna ek olarak zorunlu taranacak semboller
     (monitoring izleme listesi — daha sık analiz).
+    kline_cache: PERFORMANS (2026-09-26) — aynı tarama turunda 5m/15m profilleri
+    AYNI sembolün AYNI (1m/5m) serilerini iki kez indiriyordu (REST yükü 2×).
+    Çağıran tur-başı bir dict geçirirse (symbol, tf) → ham satırlar önbelleğe
+    alınır; ikinci profil aynı seri için ağa gitmez. Tek çağrılar parametreyi
+    atlar (davranış değişmez). Ham satırlar saklanır — D-04 oluşan-bar düşürme
+    her tüketicide kendi `now_ms`'iyle uygulanır.
     """
     profile = VELOCITY_PROFILES.get(horizon_minutes) or VELOCITY_PROFILES[5]
     base_target_pct = float(profile["target_pct"])
@@ -395,6 +402,19 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
         all_ticker_rows = await ticker_24h()
     except Exception as exc:
         logger.warning("velocity scan: ticker_24h hatası: %s", exc)
+
+    async def _fetch_cached(symbol: str, tf: str, limit: int):
+        """Tur-başı paylaşılan kline önbelleği (kline_cache verildiyse)."""
+        if kline_cache is not None:
+            key = (str(symbol).upper(), tf)
+            if key in kline_cache:
+                return kline_cache[key]
+            await _velocity_rate_acquire()
+            rows = await fetch_klines(symbol, tf, limit)
+            kline_cache[key] = rows
+            return rows
+        await _velocity_rate_acquire()
+        return await fetch_klines(symbol, tf, limit)
 
     try:
         gainer_rows = await top_gainers(config.VELOCITY_POOL_SIZE, _ticker_rows=all_ticker_rows)
@@ -493,8 +513,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     async def scan_one(symbol: str) -> dict | None:
         async with sem:
             try:
-                await _velocity_rate_acquire()
-                rows = await fetch_klines(symbol, "1m", 60)
+                rows = await _fetch_cached(symbol, "1m", 60)
             except Exception:
                 return None
             # D-04 (2026-09-12): oluşmakta olan (forming) mumu düşür. Binance
@@ -674,8 +693,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # 1m serisi yalnız tarama/desen eşikleri için kalır.
             m5_ml_features = None
             try:
-                await _velocity_rate_acquire()
-                m5_rows = await fetch_klines(symbol, "5m", 40)  # ~3.3 saat warmup
+                m5_rows = await _fetch_cached(symbol, "5m", 40)  # ~3.3 saat warmup
                 # D-04: oluşmakta olan 5m mumunu düşür (kalibrasyon kapanmış mum).
                 if int(m5_rows[-1][0]) + 300_000 > now_ms:
                     m5_rows = m5_rows[:-1]

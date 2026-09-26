@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { API_BASE, apiRequest } from "../lib/api";
@@ -74,6 +74,31 @@ function CandleCountdown({ intervalMs }: { intervalMs: number }) {
 
 
 
+/**
+ * PERFORMANS (2026-09-26): ufuk geri sayımı kendi 1 sn interval'ine sahip İZOLE
+ * bileşene alındı. Eskiden saniyelik `setMonitorRemainingSec` ana sayfa
+ * state'iydi → tüm 2000+ satırlık sayfa (grafik, tablolar, paneller) HER SANİYE
+ * yeniden render ediliyordu. Artık yalnız bu bileşen tık başına render olur.
+ */
+const CountdownSec = memo(function CountdownSec({ expiresAtSec }: { expiresAtSec: number | null }) {
+    const [remaining, setRemaining] = useState<number | null>(() =>
+        expiresAtSec ? Math.max(0, Math.floor(expiresAtSec - Date.now() / 1000)) : null);
+    useEffect(() => {
+        if (!expiresAtSec) { setRemaining(null); return; }
+        const tick = () => setRemaining(Math.max(0, Math.floor(expiresAtSec - Date.now() / 1000)));
+        tick();
+        const t = setInterval(tick, 1000);
+        return () => clearInterval(t);
+    }, [expiresAtSec]);
+    return (
+        <span className={`font-mono text-lg font-bold tabular-nums ${remaining == null ? "text-bunker-muted" : remaining <= 60 ? "text-yellow-300 animate-pulse" : "text-neon-green"}`}>
+            {remaining != null
+                ? `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`
+                : "—"}
+        </span>
+    );
+});
+
 export default function ChartsPage() {
     const searchParams = useSearchParams();
     const router = useRouter();
@@ -114,7 +139,7 @@ export default function ChartsPage() {
     // Radar bildirimi paneli: sembol için ufku dolmamış son monitoring bildirimi
     // (fiyat/hedef/skor/ufuk + geri sayım) ve grafik çizgisi göstergesi.
     const [monitorNotif, setMonitorNotif] = useState<any | null>(null);
-    const [monitorRemainingSec, setMonitorRemainingSec] = useState<number | null>(null);
+    // (monitorRemainingSec state'i KALDIRILDI — geri sayım izole CountdownSec bileşeninde)
     const [showMonitoringLines, setShowMonitoringLines] = useState(true);
     const [monitorDisplayReady, setMonitorDisplayReady] = useState(false); // DB display yüklendi mi (ilk yazımda sıfırları ezmesin)
     const [livePortfolio, setLivePortfolio] = useState<LivePortfolio | null>(null);
@@ -495,20 +520,11 @@ export default function ChartsPage() {
     }, [symbol]);
     useEffect(() => {
         setMonitorNotif(null);
-        setMonitorRemainingSec(null);
         loadMonitorNotif();
     }, [loadMonitorNotif]);
     // 15 sn'lik yoklama: sekme gizliyken durur (2026-09-16).
     useVisibleInterval(loadMonitorNotif, 15_000);
-
-    // Ufuk geri sayımı: expires_at'e kalan saniye, saniyelik tık.
-    useEffect(() => {
-        if (!monitorNotif?.active || !monitorNotif?.expires_at) { setMonitorRemainingSec(null); return; }
-        const tick = () => setMonitorRemainingSec(Math.max(0, Math.floor(monitorNotif.expires_at - Date.now() / 1000)));
-        tick();
-        const t = setInterval(tick, 1000);
-        return () => clearInterval(t);
-    }, [monitorNotif]);
+    // (geri sayım tick'i CountdownSec bileşenine taşındı — sayfa geneli re-render etmesin)
     // Binance WS canlı akış durumu (2026-09-16): grafik canlı verisini yalnızca
     // WS'e bağlıyordu; WS tutarsa grafik donar ve kullanıcı bunu göremezdi.
     // Bu durum hem fallback'ın tetiklenmesini hem de aşağıdaki rozeti besler.
@@ -1830,11 +1846,7 @@ export default function ChartsPage() {
                         <span className="font-mono text-[11px] text-bunker-muted">
                             canlı: <b className={monitorLivePrice > 0 ? (monitorTargetHit ? "text-neon-green" : "text-white") : "text-bunker-muted"}>{monitorLivePrice > 0 ? formatPrice(monitorLivePrice) : "—"}</b>
                         </span>
-                        <span className={`font-mono text-lg font-bold tabular-nums ${monitorRemainingSec == null ? "text-bunker-muted" : monitorRemainingSec <= 60 ? "text-yellow-300 animate-pulse" : "text-neon-green"}`}>
-                            {monitorRemainingSec != null
-                                ? `${Math.floor(monitorRemainingSec / 60)}:${String(monitorRemainingSec % 60).padStart(2, "0")}`
-                                : "—"}
-                        </span>
+                        <CountdownSec expiresAtSec={monitorNotif?.active && monitorNotif.expires_at ? monitorNotif.expires_at : null} />
                     </div>
                 </section>
             )}

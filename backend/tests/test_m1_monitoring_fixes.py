@@ -646,7 +646,7 @@ class WarmListStateWiringTests(unittest.IsolatedAsyncioTestCase):
                    "price": 2.50, "change_24h": 6.0, "atr_pct": 1.1,
                    "target_pct": 3.0, "horizon_minutes": 15}]
 
-        async def fake_detect(_filters, horizon_minutes=5, extra_symbols=None):
+        async def fake_detect(_filters, horizon_minutes=5, extra_symbols=None, kline_cache=None):
             if horizon_minutes == 5:
                 return self._scan(5, warm5)
             return self._scan(15, warm15)
@@ -696,7 +696,7 @@ class WarmListStateWiringTests(unittest.IsolatedAsyncioTestCase):
                 "target_pct": 2.0, "horizon_minutes": 5}
                for i in range(30)]
 
-        async def fake_detect(_filters, horizon_minutes=5, extra_symbols=None):
+        async def fake_detect(_filters, horizon_minutes=5, extra_symbols=None, kline_cache=None):
             return self._scan(5, big if horizon_minutes == 5 else [])
 
         settings = {"enabled": False}
@@ -716,7 +716,7 @@ class WarmListStateWiringTests(unittest.IsolatedAsyncioTestCase):
         warm listesi boş kalır — bayat rozet yayınlama yok."""
         from app.routers import monitoring
 
-        async def boom(_filters, horizon_minutes=5, extra_symbols=None):
+        async def boom(_filters, horizon_minutes=5, extra_symbols=None, kline_cache=None):
             raise RuntimeError("detect patladi")
 
         with patch.object(monitoring, "detect_velocity_candidates",

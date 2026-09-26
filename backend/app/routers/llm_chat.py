@@ -995,8 +995,11 @@ def _upside_rank_score(candidate: dict, touch_rates: dict[str, float]) -> float:
 
 async def _upside_scout_impl():
     # 1) Deterministik aday seçimi: dakika başına yükseliş potansiyeli sıralaması.
-    scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
-    scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
+    # PERFORMANS (2026-09-26): iki profil tur-başı paylaşımlı kline önbelleğiyle
+    # koşar — aynı sembolün 1m/5m serisi iki kez indirilmez (REST çağrısı yarıya iner).
+    _kline_cache: dict = {}
+    scan5 = await detect_velocity_candidates({}, horizon_minutes=5, kline_cache=_kline_cache)
+    scan15 = await detect_velocity_candidates({}, horizon_minutes=15, kline_cache=_kline_cache)
     # TAH-01: aday fiyatları tarama anında gözlemlendi. Ölçüm penceresi bu ana
     # (`decided_at`) sabitlenir; LLM gecikmesi pencereyi kaydıramaz.
     observed_at = time.time()

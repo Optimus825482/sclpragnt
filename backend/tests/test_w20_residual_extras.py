@@ -42,14 +42,16 @@ class RestRefreshOrderTests(unittest.TestCase):
 
 
 class VelocityScanConcurrencyTests(unittest.TestCase):
-    """F-16 — 5dk/15dk taramaları eşzamanlı çalışmalı (seri değil)."""
+    """F-16 GÜNCELLEME (2026-09-26 performans turu): 5dk/15dk taramaları artık
+    tur-başı PAYLAŞIMLI `kline_cache` ile koşar — REST çağrısı yarıya iner
+    (eskiden aynı seriler iki kez indiriliyordu)."""
 
-    def test_run_scan_gathers_both_horizons(self):
+    def test_run_scan_shares_kline_cache_across_horizons(self):
         module_source = inspect.getsource(monitoring)
-        marker = "scan5, scan15 = await asyncio.gather("
-        assert marker in module_source, "taramalar seri kaldı (F-16)"
-        assert "detect_velocity_candidates({\"limit\": 10}, horizon_minutes=5" in module_source
-        assert "detect_velocity_candidates({\"limit\": 10}, horizon_minutes=15" in module_source
+        assert "_kline_cache: dict = {}" in module_source, "paylaşımlı kline önbelleği yok"
+        assert module_source.count("kline_cache=_kline_cache") >= 2, \
+            "iki profil de paylaşımlı önbelleğe bağlanmalı"
+        assert "horizon_minutes=5" in module_source and "horizon_minutes=15" in module_source
 
 
 class ConfigEnvRegimeDocTests(unittest.TestCase):

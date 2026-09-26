@@ -45,6 +45,7 @@ mevcut test doubles ve tek kullanıcılı kurulum böyle çalışır.
 """
 
 import asyncio
+import json
 from typing import Any, Hashable
 
 # İstemci başına kuyruk derinliği. Ticker/kline akışı "en son değer"
@@ -52,6 +53,31 @@ from typing import Any, Hashable
 CLIENT_QUEUE_MAXSIZE = 64
 # Tek bir gönderim için zaman aşımı: yavaş/kopuk istemci döngüyü bloklamaz.
 CLIENT_SEND_TIMEOUT_SEC = 0.75
+
+
+class _Prepared:
+    """Bir kez serileştirilmiş yayın mesajı (PERFORMANS 2026-09-26).
+
+    Eskiden aynı dict N istemcinin kuyruğuna konuyor ve HER istemcinin drain'i
+    `send_json` ile AYNI mesajı yeniden serialize ediyordu (CPU istemci sayısıyla
+    doğrusal). `broadcast` artık bir kez `json.dumps` yapıp `_Prepared` paylaşır;
+    gerçek transport'lar `send_text` ile hazır metni gönderir. `send_text`
+    bilmeyen test doubles eski yoldan (`send_json(data)`) devam eder.
+    """
+    __slots__ = ("text", "data")
+
+    def __init__(self, text: str, data: dict):
+        self.text = text
+        self.data = data
+
+
+def _prepare(message):
+    try:
+        return _Prepared(json.dumps(message, ensure_ascii=False, default=str), message)
+    except (TypeError, ValueError):
+        # Serileştirilemeyen mesaj: eski davranış (drain send_json dener,
+        # hata orada istemci-ölüümü olarak işlenir).
+        return message
 
 
 class _ClientOutbox:
@@ -69,8 +95,12 @@ class _ClientOutbox:
         #: yöneticisini temizlik yapmaya çağırır (D-15).
         self.on_dead = on_dead
 
-    def offer(self, message: dict) -> None:
-        """Mesajı kuyruğa koy; doluysa EN ESKİ mesajı düşür (bloklama YOK)."""
+    def offer(self, message) -> None:
+        """Mesajı kuyruğa koy; doluysa EN ESKİ mesajı düşür (bloklama YOK).
+
+        `message` dict VEYA `broadcast`'ın bir kez serileştirdiği `_Prepared`
+        olabilir — drain ikisini de ayırt eder.
+        """
         try:
             self.queue.put_nowait(message)
         except asyncio.QueueFull:
@@ -85,8 +115,16 @@ class _ClientOutbox:
         while True:
             message = await self.queue.get()
             try:
-                await asyncio.wait_for(
-                    self.websocket.send_json(message), timeout=CLIENT_SEND_TIMEOUT_SEC)
+                if isinstance(message, _Prepared) and hasattr(self.websocket, "send_text"):
+                    # Hazır metin: istemci başına yeniden serialize YOK.
+                    await asyncio.wait_for(
+                        self.websocket.send_text(message.text), timeout=CLIENT_SEND_TIMEOUT_SEC)
+                elif isinstance(message, _Prepared):
+                    await asyncio.wait_for(
+                        self.websocket.send_json(message.data), timeout=CLIENT_SEND_TIMEOUT_SEC)
+                else:
+                    await asyncio.wait_for(
+                        self.websocket.send_json(message), timeout=CLIENT_SEND_TIMEOUT_SEC)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -173,8 +211,12 @@ class ConnectionManager:
         (bakiye/pozisyon gibi kişisel veri için ZORUNLU). Kimliği eşleşmeyen
         hiçbir bağlantı mesajı ALMAZ.
         """
+        # PERFORMANS (2026-09-26): serileştirme BİR KEZ — aynı _Prepared nesnesi
+        # tüm hedef kuyruklara paylaşılır, her istemci kendi drain'inde hazır
+        # metni gönderir (eskiden N × json.dumps event loop'ta koşuyordu).
+        prepared = _prepare(message)
         for outbox in self._target_outboxes(user_id):
-            outbox.offer(message)
+            outbox.offer(prepared)
         # Bağlantı listesine hiç girmemiş (nadir, test) durumlar için yedek yol:
         # kuyruk kaydı olmayan bağlantılar doğrudan gönderilir.
         known = {id(o.websocket) for o in self._outboxes.values()}
@@ -182,8 +224,12 @@ class ConnectionManager:
             if id(websocket) in known:
                 continue
             try:
-                await asyncio.wait_for(websocket.send_json(message),
-                                       timeout=CLIENT_SEND_TIMEOUT_SEC)
+                if isinstance(prepared, _Prepared) and hasattr(websocket, "send_text"):
+                    await asyncio.wait_for(websocket.send_text(prepared.text),
+                                           timeout=CLIENT_SEND_TIMEOUT_SEC)
+                else:
+                    await asyncio.wait_for(websocket.send_json(message),
+                                           timeout=CLIENT_SEND_TIMEOUT_SEC)
             except Exception:
                 await self.disconnect(websocket)
 

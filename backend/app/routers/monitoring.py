@@ -2198,6 +2198,18 @@ async def _run_rising_scan() -> dict:
         # işaretlenir → YÜKSELİŞ bildirimi daha anlamlı olur.
         kind = str(candidate.get("kind") or "")
         if kind == rising_signals.KIND_EARLY:
+            # HİSTEREZİS (2026-09-26 performans turu): erken koşul SÜRDÜKÇE her
+            # turda `rising_alerts` satırı yazılıyordu (tablo şişmesi + tur başına
+            # gereksiz insert). STRENGTH dalıyla AYNI edge kontrolü: öncü küme
+            # değişmediyse yeni bilgi yoktur → DB kaydı YAPILMAZ. Erken-izleme
+            # tazeliği yine korunur (in-memory, ucuz) — YÜKSELİŞ sinyalinin
+            # "erken uyarılı" etiketi etkilenmez.
+            prev_key_early = rising_signals.last_key(symbol)
+            cur_key_early = rising_signals.signal_key(candidate)
+            if prev_key_early is not None and not rising_signals.rising_edge_trigger(prev_key_early, cur_key_early):
+                rising_signals.register_early_watch(candidate)
+                summary["early_dedup"] = summary.get("early_dedup", 0) + 1
+                continue
             price = _ticker_price(symbol) if notify_enabled else None
             if notify_enabled and (not price or price <= 0):
                 summary["skipped_price"] += 1
@@ -2477,14 +2489,20 @@ async def _run_scan() -> dict:
     5dk+15dk çift profili saklanır. RISK_OFF rejimde etkin eşik yükseltilir.
     """
     watch_symbols = sorted({w.get("symbol") for w in (_monitoring_state["last_watchlist"] or []) if w.get("symbol")})
-    # F-16: 5dk ve 15dk taramaları AYNI havuzu bağımsız olarak tarar; seri
-    # beklemek gecikmeyi ikiye katlıyordu. Eşzamanlı çalıştırılır (asyncio tek
-    # thread olduğu için paylaşılan durumda yarış yok).
+    # F-16 GÜNCELLEME (2026-09-26 performans turu): profiller artık tur-başı
+    # PAYLAŞIMLI kline önbelleğiyle SIRALI koşar. Eski karar ("seri beklemek
+    # gecikmeyi ikiye katlıyordu") önbelleksiz çağrı içindi; şimdi 5m profili
+    # 1m profilinin indirdiği AYNI serileri yeniden indirmiyor → REST çağrısı
+    # YARİYA İNİYOR (420→210/tur, 8 rps sınırda duvar süresi ~52sn→~26sn).
+    # İkinci profil yalnızca önbellekten okur (ağ beklemez).
+    _kline_cache: dict = {}
     try:
-        scan5, scan15 = await asyncio.gather(
-            detect_velocity_candidates({"limit": 10}, horizon_minutes=5, extra_symbols=watch_symbols),
-            detect_velocity_candidates({"limit": 10}, horizon_minutes=15, extra_symbols=watch_symbols),
-        )
+        scan5 = await detect_velocity_candidates({"limit": 10}, horizon_minutes=5,
+                                                 extra_symbols=watch_symbols,
+                                                 kline_cache=_kline_cache)
+        scan15 = await detect_velocity_candidates({"limit": 10}, horizon_minutes=15,
+                                                  extra_symbols=watch_symbols,
+                                                  kline_cache=_kline_cache)
     except Exception:
         # Detect patlarsa mevcut hata davranışı korunur (istisna aynen yukarı
         # çıkar); yalnızca warm listesi boşaltılır — bayat "ısınıyor" rozeti
@@ -3374,7 +3392,8 @@ async def report_notifications(
     }
 
     # Seçilen gün / dönem genel başarı dökümü (day=all ise tüm zamanlar)
-    all_rows = await database.get_monitoring_velocity_matches(limit=None, day=effective_day)
+    # slim=True: agregasyon message/title kullanmaz → kolon transferini atla.
+    all_rows = await database.get_monitoring_velocity_matches(limit=None, day=effective_day, slim=True)
     all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
     if req_conf > 1:
         all_rows = [r for r in all_rows if len(_parse_sources(r.get("sources"))) >= req_conf]

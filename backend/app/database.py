@@ -3096,23 +3096,29 @@ async def get_ml_training_candles(cutoff_ms: int, max_bars_per_symbol: int = 300
     """
     def op(conn):
         data: dict[str, dict[str, list]] = {}
+        # PERFORMANS (2026-09-26): eski sorgu penceredeki TÜM satırları çekip
+        # sembol başına fazlasını Python'da atıyordu (10 günlük pencerede tüm
+        # semboller × 288 bar transferi). Kırpım ROW_NUMBER ile SQL'e taşındı —
+        # çıktı birebir aynı: sembol başına son N bar, open_time ASC.
         rows = conn.execute(
-            """SELECT symbol, open_time, high, low, close, volume
-               FROM historical_candles WHERE timeframe='5m' AND open_time >= ?
-               ORDER BY symbol, open_time DESC""", (int(cutoff_ms),)).fetchall()
+            """SELECT symbol, open_time, high, low, close, volume FROM (
+                   SELECT symbol, open_time, high, low, close, volume,
+                          ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY open_time DESC) AS rn
+                   FROM historical_candles WHERE timeframe='5m' AND open_time >= ?
+               ) t
+               WHERE rn <= ?
+               ORDER BY symbol, open_time ASC""", (int(cutoff_ms), int(max_bars_per_symbol))).fetchall()
         for row in rows:
             # Postgres (asyncpg) satırları dict döner; tuple-unpack anahtar
             # stringlerini değişkene atadığı için dict erişimi kullanılır.
             symbol = str(row["symbol"]).upper()
             bucket = data.setdefault(symbol, {"open_time": [], "high": [], "low": [], "close": [], "volume": []})
-            if len(bucket["open_time"]) >= max_bars_per_symbol:
-                continue
             bucket["open_time"].append(int(row["open_time"]))
             bucket["high"].append(float(row["high"]))
             bucket["low"].append(float(row["low"]))
             bucket["close"].append(float(row["close"]))
             bucket["volume"].append(float(row["volume"]))
-        return {sym: {k: list(reversed(v)) for k, v in bucket.items()} for sym, bucket in data.items()}
+        return data
     return await _run_db(op)
 
 
@@ -4034,7 +4040,8 @@ async def mark_monitoring_push_sent(notification_id):
 
 
 
-async def get_monitoring_velocity_matches(limit: int | None = 1000, day: str | None = None):
+async def get_monitoring_velocity_matches(limit: int | None = 1000, day: str | None = None,
+                                          slim: bool = False):
     """Bildirimleri ayni andaki velocity adayiyla karsilastir (salt okunur).
 
 monitoring_notifications VE velocity_candidates ayni tarama turunda
@@ -4049,13 +4056,17 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
 
     limit: ust sinir (varsayilan 1000). M4 (R4-04): ``limit=None`` = cap YOK,
     tumu getirilir (overall hesaplari icin). day: 'YYYY-MM-DD' gun filtresi.
+    slim: PERFORMANS (2026-09-26) — ``message``/``title`` kolonlarını SELECT'ten
+    çıkarır (agregasyon tüketicileri bunları kullanmaz; satır başına ~hundreds of
+    bytes transfer ve dict kurulumu tasarrufu). Semantik DEĞİŞMEZ.
     """
     from datetime import datetime, timezone, timedelta
     def op(conn):
         base_sql = (
             "SELECT id, symbol, mode, score, target_pct, price, expected_price,"
-            " horizon_minutes, detected_at, sent_via_push, message, title,"
-            " candidate_id, norm_cap, norm_version, sources"
+            " horizon_minutes, detected_at, sent_via_push,"
+            + ("" if slim else " message, title,")
+            + " candidate_id, norm_cap, norm_version, sources"
             " FROM monitoring_notifications"
         )
         params: list = []
@@ -4185,25 +4196,27 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
 
 async def get_pending_monitoring_notification(symbol: str) -> dict | None:
     """Sembol icin sonuclanmamis (BEKLIYOR) bildirimlerini getir.
-    
-    En yeni bildirim ve toplam BEKLIYOR sayisi doner.
-    Eski bildirimler icin ID'ler de doner (silinmek uzere).
+
+    En yeni bildirim doner. PERFORMANS (2026-09-26): sorgu eski davranışta
+    sembolün TÜM 30 günlük geçmişini fetch edip ilk satırı kullanıyordu — sıcak
+    sembolde on binlerce satır transferi demekti. `old_ids`/`total_pending`
+    alanları hiçbir tüketicide kullanılmıyor (grep: yalnız burada üretiliyor);
+    sözleşme bozulmasın diye boş/1 ile doldurulur, sorgu `LIMIT 1`'e iner.
     """
     def op(conn):
-        rows = conn.execute(
+        row = conn.execute(
             "SELECT id, symbol, score, target_pct, price, expected_price, "
             "horizon_minutes, detected_at, mode "
             "FROM monitoring_notifications "
             "WHERE symbol=%s "
-            "ORDER BY detected_at DESC",
+            "ORDER BY detected_at DESC LIMIT 1",
             (str(symbol).upper(),)
-        ).fetchall()
-        if not rows:
+        ).fetchone()
+        if not row:
             return None
-        latest = dict(rows[0])
-        old_ids = [row[0] for row in rows[1:]]  # En yeni haric tum ID'ler
-        latest["old_ids"] = old_ids
-        latest["total_pending"] = len(rows)
+        latest = dict(row)
+        latest["old_ids"] = []
+        latest["total_pending"] = 1
         return latest
     return await _run_db(op)
 
@@ -4653,6 +4666,21 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
             conn.rollback()
             deleted["decision_logs"] = 0
             logger.warning("retention budama atlandı (tablo=decision_logs): %s",
+                           exc, exc_info=True)
+        # AUDIT-RETENTION (2026-09-26 performans turu): audit_logs budama
+        # listesinde DEĞİLDİ ve sınırsız büyüyordu (her admin/otonom eylem bir
+        # satır + details JSONB). Karar günlüğü penceresiyle aynı 90 gün —
+        # denetim izi uzun, ama sınırlı. `created_at` DOUBLE PRECISION (epoch sn)
+        # → doğrudan karşılaştırma; (created_at DESC) index'i mevcut.
+        try:
+            cursor = conn.execute("DELETE FROM audit_logs WHERE created_at < ?",
+                                  (decision_logs_cutoff,))
+            conn.commit()
+            deleted["audit_logs"] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        except Exception as exc:
+            conn.rollback()
+            deleted["audit_logs"] = 0
+            logger.warning("retention budama atlandı (tablo=audit_logs): %s",
                            exc, exc_info=True)
         # MEM-01: `_persist_chat_memory` HER sohbet isteğinde bir
         # `memory_documents` satırı (ve ON DELETE CASCADE ile

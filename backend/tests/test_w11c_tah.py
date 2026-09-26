@@ -210,7 +210,7 @@ class ExplorationUniverseTests(unittest.TestCase):
     def _scout(self):
         saved = []
 
-        async def fake_scan(_payload, horizon_minutes=5):
+        async def fake_scan(_payload, horizon_minutes=5, kline_cache=None):
             if horizon_minutes != 5:
                 return {"candidates": [], "watchlist": []}
             return {"candidates": [
