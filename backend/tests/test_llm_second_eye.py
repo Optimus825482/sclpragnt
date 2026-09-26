@@ -73,8 +73,27 @@ class ParseVerdictTests(unittest.TestCase):
         self.assertEqual(parsed["confidence"], 72)
 
     def test_free_prose_without_verdict_pattern_rejected(self):
-        # Serbest metin taraması YOK: "gerçek değil" tuzağına düşülmemeli.
+        # Serbest metin taraması YOK: küçük harf "gerçek değil / fake" tuzağına düşülmez.
         self.assertIsNone(llm_second_eye.parse_verdict("Bu kırılım gerçek değil, fake olabilir gibi."))
+
+    def test_leaked_reasoning_with_uppercase_token_salvaged(self):
+        # CANLI VAKA (rozet SCHEMA): model düşünme sürecini İngilizce sızdırdı,
+        # JSON hiç yazmadı ama kararını BÜYÜK HARF şema tokeniyle verdi.
+        live_sample = (
+            "We need answer only JSON exact schema. Need evaluate solely evidence. "
+            "Package bullish technical but no CVD/trade imbalance, whales, ladder, "
+            "funding, BTC. We should perhaps DEVAM due strong confluence?"
+        )
+        parsed = llm_second_eye.parse_verdict(live_sample)
+        self.assertEqual(parsed["verdict"], "DEVAM")
+        self.assertEqual(parsed["confidence"], 50)   # güven alanı yok → nötr
+
+    def test_salvage_respects_percent_and_negation(self):
+        parsed = llm_second_eye.parse_verdict("Kanıtlar çelişiyor, FAKE olasılığı yüksek. %65")
+        self.assertEqual(parsed["verdict"], "FAKE")
+        self.assertEqual(parsed["confidence"], 65)
+        # küçük harf "devam etmez" — token taramasına takılmaz
+        self.assertIsNone(llm_second_eye.parse_verdict("Momentum bitmiş, devam etmez."))
 
     def test_extract_content_list_and_reasoning_fallback(self):
         # content parça listesi biçimi
