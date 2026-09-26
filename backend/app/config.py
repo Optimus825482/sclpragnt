@@ -670,6 +670,16 @@ class Config:
     # (kanıt → replay → paper kuralı; aktive DEĞİL, yalnız gözlem).
     MACD_EARLY_ADAPTIVE_COOLDOWN = os.getenv("MACD_EARLY_ADAPTIVE_COOLDOWN", "false").lower() == "true"
 
+    # ---- "Isınıyor" (warm) şeridi + keşif havuzu (2026-09-26) ----
+    # Warm şeridi: eşiği kıl payı kaçıran adayların erken görünürlük listesi.
+    # AUTO-ENTRY'YE BAĞLI DEĞİLDİR — yalnız panel/bildirim katmanı okur.
+    MONITORING_WARM_LIST_LIMIT = max(1, int(os.getenv("MONITORING_WARM_LIST_LIMIT", "12")))
+    # Keşif A (!miniTicker@arr): 1m momentum+hacim patlaması yakalayan erken
+    # keşif akışının tarama havuzuna enjekte edilecek sembol limitleri/eşikleri.
+    DISCOVERY_MIN_RETURN_1M_PCT = float(os.getenv("DISCOVERY_MIN_RETURN_1M_PCT", "0.4"))
+    DISCOVERY_MIN_VOLUME_BURST = float(os.getenv("DISCOVERY_MIN_VOLUME_BURST", "2.0"))
+    DISCOVERY_POOL_INJECT_LIMIT = max(1, int(os.getenv("DISCOVERY_POOL_INJECT_LIMIT", "8")))
+
     @classmethod
     def round_trip_cost(cls) -> float:
         """Gidiş-dönüş maliyet: iki bacak komisyon + iki bacak slippage (KESİR).

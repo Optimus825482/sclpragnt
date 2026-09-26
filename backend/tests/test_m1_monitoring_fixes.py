@@ -613,5 +613,128 @@ class RobustnessTests(unittest.IsolatedAsyncioTestCase):
                       "ölü _record_history bağlanmalı (R2-15)")
 
 
+# ---------------------------------------------------------------------------
+# Warm listesi state yayını (2026-09-26, B-C bağlantısı)
+# ---------------------------------------------------------------------------
+class WarmListStateWiringTests(unittest.IsolatedAsyncioTestCase):
+    """Velocity taramasının "warm" (eşik altı ama yakın) adayları
+    `_monitoring_state["warm"]`a taşınır ve GET /state payload'ında
+    yayınlanır. Detect patlarsa warm BOŞ kalır — bayat rozet yayınlanmaz.
+    Warm geçicidir: persist/restore akışlarına dokunulmaz.
+    """
+
+    def setUp(self):
+        _reset_state()
+        from app.routers import monitoring
+        monitoring._monitoring_state["warm"] = []
+        monitoring._monitoring_state["last_watchlist"] = []
+        monitoring._monitoring_state["last_candidates"] = []
+
+    @staticmethod
+    def _scan(horizon: int, warm: list) -> dict:
+        return {"candidates": [], "watchlist": [], "warm": warm,
+                "horizon_minutes": horizon}
+
+    async def test_run_scan_collects_warm_into_state_and_publishes(self):
+        from app.routers import monitoring
+        warm5 = [{"symbol": "AAAUSDT", "velocity_score": 900.0,
+                  "warm_reason": "esige-yakin", "warm_proximity": 0.80,
+                  "price": 1.25, "change_24h": 4.5, "atr_pct": 0.7,
+                  "target_pct": 2.0, "horizon_minutes": 5}]
+        warm15 = [{"symbol": "BBBUSDT", "velocity_score": 1100.0,
+                   "warm_reason": "hacim-artisi", "warm_proximity": 0.95,
+                   "price": 2.50, "change_24h": 6.0, "atr_pct": 1.1,
+                   "target_pct": 3.0, "horizon_minutes": 15}]
+
+        async def fake_detect(_filters, horizon_minutes=5, extra_symbols=None):
+            if horizon_minutes == 5:
+                return self._scan(5, warm5)
+            return self._scan(15, warm15)
+
+        settings = {"enabled": False, "min_score": 70.0,
+                    "min_score_explicit": False, "min_target_pct": 0.0}
+        with patch.object(monitoring, "detect_velocity_candidates",
+                          new=AsyncMock(side_effect=fake_detect)), \
+             patch.object(monitoring, "_journal_touch_rates",
+                          new=AsyncMock(return_value={})), \
+             patch.object(monitoring, "get_user_notification_settings",
+                          new=AsyncMock(return_value=settings)), \
+             patch.object(monitoring, "_check_pending_targets", new=AsyncMock()), \
+             patch.object(monitoring, "_persist_runtime_state", new=AsyncMock()):
+            await monitoring._run_scan()
+
+            state_warm = monitoring._monitoring_state["warm"]
+            self.assertEqual(2, len(state_warm))
+            # warm_proximity azalan sıralama: BBB (0.95) başa geçer
+            self.assertEqual("BBBUSDT", state_warm[0]["symbol"])
+            by_sym = {w["symbol"]: w for w in state_warm}
+            # Profil etiketleri hangi taramadan geldiğini söyler
+            self.assertEqual("5m", by_sym["AAAUSDT"]["profile"])
+            self.assertEqual("15m", by_sym["BBBUSDT"]["profile"])
+            self.assertIsNotNone(by_sym["AAAUSDT"]["detected_at"])
+            self.assertAlmostEqual(0.80, by_sym["AAAUSDT"]["warm_proximity"])
+            # Frontend sözleşmesi: alan adları BİREBİR korunur
+            contract_keys = ("symbol", "velocity_score", "warm_reason",
+                             "warm_proximity", "price", "change_24h", "atr_pct",
+                             "target_pct", "horizon_minutes", "profile",
+                             "detected_at")
+            for row in state_warm:
+                for key in contract_keys:
+                    self.assertIn(key, row, f"warm satırında {key} eksik")
+
+            # GET /state payload'ı warm'ı yayınlar
+            with patch.object(monitoring, "_push_health_safe",
+                              new=AsyncMock(return_value={"subscribers": 0})):
+                payload = await monitoring.monitoring_state()
+            self.assertEqual(state_warm, payload["warm"])
+
+    async def test_run_scan_caps_warm_at_twelve(self):
+        from app.routers import monitoring
+        big = [{"symbol": f"W{i:02d}USDT", "velocity_score": 500.0 + i,
+                "warm_reason": "test", "warm_proximity": 0.5 + i / 100.0,
+                "price": 1.0, "change_24h": 1.0, "atr_pct": 0.5,
+                "target_pct": 2.0, "horizon_minutes": 5}
+               for i in range(30)]
+
+        async def fake_detect(_filters, horizon_minutes=5, extra_symbols=None):
+            return self._scan(5, big if horizon_minutes == 5 else [])
+
+        settings = {"enabled": False}
+        with patch.object(monitoring, "detect_velocity_candidates",
+                          new=AsyncMock(side_effect=fake_detect)), \
+             patch.object(monitoring, "_journal_touch_rates",
+                          new=AsyncMock(return_value={})), \
+             patch.object(monitoring, "get_user_notification_settings",
+                          new=AsyncMock(return_value=settings)), \
+             patch.object(monitoring, "_check_pending_targets", new=AsyncMock()), \
+             patch.object(monitoring, "_persist_runtime_state", new=AsyncMock()):
+            await monitoring._run_scan()
+        self.assertEqual(12, len(monitoring._monitoring_state["warm"]))
+
+    async def test_detect_exception_leaves_warm_empty(self):
+        """Detect patlarsa istisna aynen yükselir (mevcut hata davranışı) ve
+        warm listesi boş kalır — bayat rozet yayınlama yok."""
+        from app.routers import monitoring
+
+        async def boom(_filters, horizon_minutes=5, extra_symbols=None):
+            raise RuntimeError("detect patladi")
+
+        with patch.object(monitoring, "detect_velocity_candidates",
+                          new=AsyncMock(side_effect=boom)):
+            with self.assertRaises(RuntimeError):
+                await monitoring._run_scan()
+        self.assertEqual([], monitoring._monitoring_state["warm"])
+
+    async def test_reset_notifications_clears_warm(self):
+        from app.routers import monitoring
+        monitoring._monitoring_state["warm"] = [{"symbol": "AAAUSDT", "profile": "5m"}]
+        with patch("app.api_common.require_admin", return_value={"role": "admin"}), \
+             patch.object(monitoring, "log_user_action", new=AsyncMock()), \
+             patch.object(monitoring, "_persist_runtime_state", new=AsyncMock()):
+            resp = await monitoring.reset_monitoring_notifications(request=object())
+        self.assertTrue(resp.get("ok"))
+        self.assertEqual([], monitoring._monitoring_state["warm"])
+
+
 if __name__ == "__main__":
     unittest.main()

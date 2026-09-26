@@ -296,6 +296,85 @@ def _velocity_raw_score_gate() -> float:
     return _panel_to_raw_score(float(config.VELOCITY_AUTO_MIN_SCORE or 0))
 
 
+def _warm_gate(*, prof_atr: float, atr_pct: float, bb_width: float | None,
+               slope: float | None, aroon_up: float | None,
+               macd_bullish: bool, macd_rising: bool, ret3: float,
+               volume_ratio: float, leading_ok: bool) -> tuple[bool, str | None, float]:
+    """Isınıyor (warm) şeridi — eşiği kıl payı kaçıran adaylar için erken görünürlük.
+
+    Kök neden (2026-09-26 kullanıcı şikâyeti: "bildirimler geç geliyor"): eşiği
+    kıl payı kaçıran adaylar yalnızca ``block_reason`` ile watchlist'e düşüyor
+    ve panelde görünmez. Bu yardımcı, geçilememiş kapıların eşik oranlarını
+    hesaplar ve EN ZAYIF kapının eşiğe yakınlığını (0..1) döndürür.
+
+    DÖNÜŞ: ``(warm, warm_reason, warm_proximity)`` — warm=True yolları:
+      (a) ``leading_ok`` (M1/M3 öncü ATR kesişimi) → reason="m1_m3_oncu_atr",
+          proximity=0.75 (sabit yüksek güven; araştırmada dokunuşu ~2.5× artırır).
+      (b) Geçilememiş kapılar YALNIZ {atr, bb, struct} kümesinden VE en zayıf
+          oran ≥ 0.6 VE destek sinyali (macd_bullish | macd_rising |
+          ret3 ≥ 0.5 | volume_ratio ≥ 2.0) → reason="<kapı>_yaklas"
+          ("atr_yaklas"/"bb_yaklas"/"struct_yaklas"), proximity=en zayıf oran.
+
+    ÖNEMLİ — auto-entry BAĞLANTISI YOK: bu şerit ``passes``/skor/sıralama/hedef
+    hesabını HİÇ etkilemez; yalnızca görünürlük (warm listesi + bildirim
+    şeridi) içindir. ``exhausted``/``rejection_wick`` gibi tuzak elmelerini bu
+    saf fonksiyon BİLMEZ — çağıran taraf (scan_one) guard eder.
+    """
+    # Kapı oranları: 1.0 = tam eşikte, <1.0 = eşiğin altında (geçilemedi).
+    atr_oran = (atr_pct / prof_atr) if (prof_atr and prof_atr > 0) else 0.0
+    bb_oran = (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) \
+        if (bb_width is not None and VELOCITY_MIN_BB_WIDTH_PCT > 0) else 0.0
+    # Yapısal kapı: slope VEYA Aroon'dan GEÇENİ (skor formülündeki struct_ratio
+    # ile aynı tanım; None → 0 yani kapı açılmamış sayılır).
+    _slope_oran = ((slope or 0.0) / VELOCITY_STRUCT_SLOPE_PCT) if VELOCITY_STRUCT_SLOPE_PCT > 0 else 0.0
+    _aroon_oran = (aroon_up or 0.0) / 50.0
+    struct_oran = max(_slope_oran, _aroon_oran)
+
+    # (a) M1/M3 öncü kesişim: bağımsız yüksek güven şeridi.
+    if leading_ok:
+        return True, "m1_m3_oncu_atr", 0.75
+
+    # (b) Geçilememiş kapılar (yalnız oranla ifade edilebilen {atr, bb, struct});
+    # negatif oranlar (ör. aşağı eğim) 0'a kırpılır — proximity negatif olmasın.
+    failed: list[tuple[str, float]] = []
+    if atr_oran < 1.0:
+        failed.append(("atr", max(0.0, atr_oran)))
+    if bb_oran < 1.0:
+        failed.append(("bb", max(0.0, bb_oran)))
+    if struct_oran < 1.0:
+        failed.append(("struct", max(0.0, struct_oran)))
+    if not failed:
+        # Tüm kapılar oran olarak geçiyor → "yaklaşan" diye işaretlenmez;
+        # (geçenler zaten normal aday akışına girer).
+        return False, None, 0.0
+    min_oran = min(r for _, r in failed)
+    if min_oran < 0.6:
+        # Eşiğin çok altında → ısınma değil, hareketsizlik.
+        return False, None, 0.0
+    if not (macd_bullish or macd_rising or ret3 >= 0.5 or volume_ratio >= 2.0):
+        # Destek sinyali yok: eşeğin dibinde duran aday erken görünürlük kazanmaz.
+        return False, None, 0.0
+    en_zayif = min(failed, key=lambda item: item[1])[0]
+    return True, f"{en_zayif}_yaklas", min_oran
+
+
+def _warm_list_build(candidates: list[dict], watchlist: list[dict]) -> list[dict]:
+    """Warm (ısınıyor) şeridi listesi: aday + izleme listesi içinden ``warm=True`` satırlar.
+
+    Sıralama ``warm_proximity`` azalan (eşiğe EN YAKIN en üstte); limit
+    ``config.MONITORING_WARM_LIST_LIMIT`` (getattr, varsayılan 12). Öğeler
+    mevcut aday sözlüklerinin KENDİSİDİR (kopya gerekmez). Bu liste auto-entry'ye
+    BAĞLI DEĞİLDİR — yalnız erken görünürlük (panel/bildirim) içindir.
+    """
+    try:
+        limit = max(1, int(getattr(config, "MONITORING_WARM_LIST_LIMIT", 12)))
+    except (TypeError, ValueError):
+        limit = 12
+    warm_rows = [r for r in (list(candidates) + list(watchlist)) if r.get("warm") is True]
+    warm_rows.sort(key=lambda r: (r.get("warm_proximity") or 0.0), reverse=True)
+    return warm_rows[:limit]
+
+
 async def detect_velocity_candidates(args: dict | None = None, *, horizon_minutes: int = 5,
                                       extra_symbols: list | None = None):
     """Belirli ufukta (5dk/15dk) en az hedef % (2/3) yükselme potansiyeli taşıyan en hızlı 3 aday.
@@ -364,6 +443,19 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
         _add(item["symbol"], "gainer")
     for item in active_rows:
         _add(item["symbol"], "mover")
+    # 2026-09-26 (keşif A): !miniTicker@arr akışından 1m momentum+hacim patlaması
+    # yakalanan semboller havuza eklenir — 24h top-gainer listesi birkaç dakika
+    # geriden geldiği için ŞU AN başlayan hareket burada yakalanır.
+    try:
+        from app.early_discovery import top_candidates as _discovery_top
+        for _c in _discovery_top(int(getattr(config, "DISCOVERY_POOL_INJECT_LIMIT", 8))):
+            # Sembolsüz/bozuk kayıt havuzu kirletmesin (_add "None"u "NONE"
+            # sembolüne çevirirdi).
+            if not isinstance(_c, dict) or not _c.get("symbol"):
+                continue
+            _add(_c.get("symbol"), "discovery")
+    except Exception as exc:
+        logger.warning("velocity discovery havuz birleşimi: %s", exc)
     for sym in (str(s).upper() for s in config.SYMBOLS):
         _add(sym, "symbol")
     if extra_symbols:
@@ -666,6 +758,21 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 logger.warning("velocity m1/m3 leading hesabı: %s", exc)
                 m1_atr_prev = m3_atr_prev = None
                 leading_ok = False
+            # ---- "Isınıyor" (warm) şeridi (2026-09-26) ------------------------
+            # Eşiği kıl payı kaçıran adaylar için ERKEN GÖRÜNÜRLÜK. BU ŞERİT
+            # auto-entry'ye HİÇ BAĞLI DEĞİLDİR — passes/skor/sıralama/hedef
+            # değişmez; yalnız warm listesi/bildirim katmanı okur. Tuzak
+            # elmeleri (exhausted / rejection_wick) burada guard edilir,
+            # _warm_gate saf kalır; `passes` zaten True ise warm=False.
+            warm = False
+            warm_reason = None
+            warm_proximity = 0.0
+            if not passes and exhausted is None and not rejection_wick:
+                warm, warm_reason, warm_proximity = _warm_gate(
+                    prof_atr=prof_atr, atr_pct=atr_pct, bb_width=bb_width,
+                    slope=slope, aroon_up=aroon_up,
+                    macd_bullish=macd_bullish, macd_rising=macd_rising, ret3=ret3,
+                    volume_ratio=volume_ratio, leading_ok=bool(leading_ok))
             # --- ML tahmin: sembol bazlı adaptif hedef/süre ---
             ml_target = None
             ml_hit_prob = None
@@ -778,6 +885,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                         "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
                         "macd_bullish": macd_bullish,
                         "macd_rising": macd_rising,
+                        "warm": warm, "warm_reason": warm_reason,
+                        "warm_proximity": round(warm_proximity, 3),
                         "leading_ok": leading_ok,
                         "base_hit_pct": VELOCITY_BASE_RATE_PCT,
                         "last_closed_at": rows[-1][0]}
@@ -811,6 +920,11 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "change_24h": _change_24h.get(symbol),
                     "velocity_score": velocity_score, "passes": passes,
                     "block_reason": block_reason,
+                    # Warm şeridi: `passes=True` iken yukarıdaki guard yüzünden
+                    # zaten False'tur (geçen aday "ısınıyor" olarak işaretlenmez);
+                    # `passes=False` adaylarda kıl payı kaçırma yakınlığı taşır.
+                    "warm": warm, "warm_reason": warm_reason,
+                    "warm_proximity": round(warm_proximity, 3),
                     "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
                     "macd_bullish": macd_bullish,
                     "macd_rising": macd_rising,
@@ -902,6 +1016,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     _watchlist_min_raw = _panel_to_raw_score(0.6)
     watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= _watchlist_min_raw]
     watchlist.sort(key=lambda r: r["velocity_score"] * r["micro_mult"], reverse=True)
+    # "Isınıyor" (warm) şeridi (2026-09-26): eşiği kıl payı kaçıran adaylar
+    # block_reason'a gömülüp görünmez olmasın — erken görünürlük listesi.
+    # Auto-entry BU listeye BAĞLI DEĞİLDİR (yalnız panel/bildirim okur).
+    warm_list = _warm_list_build(candidates, watchlist)
     # Journal: geçenler + izleme listesi kaydedilir; ufuk süresi dolunca
     candidate_id_prefix = f"vel-{profile['label']}-{int(now_ms)}"
     for r in candidates + watchlist:
@@ -961,6 +1079,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                              "live_passing_count": int(live_stats.get("passing_count") or 0),
                              "note": "v2: hacim şartı kaldırıldı; BB genişliği + RSI/MFI uç elmesi + LinReg/Aroon teyidi. live_hit_pct canlı journal'dan gelir."},
             "candidates": candidates[:limit], "watchlist": watchlist[:5],
+            "warm": warm_list,
             "leading_summary": {
                 "scanned": len(results),
                 "leading_ok_count": sum(1 for r in results if r and r.get("leading_ok")),

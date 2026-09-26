@@ -583,6 +583,13 @@ class MarketData:
                 "symbols": tuple(group),
                 "timeframes": tuple(timeframes),
                 "base": base,
+                # Erken keşif (2026-09-26): `!miniTicker@arr` TÜM sembolleri tek
+                # akışta saniyede bir yayınlar; aynı verinin N grup tarafından
+                # tekrar tekrar işlenmemesi için YALNIZ İLK GRUP abone olur.
+                # Not: plan["url"] B-03 sözleşmesi gereği helper'ın 3-argümanlı
+                # (arr'sız) çağrısıyla birebir eşleşir; arr, _run_ws_group'un her
+                # denemede yeniden kurduğu URL'ye include_arr bayrağıyla eklenir.
+                "include_arr": index == 0,
                 # B-03: `url` yalnızca başlangıç değeri; `_run_ws_group`
                 # her denemede `_ws_url_for` ile yeniden kurar (host rotasyonu).
                 "url": self._ws_url_for(base, group, timeframes),
@@ -590,18 +597,26 @@ class MarketData:
         return plans
 
     @staticmethod
-    def _ws_stream_list(symbols, timeframes):
-        """WS stream listesi — tek kaynak (plan kurulumu ve yeniden bağlanma)."""
-        return "/".join(
+    def _ws_stream_list(symbols, timeframes, include_arr: bool = False):
+        """WS stream listesi — tek kaynak (plan kurulumu ve yeniden bağlanma).
+
+        ``include_arr=True`` iken listenin SONUNA `!miniTicker@arr` eklenir:
+        tüm sembollerin saniyelik miniTicker dizisi (erken keşif beslemesi,
+        app/early_discovery.py). Yalnız ilk grup bu bayrakla abone olur.
+        """
+        streams = (
             [f"{symbol}@kline_{tf}" for tf in timeframes for symbol in symbols]
             + [f"{symbol}@depth5@100ms" for symbol in symbols]
             + [f"{symbol}@aggTrade" for symbol in symbols]
             + [f"{symbol}@bookTicker" for symbol in symbols]
             + [f"{symbol}@ticker" for symbol in symbols]
         )
+        if include_arr:
+            streams.append("!miniTicker@arr")
+        return "/".join(streams)
 
-    def _ws_url_for(self, base, symbols, timeframes):
-        return f"{base}/stream?streams={self._ws_stream_list(symbols, timeframes)}"
+    def _ws_url_for(self, base, symbols, timeframes, include_arr: bool = False):
+        return f"{base}/stream?streams={self._ws_stream_list(symbols, timeframes, include_arr)}"
 
     @staticmethod
     def _ws_backoff_sec(attempt: int) -> float:
@@ -660,8 +675,12 @@ class MarketData:
         while self.running and generation == self.connection_generation:
             # B-03: URL HER denemede yeniden kurulur. Eskiden donmuş `plan["url"]`
             # kullanılıyordu → yedek host'a geçiş fiilen çalışmıyordu.
+            # Erken keşif: `!miniTicker@arr` aboneliği (include_arr) yeniden
+            # bağlanmalarda KORUNUR — aksi hâlde ilk kesintiden sonra pump
+            # beslemesi sessizce kaybolurdu.
             base = bases[self.ws_host_index % len(bases)]
-            url = self._ws_url_for(base, plan["symbols"], plan["timeframes"])
+            url = self._ws_url_for(base, plan["symbols"], plan["timeframes"],
+                                   bool(plan.get("include_arr")))
             try:
                 print(
                     f"[MarketData] WebSocket generation={generation} grup={group_id} "
@@ -783,6 +802,17 @@ class MarketData:
         if not isinstance(payload, dict):
             return
         data = payload.get("data", payload)
+        # Erken keşif (2026-09-26): `!miniTicker@arr` birleşik akışı `data`
+        # alanında TÜM sembollerin miniTicker DİZİSİ'ni taşır (tek olay = liste).
+        # Bu dal aşağıdaki `isinstance(data, dict)` guard'ından ÖNCE gelmelidir;
+        # aksi hâlde her arr çerçevesi sessizce düşer ve pump keşfi hiç veri
+        # görmez. Ham dizi olduğu gibi erken keşif modülüne geçirilir — sembol
+        # filtresi (TRY eki) ve eşikler orada uygulanır, burada filtre YOK.
+        if isinstance(data, list):
+            from app import early_discovery  # yerel import: WS kurulumundan bağımsız
+            early_discovery.ingest_mini_ticker(data)
+            self._mark_ws_event()
+            return
         if not isinstance(data, dict):
             return
         stream = str(payload.get("stream") or "")
