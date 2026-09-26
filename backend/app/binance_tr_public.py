@@ -89,15 +89,14 @@ _ticker_24h_lock = threading.Lock()
 _ticker_24h_load_locks: dict[int, asyncio.Lock] = {}
 
 
-_MUT_SHARED = threading.Lock()  # MUTASYON: paylaşılan senkron kilit
-
-class _LegacyBlockingShim:
-    async def __aenter__(self):
-        _MUT_SHARED.acquire(); return self   # await uzerinde tutulur + loop doner
-    async def __aexit__(self, *a): _MUT_SHARED.release()
-
-def _ticker_24h_loop_lock():
-    return _LegacyBlockingShim()
+def _ticker_24h_loop_lock() -> asyncio.Lock:
+    """Çalışan event loop'a ait yükleme kilidi (döngü başına bir adet)."""
+    loop = asyncio.get_running_loop()
+    lock = _ticker_24h_load_locks.get(id(loop))
+    if lock is None:
+        lock = asyncio.Lock()
+        _ticker_24h_load_locks[id(loop)] = lock
+    return lock
 
 
 class TransientDecodeError(RuntimeError):
