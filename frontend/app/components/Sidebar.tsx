@@ -19,10 +19,14 @@ const MENU_ITEMS = [
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
     { href: "/technical-charts", label: "Teknik Grafik", icon: "🖥️", desc: "4'lü çoklu TradingView ekranı", adminOnly: true },
     { href: "/binance-tr", label: "Binance TR", icon: "🏛️", desc: "Kendi Binance TR hesabında canlı işlem" },
+    { href: "/alerts", label: "Alarmlar", icon: "🔔", desc: "Fiyat alarmları kur ve yönet" },
+    { href: "/risk", label: "Risk", icon: "🛡️", desc: "Risk özeti ve genel kapı" },
     { href: "/chat", label: "Chat", icon: "💬", desc: "Uzman trader LLM asistanı" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu", adminOnly: true },
     { href: "/admin", label: "Yönetim", icon: "🛠️", desc: "Veritabanı, kayıtlar, MACD monitör", requiresStaff: true },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Sinyal ve işlem raporları" },
+    { href: "/trade-repair", label: "İşlem Onarım", icon: "🧰", desc: "Veri tutarlılık onarımı", adminOnly: true },
+    { href: "/memory", label: "LLM Hafıza", icon: "🧠", desc: "Hafıza arama ve durum", adminOnly: true },
 ];
 const formatNotificationDate = (value: unknown) => {
     const numeric = Number(value);
