@@ -139,10 +139,12 @@ class DiscoveryPulseTests(unittest.IsolatedAsyncioTestCase):
         tc.assert_called_once_with(monitoring.config.DISCOVERY_PULSE_LIMIT)
         self.assertEqual(len(pulse), 1)
         item = pulse[0]
-        # Frontend sözleşmesi — alan adları BİREBİR (7 alan):
+        # Frontend sözleşmesi — alan adları BİREBİR (8 alan; macd_mtf 2026-09-26
+        # MACD MTF konfluans rozeti — önbellek kaydı yoksa None):
         self.assertEqual(set(item), {"symbol", "price", "return_1m_pct",
                                      "return_20s_pct", "volume_burst",
-                                     "sample_age_sec", "detected_at"})
+                                     "sample_age_sec", "detected_at", "macd_mtf"})
+        self.assertIsNone(item["macd_mtf"])
         self.assertEqual(item["symbol"], "BTCTRY")
         self.assertEqual(item["price"], 101.0)
         self.assertEqual(item["return_1m_pct"], 1.5)

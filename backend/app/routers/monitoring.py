@@ -16,6 +16,7 @@ from app.api_common import log_user_action, _background_tasks, _start_background
 from app.state import market, analyzer
 from app import unified_signals
 from app import llm_second_eye
+from app import macd_mtf
 from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
 from app.alerting import deliver_web_push
@@ -2467,7 +2468,24 @@ async def _run_scan() -> dict:
                 "detected_at": time.time(),
             })
     merged_warm.sort(key=lambda w: _num(w.get("warm_proximity"), 0.0) or 0.0, reverse=True)
+    # MACD MTF konfluans rozeti (cache okuması — senkron, bloklamaz). Hesap
+    # fire-and-forget tazelemeyle doldurulur; kayıt yoksa None kalır.
+    for _w in merged_warm:
+        _w["macd_mtf"] = macd_mtf.cached_compact(_w.get("symbol"))
     _monitoring_state["warm"] = merged_warm[:12]
+    # MACD MTF tazeleme (fire-and-forget): warm + nabız sembollerinin konfluans
+    # önbelleğini 60 sn TTL ile tazeler; taramayı BEKLETMEZ.
+    _macd_mtf_symbols: list[str] = [str(_w.get("symbol") or "") for _w in _monitoring_state["warm"]]
+    try:
+        from app.early_discovery import top_candidates as _top_candidates
+        _macd_mtf_symbols += [str(_r.get("symbol") or "")
+                              for _r in (_top_candidates(config.DISCOVERY_PULSE_LIMIT) or [])]
+    except Exception:
+        pass
+    if _macd_mtf_symbols:
+        _mtf_task = asyncio.create_task(macd_mtf.refresh_many(_macd_mtf_symbols))
+        _background_tasks.add(_mtf_task)
+        _mtf_task.add_done_callback(_background_tasks.discard)
 
     # Sıralama anahtarı: chat upside-scout ile ortak (journal touch oranları +
     # mikro-yapı çarpanı satırların içinde hazır: upside_rank_score hesaplar).
@@ -2761,6 +2779,9 @@ def _discovery_pulse() -> list[dict]:
             "return_20s_pct": row.get("return_20s_pct"),
             "volume_burst": row.get("volume_burst"),
             "sample_age_sec": row.get("sample_age_sec"),
+            # MACD MTF konfluans rozeti (yalnız önbellek okuması — hesap scan
+            # turundaki fire-and-forget görevde; kayıt yoksa None kalır).
+            "macd_mtf": macd_mtf.cached_compact(row.get("symbol")),
             "detected_at": time.time(),
         })
     return pulse

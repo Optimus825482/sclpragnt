@@ -68,6 +68,19 @@ type WarmCandidate = {
   horizon_minutes: number | null;
   profile: "5m" | "15m" | null;
   detected_at: number | null;      // epoch sn
+  macd_mtf?: MacdMtfCompact | null;
+};
+
+/** MACD MTF konfluans özeti (backend `macd_mtf.cached_compact`) — M1/M3/M5/M15 MACD-Signal uyumu. */
+type MacdMtfCompact = {
+  symbol?: string;
+  coverage?: number;
+  confluence?: number | null;      // 0-100
+  verdict?: string | null;         // GÜÇLÜ | ORTA | ZAYIF | VERİ YOK
+  green_count?: number;
+  parallel_up_count?: number;
+  fresh_cross?: string[];          // taze yukarı kesişim TF'leri
+  age_sec?: number;
 };
 
 /** Akıştan gelen ham keşif nabzı — backend `state.pulse` sözleşmesi (EN ERKEN katman, saniyeler). */
@@ -79,6 +92,20 @@ type PulseCandidate = {
   volume_burst: number | null;    // medyan hacme oran
   sample_age_sec: number | null;
   detected_at: number | null;     // epoch sn
+  macd_mtf?: MacdMtfCompact | null;
+};
+
+/** MTF MACD rozeti: kullanıcının "kesişim + paralel yukarı" metodunun özeti. */
+const mtfBadge = (mtf: MacdMtfCompact | null | undefined) => {
+  if (!mtf) return null;
+  const verdict = mtf.verdict ?? "VERİ YOK";
+  if (verdict === "VERİ YOK") return null; // veri yoksa satırı kirletme
+  const fresh = mtf.fresh_cross?.length ? ` · taze kesişim: ${mtf.fresh_cross.join(", ")}` : "";
+  const title = `MTF MACD uyumu: ${mtf.green_count ?? 0} yeşil · ${mtf.parallel_up_count ?? 0} paralel yukarı${fresh}` +
+    (mtf.age_sec != null ? ` (${Math.round(mtf.age_sec)} sn önce)` : "");
+  if (verdict === "GÜÇLÜ") return { label: `MTF ✓ ${mtf.confluence ?? ""}`, cls: "border-neon-green/40 bg-neon-green/10 text-neon-green", title };
+  if (verdict === "ORTA") return { label: `MTF ~ ${mtf.confluence ?? ""}`, cls: "border-yellow-400/40 bg-yellow-400/10 text-yellow-300", title };
+  return { label: `MTF ✗ ${mtf.confluence ?? ""}`, cls: "border-bunker-700 bg-bunker-800 text-bunker-muted", title };
 };
 
 type MonitoringState = {
@@ -1341,6 +1368,14 @@ export default function MonitoringPage() {
                   >
                     {p.symbol}
                   </Link>
+                  {(() => {
+                    const badge = mtfBadge(p.macd_mtf);
+                    return badge ? (
+                      <span className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-bold ${badge.cls}`} title={badge.title}>
+                        {badge.label}
+                      </span>
+                    ) : null;
+                  })()}
                   <span className={pulseReturnColor(p.return_20s_pct)}>
                     20s: <b className="font-bold">{formatPulseReturn(p.return_20s_pct)}</b>
                   </span>
@@ -1411,6 +1446,14 @@ export default function MonitoringPage() {
                         {reasonLabel}
                       </span>
                     )}
+                    {(() => {
+                      const badge = mtfBadge(w.macd_mtf);
+                      return badge ? (
+                        <span className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-bold ${badge.cls}`} title={badge.title}>
+                          {badge.label}
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
 
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:justify-end text-bunker-muted">
