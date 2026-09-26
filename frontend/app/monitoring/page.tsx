@@ -238,6 +238,24 @@ type NotificationRow = {
   mode?: string | null;
   price?: number | null;
   expected_price?: number | null;
+  llm_verdict?: string | null;
+  llm_confidence?: number | null;
+  llm_reasons?: { reasons?: string[]; trap_evidence?: string[]; summary?: string | null } | null;
+};
+
+/** LLM ikinci-göz karar rozeti: DEVAM ✓ yeşil, TUZAK ⚠ kırmızı, BELİRSİZ gri. */
+const llmVerdictBadge = (row: NotificationRow) => {
+  const verdict = row.llm_verdict;
+  if (!verdict) return null;
+  const conf = row.llm_confidence;
+  const confTxt = conf != null ? ` %${Math.round(conf)}` : "";
+  if (verdict === "DEVAM") {
+    return { label: `🧠 ONAY ✓${confTxt}`, cls: "border-neon-green/40 bg-neon-green/10 text-neon-green", tone: "text-neon-green" };
+  }
+  if (verdict === "TUZAK") {
+    return { label: `🧠 ⚠ TUZAK${confTxt}`, cls: "border-neon-red/40 bg-neon-red/10 text-neon-red", tone: "text-neon-red" };
+  }
+  return { label: `🧠 BELİRSİZ${confTxt}`, cls: "border-bunker-700 bg-bunker-800 text-bunker-muted", tone: "text-bunker-muted" };
 };
 
 const SCORE_NORM_MODE: "log" | "linear" = "log";
@@ -1536,6 +1554,23 @@ export default function MonitoringPage() {
                       <span className="text-bunker-muted text-[11px]">
                         Skor: <b className={scoreColor(score)}>{scoreText(score)}</b>
                       </span>
+                      {(() => {
+                        const badge = llmVerdictBadge(row);
+                        if (!badge) return null;
+                        const reasonList = row.llm_reasons;
+                        const tipParts: string[] = [];
+                        if (reasonList?.summary) tipParts.push(reasonList.summary);
+                        if (reasonList?.reasons?.length) tipParts.push(`Kanıt: ${reasonList.reasons.join(", ")}`);
+                        if (reasonList?.trap_evidence?.length) tipParts.push(`Tuzak: ${reasonList.trap_evidence.join(", ")}`);
+                        return (
+                          <span
+                            className={`rounded px-2 py-0.5 text-[10px] font-bold border ${badge.cls}`}
+                            title={tipParts.length > 0 ? tipParts.join(" | ") : `LLM ikinci göz kararı: ${row.llm_verdict}`}
+                          >
+                            {badge.label}
+                          </span>
+                        );
+                      })()}
                     </div>
 
                     <div className="flex items-center justify-between sm:justify-end gap-3 text-bunker-muted">
