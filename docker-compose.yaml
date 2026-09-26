@@ -59,18 +59,26 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      # 2026-09-26 (#74/a): BU DEĞİŞKEN HİÇ AYARLANMIYORDU.
-      # `config.py:751` PRODUCTION_MODE'u `SCALPER_ENV > ENVIRONMENT >
-      # "development"` sırasıyla okuyor; varsayılan "development" idi →
+      # 2026-09-26 (#74/a): PRODUCTION_MODE.
+      #
+      # `config.py` PRODUCTION_MODE'u `SCALPER_ENV > ENVIRONMENT >
+      # "development"` sırasıyla okur. Varsayılan "development" iken
       # `enforce_admin_password_policy(..., production=False)` zayıf admin
-      # parolasını yalnızca UYARI düzeyine indiriyordu ve tüm parola /
-      # placeholder korumaları üretimde fiilen atılıyordu.
-      # NOT: Bu, zayıf `SCALPER_ADMIN_PASSWORD` ile konteynerin açılmayı
-      # REDDETMESİ demektir. Yani production moduna geçmek = parola
-      # politikasının gerçekten uygulanması. Politika:
-      # `config.py:admin_password_policy_message` (>=10 karakter, harf+rakam,
-      # yaygın sözlük değeri).
-      SCALPER_ENV: production
+      # parolasını yalnızca UYARI düzeyine indirir.
+      #
+      # ⚠️ GEÇİCİ GERİ ALMA (2026-09-26, operatör kararı — Seçenek B):
+      # "production" DEĞERİ DENENDİ ve DEPLOY'U DURDURDU. Mevcut
+      # SCALPER_ADMIN_PASSWORD politikayı geçmiyor (<10 karakter / yaygın
+      # sözlük), `config.py` import sırasında RuntimeError fırlatıyor,
+      # uvicorn hiç açılmıyor, healthcheck geçmiyor, konteyner "Waiting"
+      # durumunda kalıyor.
+      #
+      # Bu değer "production" yapıldığında konteyner açılmayı REDDEDER —
+      # yani politika gerçekten uygulanır, ama mevcut parolayla prod'a
+      # çıkmak mümkün değildir. Parolayı güçlendirip (>=10 karakter, harf+
+      # rakam, yaygın sözlük değil) bu değeri "production" yapmak gerekir.
+      # Politika: `config.py:admin_password_policy_message`.
+      SCALPER_ENV: ${SCALPER_ENV:-development}
       SCALPER_DB_PATH: /data/scalper_db_v4.sqlite
       # Use the database service in this Compose stack. A stale Coolify
       # DATABASE_URL must not redirect the backend to an unreachable host.

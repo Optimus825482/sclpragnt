@@ -742,8 +742,24 @@ def enforce_admin_password_policy(password: str, *, production: bool) -> None:
     if not message:
         return
     if production:
+        # 2026-09-26: bu hata prod deploy'unu iki kez durdurdu ve Coolify
+        # deploy logunda backend loglarını göstermediği için sebep
+        # görünmüyordu. Bu yüzden mesaj artık KENDİ KENDİ YETERLİ:
+        # ne olduğunu, neden olduğunu ve iki somut çözümü içerir.
+        # Parola DEĞERİ hiçbir zaman loglanmaz — yalnızca politika ihlali.
         raise RuntimeError(
-            "[config] " + message + " (SCALPER_ENV=production; başlatma reddedildi)")
+            "[config] " + message + "\n"
+            "[config] NEDEN: SCALPER_ENV=production iken parola politikası ZORUNLU'dur;\n"
+            "[config]   ihlal ederse backend başlamaz (bu bir hata değil, korumadır).\n"
+            "[config]   Politika: >=10 karakter, tamamen rakam değil, ve şu değerlerden\n"
+            "[config]   biri değil: " + ", ".join(sorted(_WEAK_ADMIN_PASSWORDS)) + ".\n"
+            "[config] ÇÖZÜM 1 (önerilen, güvenli): Coolify panelden\n"
+            "[config]   SCALPER_ADMIN_PASSWORD ortam değişkenini güçlendirin.\n"
+            "[config]   Değeri hiçbir yere yazmayın/loglamayın.\n"
+            "[config] ÇÖZÜM 2 (geçici, güvenlik AZALIR): docker-compose.yaml'da\n"
+            "[config]   SCALPER_ENV: ${SCALPER_ENV:-development} kullanın; kod\n"
+            "[config]   değişikliği gerekmez. Böylece politika üretimde kapanır."
+        )
     print("[config] UYARI: " + message + " (geliştirme modunda yalnızca uyarı; "
           "üretimde başlatma engellenir)")
 
