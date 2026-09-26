@@ -9,6 +9,7 @@ import { useLiveMessages } from "../lib/liveSocket";
 import { useModalA11y } from "../lib/useModalA11y";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
+import { scoreToneClass, scoreToneText } from "../lib/scoreTone";
 import AppLoader from "../components/AppLoader";
 
 type NotificationSettings = {
@@ -436,11 +437,10 @@ const panelScore = (c: { panel_score?: number | null; velocity_score?: number | 
   return Math.round(100 * Math.min(1, raw / SCORE_NORM_CAP) * 10) / 10;
 };
 
-const SCORE_TONE_GREEN = 71.5;
-const SCORE_TONE_YELLOW = 68.2;
-const scoreColor = (score: number | null) =>
-  score == null ? "text-bunker-muted" : score >= SCORE_TONE_GREEN ? "text-neon-green" : score >= SCORE_TONE_YELLOW ? "text-yellow-300" : "text-neon-red";
-const scoreText = (score: number | null) => (score == null ? "—" : score.toFixed(1));
+// UX (2026-09-27): skor renk eşikleri lib/scoreTone'a taşındı — Grafik radar
+// paneli de AYNI eşikleri kullanıyor (eskiden 70/50 kopyasıydı → tutarsız renk).
+const scoreColor = scoreToneClass;
+const scoreText = scoreToneText;
 
 const blockReasonLabel = (reason?: string | null) => {
   if (!reason) return null;
@@ -1281,9 +1281,17 @@ export default function MonitoringPage() {
                     <div className="flex items-center justify-between lg:justify-start gap-3 min-w-0">
                       <div className="flex items-center gap-2.5">
                         <span className="w-6 text-center font-mono text-xs font-bold text-bunker-muted">#{i + 1}</span>
-                        <span className="font-mono text-lg sm:text-base font-black text-white group-hover:text-neon-green transition-colors">
+                        {/* UX (2026-09-27): sembol adı DOĞRUDAN grafiğe gider
+                            (CANLI NABIZ ile aynı tek-tık akışı); satır tıklaması
+                            hâlâ detay modalını açar. */}
+                        <Link
+                          href={`/charts?symbol=${encodeURIComponent(c.symbol)}`}
+                          onClick={(e) => e.stopPropagation()}
+                          title="Grafiği aç"
+                          className="font-mono text-lg sm:text-base font-black text-white hover:text-sky-300 hover:underline underline-offset-4 transition-colors"
+                        >
                           {c.symbol}
-                        </span>
+                        </Link>
 
                         <span className={`shrink-0 rounded-md border px-2 py-0.5 font-mono text-[10px] font-bold uppercase ${modeClass}`}>
                           {modeLabel}
@@ -1591,6 +1599,15 @@ export default function MonitoringPage() {
                       <span className={`text-xs font-black ${scoreColor(score)} bg-bunker-950 px-2 py-1 rounded border border-bunker-800`}>
                         Skor: {scoreText(score)}
                       </span>
+                      {/* UX (2026-09-27): tek tık grafik (satır = detay modal). */}
+                      <Link
+                        href={`/charts?symbol=${encodeURIComponent(w.symbol)}`}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Grafiği aç"
+                        className="rounded-md border border-bunker-700 px-2 py-1 text-[11px] text-bunker-muted transition-colors hover:border-sky-400/60 hover:text-sky-300"
+                      >
+                        Grafik
+                      </Link>
                       <span className="text-bunker-muted text-sm">›</span>
                     </div>
                   </button>
