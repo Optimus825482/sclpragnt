@@ -243,17 +243,17 @@ type NotificationRow = {
   llm_reasons?: { reasons?: string[]; trap_evidence?: string[]; summary?: string | null } | null;
 };
 
-/** LLM ikinci-göz karar rozeti: DEVAM ✓ yeşil, TUZAK ⚠ kırmızı, BELİRSİZ gri. */
+/** LLM ikinci-göz karar rozeti: DEVAM ✓ yeşil, FAKE ⚠ kırmızı, BELİRSİZ gri. */
 const llmVerdictBadge = (row: NotificationRow) => {
   const verdict = row.llm_verdict;
   if (!verdict) return null;
   const conf = row.llm_confidence;
   const confTxt = conf != null ? ` %${Math.round(conf)}` : "";
   if (verdict === "DEVAM") {
-    return { label: `🧠 ONAY ✓${confTxt}`, cls: "border-neon-green/40 bg-neon-green/10 text-neon-green", tone: "text-neon-green" };
+    return { label: `🧠 DEVAM ✓${confTxt}`, cls: "border-neon-green/40 bg-neon-green/10 text-neon-green", tone: "text-neon-green" };
   }
-  if (verdict === "TUZAK") {
-    return { label: `🧠 ⚠ TUZAK${confTxt}`, cls: "border-neon-red/40 bg-neon-red/10 text-neon-red", tone: "text-neon-red" };
+  if (verdict === "FAKE" || verdict === "TUZAK") {
+    return { label: `🧠 FAKE ⚠${confTxt}`, cls: "border-neon-red/40 bg-neon-red/10 text-neon-red", tone: "text-neon-red" };
   }
   return { label: `🧠 BELİRSİZ${confTxt}`, cls: "border-bunker-700 bg-bunker-800 text-bunker-muted", tone: "text-bunker-muted" };
 };
