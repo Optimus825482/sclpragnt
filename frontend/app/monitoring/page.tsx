@@ -117,6 +117,33 @@ type MonitoringState = {
   pulse?: PulseCandidate[];
 };
 
+/** LLM ikinci-göz teşhisi (backend state.llm_second_eye) — sessiz arıza görünür olsun. */
+type LlmEyeStatus = {
+  delivered: number;
+  evaluated: number;
+  skipped: number;
+  last_error_kind: string | null;   // provider_missing | timeout | http | schema | bad_response
+  last_error: string | null;
+  provider_missing_active: boolean;
+};
+
+const llmEyeChip = (s: LlmEyeStatus | null): { label: string; cls: string; title: string } | null => {
+  if (!s) return null;
+  if (s.last_error_kind === "provider_missing" || s.provider_missing_active) {
+    return { label: "🧠 LLM: SAĞLAYICI YOK", cls: "border-neon-red/50 bg-neon-red/10 text-neon-red", title: s.last_error ?? "llm_enabled veya aktif chat modeli eksik — Ayarlar → LLM'i kontrol et" };
+  }
+  if (s.last_error_kind === "timeout") {
+    return { label: "🧠 LLM: ZAMAN AŞIMI", cls: "border-yellow-400/50 bg-yellow-400/10 text-yellow-300", title: s.last_error ?? "Sağlayıcı yanıt vermedi — daha hızlı bir model seç" };
+  }
+  if (s.last_error_kind) {
+    return { label: `🧠 LLM: ${s.last_error_kind.toUpperCase()}`, cls: "border-yellow-400/50 bg-yellow-400/10 text-yellow-300", title: s.last_error ?? "" };
+  }
+  if (s.delivered > 0) {
+    return { label: `🧠 LLM: ${s.delivered} karar`, cls: "border-neon-green/40 bg-neon-green/10 text-neon-green", title: `${s.evaluated} değerlendirme · ${s.skipped} atlanan` };
+  }
+  return { label: "🧠 LLM: bekliyor", cls: "border-bunker-700 bg-bunker-800 text-bunker-muted", title: "İlk bildirim bekleniyor" };
+};
+
 type ServerHealth = {
   loop_active: boolean | null;
   data_ready: boolean | null;
@@ -547,6 +574,7 @@ export default function MonitoringPage() {
     vapid_public_key: string | null;
   } | null>(null);
   const [health, setHealth] = useState<ServerHealth>(EMPTY_HEALTH);
+  const [llmEyeStatus, setLlmEyeStatus] = useState<LlmEyeStatus | null>(null);
   const [stateError, setStateError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [stateLoaded, setStateLoaded] = useState(false);
@@ -587,6 +615,17 @@ export default function MonitoringPage() {
       warm: parseWarmCandidates(data?.warm),
       pulse: parsePulseCandidates(data?.pulse),
     });
+    const lse = data?.llm_second_eye;
+    setLlmEyeStatus(lse && typeof lse === "object"
+      ? {
+        delivered: numOrNull(lse.delivered) ?? 0,
+        evaluated: numOrNull(lse.evaluated) ?? 0,
+        skipped: numOrNull(lse.skipped) ?? 0,
+        last_error_kind: typeof lse.last_error_kind === "string" ? lse.last_error_kind : null,
+        last_error: typeof lse.last_error === "string" ? lse.last_error : null,
+        provider_missing_active: Boolean(lse.provider_missing_active),
+      }
+      : null);
     setHealth({
       loop_active: boolOrNull(data?.loop_active),
       data_ready: boolOrNull(data?.data_ready),
@@ -875,6 +914,14 @@ export default function MonitoringPage() {
           <div className="flex items-center gap-2">
             <p className="eyebrow text-neon-green">OTONOM PİYASA RADARI</p>
             <LivenessBadge lastScanAt={state.last_scan_at} />
+            {(() => {
+              const chip = llmEyeChip(llmEyeStatus);
+              return chip ? (
+                <span className={`rounded-md border px-2 py-0.5 font-mono text-[10px] font-bold ${chip.cls}`} title={chip.title}>
+                  {chip.label}
+                </span>
+              ) : null;
+            })()}
           </div>
           <h1 className="font-mono text-2xl sm:text-3xl font-black text-white mt-1">Yükselme Takip &amp; Bildirim</h1>
           <p className="mt-1 text-sm text-bunker-muted max-w-2xl">

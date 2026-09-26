@@ -27,16 +27,22 @@ from app.llm_analysis import _json_load_lenient
 logger = logging.getLogger("scalper.llm_second_eye")
 
 # --- Ayarlar (env ile aynen; testler modül niteliğini değiştirerek kelepçeler) ---
-# HIZ İLKESİ (kullanıcı kararı 2026-09-26): "fırsat kaçmadan" — geç gelen karar
-# değersizdir. Tavan 20 sn; LLM daha yavaşsa karar YOK, kural kararı geçerli.
+# HIZ İLKESİ + GERÇEKLİK (2026-09-26 revizyonu): lean prompt hızı sağlar; tavan
+# yalnızca üst sınırdır. 20 sn tavan yavaş sağlayıcılarda HER kararı siliyordu
+# (kullanıcı hiç bildirim görmüyordu) → dış bütçe 45 sn'e çekildi; aşılırsa
+# karar YOK, kural kararı geçerli.
 COOLDOWN_SEC = float(os.getenv("LLM_SECOND_EYE_COOLDOWN_SEC", "1800") or 1800)
 MIN_INTERVAL_SEC = float(os.getenv("LLM_SECOND_EYE_MIN_INTERVAL_SEC", "15") or 15)
-TIMEOUT_SEC = float(os.getenv("LLM_SECOND_EYE_TIMEOUT_SEC", "20") or 20)
+TIMEOUT_SEC = float(os.getenv("LLM_SECOND_EYE_TIMEOUT_SEC", "45") or 45)
 MIN_SCORE = float(os.getenv("LLM_SECOND_EYE_MIN_SCORE", "0") or 0)
 MAX_PER_HOUR = int(os.getenv("LLM_SECOND_EYE_MAX_PER_HOUR", "15") or 15)
 PROVIDER_MISSING_BACKOFF_SEC = float(os.getenv("LLM_SECOND_EYE_PROVIDER_BACKOFF_SEC", "600") or 600)
 # Hızlı yol: 2 mesaj + tavan 250 token — kısa JSON cevabı saniyeler içinde döner.
+# NOT (2026-09-26): HTTP tavanı başta 15 sn idi; yavaş sağlayıcılarda HER çağrı
+# sessizce düşüyor ve kullanıcı hiç karar görmüyordu. Lean prompt hızı zaten
+# sağlar; tavan yalnızca üst sınırdır → 40 sn / dış bütçe 45 sn.
 FAST_MAX_TOKENS = int(os.getenv("LLM_SECOND_EYE_MAX_TOKENS", "250") or 250)
+HTTP_TIMEOUT_SEC = float(os.getenv("LLM_SECOND_EYE_HTTP_TIMEOUT", "40") or 40)
 
 VERDICT_SCHEMA_HINT = (
     '{"verdict":"DEVAM|FAKE|BELIRSIZ","confidence":<0-100 tam sayı>,'
@@ -62,20 +68,38 @@ _state = {
     "hour_marks": deque(),
     "provider_missing_until": 0.0,
     "last_error": None,
+    "last_error_kind": None,
+    "error_counts": {},
     "evaluated": 0,
     "skipped": 0,
+    "delivered": 0,
 }
 _last_eval_per_symbol: dict[str, float] = {}
 
 
+def _record_error(kind: str, detail: str, sym: str = "") -> None:
+    """Hata türünü ayırt edilebilir kaydet — teşhis state uçta görünür olmalı."""
+    _state["last_error"] = f"{sym}: {detail}" if sym else detail
+    _state["last_error_kind"] = kind
+    _state["error_counts"][kind] = _state["error_counts"].get(kind, 0) + 1
+    # Hata TÜRÜNE göre seviye: sağlayıcı yok/timeout sessiz arızadır — görünür olmalı.
+    logger.warning("LLM ikinci göz [%s] %s: %s", kind, sym or "-", detail)
+
+
 def stats() -> dict:
-    """Gözlem sayaçları — /health veya ayar sayfası kartı için."""
+    """Gözlem sayaçları — /state ucu ve panel rozeti bu sözlüğü okur."""
     return {
         "evaluated": _state["evaluated"],
+        "delivered": _state["delivered"],
         "skipped": _state["skipped"],
         "last_error": _state["last_error"],
+        "last_error_kind": _state["last_error_kind"],
+        "error_counts": dict(_state["error_counts"]),
+        "provider_missing_active": time.time() < _state["provider_missing_until"],
         "cooldown_sec": COOLDOWN_SEC,
         "min_score": MIN_SCORE,
+        "timeout_sec": TIMEOUT_SEC,
+        "http_timeout_sec": HTTP_TIMEOUT_SEC,
     }
 
 
@@ -340,7 +364,8 @@ async def _fast_llm_call(evidence: dict) -> dict:
     taşıyan onlarca KB'lik system prompt ile çağrı yapıyordu; bu kanal yalnızca
     2 mesaj + ≤250 token ile saniyeler içinde döner. Sözleşme chat() ile aynı:
     sağlayıcı yoksa {"enabled": False}; taşıma hatası RuntimeError fırlatır.
-    HTTP tavanı 15 sn — dıştaki `TIMEOUT_SEC` (20 sn) her zaman baskındır.
+    HTTP tavanı `HTTP_TIMEOUT_SEC` — dıştaki `TIMEOUT_SEC` (45 sn) her zaman
+    baskındır.
     """
     from urllib.error import HTTPError
     from urllib.request import Request
@@ -377,7 +402,7 @@ async def _fast_llm_call(evidence: dict) -> dict:
         return Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
 
     try:
-        response = await safe_provider_open(_send(), timeout=15)
+        response = await safe_provider_open(_send(), timeout=HTTP_TIMEOUT_SEC)
         text = _extract(_decode_provider_response(response.read()))
         if text is None:
             raise RuntimeError("sağlayıcı yanıtı beklenen biçimde değil")
@@ -388,7 +413,7 @@ async def _fast_llm_call(evidence: dict) -> dict:
             raise RuntimeError(f"LLM sağlayıcısı reddetti: {http_error}") from http_error
         payload.pop("response_format", None)
         try:
-            response = await safe_provider_open(_send(), timeout=15)
+            response = await safe_provider_open(_send(), timeout=HTTP_TIMEOUT_SEC)
             text = _extract(_decode_provider_response(response.read()))
             if text is None:
                 raise RuntimeError("sağlayıcı yanıtı beklenen biçimde değil")
@@ -439,32 +464,38 @@ async def evaluate(notif: dict) -> dict | None:
         result = await asyncio.wait_for(_fast_llm_call(evidence), timeout=TIMEOUT_SEC)
     except asyncio.CancelledError:
         raise
+    except asyncio.TimeoutError:
+        _record_error("timeout", f"çağrı {TIMEOUT_SEC:.0f} sn içinde dönmedi — sağlayıcı yavaş", sym)
+        return None
     except Exception as exc:
-        _state["last_error"] = f"{sym}: {exc}"
-        logger.info("LLM ikinci göz çağrısı başarısız %s: %s", sym, exc)
+        _record_error("http", str(exc), sym)
         return None
     if not isinstance(result, dict):
-        _state["last_error"] = f"{sym}: beklenmeyen yanıt"
+        _record_error("bad_response", "beklenmeyen yanıt biçimi", sym)
         return None
     if result.get("enabled") is False:
-        # Sağlayıcı yapılandırılmamış: tekrar denemek maliyetsiz ama gereksiz.
+        # Sağlayıcı yapılandırılmamış (llm_enabled=0 veya aktif chat modeli yok):
+        # tekrar denemek maliyetsiz ama gereksiz — 10 dk sessiz, hata TÜRÜ görünür.
+        _record_error("provider_missing",
+                      "sağlayıcı yapılandırılmamış (llm_enabled / aktif chat modeli eksik olabilir)")
         _state["provider_missing_until"] = time.time() + PROVIDER_MISSING_BACKOFF_SEC
-        logger.info("LLM ikinci göz: sağlayıcı yapılandırılmamış — %s sn sessiz",
-                    PROVIDER_MISSING_BACKOFF_SEC)
         return None
     text = result.get("text") or result.get("content")
     verdict = parse_verdict(text)
     if not verdict:
-        _state["last_error"] = f"{sym}: karar şemasına uymadı"
-        logger.info("LLM ikinci göz: yanıt şemaya uymadı (%s)", sym)
+        _record_error("schema", f"yanıt karar şemasına uymadı: {str(text)[:120]}", sym)
         return None
     _state["last_error"] = None
+    _state["last_error_kind"] = None
     _state["evaluated"] += 1
+    _state["delivered"] += 1
+    logger.info("LLM ikinci göz kararı: %s → %s %%%s", sym, verdict["verdict"], verdict["confidence"])
     return build_verdict_notification(notif, verdict)
 
 
 def reset_state_for_tests() -> None:
     _state.update({"last_eval_at": 0.0, "provider_missing_until": 0.0,
-                   "last_error": None, "evaluated": 0, "skipped": 0})
+                   "last_error": None, "last_error_kind": None, "error_counts": {},
+                   "evaluated": 0, "skipped": 0, "delivered": 0})
     _state["hour_marks"].clear()
     _last_eval_per_symbol.clear()

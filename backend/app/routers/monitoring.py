@@ -1596,12 +1596,13 @@ async def _llm_second_eye_task(notif: dict) -> None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.debug("LLM ikinci göz %s: %s", sym, exc)
+        logger.warning("LLM ikinci göz görev hatası %s: %s", sym, exc)
         return
     if not isinstance(envelope, dict):
         return
     try:
         if await quiet_hours_active():
+            logger.info("LLM ikinci göz: %s sessiz saatte — değerlendirme atlandı", sym)
             return
     except Exception:
         pass
@@ -1610,9 +1611,13 @@ async def _llm_second_eye_task(notif: dict) -> None:
         ok = await _send_push(envelope)
         envelope["push_success"] = ok
         envelope["sent_via_push"] = ok
+        if not ok:
+            logger.warning("LLM ikinci göz push'u gönderilemedi: %s", sym)
     await _record_history([envelope])
     try:
         await ws_manager.broadcast({"type": "monitoring_alert", "data": [envelope]})
+        logger.info("LLM ikinci göz kararı yayınlandı: %s → %s",
+                    sym, str(envelope.get("llm_verdict")))
     except Exception as exc:
         logger.debug("LLM ikinci göz WS yayını %s: %s", sym, exc)
 
@@ -2947,6 +2952,9 @@ async def monitoring_state():
             # Backend `VAPID_PRIVATE_KEY` yapılandırılmış olsa bile abonelik yoksa
             # hiçbir push gitmez; bu blok o sessiz arızanın panelde görünmesini sağlar.
             "push": push_health,
+            # LLM İKİNCİ GÖZ TEŞHİSİ (2026-09-26): sessiz arıza görünsün —
+            # panel rozeti bu bloğu okur (karar sayısı / son hata türü).
+            "llm_second_eye": llm_second_eye.stats(),
             # M1/P0: hem ham kapı hem panel gösterim eşiği açıkça raporlanır.
             **_threshold_fields(settings),
             # M1/P1 (R4-02): canlı görev kaydından gerçek liveness.
