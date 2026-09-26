@@ -2939,7 +2939,8 @@ async def binance_positions(request: Request):
 
     # Açık emirleri çekip varlıklara iliştir (SL / TP takibi ve koruma durumu)
     try:
-        open_orders = await asyncio.to_thread(get_open_orders, api_key, api_secret)
+        cand_syms = [f"{h['asset']}_TRY" for h in holdings] + [f"{h['asset']}_USDT" for h in holdings]
+        open_orders = await asyncio.to_thread(get_open_orders, api_key, api_secret, "", cand_syms)
     except Exception as exc:
         logger.info("Pozisyonlara açık emirler iliştirilemedi: %s", exc)
         open_orders = []
@@ -3229,10 +3230,13 @@ def _fmt_tr_price(value: float) -> str:
 @app.get("/api/binance/open-orders")
 async def binance_open_orders(request: Request, symbol: str = ""):
     """Binance TR açık/bekleyen emirler listesi (oturum açmış kullanıcı)."""
-    _require_user(request)
+    principal = _require_user(request)
     api_key, api_secret = await _decrypt_binance_creds(request)
     try:
-        orders = await asyncio.to_thread(get_open_orders, api_key, api_secret, symbol)
+        username = str(principal.get("username") or "").strip()
+        seen = await _load_seen_binance_assets(username) if username else set()
+        cands = [f"{a}_TRY" for a in seen] + [f"{a}_USDT" for a in seen] if seen else None
+        orders = await asyncio.to_thread(get_open_orders, api_key, api_secret, symbol, cands)
         return {"ok": True, "orders": orders, "count": len(orders)}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Açık emirler alınamadı: {exc}")
