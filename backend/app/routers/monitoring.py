@@ -156,7 +156,17 @@ def _score_is_saturated(row: dict) -> bool:
 
 
 def _score_norm_mode() -> str:
-    return str(getattr(config, "MONITORING_SCORE_NORM_MODE", "log") or "log").lower()
+    mode = str(getattr(config, "MONITORING_SCORE_NORM_MODE", "log") or "log").lower()
+    # 2026-09-26 (denetim #5): velocity_score ust sinirsizdir (saturation
+    # kaldirildi). `linear` mod CAP=2000'de SERT kirpar -> esik ustü adaylar
+    # ayni panel skoruna duser, SIRALAMA kaybolur; `log` REF=25000'e kadar
+    # kirpma yapmaz. Mod degisimi goruntü degil, siralama olayidir.
+    if mode == "linear":
+        logger.warning(
+            "MONITORING_SCORE_NORM_MODE=linear: ham velocity_score CAP'te "
+            "sert kirpiliyor, esik ustü adaylarin siralamasi kayboluyor. "
+            "Varsayilan (log) onerilir.")
+    return mode
 
 
 # A3 (2026-09-14): panel ölçek SÜRÜMÜ. Satır başına `norm_version` yazılır; okuma

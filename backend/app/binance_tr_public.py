@@ -1,6 +1,7 @@
 """Binance TR symbol type 1 public market-data adapter."""
 
 import asyncio
+import os
 import json
 import random
 import threading
@@ -72,8 +73,12 @@ _exchange_info_load_lock = threading.Lock()
 # main.py radar_loop içinde iki kez çağrılıyor (60 sn'de bir → saniyede 160
 # weight). main.py'ye dokunmadan çözmek için modül düzeyinde KISA ÖMÜRLÜ bir
 # önbellek: ardışık çağrılar (aynı sembol listesiyle) aynı sonucu döndürür.
-# TTL radar döngüsünden (60 sn) kısa tutulur ki veri bayatlamasın.
-TICKER_24H_CACHE_TTL_SEC = 5.0
+# 2026-09-26 (denetim #7): TTL 5 → 15 sn. 5 sn, velocity taraması ile radar
+# döngüsünü AYRI 24h anlık görüntüleriyle çalıştırabiliyordu (aynı turda iki
+# modül farklı evren görüyordu). 15 sn hâlâ "taze" sayılır (24h verisi) ve
+# aynı tarama turunun tek görüntü görme olasılığını yükseltir. Env ile
+# geçersiz kılınabilir.
+TICKER_24H_CACHE_TTL_SEC = float(os.getenv("TICKER_24H_CACHE_TTL_SEC", "15"))
 _ticker_24h_cache: dict = {"key": None, "rows": None, "expires": 0.0}
 _ticker_24h_lock = threading.Lock()
 # 2026-09-26 (py-spy kanıtlı deploy kilitlenmesi): yükleme kilidi threading.Lock
@@ -461,7 +466,15 @@ async def book_tickers(symbols: list | None = None):
 # Web'deki https://www.binance.tr/en/markets/overview?tab=top-gaining listesiyle
 # aynı kaynak: /api/v3/ticker/24hr, priceChangePercent'e göre azalan sıralama.
 # quoteVolume tabanlı minimum hacim, ince/alakasız çiftleri elemek içindir.
-MIN_TOP_GAINER_QUOTE_VOLUME_TRY = 5_000_000.0
+# 2026-09-26 (denetim #8): taban para birimi başına tanımlı — eski sabit
+# 5_000_000 değeri USDT çiftine genişletilseydi 5M USDT (~17 kat sıkı) olarak
+# yorumlanıp havuzu sessizce boşaltırdı. Oran: 5M TRY ≈ 120K USDT (kurs ~42).
+_MIN_QUOTE_VOLUME = {"TRY": 5_000_000.0, "USDT": 120_000.0}
+
+
+def _min_quote_volume(quote_asset: str) -> float:
+    """Verilen quote para birimi için minimum 24h quoteVolume tabanı."""
+    return _MIN_QUOTE_VOLUME.get(str(quote_asset).upper(), _MIN_QUOTE_VOLUME["TRY"])
 
 async def top_gainers(symbol_count: int = 20, *, quote_asset: str = "TRY",
                       min_quote_volume: float | None = None,
@@ -482,7 +495,7 @@ async def top_gainers(symbol_count: int = 20, *, quote_asset: str = "TRY",
     rows = list(_ticker_rows) if _ticker_rows else await ticker_24h()
     info = await trading_symbols(quote_asset)
     trading = set(info)
-    floor = (MIN_TOP_GAINER_QUOTE_VOLUME_TRY if min_quote_volume is None
+    floor = (_min_quote_volume(quote_asset) if min_quote_volume is None
              else float(min_quote_volume))
     suffix = quote_asset.upper()
     candidates = []
@@ -516,7 +529,7 @@ async def active_movers_pool(symbol_count: int = 15, *, quote_asset: str = "TRY"
     rows = list(_ticker_rows) if _ticker_rows else await ticker_24h()
     info = await trading_symbols(quote_asset)
     trading = set(info)
-    floor = (MIN_TOP_GAINER_QUOTE_VOLUME_TRY * 0.5 if min_quote_volume is None
+    floor = (_min_quote_volume(quote_asset) * 0.5 if min_quote_volume is None
              else float(min_quote_volume))
     suffix = quote_asset.upper()
     movers = []
@@ -551,7 +564,7 @@ async def active_movers_pool(symbol_count: int = 15, *, quote_asset: str = "TRY"
         # Zirveye yakınlık + işlem adedi akışı + hacim çarpanı
         activity_score = (
             (range_pos * 40.0) +
-            (min(1.0, q_vol / 25_000_000.0) * 30.0) +
+            (min(1.0, q_vol / (_min_quote_volume(quote_asset) * 5.0)) * 30.0) +
             (min(1.0, trades / 5_000.0) * 30.0)
         ) * (1.0 + min(1.0, day_range_pct / 10.0))
 

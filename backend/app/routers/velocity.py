@@ -336,22 +336,39 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
 
     # Havuz: top_gainers + active_movers_pool (intraday akış) + config.SYMBOLS + extra_symbols.
     # 24h değişimi düşük olsa bile aktif/hacimli ve yükselen semboller taranır (H-01/T-01).
-    pool = [item["symbol"] for item in gainer_rows]
-    _pool_set = set(pool)
+    # 2026-09-26 (denetim #6): havuza girme KAYNAĞI ve 24h değişimi aday kaydına
+    # yazılır — "yükselen" tanımı havuz başına farklı olduğundan (24h değişim /
+    # 24h range-position / sabit evren) kalibrasyon popülasyonu kaynağa göre
+    # ayrıştırılabilsin (eski pump'lar 24h lookback yüzünden hâlâ gainer'dadır).
+    pool: list[str] = []
+    _pool_set: set[str] = set()
+    pool_source: dict[str, str] = {}
+    _change_24h: dict[str, float] = {}
+    for _row in (all_ticker_rows or []):
+        try:
+            _sym = str(_row.get("symbol") or "").upper()
+            _chg = float(_row.get("priceChangePercent"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if _sym and _sym not in _change_24h:
+            _change_24h[_sym] = _chg
+
+    def _add(sym: str, source: str) -> None:
+        sym = str(sym).upper()
+        if sym and sym not in _pool_set:
+            pool.append(sym)
+            _pool_set.add(sym)
+            pool_source[sym] = source
+
+    for item in gainer_rows:
+        _add(item["symbol"], "gainer")
     for item in active_rows:
-        sym = item["symbol"]
-        if sym not in _pool_set:
-            pool.append(sym)
-            _pool_set.add(sym)
+        _add(item["symbol"], "mover")
     for sym in (str(s).upper() for s in config.SYMBOLS):
-        if sym not in _pool_set:
-            pool.append(sym)
-            _pool_set.add(sym)
+        _add(sym, "symbol")
     if extra_symbols:
         for sym in extra_symbols[:10]:
-            if sym and sym not in _pool_set:
-                pool.append(sym)
-                _pool_set.add(sym)
+            _add(sym, "extra")
 
     # ---- N+1 ELİMİNASYONU (KRİTİK PERFORMANS) ---------------------------
     # Sembol başına AYRI `get_symbol_target_state` çağrısı, tarama havuzu
@@ -475,7 +492,13 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # (ret3 >= 1.0% veya ret5 >= 1.8% veya 3-bar ATR >= 0.45%),
             # sistem bu kırılmayı "ATR yetersiz" diyerek kaçırmaz.
             is_breakout = bool(ret3 >= 1.0 or ret5 >= 1.8 or short_atr_pct >= 0.45)
-            atr_passes = bool(atr_pct >= prof_atr or (is_breakout and atr_pct >= min(VELOCITY_MIN_ATR_PCT, 0.25)))
+            # 2026-09-26 (denetim #4): breakout gevşetmesi profili TAMAMEN eziyordu —
+            # DB kalibrasyonu prof_atr'yi 0.45'e çıkardıysa bile tek bir spike'lı
+            # 3-bar pencere her zaman 0.25 tabanından geçebiliyordu. Artık gevşetme
+            # tabanı profilin %60'ının altına inmez (varsayılan profilde davranış
+            # değişmez: prof=0.25 → taban 0.25).
+            breakout_floor = min(prof_atr, max(VELOCITY_MIN_ATR_PCT, prof_atr * 0.6))
+            atr_passes = bool(atr_pct >= prof_atr or (is_breakout and atr_pct >= breakout_floor))
 
             # notr modu (RSI 35-60) da aday olabilir: yalnızca yapısal teyit (struct_ok) aranir.
             passes = (exhausted is None and
@@ -503,29 +526,28 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     block_reason = "yapisal_teyit_yok"
                 else:
                     block_reason = "diger"
-            # velocity skoru: normalize edilmiş, sınırlı bileşen çarpımı.
-            # Her bileşen 0..1 aralığına haritalanır; böylece skor 0..100 bandında
-            # kalır ve admin eşikleri/panel skoru için ayrı bir cap yaması gerekmez.
-            # Saturation kaldirildi (2026-09-07): ratio 1.0+ gidebilir -> skor ayrimi artar
+            # velocity skoru: normalize edilmiş bileşen çarpımı. Her bileşen
+            # oransal (ratio) haritalanır; saturation 2026-09-07'de bilinçli
+            # kaldırıldığı için çarpım ÜST SINIRSIZDIR (atr_ratio × bb_ratio
+            # 1.0'ın üstüne çıkabilir) — "0..100 bandında kalır" iddiası artık
+            # geçerli DEĞİL. 0-100 panel karşılığı monitoring._panel_from_raw
+            # (varsayılan log haritası, REF=25000) ile üretilir; `linear` moda
+            # geçilirse CAP=2000 sert kırpar ve SIRALAMA değişir — mod geçişi
+            # sıralama olayıdır, yalnızca görüntü değil (2026-09-26 denetim #5).
             bb_ratio = (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) if bb_width else 0.0
             struct_ratio = max(0.0, (slope or 0) / VELOCITY_STRUCT_SLOPE_PCT,
                                          (aroon_up or 0) / 50.0)
             # Saturation kaldirildi (2026-09-07)
             atr_ratio = (atr_pct / prof_atr) if prof_atr else 0.0
-            # Momentum hesabı: ret3 (3 mum) ve ret5 (5 mum) maksimumu kullanılır —
-            # böylece kısa geri çekilme momentum skorunu öldürmez.
-            # V-donusu icin slope tabanli momentum (2026-09-07):
-            # ret3+ret5 pozitifse momentum devam eder; degilse son 3 bar egimi kullanilir.
-            if ret3 > 0 or ret5 > 0:
-                momentum = max(0.0, ret3, ret5)
-            else:
-                # Saf yüzde formu: eski `/max(closes[-4], 1)` 1 TRY altı
-                # fiyatlarda dönüşü sistematik eksik raporluyordu. Sıfıra
-                # yakın payda güvenliği: |closes[-4]| < 1e-12 → 0.0.
-                _ret3_base = closes[-4] if len(closes) >= 4 else 0.0
-                _reversal_slope = (((closes[-1] - closes[-4]) / _ret3_base) * 100 / 3
-                                   if len(closes) >= 4 and abs(_ret3_base) > 1e-12 else 0.0)
-                momentum = max(0.0, _reversal_slope)
+            # Momentum hesabı: ret3 (3 mum) ve ret5 (5 mum) maksimumu — kısa
+            # geri çekilme momentum skorunu öldürmesin diye maksimum alınır.
+            # 2026-09-26 (denetim #1 düzeltmesi): eski kodda "V-dönüşü slope
+            # tabanlı momentum" diye ikinci bir dal vardı; dal yalnız ret3 ≤ 0
+            # VE ret5 ≤ 0 iken çalışır, ret3/3 (≤ 0) hesaplar ve max(0, ·)
+            # ile zaten 0'a iner — yani iki dal MATEMATİKSEL ÖZDEŞTİ ve
+            # "slope tabanlı" davranış hiçbir zaman fiilen var olmadı.
+            # Ölü dal kaldırıldı; skor değişmedi (her iki mod için tek tanım).
+            momentum = max(0.0, ret3, ret5)
             # Hacim teyidi: son 20 kapanmış bar ortalamasına oranı (O-03 düzeltmesi)
             if len(vols) >= 20:
                 _avg_vol = sum(vols[-20:]) / 20.0
@@ -725,6 +747,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                             "target_pct": round(effective_target, 3),
                             "spread_pct": round(spread_pct, 3),
                             "ret3_pct": round(ret3, 3),
+                            "pool_source": pool_source.get(symbol, "unknown"),
+                            "change_24h": _change_24h.get(symbol),
                             "velocity_score": velocity_score, "passes": False,
                             "block_reason": f"asiri_spread:{spread_pct:.2f}%>{_max_spread:.2f}%_siniri",
                             "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
@@ -747,6 +771,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                         "target_pct": round(effective_target, 3),
                         "ml_hit_probability": round(ml_hit_prob, 3),
                         "ret3_pct": round(ret3, 3),
+                        "pool_source": pool_source.get(symbol, "unknown"),
+                        "change_24h": _change_24h.get(symbol),
                         "velocity_score": velocity_score, "passes": False,
                         "block_reason": f"ml_dusuk_olasilik:{ml_hit_prob:.2f}<{_min_exec_prob:.2f}",
                         "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
@@ -781,6 +807,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "ml_target_pct": round(ml_target, 3) if ml_target is not None and ml_target > 0 else None,
                     "ml_hit_probability": round(ml_hit_prob, 3) if ml_hit_prob is not None else None,
                     "ret3_pct": round(ret3, 3),
+                    "pool_source": pool_source.get(symbol, "unknown"),
+                    "change_24h": _change_24h.get(symbol),
                     "velocity_score": velocity_score, "passes": passes,
                     "block_reason": block_reason,
                     "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,

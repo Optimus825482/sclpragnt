@@ -204,7 +204,11 @@ def macd_components(symbol: str) -> tuple[dict[str, float | None], dict]:
         if early is not None:
             out[SOURCE_EARLY] = float(early)
         strength = row.get("strength")
-        if strength is not None:
+        if strength is not None and _rising_strength_qualified(row):
+            # 2026-09-26 (denetim #3): RISING bileşeni artık rising_signals ile
+            # AYNI eşikten geçer (RISING_MIN_STRENGTH/MIN_GREEN/MIN_RAW_SCORE).
+            # Eski davranış eşiği atlıyordu: %yeşil<5 bir sembol füzyonda
+            # "rising kaynağı" sayılıp 4'lü teyidi şişirabiliyordu.
             out[SOURCE_RISING] = round(float(strength) * 10.0, 1)
     except (TypeError, ValueError):
         pass
@@ -228,6 +232,21 @@ def _macd_green_count(row: dict) -> int:
         if cell and bool(cell.get("green")):
             count += 1
     return count
+
+
+def _rising_strength_qualified(row: dict) -> bool:
+    """MACD snapshot satırı rising_signals yükseliş eşiğini geçiyor mu?
+
+    Tek doğruluk kaynağı `rising_signals.strength_qualifies` (döngüsel import
+    riskine karşı fonksiyon içi import — rising_signals da macd_monitor'ü
+    import eder; modül yükleme sırasından bağımsız olsun).
+    """
+    from app.rising_signals import green_count as _green, strength_qualifies
+    try:
+        return bool(strength_qualifies(
+            row.get("strength"), _green(row), raw=row.get("raw"), row=row))
+    except (TypeError, ValueError):
+        return False
 
 
 # ---------------------------------------------------------------------------
