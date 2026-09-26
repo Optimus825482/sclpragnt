@@ -54,7 +54,12 @@ _OPEN_ORDERS_CACHE_TTL_SEC = 30
 # Sembol taraması akıllı ve sınırlı. Sadece kilitli veya ilgili varlıklar taranır.
 _OPEN_ORDERS_SWEEP_MAX = 20
 _OPEN_ORDERS_SWEEP_GAP_SEC = 0.10
-_BALANCE_CACHE_TTL_SEC = 5.0
+# PERFORMANS (2026-09-27): 5→15 sn. Sayfa ilk yüklemesinde /account, /positions,
+# /open-orders, /trades-day AYNI ANDA gelir; 5 sn TTL'de her biri ayrı harici
+# çağrı yapıyordu. 15 sn = WS push döngüsü kadansı (binance_account_push_loop)
+# → WS verisi eskisi kadar taze kalır, uçlar arası burst tek çağrıya iner.
+# Emir yolları invalidate_account_balance_cache ile tazeler.
+_BALANCE_CACHE_TTL_SEC = 15.0
 
 _symbols_cache: dict = {"symbols": [], "underscore_by_concat": {}, "expires": 0.0, "filters": {}}
 _symbols_lock = threading.Lock()
@@ -732,7 +737,7 @@ def cancel_order(api_key: str, api_secret: str, order_id: int | str, symbol_unde
 def get_account_balance(api_key: str, api_secret: str, force_refresh: bool = False) -> list[dict]:
     """GET /open/v1/account/spot → data.accountAssets [{asset, free, locked}].
 
-    Kısa süreli (5 sn) bellek önbelleği uygulanır: /account, /positions, /trades-day
+    Kısa süreli (15 sn, WS push kadansı) bellek önbelleği uygulanır: /account, /positions, /trades-day
     ve açık emir kontrolleri aynı anda çağrıldığında Binance TR API'sine tek istek atılır.
     """
     cache_key = (api_key or "")[:16]

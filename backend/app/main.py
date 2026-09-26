@@ -2695,6 +2695,22 @@ async def binance_price_tick_loop():
 # alım maliyetleri birbirine karışmasın (eski anahtar yalnız asset'ti ve tek
 # admin hesabı için güvenliydi).
 _binance_cost_cache: dict[tuple[int, str], tuple[float, dict]] = {}
+
+
+def _invalidate_binance_cost_cache(user_id: int, asset: str | None = None) -> None:
+    """PERFORMANS (2026-09-27): maliyet cache TTL'i 60→120 sn'e uzatıldı; emir
+    (market fill) sonrası FIFO doğruluğu için kullanıcı kapsamında temizlenir.
+    asset verilirse yalnız o varlık, verilmezse kullanıcının tamamı sıfırlanır."""
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return
+    if asset:
+        _binance_cost_cache.pop((uid, str(asset).upper()), None)
+        return
+    for key in [k for k in _binance_cost_cache if k[0] == uid]:
+        _binance_cost_cache.pop(key, None)
+
 # Gün -> (cache bitiş zamanı, günün işlem listesi yanıtı)
 # ÇOK KULLANICILI: anahtar (user_id, date) — A kullanıcısının gün işlemleri
 # B kullanıcısına sızmasın.
@@ -2916,17 +2932,37 @@ async def binance_positions(request: Request):
             symbol_concat = None
         h["price_try"] = price_try
         h["value_try"] = round(h["total"] * price_try, 2) if price_try is not None else None
-        # Ağırlıklı ortalama alım maliyeti (işlem geçmişindeki alışların VWAP'ı,
-        # 60 sn cache'li). TRY çifti yoksa USDT maliyeti USDTTRY ile TRY'ye çevrilir.
+        h["_cost_symbol"] = symbol_concat
+        holdings.append(h)
+
+    # Ağırlıklı ortalama alım maliyeti (FIFO, cache'li). TRY çifti yoksa USDT
+    # maliyeti USDTTRY ile TRY'ye çevrilir.
+    # PERFORMANS (2026-09-27): maliyet hesapları SIRALI await'ti — cache soğkken
+    # N varlık = N ardışık harici get_trade_history çağrısı ve sayfanın ilk
+    # yüklemesi 10-20 sn sürüyordu. Paralel dalgalar (sem 5) ile ~1-2 dalgaya iner.
+    _cost_sem = asyncio.Semaphore(5)
+
+    async def _cost_for(h: dict):
+        sym = h.get("_cost_symbol")
+        if h["asset"] == "TRY" or not sym:
+            return None
+        async with _cost_sem:
+            try:
+                return await asyncio.to_thread(
+                    _avg_buy_cost, user_id, api_key, api_secret, h["asset"], sym, now_ts)
+            except Exception:
+                return None
+
+    costs = await asyncio.gather(*[_cost_for(h) for h in held]) if held else []
+    for h, cost in zip(held, costs):
+        price_try = h.get("price_try")
         avg_cost_try = None
-        if asset != "TRY" and symbol_concat:
-            cost = await asyncio.to_thread(_avg_buy_cost, user_id, api_key, api_secret, asset, symbol_concat, now_ts)
-            if cost and cost.get("avg_price"):
-                quote = cost.get("quote")
-                if quote == "TRY":
-                    avg_cost_try = cost["avg_price"]
-                elif quote == "USDT" and usdt_try:
-                    avg_cost_try = cost["avg_price"] * usdt_try
+        if cost and cost.get("avg_price"):
+            quote = cost.get("quote")
+            if quote == "TRY":
+                avg_cost_try = cost["avg_price"]
+            elif quote == "USDT" and usdt_try:
+                avg_cost_try = cost["avg_price"] * usdt_try
         h["avg_cost_try"] = round(avg_cost_try, 8) if avg_cost_try else None
         if avg_cost_try and price_try:
             pnl_try = (price_try - avg_cost_try) * h["total"]
@@ -2935,7 +2971,7 @@ async def binance_positions(request: Request):
         else:
             h["pnl_try"] = None
             h["pnl_pct"] = None
-        holdings.append(h)
+        h.pop("_cost_symbol", None)
 
     # Açık emirleri çekip varlıklara iliştir (SL / TP takibi ve koruma durumu)
     try:
@@ -3032,7 +3068,7 @@ def _avg_buy_cost(user_id: int, api_key: str, api_secret: str, asset: str, symbo
             info["held_quantity"] = held_qty
     except Exception as exc:
         logger.warning("Binance TR alım geçmişi okunamadı (%s): %s", asset, exc)
-    _binance_cost_cache[(user_id, asset)] = (now + 60.0, info)
+    _binance_cost_cache[(user_id, asset)] = (now + 120.0, info)
     return info
 
 @app.post("/api/binance/sell")
@@ -3099,6 +3135,9 @@ async def binance_sell(payload: dict, request: Request):
         result = await asyncio.to_thread(place_market_sell, api_key, api_secret, symbol_u, qty)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Satış emri gönderilemedi: {exc}")
+    # PERFORMANS (2026-09-27): TTL uzatılan FIFO maliyet cache'ini emir sonrası
+    # tazele — satış FIFO kuyruğunu değiştirir, eski maliyet yanlış PnL üretir.
+    _invalidate_binance_cost_cache(int(user["id"]))
     _actor, _actor_role = _session_identity(request)
     await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_SELL",
                           target=asset, details={"asset": asset, **result}, request=request)
@@ -3192,6 +3231,8 @@ async def binance_buy(payload: dict, request: Request):
             min_notional if quote_asset != "USDT" else None)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Alım emri gönderilemedi: {exc}")
+    # PERFORMANS (2026-09-27): alım yeni FIFO lotu ekler → maliyet cache'i tazele.
+    _invalidate_binance_cost_cache(int(user["id"]))
     _actor, _actor_role = _session_identity(request)
     await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_BUY",
                           target=asset, details={"asset": asset, **result}, request=request)
