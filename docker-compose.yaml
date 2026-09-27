@@ -258,10 +258,13 @@ services:
           cpus: "0.5"
     depends_on:
       backend:
-        # Backend ancak migration'ı geçince sağlıklı olur. pg_dump tüm
-        # tablolara dakikalarca ACCESS SHARE kilit alır; migration'ın
-        # ALTER TABLE'ı ile açılış yarışını böylece kökten engelleriz.
-        condition: service_healthy
+        # 2026-09-27: service_healthy yerine service_started.
+        # Backend'in start_period'u 60s olduğundan compose backend sağlıklı
+        # olana dek bekler; Coolify bu beklemede up -d yi ~20s de 255 ile
+        # abort ediyor ve gerçekte sağlıklı başlayan stack i yanlışlıkla
+        # Deployment failed sayıyordu. Aşağıdaki betik ilk dump ta 300sn
+        # uyuyor (sleep 300); dump-vs-migration yarışı güvende kalıyor.
+        condition: service_started
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     volumes:
