@@ -17,12 +17,8 @@ const labels: Record<string, string> = {
   "/macd-monitor": "MACD Monitör",
   "/users": "Kullanıcı Yönetimi",
   "/chat": "Chat Merkezi",
-  "/memory": "LLM Hafızası",
   "/symbol-analysis": "Sembol Analizi",
-  "/alerts": "Alarmlar & Bildirimler",
-  "/risk": "Risk Yönetimi",
   "/system-health": "Sistem Sağlığı",
-  "/trade-repair": "İşlem Onarımı",
 };
 
 export default function TopBar() {
