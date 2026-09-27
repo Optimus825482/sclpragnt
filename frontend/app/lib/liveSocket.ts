@@ -18,9 +18,11 @@ export type LiveStatus = "connecting" | "open" | "closed";
  */
 export const UNCONSUMED_LIVE_TYPES: ReadonlySet<string> = new Set([
   "tickers",
-  // NOT: `binance_account_update` ve `trade_repair_completed` bu listeye
-  // eklenmedi — artık tüketicileri var (bkz. `binance-tr/page.tsx`,
-  // `trade-repair/page.tsx`).
+  // `trade_repair_completed`: `/trade-repair` sayfası kaldırıldığı için
+  // frontend'de tüketicisi yok.
+  "trade_repair_completed",
+  // NOT: `binance_account_update` bu listeye eklenmedi — tüketicisi var
+  // (bkz. `binance-tr/page.tsx`).
 ]);
 
 type MessageListener = (message: LiveMessage) => void;
