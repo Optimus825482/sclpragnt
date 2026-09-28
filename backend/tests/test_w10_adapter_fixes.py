@@ -15,10 +15,17 @@ if str(ROOT) not in sys.path:
 
 
 class _FakeResponse:
-    """urlopen bağlam yöneticisi taklidi."""
+    """urlopen bağlam yöneticisi taklidi.
 
-    def __init__(self, payload: bytes, headers=None):
+    #82'den beri adaptör `response.status` okur (HTTP durum makinesi);
+    taklit de varsayılan 200 döndürür. urlopen'i mock'layan testler ayrıca
+    `_HTTP_POOL`'u None'a sabitler — aksi halde keep-alive havuzu (birincil
+    yol) devreye girip mock'lanan `urlopen` (yedek yol) hiç çağrılmaz.
+    """
+
+    def __init__(self, payload: bytes, headers=None, status: int = 200):
         self._payload = payload
+        self.status = status
         self.headers = headers if headers is not None else {}
 
     def read(self):
@@ -50,6 +57,7 @@ class PublicConcurrencyAndWeightTests(unittest.TestCase):
 
         recorder = _RecordingSemaphore()
         with mock.patch.object(pub, "_REQUEST_SEMAPHORE", recorder), \
+             mock.patch.object(pub, "_HTTP_POOL", None), \
              mock.patch.object(pub, "urlopen", return_value=_FakeResponse(b"[1,2,3]")):
             result = pub._get_json("/api/v3/klines", {"symbol": "BTCTRY"})
         self.assertEqual([1, 2, 3], result)
@@ -103,13 +111,22 @@ class PublicRetryPolicyTests(unittest.TestCase):
         def always_418(*_args, **_kwargs):
             raise urllib.error.HTTPError("https://api.binance.me", 418, "banned", {}, None)
 
-        with mock.patch.object(pub, "urlopen", side_effect=always_418), \
+        # `_note_global_cooldown` no-op: sleep mock'u saati ilerletmediği için
+        # gerçek soğuma penceresi `_wait_global_cooldown`'u sonsuz döngüye
+        # sokar ve modül durumunu sonraki testlere sızdırır. Soğuma davranışı
+        # test_rate_limit_hardening'de sahte saatle ayrıca kilitli.
+        with mock.patch.object(pub, "_HTTP_POOL", None), \
+             mock.patch.object(pub, "urlopen", side_effect=always_418), \
+             mock.patch.object(pub, "_note_global_cooldown"), \
              mock.patch.object(pub.time, "sleep") as sleeper:
             with self.assertRaises(RuntimeError) as ctx:
                 pub._get_json("/api/v3/klines", {})
         # Eski hâl: `HTTP 418` ANINDA yükseltiliyordu (deneme yok).
         self.assertIn("denemede yanıt vermedi", str(ctx.exception))
-        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, sleeper.call_count)
+        # Ban ölçeğinde (≥600 sn) tam 3 bekleme; global soğuma penceresinin
+        # kısa pacing dilimleri (tavan 60 sn) bu sayıya dahil değildir.
+        ban_waits = [c for c in sleeper.call_args_list if c.args and c.args[0] >= 600.0]
+        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(ban_waits))
 
     def test_truncated_json_body_is_retried(self):
         from app import binance_tr_public as pub
@@ -122,7 +139,8 @@ class PublicRetryPolicyTests(unittest.TestCase):
                 return _FakeResponse(b'{"code":0,"data":[{"sym')
             return _FakeResponse(b'{"code":0,"data":[{"symbol":"BTCTRY"}]}')
 
-        with mock.patch.object(pub, "urlopen", side_effect=flaky), \
+        with mock.patch.object(pub, "_HTTP_POOL", None), \
+             mock.patch.object(pub, "urlopen", side_effect=flaky), \
              mock.patch.object(pub.time, "sleep"):
             result = pub._get_json("/api/v3/klines", {})
         self.assertEqual([{"symbol": "BTCTRY"}], result)
@@ -137,7 +155,8 @@ class PublicRetryPolicyTests(unittest.TestCase):
             calls["n"] += 1
             return _FakeResponse(b'{"code":2002,"msg":"Key iptal"}')
 
-        with mock.patch.object(pub, "urlopen", side_effect=business_error), \
+        with mock.patch.object(pub, "_HTTP_POOL", None), \
+             mock.patch.object(pub, "urlopen", side_effect=business_error), \
              mock.patch.object(pub.time, "sleep") as sleeper:
             with self.assertRaises(RuntimeError):
                 pub._get_json("/api/v3/klines", {})
@@ -165,13 +184,21 @@ class PublicRetryPolicyTests(unittest.TestCase):
             raise urllib.error.HTTPError("https://api.binance.me", 429, "slow down",
                                          {"Retry-After": "90"}, None)
 
-        with mock.patch.object(pub, "urlopen", side_effect=throttled), \
+        with mock.patch.object(pub, "_HTTP_POOL", None), \
+             mock.patch.object(pub, "urlopen", side_effect=throttled), \
+             mock.patch.object(pub, "_note_global_cooldown"), \
              mock.patch.object(pub.time, "sleep", side_effect=slept.append):
             with self.assertRaises(RuntimeError):
                 pub._get_json("/api/v3/klines", {})
         self.assertTrue(slept)
-        self.assertTrue(all(delay >= 90.0 for delay in slept),
-                        f"sunucu 90 sn dedi, istemci {slept} bekledi")
+        # Retry beklemeleri ≥90 olmalı; global soğuma penceresinin kısa
+        # pacing dilimleri (tavan 60 sn) ayrıdır ve bu sözleşmeye dahil
+        # değildir.
+        retry_waits = [d for d in slept if d >= 90.0]
+        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(retry_waits),
+                         f"retry beklemeleri sunucunun 90 sn sözünü dinlemedi: {slept}")
+        self.assertTrue(all(delay >= 90.0 for delay in retry_waits),
+                        f"sunucu 90 sn dedi, istemci {retry_waits} bekledi")
 
     def test_ban_backoff_is_minutes_not_30_60_90_seconds(self):
         """#32: 418 dakikalar-günler sürer; 30/60/90 sn banı garanti ederdi."""
@@ -196,15 +223,20 @@ class PublicRetryPolicyTests(unittest.TestCase):
             raise urllib.error.HTTPError("https://api.binance.me", 418, "banned",
                                          {"Retry-After": "1200"}, None)
 
-        with mock.patch.object(pub, "urlopen", side_effect=banned), \
+        with mock.patch.object(pub, "_HTTP_POOL", None), \
+             mock.patch.object(pub, "urlopen", side_effect=banned), \
+             mock.patch.object(pub, "_note_global_cooldown"), \
              mock.patch.object(pub.time, "sleep", side_effect=slept.append):
             with self.assertRaises(RuntimeError):
                 pub._get_json("/api/v3/klines", {})
-        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(slept))
+        # Ban ölçeğindeki beklemeler (≥1200 sn) tam olarak 3 kez; global
+        # soğuma penceresinin kısa pacing dilimleri hariçtir.
+        ban_waits = [d for d in slept if d >= 1200.0]
+        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(ban_waits))
         # Sunucu 1200 sn dedi → 1200 sn beklendi. 4 sn'e (eskiden kullanılan
         # tavan) kırpılmadığı gibi 1 saatlik ban tavanına da takılmadı.
-        self.assertTrue(all(delay == 1200.0 for delay in slept),
-                        f"418 geri çekilmesi sunucunun dediğinden saptı: {slept}")
+        self.assertTrue(all(delay == 1200.0 for delay in ban_waits),
+                        f"418 geri çekilmesi sunucunun dediğinden saptı: {ban_waits}")
 
 
 # ---------------------------------------------------------------- #32 exchangeInfo cache
