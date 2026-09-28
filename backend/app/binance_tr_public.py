@@ -94,15 +94,22 @@ class TransientDecodeError(RuntimeError):
 
 
 def _throttle_for_weight() -> None:
-    """B-11: sunucunun bildirdiği ağırlık tavana yaklaştıysa pencereyi bekle."""
+    """B-11: Sunucunun bildirdiği ağırlık tavana yaklaştıysa dinamik pacing uygula."""
     with _weight_lock:
         used = int(_rate_limit_used.get("total") or 0)
         reported_at = _weight_reported_at
     if used < REST_WEIGHT_SOFT_LIMIT or not reported_at:
         return
-    wait = REST_WEIGHT_WINDOW_SEC - (time.time() - reported_at)
-    if wait > 0:
-        time.sleep(min(wait, REST_WEIGHT_WINDOW_SEC))
+    now = time.time()
+    age = now - reported_at
+    if used >= 1100:
+        # Acil tavan koruması: pencere sıfırlanana kadar (maks 15s) bekle
+        wait = min(max(1.0, REST_WEIGHT_WINDOW_SEC - age), 15.0)
+        time.sleep(wait)
+    else:
+        # 950-1100 arası: 200-400ms dinamik pacing ile akışı yavaşlat
+        pacing = 0.2 + (0.3 * ((used - REST_WEIGHT_SOFT_LIMIT) / 150.0))
+        time.sleep(pacing)
 
 
 def _retry_delay(attempt: int, headers: dict | None = None) -> float:

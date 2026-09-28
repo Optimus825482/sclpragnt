@@ -158,17 +158,24 @@ def _throttle_private_request() -> None:
         time.sleep(min(cooldown, 60.0))
         return
 
-    # 2. Yumuşak ağırlık sınırı kontrolü (REST_WEIGHT_SOFT_LIMIT = 950)
+    # 2. Akıllı ağırlık kontrolü ve dinamik pacing
     with _rate_limit_lock:
         age = now - _weight_reported_at
         current_weight = _used_weight_1m if (0 <= age < 60.0) else 0
-    if current_weight >= REST_WEIGHT_SOFT_LIMIT:
-        wait = max(1.0, 60.0 - age)
+
+    if current_weight >= 1100:
+        # Gerçekten kritik tavan (1100/1200): IP ban riskini önlemek için pencerenin sıfırlanmasını bekle
+        wait = min(max(1.0, 60.0 - age), 15.0)
         logger.warning(
-            "Binance TR ağırlığı kritik (%d/%d, yaş: %.1fs). Proaktif frenleme: %.1fs bekleniyor",
+            "Binance TR ağırlığı acil seviyede (%d/%d, yaş: %.1fs). Koruma beklemesi: %.1fs",
             current_weight, REST_MAX_WEIGHT_1M, age, wait
         )
-        time.sleep(min(wait, 60.0))
+        time.sleep(wait)
+    elif current_weight >= REST_WEIGHT_SOFT_LIMIT:
+        # Yumuşak sınır (950-1100): Sistemi 60s kitlemek yerine dinamik pacing uygula.
+        # İstekler arasına mikro gecikme koyarak tüketim hızını düşür ve ağırlığın erimesini sağla.
+        pacing = 0.25 + (0.5 * ((current_weight - REST_WEIGHT_SOFT_LIMIT) / 150.0))
+        time.sleep(pacing)
 
 
 def _http_get_json(url: str, headers: dict | None = None) -> dict | list:
