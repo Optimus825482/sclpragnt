@@ -21,6 +21,7 @@ SINIRLAR:
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 logger = logging.getLogger("scalper.surge_learning")
@@ -262,12 +263,14 @@ def is_cache_stale(ttl: float = _BIAS_CACHE_TTL) -> bool:
 def bias_summary(biases: dict[str, dict] | None = None) -> dict:
     """API/frontend için okunabilir bias özeti üretir."""
     b = biases if biases is not None else _BIAS_CACHE
+    age = cache_age_seconds()
+    age_s = round(age, 1) if math.isfinite(age) else None
     if not b:
         return {
             "enabled": False,
             "symbol_count": 0,
             "symbols": [],
-            "cache_age_s": cache_age_seconds(),
+            "cache_age_s": age_s,
         }
 
     positive = [(sym, d) for sym, d in b.items() if d.get("bias_pct", 0) > 0.5]
@@ -301,8 +304,8 @@ def bias_summary(biases: dict[str, dict] | None = None) -> dict:
         "positive": _fmt(positive),
         "negative": _fmt(negative),
         "neutral": _fmt(neutral)[:10],
-        "cache_age_s": round(cache_age_seconds(), 1),
-        "last_updated": _BIAS_CACHE_TS,
+        "cache_age_s": age_s,
+        "last_updated": _BIAS_CACHE_TS if _BIAS_CACHE_TS > 0 else None,
         "max_bias_pct": MAX_BIAS_PCT,
         "min_confidence": MIN_CONFIDENCE,
         "policy": "descriptive_adaptive_score_adjustment_max_15pct_no_confluence_override",

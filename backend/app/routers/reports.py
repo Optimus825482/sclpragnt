@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from app.config import config
 from app import database
 from app.state import market, analyzer
-from app.api_common import _start_background
+from app.api_common import _start_background, _json_safe_positions
 from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
@@ -294,7 +294,7 @@ async def get_report_overview(day: str | None = None):
     except Exception:
         learning_bias_summary = {"enabled": False, "symbol_count": 0}
 
-    return {
+    return _json_safe_positions({
         "paper_only": True,
         "generated_at": now,
         "day": day or "today",
@@ -304,7 +304,7 @@ async def get_report_overview(day: str | None = None):
         "symbols": symbols,
         "decision_summary": decision_summary[:40],
         "open_positions": [],
-    }
+    })
 
 
 @router.get("/api/reports/rising-signals")

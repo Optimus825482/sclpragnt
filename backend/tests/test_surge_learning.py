@@ -8,7 +8,10 @@ Sembol bazlı adaptif bias hesaplamasının tüm kritik senaryolarını test ede
 - Güven eşiği → confidence < 0.30 → bias uygulanmaz (master_surge.py mantığı)
 - Min örnek → sample_size < 5 → sıfır bias
 """
+import json
+
 import pytest
+from app import surge_learning
 from app.surge_learning import (
     compute_symbol_bias,
     build_surge_biases,
@@ -232,3 +235,44 @@ class TestCache:
         assert summary["symbol_count"] >= 1
         assert "max_bias_pct" in summary
         assert summary["max_bias_pct"] == MAX_BIAS_PCT
+
+
+# ---------------------------------------------------------------------------
+# 8. Bias özeti JSON-güvenliği (2026-09-28, /api/reports/overview 500 fix)
+#    Soğuk önbellekte cache_age_seconds() float("inf") dönüyordu; Starlette
+#    JSON dumper'ı (allow_nan=False) inf'e ValueError fırlatıyordu.
+# ---------------------------------------------------------------------------
+
+class TestBiasSummaryJsonSafety:
+    def _assert_json_safe(self, payload):
+        # Starlette JSONResponse.render ile birebir aynı koşul
+        json.dumps(payload, allow_nan=False)
+
+    def test_cold_cache_summary_is_json_safe(self, monkeypatch):
+        """Üretim hatası: boş önbellek + _BIAS_CACHE_TS=0 → cache_age_s=inf."""
+        monkeypatch.setattr(surge_learning, "_BIAS_CACHE_TS", 0.0)
+        summary = bias_summary({})
+        assert summary["enabled"] is False
+        assert summary["cache_age_s"] is None
+        self._assert_json_safe(summary)
+
+    def test_warm_cache_zero_ts_is_json_safe(self, monkeypatch):
+        """Bias verisi var ama TS=0 → hem cache_age_s hem last_updated güvenli."""
+        monkeypatch.setattr(surge_learning, "_BIAS_CACHE_TS", 0.0)
+        trades = [_trade("JSONTRY", 10.0) for _ in range(10)]
+        summary = bias_summary(build_surge_biases(trades, []))
+        assert summary["enabled"] is True
+        assert summary["cache_age_s"] is None
+        assert summary["last_updated"] is None
+        self._assert_json_safe(summary)
+
+    def test_warm_cache_finite_age_preserved(self, monkeypatch):
+        """Normal (sıcak) yol bozulmamalı: age float, last_updated dolu."""
+        now = 1234.5
+        monkeypatch.setattr(surge_learning, "_BIAS_CACHE_TS", now)
+        monkeypatch.setattr(surge_learning.time, "monotonic", lambda: now + 30.0)
+        trades = [_trade("JSONTRY", 10.0) for _ in range(10)]
+        summary = bias_summary(build_surge_biases(trades, []))
+        assert summary["cache_age_s"] == 30.0
+        assert summary["last_updated"] == now
+        self._assert_json_safe(summary)

@@ -1,3 +1,4 @@
+import json
 import pathlib
 import sys
 import unittest
@@ -68,6 +69,12 @@ class TestReportDayFiltering(unittest.IsolatedAsyncioTestCase):
             ov_all = await reports.get_report_overview(day="all")
             self.assertEqual(ov_all["day"], "all")
             self.assertTrue(any(s["symbol"] == "TESTOLDTRY" for s in ov_all["symbols"]))
+
+            # 5. JSON-güvenliği: Starlette JSONResponse allow_nan=False kullanır;
+            # payload'da NaN/Infinity kalırsa üretimde 500 ("Out of range float
+            # values are not JSON compliant") dönüyordu (2026-09-28).
+            json.dumps(ov_today, allow_nan=False)
+            json.dumps(ov_all, allow_nan=False)
 
         finally:
             def cleanup(conn):
