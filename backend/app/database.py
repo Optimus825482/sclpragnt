@@ -5713,3 +5713,165 @@ async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: fl
         conn.commit()
         return True
     return await _run_db(op)
+
+
+# ---------------------------------------------------------------------------
+# LLM vs Kural Bazlı Karşılaştırmalı Analiz (2026-09-28)
+# ---------------------------------------------------------------------------
+async def get_llm_vs_rules_comparison(
+    day: str | None = None,
+    since: float | None = None,
+    until: float | None = None,
+    limit: int = 500,
+) -> dict:
+    """Otonom paper işlemlerini LLM İkinci Göz (Second Eye) değerlendirmeleriyle karşılaştırır."""
+    eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=False)
+
+    def op(conn):
+        where_clauses = ["COALESCE(t.exit_reason, '') <> 'reset'"]
+        params: list = []
+        if eff_since is not None:
+            where_clauses.append("t.entry_time >= ?")
+            params.append(eff_since)
+        if eff_until is not None:
+            where_clauses.append("t.entry_time < ?")
+            params.append(eff_until)
+
+        where_sql = "WHERE " + " AND ".join(where_clauses)
+        sql = f"""
+            SELECT 
+                t.id AS trade_id,
+                t.symbol,
+                t.status,
+                t.entry_time,
+                t.exit_time,
+                t.entry_price,
+                t.exit_price,
+                t.quantity,
+                t.order_value_try,
+                t.pnl,
+                t.pnl_pct,
+                t.exit_reason,
+                t.peak_price,
+                t.take_profit,
+                t.stop_loss,
+                t.notification_id,
+                t.notification_score,
+                t.notification_target_pct,
+                n.llm_verdict AS notif_verdict,
+                n.llm_confidence AS notif_conf,
+                n.llm_reasons AS notif_reasons,
+                n.message AS notif_msg
+            FROM auto_paper_trades t
+            LEFT JOIN monitoring_notifications n ON t.notification_id = n.id
+            {where_sql}
+            ORDER BY t.entry_time DESC
+            LIMIT ?
+        """
+        params.append(max(1, min(int(limit), 2000)))
+        rows = conn.execute(sql, params).fetchall()
+
+        # Eksik LLM değerlendirmeleri için ikinci-göz bildirimlerinden eşleştirme (symbol + zaman aralığı)
+        trades: list[dict] = []
+        seen_trades = set()
+
+        for r in rows:
+            d = dict(r)
+            tid = d["trade_id"]
+            if tid in seen_trades:
+                continue
+            seen_trades.add(tid)
+
+            sym = d["symbol"]
+            entry_t = float(d["entry_time"] or 0)
+            llm_v = d.get("notif_verdict")
+            llm_c = d.get("notif_conf")
+            llm_r = d.get("notif_reasons")
+            llm_msg = d.get("notif_msg")
+
+            if not llm_v and entry_t > 0:
+                # İkinci göz bildirimlerinden en yakın kararı bul
+                sub = conn.execute(
+                    """SELECT llm_verdict, llm_confidence, llm_reasons, message
+                       FROM monitoring_notifications
+                       WHERE symbol = ? AND (sources LIKE ? OR mode = ? OR llm_verdict IS NOT NULL)
+                         AND llm_verdict IS NOT NULL
+                         AND detected_at BETWEEN ? AND ?
+                       ORDER BY ABS(detected_at - ?) ASC LIMIT 1""",
+                    (sym, "%llm_second_eye%", "llm_ikinci_goz", entry_t - 900, entry_t + 300, entry_t)
+                ).fetchone()
+                if sub:
+                    llm_v = sub["llm_verdict"]
+                    llm_c = sub["llm_confidence"]
+                    llm_r = sub["llm_reasons"]
+                    llm_msg = sub["message"]
+
+            d["llm_verdict"] = llm_v
+            d["llm_confidence"] = float(llm_c) if llm_c is not None else None
+            d["llm_reasons"] = llm_r
+            d["llm_summary"] = llm_msg
+
+            # Karşılaştırma Analitiği
+            pnl = float(d.get("pnl") or 0.0)
+            status = d.get("status")
+
+            if status != "closed":
+                d["comparison_status"] = "OPEN"
+                d["comparison_label"] = "Açık İşlem"
+            elif not llm_v:
+                d["comparison_status"] = "NOT_EVALUATED"
+                d["comparison_label"] = "Değerlendirilmedi"
+            elif llm_v == "DEVAM":
+                if pnl > 0:
+                    d["comparison_status"] = "LLM_WIN"
+                    d["comparison_label"] = "✅ Kazanç Teyitli"
+                else:
+                    d["comparison_status"] = "LLM_LOSS"
+                    d["comparison_label"] = "❌ LLM Yanıldı"
+            elif llm_v == "FAKE":
+                if pnl <= 0:
+                    d["comparison_status"] = "LLM_SAVED"
+                    d["comparison_label"] = "🛡️ Zarardan Korudu"
+                else:
+                    d["comparison_status"] = "LLM_MISSED"
+                    d["comparison_label"] = "⚠️ Fırsat Kaçtı"
+            else:  # BELIRSIZ
+                d["comparison_status"] = "NEUTRAL"
+                d["comparison_label"] = "⚪ Belirsiz Karar"
+
+            trades.append(d)
+
+        # İstatistik Agregasyonu
+        closed_trades = [t for t in trades if t.get("status") == "closed"]
+        total_closed = len(closed_trades)
+        rules_winning = sum(1 for t in closed_trades if (t.get("pnl") or 0) > 0)
+        rules_pnl = sum(float(t.get("pnl") or 0) for t in closed_trades)
+
+        llm_confirmed = [t for t in closed_trades if t.get("llm_verdict") == "DEVAM"]
+        llm_confirmed_count = len(llm_confirmed)
+        llm_confirmed_winning = sum(1 for t in llm_confirmed if (t.get("pnl") or 0) > 0)
+        llm_confirmed_pnl = sum(float(t.get("pnl") or 0) for t in llm_confirmed)
+
+        llm_traps_saved = sum(1 for t in closed_trades if t.get("llm_verdict") == "FAKE" and (t.get("pnl") or 0) <= 0)
+        llm_fake_total = sum(1 for t in closed_trades if t.get("llm_verdict") == "FAKE")
+
+        eval_total = sum(1 for t in closed_trades if t.get("comparison_status") in ("LLM_WIN", "LLM_LOSS", "LLM_SAVED", "LLM_MISSED"))
+        eval_correct = sum(1 for t in closed_trades if t.get("comparison_status") in ("LLM_WIN", "LLM_SAVED"))
+
+        stats = {
+            "total_trades": len(trades),
+            "total_closed": total_closed,
+            "rules_pnl": round(rules_pnl, 2),
+            "rules_win_rate": round((rules_winning / total_closed * 100), 1) if total_closed else 0.0,
+            "llm_confirmed_count": llm_confirmed_count,
+            "llm_confirmed_pnl": round(llm_confirmed_pnl, 2),
+            "llm_confirmed_win_rate": round((llm_confirmed_winning / llm_confirmed_count * 100), 1) if llm_confirmed_count else 0.0,
+            "llm_traps_saved": llm_traps_saved,
+            "llm_fake_total": llm_fake_total,
+            "llm_accuracy": round((eval_correct / eval_total * 100), 1) if eval_total else 0.0,
+            "eval_total": eval_total,
+        }
+
+        return {"stats": stats, "trades": trades}
+
+    return await _run_db(op)

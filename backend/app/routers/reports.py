@@ -582,3 +582,74 @@ async def get_decisions(limit: int = 500, offset: int = 0, symbol: str = "", str
 @router.get("/api/llm/tool-logs")
 async def get_llm_tool_logs(limit: int = 500):
     return {"logs": await database.get_llm_tool_logs(limit)}
+
+
+@router.get("/api/reports/llm-vs-rules")
+async def get_llm_vs_rules_report(day: str | None = None, limit: int = 500):
+    """Kural bazlı otonom işlemler ile LLM İkinci Göz kararlarını karşılaştırır."""
+    limit = max(1, min(int(limit), 2000))
+    res = await database.get_llm_vs_rules_comparison(day=day, limit=limit)
+    return {
+        "paper_only": True,
+        "day": day or "today",
+        "stats": res["stats"],
+        "trades": res["trades"],
+        "total": len(res["trades"]),
+    }
+
+
+@router.get("/api/reports/llm-vs-rules/csv")
+async def get_llm_vs_rules_csv(day: str | None = None, limit: int = 1000):
+    """Karşılaştırmalı analiz tablosunu Excel uyumlu UTF-8 CSV olarak dışa aktarır."""
+    import csv
+    import io
+    from fastapi.responses import Response
+
+    limit = max(1, min(int(limit), 5000))
+    res = await database.get_llm_vs_rules_comparison(day=day, limit=limit)
+    trades = res.get("trades", [])
+
+    output = io.StringIO()
+    # Excel Türkçe karakter uyumu için BOM yaz
+    output.write("\ufeff")
+    writer = csv.writer(output, delimiter=";")
+
+    # Başlık satırı
+    headers = [
+        "İşlem ID", "Sembol", "Durum", "Giriş Zamanı", "Çıkış Zamanı",
+        "Giriş Fiyatı", "Çıkış Fiyatı", "İşlem Tutarı (TRY)", "Net PnL (TRY)",
+        "Net PnL (%)", "Çıkış Nedeni", "Radar Skoru", "Hedef (%)",
+        "LLM Kararı", "LLM Güven (%)", "Karşılaştırma Sonucu", "LLM Açıklaması",
+    ]
+    writer.writerow(headers)
+
+    for t in trades:
+        entry_dt = datetime.fromtimestamp(t["entry_time"], tz=timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M:%S") if t.get("entry_time") else ""
+        exit_dt = datetime.fromtimestamp(t["exit_time"], tz=timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M:%S") if t.get("exit_time") else ""
+        writer.writerow([
+            t.get("trade_id", ""),
+            t.get("symbol", ""),
+            t.get("status", ""),
+            entry_dt,
+            exit_dt,
+            f"{float(t.get('entry_price') or 0):.6f}".replace(".", ","),
+            f"{float(t.get('exit_price') or 0):.6f}".replace(".", ",") if t.get("exit_price") else "",
+            f"{float(t.get('order_value_try') or 0):.2f}".replace(".", ","),
+            f"{float(t.get('pnl') or 0):.2f}".replace(".", ","),
+            f"{float(t.get('pnl_pct') or 0):.2f}%".replace(".", ","),
+            t.get("exit_reason", "") or "",
+            t.get("notification_score", "") or "",
+            f"{float(t.get('notification_target_pct') or 0):.2f}%".replace(".", ",") if t.get("notification_target_pct") else "",
+            t.get("llm_verdict", "DEĞERLENDİRİLMEDİ") or "DEĞERLENDİRİLMEDİ",
+            f"%{int(t['llm_confidence'])}" if t.get("llm_confidence") is not None else "",
+            t.get("comparison_label", ""),
+            (t.get("llm_summary") or "").replace(";", " - ").replace("\n", " "),
+        ])
+
+    csv_data = output.getvalue()
+    filename = f"kural_vs_llm_karsilastirma_{day or 'bugun'}.csv"
+    return Response(
+        content=csv_data,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )

@@ -618,17 +618,18 @@ class Config:
     # Başabaş (Breakeven) koruması: erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI (2026-09-22 Erkan kararı). Ayarlardan isteğe bağlı açılabilir.
     AUTO_PAPER_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_BREAKEVEN_ENABLED", "true").lower() == "true"
-    AUTO_PAPER_BREAKEVEN_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_TRIGGER_PCT", "1.5"))
+    # 2026-09-28 kârlılık düzeltmesi: erken breakeven kâr korumasını trailing'den
+    # ÖNCE devreye sokar — trailing aktif olduğunda stop zaten maliyet üstünde olur
+    # ve zarar riski sıfırlanır. Varsayılan %1.0.
+    AUTO_PAPER_BREAKEVEN_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_TRIGGER_PCT", "1.0"))
     # Trailing stop modülü (kâr takibi): pozisyon trailing_trigger_pct kadar
     # kara geçince aktifleşir ve fiyatı trailing_gap_pct geriden takip eder.
     # Varsayılan AÇIK; trailing_enabled=false ile kapatılabilir.
     AUTO_PAPER_TRAILING_ENABLED = os.getenv("AUTO_PAPER_TRAILING_ENABLED", "true").lower() == "true"
     AUTO_PAPER_TRAILING_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_TRAILING_TRIGGER_PCT", "1.8"))
-    # 2026-09-16: varsayılan 0.8 → 0.6. 0.8 HİÇ UYGULANMIYORDU: breakeven
-    # ratchet'i (%0.60, aynı değer sabiti) hem daha sıkı hem önce kontrol edildiği
-    # için trailing her zaman gölgeleniyordu (471 işlemlik gerçek replay'de
-    # `trailing_stop` 0 kez). Etkin değer zaten 0.60'tı; varsayılan artık ekranda
-    # yalan söylemiyor. Sıkılaştırmak (ör. 0.3) gerçekten etki eder.
+    # 2026-09-28 kârlılık düzeltmesi: 0.6 kâr koruma. TP artık korunduğu için
+    # (trailing aktifken silinmediği için) trailing gap'i daraltmak güvenli:
+    # geri çekilmelerde daha az kâr kaybı. TP birincil çıkış, trailing koruma.
     AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "0.6"))
     # Trailing/breakeven kapanışı sonrası aynı bildirimle yeniden açılış
     # (fiyat bildirim fiyatının üzerinde + ufuk süresi dolmadı + yükselme

@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
 import MacdMtfTab from "./MacdMtfTab";
 import GlobalBridgeTab from "./GlobalBridgeTab";
+import LlmVsRulesTab from "./LlmVsRulesTab";
 import {
   formatSignedTL,
   formatTL,
@@ -1623,7 +1624,7 @@ function SelfLearningTab() {
 export default function ReportsPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
-  const [tab, setTab] = useState<"overview" | "bridge" | "radar" | "positions" | "symbols" | "mtf" | "advanced">("overview");
+  const [tab, setTab] = useState<"overview" | "bridge" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "advanced">("overview");
   const [advancedSubTab, setAdvancedSubTab] = useState("velocity");
   const [selectedDay, setSelectedDay] = useState<string>(() => localDateInput());
   const todayStr = localDateInput();
@@ -1633,6 +1634,7 @@ export default function ReportsPage() {
     { id: "bridge", label: "🌉 Global Lead-Lag", icon: "🌉" },
     { id: "radar", label: "🎯 Sinyal & Hedef Başarısı", icon: "🎯" },
     { id: "positions", label: "💼 Otonom Pozisyonlar", icon: "💼" },
+    { id: "llm_compare", label: "🤖 Kural vs LLM", icon: "🤖" },
     { id: "symbols", label: "📈 Sembol Başarısı", icon: "📈" },
     { id: "mtf", label: "🧠 MTF Konfluans", icon: "🧠" },
     ...(isAdmin ? [{ id: "advanced", label: "⚙️ Gelişmiş Teşhis", icon: "⚙️" }] : []),
@@ -1699,22 +1701,25 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      {/* Sekmeler */}
-      <div className="flex items-center gap-2 overflow-x-auto border-b border-bunker-800 pb-2 no-scrollbar tab-scroll-fade">
-        {MAIN_TABS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => setTab(item.id as any)}
-            className={`rounded-xl px-4 py-2.5 font-mono text-xs sm:text-sm font-bold transition-all whitespace-nowrap flex items-center gap-2 ${
-              tab === item.id
-                ? "bg-neon-green/15 text-neon-green border border-neon-green/40 shadow-sm"
-                : "text-bunker-muted hover:text-white hover:bg-bunker-900"
-            }`}
-          >
-            {item.label}
-          </button>
-        ))}
+      {/* Sekmeler — Yatay scrollbar oluşturmayan, responsive buton ızgarası */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-8 gap-2 p-1.5 bg-bunker-950/70 border border-bunker-800/80 rounded-2xl shadow-inner">
+        {MAIN_TABS.map((item) => {
+          const active = tab === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setTab(item.id as any)}
+              className={`rounded-xl px-3 py-2.5 font-mono text-xs font-bold transition-all flex items-center justify-center gap-1.5 text-center leading-snug ${
+                active
+                  ? "bg-neon-green/20 text-neon-green border border-neon-green/50 shadow-md scale-[1.02]"
+                  : "bg-bunker-900/60 text-bunker-muted hover:text-white hover:bg-bunker-800 border border-bunker-800/50 hover:border-bunker-700"
+              }`}
+            >
+              <span className="truncate">{item.label}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* Sekme İçerikleri */}
@@ -1722,6 +1727,7 @@ export default function ReportsPage() {
       {tab === "bridge" && <GlobalBridgeTab day={selectedDay} />}
       {tab === "radar" && <UserRadarTab day={selectedDay} setDay={setSelectedDay} />}
       {tab === "positions" && <UserPositionsTab day={selectedDay} />}
+      {tab === "llm_compare" && <LlmVsRulesTab day={selectedDay} />}
       {tab === "symbols" && <SymbolsTab day={selectedDay} />}
       {tab === "mtf" && <MacdMtfTab />}
       {tab === "advanced" && isAdmin && (
