@@ -308,7 +308,23 @@ function BinanceTrPageInner() {
       if (!d) return;
       if (d.user_id != null && myUserIdRef.current != null && d.user_id !== myUserIdRef.current) return;
       if (d.balances) setBalances(d.balances);
-      if (d.holdings) setHoldings(d.holdings);
+      if (d.holdings) {
+        setHoldings((prev) => {
+          const prevMap = new Map(prev.map((p) => [p.asset, p]));
+          return d.holdings!.map((h) => {
+            const old = prevMap.get(h.asset);
+            return {
+              ...old,
+              ...h,
+              avg_cost_try: h.avg_cost_try ?? old?.avg_cost_try ?? null,
+              active_orders: h.active_orders ?? old?.active_orders,
+              has_active_order: h.has_active_order ?? old?.has_active_order,
+              active_sl_price: h.active_sl_price ?? old?.active_sl_price,
+              active_tp_price: h.active_tp_price ?? old?.active_tp_price,
+            };
+          });
+        });
+      }
     }
   });
 
@@ -373,7 +389,13 @@ function BinanceTrPageInner() {
     setOrdLoading(true);
     try {
       const r = await apiRequest(`${API_BASE}/api/binance/positions`, { cache: "no-store" });
-      if (r.ok) setHoldings((await r.json()).holdings || []);
+      if (r.ok) {
+        const d = await r.json();
+        setHoldings(d.holdings || []);
+        if (d.balances && Array.isArray(d.balances) && d.balances.length > 0) {
+          setBalances(d.balances);
+        }
+      }
     } catch { /* */ }
     finally { setOrdLoading(false); }
   }, []);
@@ -426,7 +448,12 @@ function BinanceTrPageInner() {
   useVisibleInterval(loadTrades, configured && tradeDay ? 45_000 : null);
 
   useEffect(() => {
-    if (configured && tradeDay) loadTrades();
+    if (configured && tradeDay) {
+      const t = setTimeout(() => {
+        loadTrades();
+      }, 300);
+      return () => clearTimeout(t);
+    }
   }, [configured, tradeDay, loadTrades]);
 
   // Canlı fiyatlarla birleştirilmiş holding listesi
@@ -441,9 +468,9 @@ function BinanceTrPageInner() {
   // kapanır. Girdi eksikse `netOpenPnlTry` `null` döner (0 DEĞİL) → UI "—".
   const mergedHoldings = useMemo(() => {
     return holdings.map((h) => {
-      const t = liveTicks[h.asset];
-      const price = h.asset === "TRY" ? 1.0 : Number(t?.price || 0);
-      if (!price) return { ...h, volume_try: t?.quote_volume_try ?? null };
+      const t = liveTicks[h.asset] || liveTicks[`${h.asset}TRY`] || liveTicks[`${h.asset}USDT`];
+      const price = h.asset === "TRY" ? 1.0 : (Number(t?.price || 0) || Number(h.price_try || 0));
+      if (!price) return { ...h, volume_try: t?.quote_volume_try ?? h.volume_try ?? null };
       const net = netOpenPnlTry(h.avg_cost_try, price, h.total);
       const pnl_try = net !== null ? net : h.pnl_try;
       const cost = Number(h.avg_cost_try);
@@ -457,7 +484,7 @@ function BinanceTrPageInner() {
         value_try: h.total * price,
         pnl_try,
         pnl_pct,
-        volume_try: t?.quote_volume_try ?? null,
+        volume_try: t?.quote_volume_try ?? h.volume_try ?? null,
       };
     });
   }, [holdings, liveTicks]);

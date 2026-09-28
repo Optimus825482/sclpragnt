@@ -168,13 +168,50 @@ async def ws_broadcast_loop():
         try:
             if market.tickers:
                 tickers = []
+                binance_ticks = {}
+                usdt_try_lp = 0.0
                 for t in market.tickers.values():
                     item = dict(t)
                     item["avg_volume"] = market.get_avg_volume(t["symbol"])
                     tickers.append(item)
+                    sym = str(t.get("symbol") or "").upper().replace("_", "")
+                    lp = float(t.get("last_price") or 0)
+                    if lp > 0:
+                        if sym == "USDTTRY":
+                            usdt_try_lp = lp
+                        qv = float(market.ticker_24h.get(sym) or 0)
+                        if sym.endswith("TRY"):
+                            base_asset = sym[:-3]
+                            tick_val = {"price": lp, "symbol": sym, "quote_volume_try": qv}
+                            binance_ticks[base_asset] = tick_val
+                            binance_ticks[sym] = tick_val
+                        elif sym.endswith("USDT"):
+                            tick_val = {"price": lp, "symbol": sym, "quote_volume_try": None}
+                            binance_ticks[sym] = tick_val
+
+                if usdt_try_lp > 0:
+                    usdt_val = {"price": usdt_try_lp, "symbol": "USDTTRY", "quote_volume_try": None}
+                    binance_ticks["USDT"] = usdt_val
+                    binance_ticks["USDTTRY"] = usdt_val
+                    for t in market.tickers.values():
+                        sym = str(t.get("symbol") or "").upper().replace("_", "")
+                        if sym.endswith("USDT"):
+                            base_asset = sym[:-4]
+                            if base_asset not in binance_ticks:
+                                lp = float(t.get("last_price") or 0)
+                                if lp > 0:
+                                    binance_ticks[base_asset] = {
+                                        "price": lp * usdt_try_lp,
+                                        "symbol": sym,
+                                        "quote_volume_try": None,
+                                    }
+                binance_ticks["TRY"] = {"price": 1.0, "symbol": "TRY", "quote_volume_try": None}
+
                 _ws_snapshot_cache["tickers"] = tickers
                 _ws_snapshot_cache["generated_at"] = time.time()
                 await ws_manager.broadcast({"type": "tickers", "data": _ws_snapshot_cache["tickers"]})
+                if binance_ticks:
+                    await ws_manager.broadcast({"type": "binance_price", "data": {"ticks": binance_ticks, "time": int(time.time() * 1000)}})
 
                 try_bal = await _cached_try_balance()
                 total_value = try_bal
