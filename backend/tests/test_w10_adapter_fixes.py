@@ -326,9 +326,12 @@ class PrivateAdapterTests(unittest.TestCase):
         self.btp = btp
         self._saved_filters = dict(btp._symbols_cache.get("filters") or {})
         btp._symbols_cache["filters"] = {}
+        self._saved_cooldown = btp._cooldown_until
+        btp._cooldown_until = 0.0
 
     def tearDown(self):
         self.btp._symbols_cache["filters"] = self._saved_filters
+        self.btp._cooldown_until = self._saved_cooldown
 
     def test_signed_request_applies_the_server_time_offset(self):
         btp = self.btp

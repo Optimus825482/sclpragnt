@@ -445,7 +445,8 @@ function BinanceTrPageInner() {
   // WS push birincil kaynak (binance_account_push_loop, 15 sn).
   // Polling yalnızca WS kesilirse yedek — 60 sn yeterli.
   useVisibleInterval(refreshAccountData, configured ? 60_000 : null);
-  useVisibleInterval(loadTrades, configured && tradeDay ? 45_000 : null);
+  // Günlük işlem taraması (92 sembol): rate-limit dostu 90 sn aralık
+  useVisibleInterval(loadTrades, configured && tradeDay ? 90_000 : null);
 
   useEffect(() => {
     if (configured && tradeDay) {

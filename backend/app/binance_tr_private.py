@@ -32,22 +32,32 @@ REST_TIMEOUT_SEC = 15
 # (bakiye / açık emir / satış) olduğu için pencere iki katına çıkarıldı:
 # 10 sn, ofset ölçümü 60 sn'de bir tazelendiğinden fazlasıyla yeterli.
 RECV_WINDOW_MS = 10000
+
+# Binance TR resmi dokümantasyonu: IP başına 1 dakikada 1200 request weight sınırı.
+REST_MAX_WEIGHT_1M = 1200
+REST_WEIGHT_SOFT_LIMIT = 950  # 950'ye ulaşınca proaktif bekleme
+REST_REQUEST_GAP_SEC = 0.08  # İki private istek arası min 80ms (istek patlamasını önler)
+
 # B-14: imzalı istekler için sınırlı yeniden deneme + sunucu saati ofseti.
-REST_MAX_ATTEMPTS = 4
-REST_BACKOFF_BASE_SEC = 0.35
-REST_BACKOFF_MAX_SEC = 4.0
+REST_MAX_ATTEMPTS = 5
+REST_BACKOFF_BASE_SEC = 1.0
+REST_BACKOFF_MAX_SEC = 10.0
 REST_BAN_BACKOFF_BASE_SEC = 600.0
 REST_BAN_BACKOFF_MAX_SEC = 3600.0
 # #31: Retry-After'ı 4 sn'ye kırpmak, sunucunun "dakikalarca bekle" dediği anda
 # isteği tekrar atmak demek. Tavan çok yüksek tutulur; sunucunun söylediği
 # değer kırpılmaz.
 REST_RETRY_AFTER_MAX_SEC = 300.0
-# #33: private tarafta ortak eşzamanlılık sınırı yoktu. Public taraftaki desen
-# (Semaphore(8)) uygulanır: sembol taraması gibi 300 çağrılık patlamalar
-# imzalı uçları (bakiye, emir) tek bir anda doyurmamalı.
-PRIVATE_MAX_CONCURRENCY = 4
+# #33: private tarafta ortak eşzamanlılık sınırı.
+PRIVATE_MAX_CONCURRENCY = 3
 _PRIVATE_SEMAPHORE = threading.Semaphore(PRIVATE_MAX_CONCURRENCY)
 _SERVER_TIME_TTL_SEC = 60.0
+
+_used_weight_1m = 0
+_weight_reported_at = 0.0
+_rate_limit_lock = threading.Lock()
+_cooldown_until = 0.0
+_last_request_time = [0.0]
 
 _SYMBOLS_CACHE_TTL_SEC = 6 * 3600
 _OPEN_ORDERS_CACHE_TTL_SEC = 30
@@ -110,9 +120,61 @@ def _unwrap(payload: dict) -> dict | list:
     return data if data is not None else payload
 
 
+def _record_used_weight(resp_headers) -> None:
+    """X-MBX-USED-WEIGHT-1M başlığını yakalayarak global ağırlık durumunu günceller."""
+    global _used_weight_1m, _weight_reported_at
+    if not resp_headers:
+        return
+    used_val = None
+    for k, v in resp_headers.items():
+        if k.lower() in ("x-mbx-used-weight-1m", "x-mbx-used-weight"):
+            try:
+                used_val = int(v)
+                break
+            except (ValueError, TypeError):
+                pass
+    if used_val is not None:
+        with _rate_limit_lock:
+            _used_weight_1m = used_val
+            _weight_reported_at = time.time()
+
+
+def _update_cooldown(delay: float) -> None:
+    """Aktif cooldown bitiş zamanını günceller."""
+    global _cooldown_until
+    with _rate_limit_lock:
+        _cooldown_until = max(_cooldown_until, time.time() + delay)
+
+
+def _throttle_private_request() -> None:
+    """Sunucunun bildirdiği ağırlık tavana yaklaştıysa veya aktif cooldown varsa bekle."""
+    now = time.time()
+
+    # 1. Aktif cooldown (429/418 sonrası) kontrolü
+    with _rate_limit_lock:
+        cooldown = _cooldown_until - now
+    if cooldown > 0:
+        logger.info("Binance TR rate-limit cooldown devrede, %.2fs bekleniyor...", cooldown)
+        time.sleep(min(cooldown, 60.0))
+        return
+
+    # 2. Yumuşak ağırlık sınırı kontrolü (REST_WEIGHT_SOFT_LIMIT = 950)
+    with _rate_limit_lock:
+        age = now - _weight_reported_at
+        current_weight = _used_weight_1m if (0 <= age < 60.0) else 0
+    if current_weight >= REST_WEIGHT_SOFT_LIMIT:
+        wait = max(1.0, 60.0 - age)
+        logger.warning(
+            "Binance TR ağırlığı kritik (%d/%d, yaş: %.1fs). Proaktif frenleme: %.1fs bekleniyor",
+            current_weight, REST_MAX_WEIGHT_1M, age, wait
+        )
+        time.sleep(min(wait, 60.0))
+
+
 def _http_get_json(url: str, headers: dict | None = None) -> dict | list:
     req = Request(url, headers=headers or {}, method="GET")
     with urlopen(req, timeout=REST_TIMEOUT_SEC) as resp:
+        _record_used_weight(resp.headers)
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -120,16 +182,15 @@ def _http_post_json(url: str, headers: dict | None = None) -> dict | list:
     """Boş gövdeli POST — tüm parametreler query string'te (doküman: kabul edilir)."""
     req = Request(url, headers=headers or {}, method="POST", data=b"")
     with urlopen(req, timeout=REST_TIMEOUT_SEC) as resp:
+        _record_used_weight(resp.headers)
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _private_retry_delay(attempt: int, headers=None) -> float:
+def _private_retry_delay(attempt: int, headers=None, is_429: bool = False) -> float:
     """Üstel backoff + jitter + Retry-After (B-14, #31/#33).
 
-    #33: eskiden `exc.headers` HİÇ okunmuyordu; sunucu 429'da dakikalarca
-    "bekle" dese bile istemci 0.35 sn sonra tekrar atıyordu. Public taraftaki
-    mantık buraya da birebir uygulanır: sunucunun Retry-After değeri kırpılmadan
-    (yalnız `REST_RETRY_AFTER_MAX_SEC` tavanına) kullanılır.
+    Binance TR resmi dakikalık (1200 weight/min) limitinde 429 alındığında
+    0.35s yerine en az 8s-32s beklenir.
     """
     retry_after = headers.get("Retry-After") if headers else None
     if retry_after is not None:
@@ -137,6 +198,9 @@ def _private_retry_delay(attempt: int, headers=None) -> float:
             return min(REST_RETRY_AFTER_MAX_SEC, max(0.0, float(retry_after)))
         except (TypeError, ValueError):
             pass
+    if is_429:
+        return min(60.0, 8.0 * (2 ** (attempt - 1))) + random.uniform(0.5, 2.0)
+
     exponential = min(REST_BACKOFF_MAX_SEC, REST_BACKOFF_BASE_SEC * (2 ** (attempt - 1)))
     return exponential + random.uniform(0.0, exponential * 0.25)
 
@@ -228,6 +292,8 @@ def _signed_request(method: str, path: str, params: dict | None,
     # yüzlerce çağrılık patlamalar bakiye/emir uçlarını tek anda doyuruyordu.
     with _PRIVATE_SEMAPHORE:
         for attempt in range(1, REST_MAX_ATTEMPTS + 1):
+            if attempt == 1:
+                _throttle_private_request()
             attempt_params = dict(base_params)
             attempt_params["timestamp"] = int(time.time() * 1000 + offset_ms)
             query = urlencode(sorted(attempt_params.items()))
@@ -246,7 +312,10 @@ def _signed_request(method: str, path: str, params: dict | None,
                         raise exc
                     if attempt == REST_MAX_ATTEMPTS:
                         break
-                    delay = max(1.0, _private_retry_delay(attempt))
+                    is_429 = ("1003" in str(exc.code)) or ("too many requests" in str(exc.msg).lower())
+                    delay = _private_retry_delay(attempt, is_429=is_429)
+                    if is_429:
+                        _update_cooldown(delay)
                     logger.warning(
                         "Binance TR geçici sunucu/yoğunluk yanıtı (kod %s, %s) | path=%s | %.2f sn beklenip yeniden denenecek (%d/%d)",
                         exc.code, exc.msg, path, delay, attempt, REST_MAX_ATTEMPTS
@@ -263,6 +332,8 @@ def _signed_request(method: str, path: str, params: dict | None,
                         continue
                 raise exc
             except HTTPError as exc:
+                # Başlıklardaki ağırlık bilgisini her durumda güncelle
+                _record_used_weight(exc.headers)
                 # Binance TR 4xx hataları JSON body'sinde {code, msg} taşır.
                 try:
                     body = exc.read().decode("utf-8", errors="replace")
@@ -281,14 +352,19 @@ def _signed_request(method: str, path: str, params: dict | None,
                     # #32: Ban sinyali.
                     if attempt == REST_MAX_ATTEMPTS:
                         break
-                    time.sleep(_private_ban_delay(attempt, exc.headers))
+                    delay = _private_ban_delay(attempt, exc.headers)
+                    _update_cooldown(delay)
+                    time.sleep(delay)
                     continue
                 if exc.code == 429 or (500 <= exc.code < 600) or binance_err.is_transient:
                     if not idempotent and exc.code != 429 and not binance_err.is_transient:
                         raise binance_err
                     if attempt == REST_MAX_ATTEMPTS:
                         break
-                    delay = max(1.0, _private_retry_delay(attempt, exc.headers)) if binance_err.is_transient else _private_retry_delay(attempt, exc.headers)
+                    is_429 = (exc.code == 429) or ("429" in str(binance_err.code)) or ("too many requests" in str(binance_err.msg).lower())
+                    delay = _private_retry_delay(attempt, exc.headers, is_429=is_429)
+                    if is_429:
+                        _update_cooldown(delay)
                     logger.warning(
                         "Binance TR HTTP %s geçici hata (kod %s) | %.2f sn sonra yeniden denenecek (%d/%d)",
                         exc.code, binance_err.code, delay, attempt, REST_MAX_ATTEMPTS
@@ -403,10 +479,17 @@ def _load_symbol_list_locked(api_key: str, api_secret: str) -> None:
 
 
 def get_symbol_filters(api_key: str, api_secret: str, symbol_underscore: str) -> dict | None:
-    """Sembol filtreleri (LOT_SIZE/NOTIONAL, quoteAsset) — 6 sn cache'li liste."""
+    """Sembol filtreleri (LOT_SIZE/NOTIONAL, quoteAsset) — 6 saat cache'li liste."""
     _load_symbol_list(api_key, api_secret)
     with _symbols_lock:
         return _symbols_cache["filters"].get(symbol_underscore)
+
+
+def get_all_valid_symbols(api_key: str = "", api_secret: str = "") -> set[str]:
+    """Geçerli tüm alt çizgili sembollerin kümesini döndürür (cache'li)."""
+    _load_symbol_list(api_key, api_secret)
+    with _symbols_lock:
+        return set(_symbols_cache.get("filters", {}).keys())
 
 
 def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, quantity: float,

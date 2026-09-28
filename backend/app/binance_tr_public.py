@@ -42,11 +42,10 @@ REST_BAN_BACKOFF_MAX_SEC = 3600.0
 # eşzamanlılık 8×3 = 24 isteğe çıkıyordu ve thread havuzunu doyurabiliyordu.
 # Tek, modül düzeyinde paylaşılan sınır bunu kapatır.
 REST_MAX_CONCURRENCY = 8
-# B-11: sunucunun bildirdiği 1 dakikalık ağırlık (X-MBX-USED-WEIGHT-1M) bu
-# eşiği aşarsa yeni istek, pencere sıfırlanana kadar bekletilir. Binance TR
-# limiti tam olarak bilinmediğinden muhafazakâr bir tavan kullanılır; sabit
-# bir hız sınırı uydurmak yerine GERÇEK sunucu metriğine dayanılır.
-REST_WEIGHT_SOFT_LIMIT = 4500
+# Binance TR resmi dokümantasyonu: IP başına 1 dakikada hard limit 1200 weight.
+# Sunucunun bildirdiği 1 dakikalık ağırlık (X-MBX-USED-WEIGHT-1M) 950'ye ulaşırsa
+# 1200 tavanına çarpmadan önce yeni istekler pencere sıfırlanana kadar bekletilir.
+REST_WEIGHT_SOFT_LIMIT = 950
 REST_WEIGHT_WINDOW_SEC = 60.0
 
 _REQUEST_SEMAPHORE = threading.Semaphore(REST_MAX_CONCURRENCY)
