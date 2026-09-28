@@ -5,6 +5,7 @@ import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
 import MacdMtfTab from "./MacdMtfTab";
+import GlobalBridgeTab from "./GlobalBridgeTab";
 import {
   formatSignedTL,
   formatTL,
@@ -1618,13 +1619,14 @@ function SelfLearningTab() {
 export default function ReportsPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
-  const [tab, setTab] = useState<"overview" | "radar" | "positions" | "symbols" | "mtf" | "advanced">("overview");
+  const [tab, setTab] = useState<"overview" | "bridge" | "radar" | "positions" | "symbols" | "mtf" | "advanced">("overview");
   const [advancedSubTab, setAdvancedSubTab] = useState("velocity");
   const [selectedDay, setSelectedDay] = useState<string>(() => localDateInput());
   const todayStr = localDateInput();
 
   const MAIN_TABS = [
     { id: "overview", label: "📊 Performans Özeti", icon: "📊" },
+    { id: "bridge", label: "🌉 Global Lead-Lag", icon: "🌉" },
     { id: "radar", label: "🎯 Sinyal & Hedef Başarısı", icon: "🎯" },
     { id: "positions", label: "💼 Otonom Pozisyonlar", icon: "💼" },
     { id: "symbols", label: "📈 Sembol Başarısı", icon: "📈" },
@@ -1713,6 +1715,7 @@ export default function ReportsPage() {
 
       {/* Sekme İçerikleri */}
       {tab === "overview" && <OverviewTab day={selectedDay} />}
+      {tab === "bridge" && <GlobalBridgeTab day={selectedDay} />}
       {tab === "radar" && <UserRadarTab day={selectedDay} setDay={setSelectedDay} />}
       {tab === "positions" && <UserPositionsTab day={selectedDay} />}
       {tab === "symbols" && <SymbolsTab day={selectedDay} />}

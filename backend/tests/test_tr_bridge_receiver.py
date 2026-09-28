@@ -304,3 +304,18 @@ class TestBridgeRestEndpoints(unittest.IsolatedAsyncioTestCase):
             data = res.json()
             self.assertTrue(data["ok"])
             self.assertEqual(data["status"], "pong")
+
+    async def test_performance_endpoint(self):
+        """/api/bridge/performance uç noktası testi."""
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            headers = {"X-Bridge-Secret": "super-guclu-kopru-anahtari"}
+            res = await ac.get("/api/bridge/performance?day=all", headers=headers)
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertTrue(data["ok"])
+            self.assertIn("summary", data)
+            self.assertIn("win_rate", data["summary"])
+            self.assertIn("open_positions", data)
+            self.assertIn("closed_trades", data)
+            self.assertIn("recent_signals", data)
+

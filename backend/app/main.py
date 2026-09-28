@@ -2689,14 +2689,42 @@ async def binance_account_push_loop():
         await asyncio.sleep(15)
 
 
+# 2026-09-28 (denetim): /api/v3/ticker/24hr ağırlığı SEMBOL BAŞINA 2'dir
+# (eski "~2/batch" notu yanlıştı). TICKER_SYMBOL_BATCH=50 olduğundan adaylar
+# tek istekte kalırsa ağırlık 2×N ile sınırlı kalır; evren 50'yi aşarsa
+# her ek chunk +80-100 weight demekti. Canlı tick evreni tek chunk'a sığar
+# şekilde kırpılır: 24 varlık × 2 çift + USDTTRY = 49 aday → tek istek.
+PRICE_TICK_MAX_ASSETS = int(os.getenv("PRICE_TICK_MAX_ASSETS", "24"))
+
+
+def _order_tick_assets(seen_assets: set, extra: list, cap: int = PRICE_TICK_MAX_ASSETS) -> list[str]:
+    """Canlı tick evrenini önceliklendirip tek chunk'a sığacak şekilde kırp.
+
+    Öncelik: izleme diyaloğundan gelen `extra` varlıklar (TTL'li, en güncel
+    ilgi) önce, ardından alfabetik görülmüş varlıklar. TRY (baz para birimi)
+    dışlanır. Kırpma deterministiktir.
+    """
+    extra_first = [a for a in dict.fromkeys(extra) if a and a != "TRY"]
+    extra_set = set(extra_first)
+    seen_sorted = sorted(a for a in seen_assets if a and a != "TRY" and a not in extra_set)
+    ordered = extra_first + seen_sorted
+    if len(ordered) > cap:
+        logger.warning("Canlı tick evreni kırpıldı | assets=%d cap=%d (PRICE_TICK_MAX_ASSETS)",
+                       len(ordered), cap)
+        ordered = ordered[:cap]
+    return ordered
+
+
 async def binance_price_tick_loop():
     """Canlı Hesap açık pozisyonları için WS fiyat + 24s hacim tick'leri (2 sn).
 
-    Kaynak: /api/v3/ticker/24hr (batch'li, weight ~2/batch) — lastPrice +
-    quoteVolume tek istekte. Öncelik ASSETTRY çifti; TRY çifti yoksa ASSETUSDT
-    fiyatı USDTTRY ile TRY'ye çevrilir. Hacim de aynı kurala göre TRY'ye
-    çevrilir (USDT çiftinin quoteVolume'u USDT cinsindendir). Bağlı WS
-    istemcisi yokken broadcast no-op'tur; ağ hatası döngüyü öldürmez.
+    Kaynak: /api/v3/ticker/24hr (symbols parametreli — ağırlık SEMBOL BAŞINA 2,
+    TICKER_SYMBOL_BATCH=50 ile tek istekte kalır). Evren `_order_tick_assets`
+    ile PRICE_TICK_MAX_ASSETS varlığa kırpılır: 24×2+1=49 aday → tek istek,
+    15 sn önbellek dedupe ile ~4 fetch/dk. Öncelik ASSETTRY çifti; TRY çifti
+    yoksa ASSETUSDT fiyatı USDTTRY ile TRY'ye çevrilir. Hacim de aynı kurala
+    göre TRY'ye çevrilir (USDT çiftinin quoteVolume'u USDT cinsindendir).
+    Bağlı WS istemcisi yokken broadcast no-op'tur; ağ hatası döngüyü öldürmez.
     """
     await asyncio.sleep(2)  # Hızlı başlangıç
     while True:
@@ -2714,7 +2742,7 @@ async def binance_price_tick_loop():
                     continue
                 seen_assets |= await _load_seen_binance_assets(uname)
             extra = _extra_watch_assets(time.monotonic())
-            assets = sorted(set(seen_assets) | set(extra))
+            assets = _order_tick_assets(seen_assets, extra)
             if not assets:
                 await asyncio.sleep(5)
                 continue

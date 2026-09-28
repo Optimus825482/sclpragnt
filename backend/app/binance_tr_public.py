@@ -37,6 +37,13 @@ REST_BAN_BACKOFF_MAX_SEC = 3600.0
 REST_MAX_CONCURRENCY = 16
 REST_WEIGHT_SOFT_LIMIT = 950
 REST_WEIGHT_WINDOW_SEC = 60.0
+# 2026-09-28 (denetim): 429/418 yanıtından sonra TÜM isteklerin saygı duyduğu
+# paylaşılan soğuma penceresi. Tavan bilinçli KISA tutuldu: `_get_json`
+# asyncio.to_thread default executor'unda çalışır; saatlerce süren bir global
+# bekleme thread havuzunu tüketip DB/yardımcı işleri de bloke edebilirdi.
+# Tek isteğin kendi ban geri çekilmesi (600-3600 sn) değişmedi — yalnız artık
+# semaphore DIŞINDA uyur, yuvayı bloke etmez.
+GLOBAL_COOLDOWN_MAX_SEC = 60.0
 
 _REQUEST_SEMAPHORE = threading.Semaphore(REST_MAX_CONCURRENCY)
 
@@ -58,6 +65,7 @@ _rate_limit_used = {"total": 0, "by_endpoint": {}}
 _rate_limit_last_reset = None
 _weight_lock = threading.Lock()
 _weight_reported_at = 0.0
+_cooldown_until = 0.0
 
 # #32 (api-gap-analysis 3.1): /api/v3/exchangeInfo AĞIR bir uçtur (tüm sembol
 # + filtre şeması) ve `trading_symbols` ile `trading_symbols_with_filters`
@@ -112,6 +120,39 @@ def _throttle_for_weight() -> None:
         time.sleep(pacing)
 
 
+def _note_global_cooldown(delay: float) -> None:
+    """Bir 429/418 yanıtından sonra diğer istekler için soğuma penceresi açar.
+
+    Rate limit IP başına olduğu için tek isteğin aldığı 429/418 tüm arka plan
+    döngülerini de ilgilendirir; pencere tavanı `GLOBAL_COOLDOWN_MAX_SEC` ile
+    kırpılır (thread havuzu korunur). Tek isteğin kendi uzun ban beklemesi
+    etkilenmez.
+    """
+    global _cooldown_until
+    if delay <= 0:
+        return
+    with _weight_lock:
+        _cooldown_until = max(_cooldown_until, time.time() + min(delay, GLOBAL_COOLDOWN_MAX_SEC))
+
+
+def _cooldown_remaining() -> float:
+    with _weight_lock:
+        return max(0.0, _cooldown_until - time.time())
+
+
+def _wait_global_cooldown() -> None:
+    """Soğuma penceresi bitene kadar bekle — semaphore DIŞINDA çağrılır.
+
+    5 sn'lik dilimler halinde bekler ki arada açılan daha uzun bir pencere
+    (yeni bir 429/418) gözden kaçmasın.
+    """
+    while True:
+        remaining = _cooldown_remaining()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 5.0))
+
+
 def _retry_delay(attempt: int, headers: dict | None = None) -> float:
     """Üstel backoff + jitter, öncelikle sunucunun Retry-After'ı (#31)."""
     retry_after = headers.get("Retry-After") if headers else None
@@ -157,8 +198,14 @@ def _get_json(path: str, params: dict):
     full_path = f"{path}?{query_string}" if query_string else path
     last_error = None
 
-    with _REQUEST_SEMAPHORE:
-        for attempt in range(1, REST_MAX_ATTEMPTS + 1):
+    for attempt in range(1, REST_MAX_ATTEMPTS + 1):
+        # Denetim 2026-09-28: uzun beklemeler (Retry-After / ban backoff)
+        # semaphore DIŞINDA uyur — tek bir 429/418 isteği 16 yuvayı saatlerce
+        # bloke edemez. Soğuma penceresi her denemeden önce kontrol edilir;
+        # diğer döngüler de aynı pencereye saygı duyar.
+        _wait_global_cooldown()
+        retry_delay = 0.0
+        with _REQUEST_SEMAPHORE:
             _throttle_for_weight()
             # Host seçimi: birincil host öncelikli, başarısız denemelerde fallback hostlar
             host_idx = (attempt - 1) % len(REST_BASES)
@@ -192,45 +239,42 @@ def _get_json(path: str, params: dict):
                 except (TypeError, ValueError):
                     pass
 
-                # HTTP durum kodu kontrolleri
+                # HTTP durum kodu kontrolleri — yalnızca gecikme hesaplanır,
+                # uyku `with` bloğunun DIŞINDA yapılır.
                 if status_code == 418:
                     last_error = RuntimeError(f"Binance TR HTTP 418 IP Ban sinyali ({base_url})")
-                    if attempt == REST_MAX_ATTEMPTS:
-                        break
-                    time.sleep(_ban_delay(attempt, headers))
-                    continue
+                    if attempt < REST_MAX_ATTEMPTS:
+                        retry_delay = _ban_delay(attempt, headers)
+                        _note_global_cooldown(retry_delay)
                 elif status_code == 429:
                     last_error = RuntimeError(f"Binance TR HTTP 429 Rate Limit ({base_url})")
-                    if attempt == REST_MAX_ATTEMPTS:
-                        break
-                    time.sleep(_retry_delay(attempt, headers))
-                    continue
+                    if attempt < REST_MAX_ATTEMPTS:
+                        retry_delay = _retry_delay(attempt, headers)
+                        _note_global_cooldown(retry_delay)
                 elif status_code >= 400:
                     last_error = RuntimeError(f"Binance TR public API HTTP {status_code} ({base_url})")
-                    if attempt == REST_MAX_ATTEMPTS:
-                        break
-                    time.sleep(_retry_delay(attempt, headers))
-                    continue
-
-                # Başarılı gövde çözümleme
-                try:
-                    return _decode_payload(raw_bytes)
-                except TransientDecodeError as exc:
-                    last_error = exc
-                    if attempt == REST_MAX_ATTEMPTS:
-                        break
-                    time.sleep(_retry_delay(attempt))
-                    continue
+                    if attempt < REST_MAX_ATTEMPTS:
+                        retry_delay = _retry_delay(attempt, headers)
+                else:
+                    # Başarılı gövde çözümleme
+                    try:
+                        return _decode_payload(raw_bytes)
+                    except TransientDecodeError as exc:
+                        last_error = exc
+                        if attempt < REST_MAX_ATTEMPTS:
+                            retry_delay = _retry_delay(attempt)
 
             except Exception as exc:
                 last_error = exc
-                if attempt == REST_MAX_ATTEMPTS:
-                    break
-                time.sleep(_retry_delay(attempt))
+                if attempt < REST_MAX_ATTEMPTS:
+                    retry_delay = _retry_delay(attempt)
 
-        raise RuntimeError(
-            f"Binance TR public API {REST_MAX_ATTEMPTS} denemede yanıt vermedi: {last_error}"
-        ) from last_error
+        if retry_delay > 0:
+            time.sleep(retry_delay)
+
+    raise RuntimeError(
+        f"Binance TR public API {REST_MAX_ATTEMPTS} denemede yanıt vermedi: {last_error}"
+    ) from last_error
 
 
 async def klines(symbol: str, interval: str, limit: int = 500, start_time_ms: int | None = None,
@@ -634,6 +678,10 @@ def rate_limit_snapshot():
         # için raporlanır (davranış değişikliği değil, teşhis kolaylığı).
         "retry_after_max_sec": REST_RETRY_AFTER_MAX_SEC,
         "ban_backoff_max_sec": REST_BAN_BACKOFF_MAX_SEC,
+        # 2026-09-28: paylaşılan soğuma penceresi (429/418 sonrası) ve
+        # şu an yuvayı bekleyen istek sayısı — fren durumunun gözlemlenmesi.
+        "global_cooldown_remaining_sec": round(_cooldown_remaining(), 1),
+        "global_cooldown_max_sec": GLOBAL_COOLDOWN_MAX_SEC,
         # #32: exchangeInfo / ticker_24h önbellekleri.
         "exchange_info_cache": exchange_info_cache_snapshot(),
         "ticker_24h_cache": ticker_24h_cache_snapshot(),
