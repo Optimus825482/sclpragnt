@@ -220,6 +220,15 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                            "açılmadı (R3-08)", symbol)
             return _blocked(symbol, "not_passing")
 
+        # Savunma Derinliği: Master Surge veya Risk Kapısı engeli varsa açma (fail-closed)
+        block_reason = notification.get("block_reason") or notification.get("surge_block_reason")
+        if block_reason:
+            logger.warning("auto_paper %s: risk engeli devrede (%s) — açılmadı", symbol, block_reason)
+            return _blocked(symbol, f"risk_blocked:{block_reason}", block_reason=block_reason)
+        if notification.get("master_surge_passed") is False:
+            logger.warning("auto_paper %s: Master Surge kontrolünden geçmedi — açılmadı", symbol)
+            return _blocked(symbol, "master_surge_failed")
+
         # R3-07 (P0): SESSİZ SAATLERDE otonom işlem DURDURULUR. Web push'un sessiz
         # saatlerde ertelenmesi monitoring._notify içinde zaten korunur (onun
         # ALTERNATİFİ değil, POSITION açılışında ek kapı). Aday bir sonraki taramada
@@ -603,13 +612,12 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
 
 async def _update_existing_trade(open_trade: dict, notification: dict, current_price: float) -> dict | None:
     """Açık pozisyon için TP'yi bildirimdeki yeni hedefle güncelle."""
-    # ERKAN İSTEĞİ (2026-09-18): trailing devreye girdiği pozisyonda TP kaldırılır;
-    # yeni bildirim TP'yi geri YAZMAZ — geri yazmak kaldırma kararını bozar ve
-    # fiyat tahmin edilen artışın üzerinde yükselirken çıkışı keser. Pozisyonun
-    # çıkışı artık tamamen trailing stop'a aittir.
-    if open_trade.get("trailing_activated"):
-        return {"status": "no_change", "trade_id": open_trade["id"],
-                "symbol": open_trade["symbol"], "reason": "trailing_active"}
+    # TP KORUMALI TRAILING (2026-09-28): trailing aktifken de yeni bildirim
+    # TP'yi YUKARI güncelleyebilir — çıkış hedefini iyileştirir. Aşağı
+    # çekmek engellenir (satır 726'daki `new_tp > old_tp` koruması yeterli).
+    # Eski davranış (2026-09-18): trailing aktifken TP güncelleme tamamen
+    # engelleniyordu çünkü TP siliniyordu. Artık TP korunduğu için
+    # güncellemeye izin vermek mantıklı.
     try:
         target_pct = _effective_target_pct(notification)
         if target_pct <= 0:
@@ -925,19 +933,31 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
                 current_trailing_stop = applied_trailing
                 logger.info("auto_paper %s: trailing stop=%.6f (gross=%+.2f%%)", symbol, applied_trailing, gross_pnl_pct)
 
-            # ERKAN İSTEĞİ (2026-09-18): trailing devreye girdiği AN TP kaldırılır —
-            # çıkış tamamen trailing stop'a devredilir. Böylece fiyat tahmin edilen
-            # artışın üzerinde yükselirse pozisyon taşınmaya devam eder (maksimum
-            # kar); küçük geri çekilmelerde zirvenin %gap gerisindeki stop kilitler.
-            # Kapanıştan EN ÜSTTEKI TP-birincil çıkışı (TP-primary) aktivasyon
-            # turundan İTİBAREN devre dışı kalır (DB'de take_profit=NULL).
-            if take_profit is not None:
+            # TP KORUMALI TRAILING (2026-09-28, kârlılık düzeltmesi):
+            # Trailing devreye girdiğinde TP artık SİLİNMEZ. Fiyat TP'ye
+            # ulaşırsa → TP ile kapanır (garanti kâr). Fiyat TP'ye ulaşmadan
+            # geri dönerse → trailing stop ile kapanır (korumalı kâr).
+            #
+            # Eski davranış (2026-09-18): trailing aktivasyonunda TP=NULL yapılıyordu
+            # ve çıkış tamamen trailing'e devrediliyordu. MFE verisi gösterdi ki
+            # işlemlerin %93'ü kâra geçiyor ama TP silindiği için yalnızca %33'ü
+            # kârla kapanıyordu — tepe ile çıkış arasında %1.73 sistematik kayıp.
+            #
+            # Yeni davranış: TP korunur; trailing stop TP'nin ÜZERİNE çıkarsa
+            # TP yukarı ratchet'lenir (trailing stop seviyesine). Böylece:
+            #  - Fiyat tahmin edilen artışın üzerinde yükselirse pozisyon taşınır ✓
+            #  - Fiyat hedefe ulaştığında kâr GERÇEKTEN alınır ✓
+            #  - Küçük geri çekilmelerde trailing kilitler ✓
+            if take_profit is not None and applied_trailing > take_profit:
+                # Trailing stop TP'nin üzerine çıktı → TP'yi yukarı ratchet'le
+                # (trailing en az TP kadar koruyor, TP yükselince hedefe ulaşım garanti)
                 try:
-                    await database.update_auto_paper_trade_tp(trade_id, None)
-                    take_profit = None
-                    logger.info("auto_paper %s: trailing aktivasyonu — TP kaldırıldı, çıkış trailing stop'a devredildi", symbol)
+                    await database.update_auto_paper_trade_tp(trade_id, applied_trailing)
+                    take_profit = applied_trailing
+                    logger.info("auto_paper %s: trailing TP'nin üstüne çıktı — TP ratchet: %.6f (gross=%+.2f%%)",
+                                symbol, applied_trailing, gross_pnl_pct)
                 except Exception as tp_exc:
-                    logger.warning("auto_paper %s: TP kaldırılamadı (trailing yine de aktif): %s", symbol, tp_exc)
+                    logger.warning("auto_paper %s: TP ratchet hatası: %s", symbol, tp_exc)
 
         # Trailing stop koruması: aktifse ve fiyat stopa düştüyse kapat.
         # D-08: stop dolumu tetik fiyatından (gap-through: max(price, stop)).

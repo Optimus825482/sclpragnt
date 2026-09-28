@@ -236,6 +236,14 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    # Coolify / Traefik proxy healthcheck etiketleri:
+    # Traefik proxy, gateway servisi hazır olmadan trafiği yönlendirmez.
+    # Bu etiketler Coolify'daki "No health check configured" uyarısını çözer.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.gateway.loadbalancer.healthcheck.path=/gateway-health"
+      - "traefik.http.services.gateway.loadbalancer.healthcheck.interval=10s"
+      - "traefik.http.services.gateway.loadbalancer.healthcheck.timeout=3s"
     logging: *default-logging
 
   # Otomatik gece yedeği: her 24 saatte bir pg_dump. Saklama 1 GÜN (2026-09-16):

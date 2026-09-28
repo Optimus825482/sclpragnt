@@ -46,24 +46,26 @@ HTTP_TIMEOUT_SEC = float(os.getenv("LLM_SECOND_EYE_HTTP_TIMEOUT", "40") or 40)
 
 VERDICT_SCHEMA_HINT = (
     '{"verdict":"DEVAM|FAKE|BELIRSIZ","confidence":<0-100 tam sayı>,'
+    '"regime":"TRENDING|RANGE|PANIC",'
+    '"suggested_tp_pct":<önerilen dinamik TP yüzdesi örn 2.5>,'
+    '"suggested_sl_pct":<önerilen dinamik SL yüzdesi örn 1.2>,'
     '"reasons":["kısa kanıt etiketi",...],"trap_evidence":["varsa fake kanıtları",...],'
     '"summary":"tek cümle Türkçe özet"}'
 )
 
 SECOND_EYE_PROMPT = FAST_SYSTEM_PROMPT = (
-    "TEK GÖREVİN: aşağıdaki şemada JSON döndürmek. Düşünme sürecini, ara cümleleri, "
-    "İngilizce yorumları YAZMA — 'We need to evaluate...' gibi analiz cümleleri yasak. "
-    "İlk karakterin '{' son karakterin '}' olsun. Örnek biçim: "
-    '{"verdict":"DEVAM","confidence":78,"reasons":["cvd_pozitif","derinlik_guclu"],'
-    '"trap_evidence":[],"summary":"Akis teyitli"}\n'
-    "Görev: kural motoru bir yükseliş/kırılım sinyali ateşledi; bu kırılımın GERÇEK mi "
-    "FAKE mi olduğunu ve yükselişin DEVAM edip etmeyeceğini yalnızca verilen kanıt "
-    "paketiyle değerlendir. Yeni veri uydurma, aritmetik yapma. Kanıtlar ÇELİŞİYORSA "
-    "(fiyat yükseliyor ama CVD/trade_imbalance negatif, whale satıyor, ladder_asymmetry "
-    "negatif, funding EXTREME_LONG, BTC panik) FAKE ihtimali GÜÇLENİR; kanıtlar "
-    "hemfikirse DEVAM'a eğil; yeterli kanıt yoksa BELIRSIZ. "
-    "verdict değeri TAM OLARAK şu üç kelimeden biri: DEVAM, FAKE, BELIRSIZ. "
-    "'GERÇEK', 'REAL' gibi eş anlamlı yazma. JSON dışında tek karakter yazma."
+    "SEN KIDEMLİ BİR KRİPTO QUANT VE SCALPER HAKEMİSİN. TEK GÖREVİN: aşağıdaki şemada JSON döndürmek. "
+    "Düşünme sürecini, ara cümleleri, İngilizce yorumları YAZMA. İlk karakterin '{' son karakterin '}' olsun.\n"
+    "Örnek çıktı:\n"
+    '{"verdict":"DEVAM","confidence":85,"regime":"TRENDING","suggested_tp_pct":3.2,"suggested_sl_pct":1.4,'
+    '"reasons":["cvd_alici_ustunlugu","m15_direnc_kirilimi"],"trap_evidence":[],"summary":"Trend genislemesi teyitli, akis guclu"}\n\n'
+    "UZMANLIK BECERİLERİN:\n"
+    "1. SİNYAL HAKEMLİĞİ & TUZAK ANALİZİ: Kural motorunun yükseliş sinyalini incele. Fiyat çıkarken CVD/trade_imbalance "
+    "negatifse, üst fitil/direnç iğnesi varsa, ladder_asymmetry negatifse veya funding EXTREME_LONG ise FAKE (Boğa Tuzağı) de.\n"
+    "2. PİYASA REJİMİ (regime): Bollinger/ATR genişlemesi ve MTF uyumu varsa TRENDING; yatay/sıkışık ise RANGE; BTC çöküşteyse PANIC.\n"
+    "3. DİNAMİK ÇIKIŞ VE HEDEF: Sabit %1.5 yerine volatiliteye ve dirence göre akılcı suggested_tp_pct ve suggested_sl_pct öner.\n"
+    "4. ÇELİK RİSK KURALI: Kanıtlar çelişkiliyse FAKE'e eğil; yetersizse BELIRSIZ. Asla hayali veri üretme.\n"
+    "verdict değeri TAM OLARAK şu üç kelimeden biri: DEVAM, FAKE, BELIRSIZ. JSON dışında tek karakter yazma."
 )
 
 
@@ -359,9 +361,26 @@ def parse_verdict(text) -> dict | None:
                 out.append(item.strip()[:120])
         return out
 
+    raw_regime = str((decoded or {}).get("regime") or "").strip().upper() if isinstance(decoded, dict) else ""
+    regime = raw_regime if raw_regime in ("TRENDING", "RANGE", "PANIC") else None
+    
+    suggested_tp = None
+    suggested_sl = None
+    if isinstance(decoded, dict):
+        try:
+            if decoded.get("suggested_tp_pct") is not None:
+                suggested_tp = round(float(decoded["suggested_tp_pct"]), 2)
+            if decoded.get("suggested_sl_pct") is not None:
+                suggested_sl = round(float(decoded["suggested_sl_pct"]), 2)
+        except (ValueError, TypeError):
+            pass
+
     return {
         "verdict": verdict,
         "confidence": round(confidence),
+        "regime": regime,
+        "suggested_tp_pct": suggested_tp,
+        "suggested_sl_pct": suggested_sl,
         "reasons": _str_list((decoded or {}).get("reasons") if isinstance(decoded, dict) else None),
         "trap_evidence": _str_list((decoded or {}).get("trap_evidence") if isinstance(decoded, dict) else None),
         "summary": str((decoded or {}).get("summary") or "").strip()[:300] or None,
@@ -371,16 +390,22 @@ def parse_verdict(text) -> dict | None:
 def build_verdict_notification(notif: dict, verdict: dict) -> dict:
     """Kararı ekrana/push'a gidecek KISA VE NET bildirim zarfına çevirir.
 
-    Başlık = karar + güven; mesaj = tek satır (yönlendirme + en güçlü tek kanıt).
+    Başlık = karar + güven; mesaj = tek satır (yönlendirme + en güçlü tek kanıt + rejim).
     """
     import json as _json
 
     sym = str(notif.get("symbol") or "").upper()
     v = verdict["verdict"]
     conf = verdict["confidence"]
+    regime = verdict.get("regime")
+    tp_pct = verdict.get("suggested_tp_pct")
+    sl_pct = verdict.get("suggested_sl_pct")
+
+    regime_label = "Trend" if regime == "TRENDING" else "Yatay" if regime == "RANGE" else "Panik" if regime == "PANIC" else ""
+
     if v == "DEVAM":
         title = f"🧠 {sym}: DEVAM ✓ %{conf}"
-        lead = "Kırılım gerçek görünüyor"
+        lead = f"Kırılım gerçek ({regime_label})" if regime_label else "Kırılım gerçek görünüyor"
         reasons = verdict.get("reasons") or []
     elif v == "FAKE":
         title = f"🧠 {sym}: FAKE ⚠ %{conf}"
@@ -390,13 +415,23 @@ def build_verdict_notification(notif: dict, verdict: dict) -> dict:
         title = f"🧠 {sym}: BELİRSİZ %{conf}"
         lead = "Yeterli kanıt yok"
         reasons = []
+
     reason_txt = reasons[0].strip() if reasons and isinstance(reasons[0], str) else ""
     if not reason_txt and verdict.get("summary"):
         reason_txt = str(verdict["summary"]).strip()[:80]
-    message = f"🧠 {sym} | {lead}"
+
+    # Zenginleştirilmiş mesaj
+    msg_parts = [f"🧠 {sym}", lead]
+    if tp_pct and v == "DEVAM":
+        msg_parts.append(f"Dinamik TP: +%{tp_pct}")
     if reason_txt:
-        message += f" · {reason_txt}"
-    message += f" | Güven %{conf}"
+        msg_parts.append(reason_txt)
+    msg_parts.append(f"Güven %{conf}")
+
+    message = " | ".join(msg_parts[:3])
+    if len(msg_parts) > 3:
+        message += f" · {msg_parts[3]}"
+
     now = time.time()
     return {
         "symbol": sym,
@@ -406,7 +441,7 @@ def build_verdict_notification(notif: dict, verdict: dict) -> dict:
         "tag": f"llm2eye-{sym}",
         "detected_at": now,
         "score": conf,                       # bu satırda skor = LLM güveni
-        "target_pct": notif.get("target_pct"),
+        "target_pct": tp_pct or notif.get("target_pct"),
         "price": notif.get("price"),
         "horizon_minutes": notif.get("horizon_minutes"),
         "mode": "llm_ikinci_goz",
@@ -414,9 +449,15 @@ def build_verdict_notification(notif: dict, verdict: dict) -> dict:
         "sent_via_push": False,
         "llm_verdict": v,
         "llm_confidence": conf,
+        "llm_regime": regime,
+        "llm_suggested_tp_pct": tp_pct,
+        "llm_suggested_sl_pct": sl_pct,
         "llm_reasons": _json.dumps(
             {"reasons": verdict.get("reasons") or [],
              "trap_evidence": verdict.get("trap_evidence") or [],
+             "regime": regime,
+             "suggested_tp_pct": tp_pct,
+             "suggested_sl_pct": sl_pct,
              "summary": verdict.get("summary")}, ensure_ascii=False),
     }
 

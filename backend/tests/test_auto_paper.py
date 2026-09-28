@@ -503,6 +503,69 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(101.5, args[2], places=6)
 
 
+class AutoPaperTrailingTPExtensionTests(unittest.IsolatedAsyncioTestCase):
+    """Trailing stop aktivasyonunda TP'nin silinmemesi ve ratchet testleri (2026-09-28)."""
+
+    async def test_trailing_activation_preserves_take_profit(self):
+        """Trailing devreye girdiğinde TP silinmemeli (eski bug: TP=None yapılıyordu)."""
+        now = time.time()
+        trade = {
+            "id": 101, "symbol": "TESTCOIN", "entry_price": 100.0,
+            "stop_loss": 98.5, "take_profit": 103.0, "quantity": 10.0,
+            "trailing_activated": False, "trailing_stop": None,
+            "entry_time": now - 60, "peak_price": 100.0,
+        }
+        settings = {
+            "trailing_enabled": True, "trailing_trigger_pct": 2.0, "trailing_gap_pct": 0.6,
+            "breakeven_enabled": False, "tp_primary_exit_enabled": True,
+        }
+
+        # Fiyat 102.5 (+%2.5 kâr) → trailing aktive olmalı ama TP (103.0) SİLİNMEMELİ
+        with patch.object(auto_paper.market, "symbols", ["TESTCOIN"]), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 102.5, "timestamp": now * 1000}), \
+             patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 0.0}), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trailing", AsyncMock()) as update_trailing_mock, \
+             patch.object(auto_paper.database, "update_auto_paper_trade_tp", AsyncMock()) as update_tp_mock, \
+             patch.object(auto_paper, "_close_trade", AsyncMock()) as close_mock:
+
+            await auto_paper._manage_single_trade(trade, now, settings=settings)
+
+            # Trailing aktive edildi mi?
+            update_trailing_mock.assert_awaited_once()
+            # TP SİLİNMEDİ mi? update_auto_paper_trade_tp(101, None) çağrılmamış olmalı!
+            for call in update_tp_mock.await_args_list:
+                self.assertIsNotNone(call.args[1], "Take profit NULL olarak silinmemeli!")
+            close_mock.assert_not_awaited()
+
+    async def test_tp_hit_closes_even_if_trailing_active(self):
+        """Trailing aktifken fiyat TP'ye ulaşırsa işlem take_profit ile karlı kapanmalı."""
+        now = time.time()
+        trade = {
+            "id": 102, "symbol": "TESTCOIN", "entry_price": 100.0,
+            "stop_loss": 98.5, "take_profit": 103.0, "quantity": 10.0,
+            "trailing_activated": True, "trailing_stop": 101.5,
+            "entry_time": now - 60, "peak_price": 102.5,
+        }
+        settings = {
+            "trailing_enabled": True, "trailing_trigger_pct": 2.0, "trailing_gap_pct": 0.6,
+            "breakeven_enabled": False, "tp_primary_exit_enabled": True,
+        }
+
+        # Fiyat 103.2 (TP'yi aştı)
+        with patch.object(auto_paper.market, "symbols", ["TESTCOIN"]), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 103.2, "timestamp": now * 1000}), \
+             patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 0.0}), \
+             patch.object(auto_paper, "_close_trade", AsyncMock()) as close_mock:
+
+            await auto_paper._manage_single_trade(trade, now, settings=settings)
+
+            close_mock.assert_awaited_once()
+            args = close_mock.await_args.args
+            self.assertEqual(args[4], "take_profit")
+            self.assertEqual(args[2], 103.0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

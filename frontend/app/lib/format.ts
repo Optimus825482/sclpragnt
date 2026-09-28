@@ -158,3 +158,15 @@ export function localDateInput(): string {
   const offsetMs = now.getTimezoneOffset() * 60_000;
   return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
 }
+
+export const QUOTE_SYMBOL = "₺";
+
+/**
+ * Sayının önüne gösterim birimi (₺) koyar.
+ */
+export function withQuote(value: number | string, digits = 2): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return `${QUOTE_SYMBOL}${n.toLocaleString("tr-TR", { maximumFractionDigits: digits })}`;
+}
+
