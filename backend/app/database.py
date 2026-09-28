@@ -2106,6 +2106,7 @@ async def load_positions():
             # üretilir; okuma yolu DB'ye yazmaz (disentanglement, Madde 21).
             trade_id = values.get("trade_id") or uuid.uuid4().hex
             positions[symbol] = {
+                "symbol": symbol,
                 "side": values.get("side"), "entry_price": values.get("entry_price"), "stop_price": values.get("stop_price"),
                 "take_profit": values.get("take_profit"), "peak_price": values.get("peak_price"), "breakeven_hit": bool(values.get("breakeven_hit")),
                 "quantity": values.get("quantity"), "entry_time": values.get("entry_time"),
@@ -2156,6 +2157,10 @@ async def get_llm_setting(key, default=None):
 
 
 async def save_position(symbol, pos):
+    clean_symbol = str(symbol or (pos or {}).get("symbol") or "").strip().upper()
+    if not clean_symbol:
+        logger.warning("save_position: sembol boş veya geçersiz, kayıt atlandı.")
+        return
     def op(conn):
         conn.execute(
             """INSERT INTO positions (symbol, side, entry_price, stop_price, take_profit, peak_price,
@@ -2168,7 +2173,7 @@ async def save_position(symbol, pos):
                quantity=excluded.quantity, entry_time=excluded.entry_time,
                strategy=excluded.strategy, entry_context=excluded.entry_context,
                trade_id=excluded.trade_id""",
-            (symbol, pos["side"], pos["entry_price"], pos.get("stop_price"),
+            (clean_symbol, pos["side"], pos["entry_price"], pos.get("stop_price"),
              pos.get("take_profit"), pos.get("peak_price", pos["entry_price"]), bool(pos.get("breakeven_hit", False)), pos["quantity"],
              pos.get("entry_time"), pos.get("strategy"), _json_safe_dumps(_position_entry_context(pos)), pos.get("trade_id"))
         )

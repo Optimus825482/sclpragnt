@@ -269,7 +269,14 @@ def _get_json(path: str, params: dict):
                         retry_delay = _retry_delay(attempt, headers)
                         _note_global_cooldown(retry_delay)
                 elif status_code >= 400:
-                    last_error = RuntimeError(f"Binance TR public API HTTP {status_code} ({base_url})")
+                    err_detail = ""
+                    try:
+                        err_json = json.loads(raw_bytes.decode("utf-8", errors="ignore"))
+                        if isinstance(err_json, dict) and "msg" in err_json:
+                            err_detail = f": {err_json['msg']} (kod: {err_json.get('code')})"
+                    except Exception:
+                        pass
+                    last_error = RuntimeError(f"Binance TR public API HTTP {status_code}{err_detail} ({base_url})")
                     if attempt < REST_MAX_ATTEMPTS:
                         retry_delay = _retry_delay(attempt, headers)
                 else:
@@ -460,11 +467,39 @@ async def _ticker_paged(path: str, symbols: list | None):
     """
     if not symbols:
         return await asyncio.to_thread(_get_json, path, {})
+
+    # Önbellekteki geçerli sembollerle filtrele (delisted/hatalı sembollerin tüm grubu 400 yapmasını önle)
+    with _exchange_info_lock:
+        cached_info = _exchange_info_cache.get("payload")
+    if isinstance(cached_info, dict) and cached_info.get("symbols"):
+        valid_symbols = {
+            str(item.get("symbol", "")).upper()
+            for item in cached_info.get("symbols", [])
+            if item.get("status") == "TRADING"
+        }
+        if valid_symbols:
+            filtered = [s for s in symbols if str(s).upper() in valid_symbols]
+            if filtered:
+                symbols = filtered
+
     merged: list = []
     for batch in _chunked(symbols):
-        rows = await asyncio.to_thread(_get_json, path, _ticker_params(batch))
-        if isinstance(rows, list):
-            merged.extend(rows)
+        try:
+            rows = await asyncio.to_thread(_get_json, path, _ticker_params(batch))
+            if isinstance(rows, list):
+                merged.extend(rows)
+        except RuntimeError as exc:
+            # Toplu pakette geçersiz bir sembol (HTTP 400 Invalid symbol) varsa tek tek kurtar
+            if "HTTP 400" in str(exc) and len(batch) > 1:
+                for single in batch:
+                    try:
+                        single_rows = await asyncio.to_thread(_get_json, path, _ticker_params([single]))
+                        if isinstance(single_rows, list):
+                            merged.extend(single_rows)
+                    except Exception:
+                        pass
+            else:
+                raise
     return merged
 
 

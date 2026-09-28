@@ -317,12 +317,6 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
         _history.append(record)
         return {"ok": False, "status": "invalid_symbol", "event_id": event_id, "message": "TR sembolü çözümlenemedi."}
 
-    # Sembolü anında akış evrenine dahil et (WS mum ve derinlik için)
-    try:
-        extend_stream_universe([tr_symbol], source="global_bridge")
-    except Exception as exc:
-        logger.debug("[BridgeReceiver] extend_stream_universe atlandı %s: %s", tr_symbol, exc)
-
     # 5. Skor filtre denetimi (varsayılan 0.0, Global'den gelen sinyaller filtrelenmez)
     score = float(payload.get("score") or 0.0)
     min_score = float(settings.get("min_score", 0.0))
@@ -420,6 +414,12 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
             "symbol": tr_symbol,
             "message": f"{tr_symbol} için Binance TR fiyatı alınamadı.",
         }
+
+    # Fiyat teyit edildi: sembolü anında akış evrenine dahil et (WS mum ve derinlik için)
+    try:
+        extend_stream_universe([tr_symbol], source="global_bridge")
+    except Exception as exc:
+        logger.debug("[BridgeReceiver] extend_stream_universe atlandı %s: %s", tr_symbol, exc)
 
     # 8. Sinyali kalıcı DB'ye kaydet (signals + decision_logs)
     title = str(payload.get("title") or "Global Lead-Lag Sinyali")

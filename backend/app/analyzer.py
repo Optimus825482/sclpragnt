@@ -432,7 +432,7 @@ class ScalpAnalyzer:
                 return number
         return None
 
-    async def _persist_velocity_lock(self, pos: dict) -> None:
+    async def _persist_velocity_lock(self, pos: dict, symbol: str | None = None) -> None:
         """Kâr kilidi bayrağını + stop'unu KALICI yaz.
 
         D-01/2026-09-26 (KRİTİK): `velocity_protection_armed` ve kilit stop'u
@@ -445,6 +445,10 @@ class ScalpAnalyzer:
         zaten `database._position_entry_context` tarafından her `save_position`
         çağrısında korunur; yeni tablo kolonu istemiyoruz.
         """
+        target_symbol = str(symbol or pos.get("symbol") or "").strip().upper()
+        if not target_symbol:
+            return
+        pos["symbol"] = target_symbol
         context = dict(pos.get("entry_context") or {})
         runtime = dict(context.get("_runtime") or {})
         armed = bool(pos.get("velocity_protection_armed") or runtime.get("velocity_protection_armed"))
@@ -465,14 +469,13 @@ class ScalpAnalyzer:
             return
         context["_runtime"] = runtime
         pos["entry_context"] = context
-        symbol = str(pos.get("symbol") or "").upper()
         try:
-            await database.save_position(symbol, pos)
+            await database.save_position(target_symbol, pos)
         except Exception as exc:
             # Yazma başarısız olursa kâr kilidi yine de bu turda BELLEKTE
             # geçerlidir; yalnızca restart kalıcılığı kaybolur. Sessizce
             # yutmak yerine iz bırakılır.
-            print(f"[D-01] velocity kâr kilidi kalıcı yazılamadı ({symbol}): {exc}", flush=True)
+            print(f"[D-01] velocity kâr kilidi kalıcı yazılamadı ({target_symbol}): {exc}", flush=True)
 
     @staticmethod
     def _trigger_fill_price(price, trigger, kind):
@@ -648,7 +651,7 @@ class ScalpAnalyzer:
                     # otomatik taşınır. Restart sonrası `load_positions`
                     # bu alanları geri yükler → stop'suz pozisyon sözleşmesi
                     # korunur.
-                    await self._persist_velocity_lock(pos)
+                    await self._persist_velocity_lock(pos, symbol=symbol)
             if price <= system_stop:
                 # Kâr kilidi stop'u bir trailing değil, kârı koruyan sabit bir
                 # zemindir; normal stop-loss çıkışı olarak işlenir.
@@ -1571,6 +1574,7 @@ class ScalpAnalyzer:
                     pos["llm_take_profit_price"] = entry_price * (1 + max(0.0001, float(requested_tp_pct)))
                 if requested_hold_sec is not None:
                     pos["llm_max_hold_sec"] = max(60, int(requested_hold_sec))
+        pos["symbol"] = symbol
         self.positions[symbol] = pos
         sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "trade_id": pos.get("trade_id"), "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time(),
                # D-03: raporlanan büyüklük FİİLEN kullanılan büyüklük olsun.
