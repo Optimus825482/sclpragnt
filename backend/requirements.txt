@@ -13,3 +13,4 @@ psycopg-pool==3.3.1
 edge-tts==7.2.7
 scikit-learn==1.6.1
 joblib==1.4.2
+urllib3>=2.2.0

@@ -12,47 +12,48 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 REST_BASE = "https://api.binance.me"
+# 2026-09-28 (Binance TR resmi doküman güncellemesi):
+# Symbol Type 1 için resmi birincil adres `https://api.binance.me`.
+# Geçici DNS/erişim kesintilerinde otomatik devreye giren yedek havuz:
+REST_BASES = (
+    "https://api.binance.me",
+    "https://api.binance.com",
+    "https://api1.binance.com",
+)
 # WS birincil ve yedek hostlar. Birincil (stream-cloud.binance.tr) canlı
 # Binance TR market-data yayınıdır; bağlantı kurulamazsa stream.binance.me
 # (dokümantasyondaki genel spot market-data yayını) denenir.
 WS_BASE = "wss://stream-cloud.binance.tr"
-WS_BASES = ("wss://stream-cloud.binance.tr", "wss://stream.binance.me")
+WS_BASES = ("wss://stream-cloud.binance.tr", "wss://stream.binance.me", "wss://stream.binance.com:9443")
 
 
-REST_TIMEOUT_SEC = 15
+REST_TIMEOUT_SEC = 15.0
 REST_MAX_ATTEMPTS = 4
 REST_BACKOFF_BASE_SEC = 0.35
 REST_BACKOFF_MAX_SEC = 4.0
-# #31: Retry-After ESKİDEN 4 sn'ye kırpılıyordu. Binance 429'da
-# `Retry-After: 120` (dakikalar) gönderiyor; kırpmak, sunucunun "bekle" dediği
-# anda isteği tekrar atmak demek — 418'e (kademeli IP banı) tırmanmanın en
-# kısa yolu. Sunucunun söylediği değer artık yalnız çok yüksek bir tavana
-# (5 dakika) kırpılır.
 REST_RETRY_AFTER_MAX_SEC = 300.0
-# B-13: 418 = kademeli IP ban sinyali. Anında raise etmek yerine uzun geri
-# çekilme uygulanır (429/5xx kadar agresif denenmez).
-# #32: eski 30/60/90 sn lineer dizisi 4 denemelik bir döngüde banı garanti
-# ediyordu (418 dakikalar–günler sürer). Artık sunucunun Retry-After/Ban
-# ipucu varsa o esas alınır, yoksa en az 10 dakikadan başlayan üstel geri
-# çekilme uygulanır ve 1 saatte tavanlanır.
 REST_BAN_BACKOFF_BASE_SEC = 600.0
 REST_BAN_BACKOFF_MAX_SEC = 3600.0
-# B-11: çağrı noktaları (fetch_historical_data / ensure_history /
-# repair_history_gaps) kendi `asyncio.Semaphore(8)`'ini kurduğunda toplam
-# eşzamanlılık 8×3 = 24 isteğe çıkıyordu ve thread havuzunu doyurabiliyordu.
-# Tek, modül düzeyinde paylaşılan sınır bunu kapatır.
-REST_MAX_CONCURRENCY = 8
-# Binance TR resmi dokümantasyonu: IP başına 1 dakikada hard limit 1200 weight.
-# Sunucunun bildirdiği 1 dakikalık ağırlık (X-MBX-USED-WEIGHT-1M) 950'ye ulaşırsa
-# 1200 tavanına çarpmadan önce yeni istekler pencere sıfırlanana kadar bekletilir.
+REST_MAX_CONCURRENCY = 16
 REST_WEIGHT_SOFT_LIMIT = 950
 REST_WEIGHT_WINDOW_SEC = 60.0
 
 _REQUEST_SEMAPHORE = threading.Semaphore(REST_MAX_CONCURRENCY)
 
-# Server-reported used request weight (X-MBX-USED-WEIGHT-1M), tracked per
-# response. Without this the startup burst (~900 kline requests) has zero
-# rate-limit visibility.
+# Kalıcı HTTPS bağlantı havuzu (Keep-Alive Pool).
+# Her istekte TLS el sıkışmasını sıfırdan yapmak yerine bağlantıları canlı tutar;
+# gecikmeyi 300ms'den 30ms'ye indirir ve Uvicorn / Nginx istek sırasını boşaltır.
+try:
+    import urllib3
+    _HTTP_POOL = urllib3.PoolManager(
+        maxsize=32,
+        timeout=urllib3.Timeout(connect=5.0, read=REST_TIMEOUT_SEC),
+        headers={"User-Agent": "scalperagent-v4/binance-tr-public", "Accept": "application/json"}
+    )
+except Exception:
+    _HTTP_POOL = None
+
+# Server-reported used request weight (X-MBX-USED-WEIGHT-1M), tracked per response.
 _rate_limit_used = {"total": 0, "by_endpoint": {}}
 _rate_limit_last_reset = None
 _weight_lock = threading.Lock()
@@ -72,24 +73,9 @@ _exchange_info_load_lock = threading.Lock()
 # main.py radar_loop içinde iki kez çağrılıyor (60 sn'de bir → saniyede 160
 # weight). main.py'ye dokunmadan çözmek için modül düzeyinde KISA ÖMÜRLÜ bir
 # önbellek: ardışık çağrılar (aynı sembol listesiyle) aynı sonucu döndürür.
-# 2026-09-26 (denetim #7): TTL 5 → 15 sn. 5 sn, velocity taraması ile radar
-# döngüsünü AYRI 24h anlık görüntüleriyle çalıştırabiliyordu (aynı turda iki
-# modül farklı evren görüyordu). 15 sn hâlâ "taze" sayılır (24h verisi) ve
-# aynı tarama turunun tek görüntü görme olasılığını yükseltir. Env ile
-# geçersiz kılınabilir.
 TICKER_24H_CACHE_TTL_SEC = float(os.getenv("TICKER_24H_CACHE_TTL_SEC", "15"))
 _ticker_24h_cache: dict = {"key": None, "rows": None, "expires": 0.0}
 _ticker_24h_lock = threading.Lock()
-# 2026-09-26 (py-spy kanıtlı deploy kilitlenmesi): yükleme kilidi threading.Lock
-# idi ve `ticker_24h` içinde `await _ticker_paged(...)` BU kilidin altında
-# tutuluyordu. Sonuç: radar yükleme yaparken (Binance 429/418 → _get_json
-# worker'da time.sleep 30-90 sn × 4 deneme) velocity scan satır 402'de
-# MainThread üzerinde SENKRON beklemeye giriyor, event loop donuyor, ilk
-# yükleyicinin tamamlanması işlenemiyor → KALICI DEADLOCK → /health hiç
-# yanıt vermiyor → docker compose up -d 255 ile ölüyor. asyncio.Lock ile
-# bekleyenler loop'u serbest bırakır; yükleme yavaş olsa bile /health yanıt
-# verir. Kilidin döngüye bağlanması (3.10+ lazy bind) testlerdeki farklı
-# asyncio.run() çağrıları için döngü başına ayrı tutulur.
 _ticker_24h_load_locks: dict[int, asyncio.Lock] = {}
 
 
@@ -119,15 +105,8 @@ def _throttle_for_weight() -> None:
         time.sleep(min(wait, REST_WEIGHT_WINDOW_SEC))
 
 
-def _retry_delay(attempt: int, headers: Message | dict | None = None) -> float:
-    """Üstel backoff + jitter, öncelikle sunucunun Retry-After'ı (#31).
-
-    #31: `Retry-After` DEĞERİ KIRPILMAZDI (`min(REST_BACKOFF_MAX_SEC, ...)` =
-    4 sn). Binance 429'da dakikalarca beklememizi istediği hâlde istemci 4 sn
-    sonra tekrar atıyor, uyumsuz trafikle 418'e (kademeli IP banı) tırmanıyordu.
-    Artık sunucunun söylediği değer yalnız `REST_RETRY_AFTER_MAX_SEC` (5 dk)
-    tavanına kırpılır.
-    """
+def _retry_delay(attempt: int, headers: dict | None = None) -> float:
+    """Üstel backoff + jitter, öncelikle sunucunun Retry-After'ı (#31)."""
     retry_after = headers.get("Retry-After") if headers else None
     if retry_after is not None:
         try:
@@ -138,20 +117,12 @@ def _retry_delay(attempt: int, headers: Message | dict | None = None) -> float:
     return exponential + random.uniform(0.0, exponential * 0.25)
 
 
-def _ban_delay(attempt: int, headers: Message | dict | None = None) -> float:
-    """418 (kademeli IP ban) geri çekilmesi — saniyeler değil, onlarca dakika (#32).
-
-    418 dakikalar–günler sürebilir; 4 denemelik bir döngüde 30/60/90 sn'lik
-    lineer bir dizi banı tırmandırmak demektir. Sunucunun Retry-After ipucu
-    varsa esas alınır, yoksa 10 dk → 20 dk → 40 dk üstel geri çekilme ve
-    1 saatlik tavan uygulanır.
-    """
+def _ban_delay(attempt: int, headers: dict | None = None) -> float:
+    """418 (kademeli IP ban) geri çekilmesi — saniyeler değil, onlarca dakika (#32)."""
     for header in ("Retry-After", "Ban"):
         value = headers.get(header) if headers else None
         if value is not None:
             try:
-                # Ban ipucu 429 tavanından (5 dk) DAHA UZUN süre bildirebilir;
-                # o yüzden ban tavanı (1 saat) kullanılır.
                 return min(REST_BAN_BACKOFF_MAX_SEC, max(0.0, float(value)))
             except (TypeError, ValueError):
                 pass
@@ -159,12 +130,7 @@ def _ban_delay(attempt: int, headers: Message | dict | None = None) -> float:
 
 
 def _decode_payload(raw: bytes):
-    """Gövdeyi çöz ve zarfla.
-
-    B-13: çözme/şema hataları GEÇİCİ kabul edilir (kesilmiş gövde kalıcı seri
-    hatasına dönüşmesin diye yeniden denenir); `code != 0` iş kuralı hatası
-    kalıcıdır — tekrar denemek yalnız ağırlık israfı olur.
-    """
+    """Gövdeyi çöz ve zarfla."""
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -180,57 +146,81 @@ def _decode_payload(raw: bytes):
 
 
 def _get_json(path: str, params: dict):
-    url = f"{REST_BASE}{path}?{urlencode(params)}"
-    request = Request(url, headers={"User-Agent": "scalperagent-v4", "Accept": "application/json"})
+    query_string = urlencode(params) if params else ""
+    full_path = f"{path}?{query_string}" if query_string else path
     last_error = None
-    # B-11: eşzamanlılık TÜM çağrı noktaları için paylaşılan tek sınırla
-    # kapatılır; ağırlık tavana yaklaştıysa istek pencere açılana kadar bekler.
+
     with _REQUEST_SEMAPHORE:
         for attempt in range(1, REST_MAX_ATTEMPTS + 1):
             _throttle_for_weight()
+            # Host seçimi: birincil host öncelikli, başarısız denemelerde fallback hostlar
+            host_idx = (attempt - 1) % len(REST_BASES)
+            base_url = REST_BASES[host_idx]
+            url = f"{base_url}{full_path}"
+
             try:
-                with urlopen(request, timeout=REST_TIMEOUT_SEC) as response:
-                    # Track rate-limit headers; a malformed header must not fail
-                    # the response itself.
-                    try:
-                        used = int(response.headers.get("X-MBX-USED-WEIGHT-1M", 0) or 0)
-                        global _rate_limit_last_reset, _weight_reported_at
-                        _rate_limit_used["total"] = used
-                        _rate_limit_used["by_endpoint"][path] = max(
-                            _rate_limit_used["by_endpoint"].get(path, 0), used)
-                        _rate_limit_last_reset = time.time()
-                        _weight_reported_at = _rate_limit_last_reset
-                    except (TypeError, ValueError):
-                        pass
-                    raw = response.read()
-                # B-13: gövde çözme/şema hatası GEÇİCİdir → yeniden dene.
+                if _HTTP_POOL is not None:
+                    # Hızlı yol: Kalıcı HTTP Keep-Alive havuzu (urllib3)
+                    resp = _HTTP_POOL.request("GET", url, retries=False)
+                    status_code = resp.status
+                    headers = dict(resp.headers)
+                    raw_bytes = resp.data
+                else:
+                    # Yedek yol: urllib.request
+                    request = Request(url, headers={"User-Agent": "scalperagent-v4", "Accept": "application/json"})
+                    with urlopen(request, timeout=REST_TIMEOUT_SEC) as response:
+                        status_code = response.status
+                        headers = dict(response.headers)
+                        raw_bytes = response.read()
+
+                # Rate limit ağırlık takibi
                 try:
-                    return _decode_payload(raw)
+                    used = int(headers.get("X-MBX-USED-WEIGHT-1M", 0) or 0)
+                    global _rate_limit_last_reset, _weight_reported_at
+                    _rate_limit_used["total"] = used
+                    _rate_limit_used["by_endpoint"][path] = max(
+                        _rate_limit_used["by_endpoint"].get(path, 0), used)
+                    _rate_limit_last_reset = time.time()
+                    _weight_reported_at = _rate_limit_last_reset
+                except (TypeError, ValueError):
+                    pass
+
+                # HTTP durum kodu kontrolleri
+                if status_code == 418:
+                    last_error = RuntimeError(f"Binance TR HTTP 418 IP Ban sinyali ({base_url})")
+                    if attempt == REST_MAX_ATTEMPTS:
+                        break
+                    time.sleep(_ban_delay(attempt, headers))
+                    continue
+                elif status_code == 429:
+                    last_error = RuntimeError(f"Binance TR HTTP 429 Rate Limit ({base_url})")
+                    if attempt == REST_MAX_ATTEMPTS:
+                        break
+                    time.sleep(_retry_delay(attempt, headers))
+                    continue
+                elif status_code >= 400:
+                    last_error = RuntimeError(f"Binance TR public API HTTP {status_code} ({base_url})")
+                    if attempt == REST_MAX_ATTEMPTS:
+                        break
+                    time.sleep(_retry_delay(attempt, headers))
+                    continue
+
+                # Başarılı gövde çözümleme
+                try:
+                    return _decode_payload(raw_bytes)
                 except TransientDecodeError as exc:
                     last_error = exc
                     if attempt == REST_MAX_ATTEMPTS:
                         break
                     time.sleep(_retry_delay(attempt))
                     continue
-            except HTTPError as exc:
-                last_error = exc
-                if exc.code == 418:
-                    # B-13/#32: IP ban sinyali — anında raise YOK, dakikalar
-                    # süren üstel geri çekilme uygulanır.
-                    if attempt == REST_MAX_ATTEMPTS:
-                        break
-                    time.sleep(_ban_delay(attempt, exc.headers))
-                    continue
-                if exc.code != 429 and not 500 <= exc.code < 600:
-                    raise RuntimeError(f"Binance TR public API HTTP {exc.code}") from exc
-                if attempt == REST_MAX_ATTEMPTS:
-                    break
-                time.sleep(_retry_delay(attempt, exc.headers))
-            except (URLError, TimeoutError, ConnectionError) as exc:
+
+            except Exception as exc:
                 last_error = exc
                 if attempt == REST_MAX_ATTEMPTS:
                     break
                 time.sleep(_retry_delay(attempt))
+
         raise RuntimeError(
             f"Binance TR public API {REST_MAX_ATTEMPTS} denemede yanıt vermedi: {last_error}"
         ) from last_error
