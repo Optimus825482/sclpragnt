@@ -3558,10 +3558,12 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
     await _save_seen_binance_assets(username, current_assets | known_assets)
 
     # Varlık → mevcut sembol çiftleri (sıra: TRY önce)
-    sem: asyncio.Semaphore = asyncio.Semaphore(8)
+    # Rate limit dostu eşzamanlılık (Semaphore: 3) ve nazik istek aralığı
+    sem: asyncio.Semaphore = asyncio.Semaphore(3)
 
     async def fetch_symbol(sym_concat: str) -> list[dict]:
         async with sem:
+            await asyncio.sleep(0.06)
             try:
                 return await asyncio.to_thread(
                     get_trade_history, api_key, api_secret, sym_concat,
@@ -3626,6 +3628,7 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
     if sym_need_hist:
         async def fetch_hist(s: str):
             async with sem:
+                await asyncio.sleep(0.06)
                 try:
                     return s, await asyncio.to_thread(
                         get_trade_history, api_key, api_secret, s, None, end_ms, 1000, 0
@@ -3782,7 +3785,7 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
                          "gross_pnl_try": round(daily_gross, 2),
                          "wins": wins, "losses": losses, "unmatched": unmatched}}
     today_str = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
-    cache_ttl = 20.0 if date == today_str else 300.0
+    cache_ttl = 120.0 if date == today_str else 3600.0
     _binance_day_trades_cache[(user_id, date)] = (now_ts + cache_ttl, payload)
     return payload
 

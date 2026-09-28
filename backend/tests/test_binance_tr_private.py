@@ -1,4 +1,5 @@
 """binance_tr_private adapter birim testleri (HTTP mock'lu)."""
+import time
 import urllib.error
 from unittest import mock
 
@@ -14,12 +15,18 @@ def _reset_caches():
     btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
     btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
     btp._balance_cache.clear()
+    btp._cooldown_until = 0.0
+    btp._used_weight_1m = 0
+    btp._weight_reported_at = 0.0
     yield
     btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0,
                                "filters": {}})
     btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
     btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
     btp._balance_cache.clear()
+    btp._cooldown_until = 0.0
+    btp._used_weight_1m = 0
+    btp._weight_reported_at = 0.0
 
 
 def _mock_http(payload):
@@ -530,5 +537,32 @@ def test_open_orders_with_zero_locked_assets_makes_zero_order_requests():
     assert orders == []
     # /open/v1/orders'a hiç çağrı gitmedi çünkü locked == 0
     assert len(order_calls) == 0
+
+
+def test_record_used_weight_updates_state():
+    headers = {"X-Mbx-Used-Weight-1m": "850", "Content-Type": "application/json"}
+    btp._record_used_weight(headers)
+    assert btp._used_weight_1m == 850
+    assert btp._weight_reported_at > 0
+
+
+def test_throttle_private_request_sleeps_on_high_weight():
+    btp._used_weight_1m = 1000
+    btp._weight_reported_at = time.time()
+    with mock.patch.object(btp.time, "sleep") as sleeper:
+        btp._throttle_private_request()
+    assert sleeper.called
+    # Cleanup
+    btp._used_weight_1m = 0
+    btp._weight_reported_at = 0.0
+
+
+def test_get_all_valid_symbols_from_cache():
+    btp._symbols_cache["filters"] = {"BTC_TRY": {}, "ETH_USDT": {}}
+    btp._symbols_cache["expires"] = time.monotonic() + 3600
+    symbols = btp.get_all_valid_symbols("k", "s")
+    assert "BTC_TRY" in symbols
+    assert "ETH_USDT" in symbols
+
 
 
