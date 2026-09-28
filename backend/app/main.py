@@ -2709,8 +2709,8 @@ def _order_tick_assets(seen_assets: set, extra: list, cap: int = PRICE_TICK_MAX_
     seen_sorted = sorted(a for a in seen_assets if a and a != "TRY" and a not in extra_set)
     ordered = extra_first + seen_sorted
     if len(ordered) > cap:
-        logger.warning("Canlı tick evreni kırpıldı | assets=%d cap=%d (PRICE_TICK_MAX_ASSETS)",
-                       len(ordered), cap)
+        logger.debug("Canlı tick evreni kırpıldı | assets=%d cap=%d (PRICE_TICK_MAX_ASSETS)",
+                     len(ordered), cap)
         ordered = ordered[:cap]
     return ordered
 
