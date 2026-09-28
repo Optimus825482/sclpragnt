@@ -961,6 +961,18 @@ def get_trade_history(api_key: str, api_secret: str, symbol: str,
     items = rows.get("list", []) if isinstance(rows, dict) else []
     out = []
     for t in items:
+        raw_buyer = t.get("isBuyer")
+        is_buyer = (
+            raw_buyer is True
+            or raw_buyer == 1
+            or (isinstance(raw_buyer, str) and raw_buyer.strip().lower() in ("1", "true", "buy"))
+        )
+        raw_maker = t.get("isMaker")
+        is_maker = (
+            raw_maker is True
+            or raw_maker == 1
+            or (isinstance(raw_maker, str) and raw_maker.strip().lower() in ("1", "true"))
+        )
         out.append({
             "id": int(t.get("tradeId") or 0),
             "orderId": str(t.get("orderId") or ""),
@@ -970,8 +982,8 @@ def get_trade_history(api_key: str, api_secret: str, symbol: str,
             "quoteQty": t.get("quoteQty", "0"),
             "commission": t.get("commission", "0"),
             "commissionAsset": t.get("commissionAsset", ""),
-            "isBuyer": bool(t.get("isBuyer")),
-            "isMaker": bool(t.get("isMaker")),
+            "isBuyer": is_buyer,
+            "isMaker": is_maker,
             "time": int(t.get("time") or 0),
         })
     return out

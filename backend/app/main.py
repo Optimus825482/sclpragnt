@@ -2578,12 +2578,18 @@ async def binance_account_push_loop():
                     for h in held:
                         asset = h["asset"]
                         if asset == "TRY":
-                            holdings_ws.append({**h, "price_try": 1.0, "value_try": h["total"], "pnl_try": None, "pnl_pct": None})
+                            holdings_ws.append({**h, "price_try": 1.0, "value_try": h["total"], "avg_cost_try": 1.0, "pnl_try": None, "pnl_pct": None})
                             continue
                         price = price_by_symbol.get(f"{asset}TRY") or (
                             (price_by_symbol.get(f"{asset}USDT", 0) * usdt_try) if usdt_try else 0)
                         value_try = round(price * h["total"], 4) if price else None
-                        holdings_ws.append({**h, "price_try": price or None, "value_try": value_try, "pnl_try": None, "pnl_pct": None})
+                        cached_cost = _binance_cost_cache.get((user_id, asset))
+                        avg_cost = None
+                        if cached_cost and cached_cost[1] and cached_cost[1].get("avg_price"):
+                            avg_cost = cached_cost[1]["avg_price"]
+                        pnl_try = round((price - avg_cost) * h["total"], 2) if (price and avg_cost) else None
+                        pnl_pct = round((price - avg_cost) / avg_cost * 100, 2) if (price and avg_cost) else None
+                        holdings_ws.append({**h, "price_try": price or None, "value_try": value_try, "avg_cost_try": avg_cost, "pnl_try": pnl_try, "pnl_pct": pnl_pct})
                     # WS broadcast — KULLANICI KAPSAMLI (güvenlik): mesaj yalnız
                     # bu kullanıcının bağlantılarına gider. `user_id` verilmezse
                     # ws_manager fail-closed olarak HİÇBİR yere göndermez.
@@ -2608,7 +2614,7 @@ async def binance_account_push_loop():
 
 
 async def binance_price_tick_loop():
-    """Canlı Hesap açık pozisyonları için WS fiyat + 24s hacim tick'leri (4 sn).
+    """Canlı Hesap açık pozisyonları için WS fiyat + 24s hacim tick'leri (2 sn).
 
     Kaynak: /api/v3/ticker/24hr (batch'li, weight ~2/batch) — lastPrice +
     quoteVolume tek istekte. Öncelik ASSETTRY çifti; TRY çifti yoksa ASSETUSDT
@@ -2616,11 +2622,11 @@ async def binance_price_tick_loop():
     çevrilir (USDT çiftinin quoteVolume'u USDT cinsindendir). Bağlı WS
     istemcisi yokken broadcast no-op'tur; ağ hatası döngüyü öldürmez.
     """
-    await asyncio.sleep(20)  # startup patlaması bitsin
+    await asyncio.sleep(2)  # Hızlı başlangıç
     while True:
         try:
             if not await _binance_ticks_configured():
-                await asyncio.sleep(30)
+                await asyncio.sleep(10)
                 continue
             # Çok kullanıcılı (2026-09-19): tüm kullanıcıların görülmüş
             # varlık havuzları birleştirilir — tek global tick yayınını
@@ -2634,7 +2640,7 @@ async def binance_price_tick_loop():
             extra = _extra_watch_assets(time.monotonic())
             assets = sorted(set(seen_assets) | set(extra))
             if not assets:
-                await asyncio.sleep(30)
+                await asyncio.sleep(5)
                 continue
             candidates: list[str] = []
             for asset in sorted(assets):
@@ -2645,7 +2651,7 @@ async def binance_price_tick_loop():
             rows = await binance_tr_public.ticker_24h(candidates)
             raw: dict[str, dict] = {}
             for row in rows if isinstance(rows, list) else []:
-                symbol_u = str(row.get("symbol") or "").upper()
+                symbol_u = str(row.get("symbol") or "").upper().replace("_", "")
                 try:
                     price = float(row.get("lastPrice") or row.get("price") or 0)
                 except (TypeError, ValueError):
@@ -2657,9 +2663,10 @@ async def binance_price_tick_loop():
                 except (TypeError, ValueError):
                     quote_volume = 0.0
                 if symbol_u == "USDTTRY":
-                    raw["USDTTRY"] = {"price_try": price, "symbol": symbol_u}
+                    raw["USDTTRY"] = {"price_try": price, "symbol": symbol_u, "qv": quote_volume}
                     continue
-                base = symbol_u[:-4] if symbol_u.endswith("TRY") else (symbol_u[:-5] if symbol_u.endswith("USDT") else symbol_u)
+                # TRY 3 karakter, USDT 4 karakter:
+                base = symbol_u[:-3] if symbol_u.endswith("TRY") else (symbol_u[:-4] if symbol_u.endswith("USDT") else symbol_u)
                 if not base:
                     continue
                 entry = raw.setdefault(base, {})
@@ -2682,14 +2689,29 @@ async def binance_price_tick_loop():
                 quote_volume = entry.get("qv")
                 if quote_volume is None and entry.get("qv_quote_usdt") and usdt_try:
                     quote_volume = entry["qv_quote_usdt"] * usdt_try
-                ticks[base] = {"price": round(price_try, 10), "symbol": symbol_u,
-                               "quote_volume_try": round(quote_volume, 0) if quote_volume else None}
+                tick_item = {
+                    "price": round(price_try, 10),
+                    "symbol": symbol_u,
+                    "quote_volume_try": round(quote_volume, 0) if quote_volume else None,
+                }
+                ticks[base] = tick_item
+                ticks[symbol_u] = tick_item
+            if usdt_try:
+                usdt_qv = raw.get("USDTTRY", {}).get("qv")
+                usdt_tick = {
+                    "price": round(usdt_try, 4),
+                    "symbol": "USDTTRY",
+                    "quote_volume_try": round(usdt_qv, 0) if usdt_qv else None,
+                }
+                ticks["USDT"] = usdt_tick
+                ticks["USDTTRY"] = usdt_tick
+            ticks["TRY"] = {"price": 1.0, "symbol": "TRY", "quote_volume_try": None}
             if ticks:
                 await ws_manager.broadcast({"type": "binance_price", "data": {
                     "ticks": ticks, "time": time.time()}})
         except Exception as exc:
             logger.debug("Canlı Hesap fiyat tick'i atlandı: %s", type(exc).__name__)
-        await asyncio.sleep(4)
+        await asyncio.sleep(2)
 # Varlık -> (cache bitiş zamanı, {"avg_price": float, "quote": "TRY"|"USDT"})
 # ÇOK KULLANICILI (2026-09-19): anahtar (user_id, asset) — kullanıcıların FIFO
 # alım maliyetleri birbirine karışmasın (eski anahtar yalnız asset'ti ve tek
@@ -2937,19 +2959,18 @@ async def binance_positions(request: Request):
 
     # Ağırlıklı ortalama alım maliyeti (FIFO, cache'li). TRY çifti yoksa USDT
     # maliyeti USDTTRY ile TRY'ye çevrilir.
-    # PERFORMANS (2026-09-27): maliyet hesapları SIRALI await'ti — cache soğkken
-    # N varlık = N ardışık harici get_trade_history çağrısı ve sayfanın ilk
-    # yüklemesi 10-20 sn sürüyordu. Paralel dalgalar (sem 5) ile ~1-2 dalgaya iner.
+    # PERFORMANS (2026-09-27): maliyet hesapları paralel dalgalar (sem 5) ile
+    # hızlıca çözülür.
     _cost_sem = asyncio.Semaphore(5)
 
     async def _cost_for(h: dict):
-        sym = h.get("_cost_symbol")
-        if h["asset"] == "TRY" or not sym:
+        if h["asset"] == "TRY":
             return None
+        sym = h.get("_cost_symbol") or f"{h['asset']}TRY"
         async with _cost_sem:
             try:
                 return await asyncio.to_thread(
-                    _avg_buy_cost, user_id, api_key, api_secret, h["asset"], sym, now_ts)
+                    _avg_buy_cost, user_id, api_key, api_secret, h["asset"], sym, now_ts, h["total"], usdt_try)
             except Exception:
                 return None
 
@@ -2958,7 +2979,7 @@ async def binance_positions(request: Request):
         price_try = h.get("price_try")
         avg_cost_try = None
         if cost and cost.get("avg_price"):
-            quote = cost.get("quote")
+            quote = cost.get("quote", "TRY")
             if quote == "TRY":
                 avg_cost_try = cost["avg_price"]
             elif quote == "USDT" and usdt_try:
@@ -3001,46 +3022,69 @@ async def binance_positions(request: Request):
         h["active_tp_price"] = float(tp_order.get("price")) if tp_order else None
 
     holdings.sort(key=lambda h: (h["value_try"] is None, -(h["value_try"] or 0)))
-    return {"holdings": holdings, "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2)}
+    non_zero_balances = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
+    return {
+        "holdings": holdings,
+        "balances": non_zero_balances,
+        "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2),
+    }
 
 
-def _avg_buy_cost(user_id: int, api_key: str, api_secret: str, asset: str, symbol_concat: str, now: float) -> dict | None:
-    """Elde tutulan miktarın ortalama alış maliyeti (FIFO, 60 sn cache).
+def _avg_buy_cost(
+    user_id: int,
+    api_key: str,
+    api_secret: str,
+    asset: str,
+    symbol_concat: str,
+    now: float,
+    total_qty: float = 0.0,
+    usdt_try: float = 0.0,
+) -> dict | None:
+    """Elde tutulan miktarın ortalama alış maliyeti (FIFO + Bakiye dengelemesi, 300 sn cache).
 
-    Önceki sürüm son 1000 fill'in TÜM alışlarının VWAP'ını hesaplıyordu;
-    bu, "yüksekte sat → yüksekte tekrar al" senaryosunda maliyeti suni olarak
-    aşağı çekiyor ve güncel fiyatla karşılaştırılınca kârı yanlış (şişkin)
-    gösteriyordu. Bizim için muhasebe olarak doğru olan, satılan kısmı en eski
-    alıştan düşüp ELDE KALAN bakiye için gerçek ortalama maliyeti bulmaktır
-    (FIFO envanter yaklaşımı). Kaba gösterge değil: bu, o günkü gerçek pozisyon
-    maliyetini güncel fiyatla birlikte doğru PnL üretir.
+    1. Hem {ASSET}TRY hem {ASSET}USDT işlem geçmişi taranır (USDT işlemleri USDTTRY kuruyla TRY'ye çevrilir).
+    2. FIFO kuyruğunda kronolojik alış ve satışlar eşleştirilir.
+    3. Elde kalan FIFO lotları varsa ve bakiye ile tutarlıysa bunların ağırlıklı ortalaması alınır.
+    4. KRİTİK GÜVENCE: Eğer geçmişteki kısmi satışlar, transferler/yatırmalar veya 1000 işlem sınırından
+       dolayı FIFO kuyruğu boşalmışsa (held_qty <= 0), kullanıcının elindeki bakiyeyi (total_qty)
+       karşılayan en son gerçekleşen alış(lar)ın VWAP'ı (last_buys fallback) hesaplanır.
+       Böylece hesabında coin olan kullanıcı ASLA "Giriş: —" görmez.
 
-    ÇOK KULLANICILI (2026-09-19): cache anahtarı (user_id, asset) — farklı
-    kullanıcıların aynı varlık için FIFO maliyetleri karışmaz.
+    ÇOK KULLANICILI: cache anahtarı (user_id, asset) — kullanıcılar birbirini etkilemez.
     """
     cached = _binance_cost_cache.get((user_id, asset))
     if cached and cached[0] > now:
         return cached[1]
-    info: dict = {"avg_price": None, "quote": "TRY" if symbol_concat.endswith("TRY") else "USDT"}
+    info: dict = {"avg_price": None, "quote": "TRY"}
     try:
-        trades = get_trade_history(api_key, api_secret, symbol_concat, None, None, 1000, 0)
-        # FIFO kuyruğu: (fiyat, miktar). Sıralı alışlar eklenir, satışlar kuyruğun
-        # başından (en eski alıştan) düşülür. Kalan bakiye ve kalan alışların
-        # toplam maliyeti, elde tutulan kısmın gerçek ortalama maliyetini verir.
-        # SIRA DÜZELTMESİ (2026-09-18, kullanıcı raporu: açık pozisyonlarda alım
-        # maliyeti yanlıştı): Binance fill listesini YENİDEN-ESKİYE döndürür;
-        # kronolojik sanıp bu sırayla işlemek FIFO'yu TERS kuruyordu — satışlar
-        # EN YENİ lotları düşüyordu, elde kalan havuz eski ucuz lotlardan
-        # oluşuyor ve maliyet suni düşük (+kâr şişkin) görünüyordu. Örnek:
-        # G pozisyonu 0,366 alımından geliyor; sayfa 0,223 gösteriyordu.
-        # Fix: fill'ler KRONOLOJİK (eski→yeni) sıraya alınır — alışlar eskiden
-        # başa eklenir, satışlar başından (en eski) düşer; elde kalan havuz
-        # EN YENİ lotlardan oluşur (gerçek pozisyon maliyeti).
-        fifo: list[tuple[float, float]] = []
+        symbols_to_query = []
+        if symbol_concat:
+            symbols_to_query.append(symbol_concat.upper().replace("_", ""))
+        for s in (f"{asset}TRY", f"{asset}USDT"):
+            if s not in symbols_to_query:
+                symbols_to_query.append(s)
+
+        raw_trades: list[dict] = []
+        for sym in symbols_to_query:
+            try:
+                part = get_trade_history(api_key, api_secret, sym, None, None, 1000, 0)
+                if isinstance(part, list) and part:
+                    for t in part:
+                        t["_query_symbol"] = sym
+                    raw_trades.extend(part)
+            except Exception as e:
+                logger.debug("Binance TR %s trade geçmişi okunamadı: %s", sym, e)
+            if raw_trades:
+                break
+
         chronological = sorted(
-            (t for t in trades if isinstance(trades, list)) if isinstance(trades, list) else [],
+            raw_trades,
             key=lambda t: (float(t.get("time") or 0), int(t.get("id") or 0)),
         )
+
+        fifo: list[tuple[float, float]] = []  # (price_try, qty)
+        all_buys: list[tuple[float, float, float]] = []  # (price_try, qty, time)
+
         for t in chronological:
             try:
                 t_qty = float(t.get("qty") or 0)
@@ -3049,26 +3093,75 @@ def _avg_buy_cost(user_id: int, api_key: str, api_secret: str, asset: str, symbo
                 continue
             if t_qty <= 0 or t_price <= 0:
                 continue
-            if t.get("isBuyer"):
-                fifo.append((t_price, t_qty))
+
+            sym = str(t.get("_query_symbol") or t.get("symbol") or "").upper().replace("_", "")
+            is_usdt = sym.endswith("USDT")
+            rate = usdt_try if (is_usdt and usdt_try > 0) else 1.0
+            price_try = t_price * rate
+
+            raw_buyer = t.get("isBuyer")
+            is_buyer = (
+                raw_buyer is True
+                or raw_buyer == 1
+                or (isinstance(raw_buyer, str) and raw_buyer.strip().lower() in ("1", "true", "buy"))
+            )
+
+            if is_buyer:
+                fifo.append((price_try, t_qty))
+                all_buys.append((price_try, t_qty, float(t.get("time") or 0)))
             else:
                 remaining = t_qty
                 while remaining > 1e-12 and fifo:
-                    _, held_qty = fifo[0]
-                    if held_qty <= remaining:
-                        remaining -= held_qty
+                    lot_p, lot_q = fifo[0]
+                    if lot_q <= remaining:
+                        remaining -= lot_q
                         fifo.pop(0)
                     else:
-                        fifo[0] = (fifo[0][0], held_qty - remaining)
+                        fifo[0] = (lot_p, lot_q - remaining)
                         remaining = 0.0
+
         held_qty = sum(q for _, q in fifo)
-        if held_qty > 1e-12:
-            held_cost = sum(p * q for p, q in fifo)
-            info["avg_price"] = held_cost / held_qty
-            info["held_quantity"] = held_qty
+        avg_price_try = None
+
+        # 1. Adım: FIFO kuyruğu pozitif ve bakiye ile makul oranda uyumlu
+        if held_qty > 1e-12 and (total_qty <= 0 or held_qty >= total_qty * 0.2):
+            accum_qty = 0.0
+            accum_cost = 0.0
+            for p, q in reversed(fifo):
+                take = min(q, max(0.0, total_qty - accum_qty)) if total_qty > 0 else q
+                if take > 0:
+                    accum_qty += take
+                    accum_cost += p * take
+                if total_qty > 0 and accum_qty >= total_qty - 1e-12:
+                    break
+            if accum_qty > 1e-12:
+                avg_price_try = accum_cost / accum_qty
+
+        # 2. Adım (Fallback): FIFO sıfırlanmış veya yetersizse, en son gerçekleşen alışlardan bakiye kadarını topla
+        if (avg_price_try is None or avg_price_try <= 0) and all_buys:
+            accum_qty = 0.0
+            accum_cost = 0.0
+            for p, q, _ in reversed(all_buys):
+                take = min(q, max(0.0, total_qty - accum_qty)) if total_qty > 0 else q
+                if take > 0:
+                    accum_qty += take
+                    accum_cost += p * take
+                if total_qty > 0 and accum_qty >= total_qty - 1e-12:
+                    break
+            if accum_qty > 1e-12:
+                avg_price_try = accum_cost / accum_qty
+            else:
+                total_buy_q = sum(q for _, q, _ in all_buys)
+                if total_buy_q > 0:
+                    avg_price_try = sum(p * q for p, q, _ in all_buys) / total_buy_q
+
+        if avg_price_try and avg_price_try > 0:
+            info["avg_price"] = avg_price_try
+            info["quote"] = "TRY"
+            info["held_quantity"] = held_qty if held_qty > 0 else total_qty
     except Exception as exc:
         logger.warning("Binance TR alım geçmişi okunamadı (%s): %s", asset, exc)
-    _binance_cost_cache[(user_id, asset)] = (now + 120.0, info)
+    _binance_cost_cache[(user_id, asset)] = (now + 300.0, info)
     return info
 
 @app.post("/api/binance/sell")
