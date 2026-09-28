@@ -1527,9 +1527,11 @@ function BinanceTrPageInner() {
                               <td className={`font-mono text-xs font-bold tabular-nums whitespace-nowrap ${pnlToneCls}`}>
                                 {h.pnl_try != null ? (
                                   <>
-                                    <span>{h.pnl_try >= 0 ? "+" : "−"}₺{fmtPrice(Math.abs(h.pnl_try))}</span>
+                                    <span className={h.pnl_try >= 0 ? "text-neon-green !text-[#00ff88]" : "text-neon-red !text-[#ff3b69]"}>
+                                      {h.pnl_try >= 0 ? "+" : "−"}₺{fmtPrice(Math.abs(h.pnl_try))}
+                                    </span>
                                     {h.pnl_pct != null && (
-                                      <span className={`ml-1 text-[11px] font-normal ${pnlToneCls}`}>
+                                      <span className={`ml-1 text-[11px] font-normal ${h.pnl_try >= 0 ? "text-neon-green !text-[#00ff88]" : "text-neon-red !text-[#ff3b69]"}`}>
                                         ({h.pnl_pct >= 0 ? "+" : "−"}%{fmtPrice(Math.abs(h.pnl_pct), 2)})
                                       </span>
                                     )}
@@ -1782,7 +1784,7 @@ function BinanceTrPageInner() {
                         {sortedSymbolSummary.map((s) => {
                           const buyAvg = s.buy_qty > 0 ? s.buy_cost_try / s.buy_qty : 0;
                           const sellAvg = s.sell_qty > 0 ? s.sell_revenue_try / s.sell_qty : 0;
-                          const pnlCls = s.realized_pnl_try >= 0 ? "text-neon-green" : "text-neon-red";
+                          const pnlCls = s.realized_pnl_try > 0 ? "ui-tone-positive text-neon-green !text-[#00ff88]" : s.realized_pnl_try < 0 ? "ui-tone-negative text-neon-red !text-[#ff3b69]" : "text-bunker-muted";
                           const isExpanded = expandedSymbol === s.symbol;
                           const detailRows = trades.filter((t) => t.symbol === s.symbol);
 
@@ -1796,7 +1798,13 @@ function BinanceTrPageInner() {
                                 <td className="font-mono text-xs text-right">{sellAvg ? `₺${fmtPrice(sellAvg, sellAvg < 1 ? 6 : 2)}` : "—"}</td>
                                 <td className="font-mono text-xs text-right text-bunker-muted">₺{fmtPrice(s.commission_try)}</td>
                                 <td className={`font-mono text-xs font-bold text-right ${pnlCls}`}>
-                                  {s.realized_pnl_try !== 0 ? `${s.realized_pnl_try >= 0 ? "+" : "−"}₺${fmtPrice(Math.abs(s.realized_pnl_try))}` : "—"}
+                                  {s.realized_pnl_try !== 0 ? (
+                                    <span className={s.realized_pnl_try > 0 ? "text-neon-green !text-[#00ff88]" : "text-neon-red !text-[#ff3b69]"}>
+                                      {s.realized_pnl_try > 0 ? "+" : "−"}₺{fmtPrice(Math.abs(s.realized_pnl_try))}
+                                    </span>
+                                  ) : (
+                                    <span className="text-bunker-muted">—</span>
+                                  )}
                                 </td>
                                 <td className="font-mono text-xs text-right text-bunker-muted">{s.fills}</td>
                                 <td className="text-right">
@@ -1813,7 +1821,7 @@ function BinanceTrPageInner() {
                                 detailRows.map((t) => (
                                   <tr key={`${s.symbol}-d-${t.id}`} className="bg-bunker-900/80 border-b border-bunker-800">
                                     <td className="font-mono text-[11px] text-bunker-muted pl-6">{fmtTime(t.time)}</td>
-                                    <td className={`font-mono text-[11px] text-right font-bold ${t.isBuyer ? "text-neon-green" : "text-neon-red"}`}>
+                                    <td className={`font-mono text-[11px] text-right font-bold ${t.isBuyer ? "text-neon-green !text-[#00ff88]" : "text-neon-red !text-[#ff3b69]"}`}>
                                       {t.isBuyer ? "AL" : "SAT"} × {fmtPrice(t.qty, Number(t.qty) < 1 ? 6 : 3)}
                                     </td>
                                     <td className="font-mono text-[11px] text-right text-bunker-muted">
@@ -1822,8 +1830,14 @@ function BinanceTrPageInner() {
                                     <td className="font-mono text-[11px] text-right text-bunker-muted">{t.isBuyer ? "alış" : "satış"}</td>
                                     <td className="font-mono text-[11px] text-right text-white">₺{fmtPrice(t.price, Number(t.price) < 1 ? 6 : 2)}</td>
                                     <td className="font-mono text-[11px] text-right text-bunker-muted">₺{fmtPrice(t.commission, 4)}</td>
-                                    <td className={`font-mono text-[11px] font-bold text-right ${t.realized_pnl_try != null ? (t.realized_pnl_try >= 0 ? "text-neon-green" : "text-neon-red") : "text-bunker-muted"}`}>
-                                      {t.realized_pnl_try != null ? `${t.realized_pnl_try >= 0 ? "+" : "−"}₺${fmtPrice(Math.abs(t.realized_pnl_try))}` : "—"}
+                                    <td className={`font-mono text-[11px] font-bold text-right ${t.realized_pnl_try != null && t.realized_pnl_try !== 0 ? (t.realized_pnl_try > 0 ? "ui-tone-positive text-neon-green !text-[#00ff88]" : "ui-tone-negative text-neon-red !text-[#ff3b69]") : "text-bunker-muted"}`}>
+                                      {t.realized_pnl_try != null && t.realized_pnl_try !== 0 ? (
+                                        <span className={t.realized_pnl_try > 0 ? "text-neon-green !text-[#00ff88]" : "text-neon-red !text-[#ff3b69]"}>
+                                          {t.realized_pnl_try > 0 ? "+" : "−"}₺{fmtPrice(Math.abs(t.realized_pnl_try))}
+                                        </span>
+                                      ) : (
+                                        <span className="text-bunker-muted">—</span>
+                                      )}
                                     </td>
                                     <td className="font-mono text-[11px] text-right text-bunker-muted">₺{fmtPrice(t.quoteQty, 2)}</td>
                                     <td />
