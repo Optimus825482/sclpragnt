@@ -125,3 +125,15 @@ async def test_ping(
     }
     client_ip = request.client.host if request.client else None
     return await tr_bridge_receiver.process_global_signal(payload, client_ip=client_ip)
+
+
+@router.get("/performance")
+async def bridge_performance(
+    request: Request,
+    day: str = "all",
+    x_bridge_secret: Optional[str] = Header(None, alias="X-Bridge-Secret"),
+):
+    """Global Lead-Lag işlemlerinin ve sinyallerinin başarı ve performans analizini döner."""
+    await _authorize_bridge_request(request, x_bridge_secret)
+    return await tr_bridge_receiver.get_bridge_performance(day=day)
+

@@ -6,6 +6,7 @@ import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { formatSignedTL, toMs } from "../lib/format";
 import LlmManagement from "./LlmManagement";
 import SymbolLink from "../components/SymbolLink";
+import BridgeSettingsPanel from "./BridgeSettingsPanel";
 
 type Config = {
   symbols: string[];
@@ -43,7 +44,7 @@ export default function SettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
 }
 function SettingsPageInner() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd" | "bridge">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -93,12 +94,12 @@ function SettingsPageInner() {
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab") as any;
-    if (tab && ["symbols", "radar", "app", "strategies", "auto-paper", "macd", "llm", "chat"].includes(tab)) {
+    if (tab && ["symbols", "radar", "app", "strategies", "auto-paper", "macd", "llm", "chat", "bridge"].includes(tab)) {
       setActiveTab(tab);
     }
   }, []);
 
-  const selectTab = (key: "symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd") => {
+  const selectTab = (key: "symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd" | "bridge") => {
     setActiveTab(key);
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
@@ -619,6 +620,7 @@ function SettingsPageInner() {
         <nav className="flex gap-2 overflow-x-auto border-b border-bunker-800 pb-2 no-scrollbar scrollbar-none touch-pan-x" aria-label="Ayar sekmeleri">
           {([
             ["symbols", "Semboller", "🪙"],
+            ["bridge", "Global Köprü", "🌉"],
             ["radar", "Radar", "📡"],
             ["app", "Uygulama Ayarları", "⚙️"],
             ["notifications", "Bildirim Ayarları", "🔔"],
@@ -637,6 +639,9 @@ function SettingsPageInner() {
 
       {cfg && (
         <>
+          <div className={`${activeTab !== "bridge" ? "hidden" : ""}`}>
+            <BridgeSettingsPanel />
+          </div>
           <div className={`${activeTab !== "radar" ? "hidden" : ""}`}>
             <div className="space-y-4">
               <RadarSettingsPanel />

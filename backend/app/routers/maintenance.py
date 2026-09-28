@@ -2,6 +2,7 @@
 import asyncio
 import bisect
 import math
+import os
 import time
 import logging
 from datetime import datetime, timezone
@@ -141,20 +142,52 @@ async def backfill_symbol_history(symbol: str, days: int = 7):
         _symbol_history_backfills.discard(symbol)
 
 
+# 2026-09-28 (denetim): canlı 5m kalıcılık evreni hız avcısı backfill'leriyle
+# sınırsız büyüyordu; 200+ sembolde tek tur 400+ weight (klines=2/sembol) ve
+# 8'lik yarı-çakışan istek dalgası demekti. Tur başına tavan + döner pencere:
+# her tur farklı taşan semboller öne alınır, hiçbir sembol kalıcı olarak
+# bayat kalmaz (tavan 100 → tur başına ~200 weight, 5 dk'da bir).
+HISTORY_CANDLE_MAX_SYMBOLS = int(os.getenv("HISTORY_CANDLE_MAX_SYMBOLS", "100"))
+_history_round_cursor = 0
+
+
+def _rotate_universe_window(full: list, cap: int, cursor: int) -> tuple[list, int]:
+    """`full` evrenini `cap` boyutlu döner pencereye indirir.
+
+    Dönen değer: (bu turun evreni, bir sonraki turun cursor'ı). Evren tavandan
+    kısaysa değişmeden döner. Böylece 250 sembollük evrende her sembol
+    ~2.5 turda bir kalıcılığa girer, sabit dilimlemedeki "sondaki semboller
+    hiç güncellenmez" sorunu olmaz.
+    """
+    if len(full) <= cap:
+        return full, 0
+    shift = cursor % len(full)
+    rotated = full[shift:] + full[:shift]
+    return rotated[:cap], (shift + cap) % len(full)
+
+
 async def history_candle_loop(interval_minutes: int = 5):
     """Canlı 5m mum kalıcılığı: her 5 dakikada son kapanan barları upsert eder.
 
     historical_candles'a yalnızca tek seferlik backfill'ler yazıyordu; deploy
     aralarında tablo bayatlıyor ve ML eğitimi 'boş' pencereye düşüyordu.
     Evren: config.SYMBOLS + veritabanında zaten bulunan semboller (hız avcısı
-    backfill'leriyle büyüyen evren). Kapanmamış bar yazılmaz.
+    backfill'leriyle büyüyen evren), HISTORY_CANDLE_MAX_SYMBOLS tavanıyla
+    döner pencereye indirilir. Kapanmamış bar yazılmaz.
     """
     semaphore = asyncio.Semaphore(8)
     await asyncio.sleep(120)  # startup backfill'i bitmeden çakışmasın
+    global _history_round_cursor
     while True:
         try:
-            universe = list(dict.fromkeys(
-                [s.upper() for s in config.SYMBOLS] + await database.get_market_symbols("5m")))
+            base = [s.upper() for s in config.SYMBOLS]
+            db_symbols = sorted(set(await database.get_market_symbols("5m")) - set(base))
+            full = list(dict.fromkeys(base + db_symbols))
+            universe, _history_round_cursor = _rotate_universe_window(
+                full, HISTORY_CANDLE_MAX_SYMBOLS, _history_round_cursor)
+            if len(full) > len(universe):
+                logger.warning("Canlı mum kalıcılık evreni kırpıldı | full=%d tur=%d cap=%d (döner pencere)",
+                               len(full), len(universe), HISTORY_CANDLE_MAX_SYMBOLS)
             now_ms = int(time.time() * 1000)
             written_total = 0
             async def persist(symbol: str) -> int:

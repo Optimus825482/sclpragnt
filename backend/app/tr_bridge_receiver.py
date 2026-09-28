@@ -633,3 +633,126 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
         "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
         "trade": trade_outcome,
     }
+
+
+async def get_bridge_performance(day: str = "all") -> Dict[str, Any]:
+    """Global Lead-Lag sinyalleri ve işlemlerinin detaylı performans ve başarı raporunu üretir."""
+    # 1. Kapanmış işlemleri çek
+    raw_trades = await database.get_trades(limit=500, strategy="GLOBAL_LEAD_LAG")
+
+    # 2. Tarih filtresi
+    target_day = str(day or "all").strip()
+    trades = []
+    for t in raw_trades:
+        exit_ts = float(t.get("exit_time") or 0.0)
+        if target_day != "all" and exit_ts > 0:
+            trade_day = time.strftime("%Y-%m-%d", time.localtime(exit_ts))
+            if trade_day != target_day:
+                continue
+        trades.append(t)
+
+    # 3. Açık pozisyonları tespit et
+    open_positions = []
+    if analyzer and getattr(analyzer, "positions", None):
+        for sym, pos in list(analyzer.positions.items()):
+            if str(pos.get("strategy") or "").upper() == "GLOBAL_LEAD_LAG":
+                ticker = market.get_ticker(sym) if market else {}
+                current_price = float((ticker or {}).get("last_price") or pos.get("entry_price") or 0.0)
+                entry_price = float(pos.get("entry_price") or current_price or 1.0)
+                qty = float(pos.get("quantity") or 0.0)
+                unrealized_pnl = (current_price - entry_price) * qty
+                unrealized_pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0.0
+
+                open_positions.append({
+                    "symbol": sym,
+                    "side": pos.get("side", "LONG"),
+                    "entry_price": entry_price,
+                    "current_price": current_price,
+                    "quantity": qty,
+                    "unrealized_pnl_try": round(unrealized_pnl, 2),
+                    "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
+                    "stop_price": pos.get("system_stop_price") or pos.get("stop_price"),
+                    "take_profit_price": pos.get("system_take_profit_price") or pos.get("take_profit"),
+                    "entry_time": pos.get("entry_time"),
+                    "trade_id": pos.get("trade_id"),
+                    "entry_context": pos.get("entry_context") or {},
+                })
+
+    # 4. Sinyalleri çek (signals tablosundan ve in-memory tamponundan)
+    raw_signals = await database.get_signals(limit=200, strategy="GLOBAL_LEAD_LAG")
+    filtered_signals = []
+    for s in raw_signals:
+        sig_ts = float(s.get("timestamp") or 0.0)
+        if target_day != "all" and sig_ts > 0:
+            sig_day = time.strftime("%Y-%m-%d", time.localtime(sig_ts))
+            if sig_day != target_day:
+                continue
+        filtered_signals.append(s)
+
+    # In-memory geçmişteki son olayları da eşleştir
+    recent_events = list(_history)
+    if target_day != "all":
+        recent_events = [
+            e for e in recent_events
+            if time.strftime("%Y-%m-%d", time.localtime(float(e.get("received_at") or 0))) == target_day
+        ]
+
+    # 5. İstatistik hesaplamaları
+    closed_count = len(trades)
+    wins = sum(1 for t in trades if float(t.get("pnl") or 0) > 0)
+    losses = sum(1 for t in trades if float(t.get("pnl") or 0) <= 0)
+    win_rate = round((wins / closed_count * 100), 1) if closed_count > 0 else 0.0
+    net_pnl = sum(float(t.get("pnl") or 0) for t in trades)
+    total_commission = sum(float(t.get("commission") or 0) for t in trades)
+
+    # Çıkış nedenleri dağılımı
+    reasons: Dict[str, int] = {}
+    for t in trades:
+        r = str(t.get("reason") or "diger")
+        reasons[r] = reasons.get(r, 0) + 1
+
+    target_hits = reasons.get("lead_lag_take_profit", 0) + reasons.get("chat_plan_take_profit", 0)
+    target_touch_rate = round((target_hits / closed_count * 100), 1) if closed_count > 0 else 0.0
+
+    # Ortalama tutma süresi (dakika)
+    durations = [
+        (float(t.get("exit_time") or 0) - float(t.get("entry_time") or 0)) / 60.0
+        for t in trades
+        if t.get("exit_time") and t.get("entry_time") and float(t.get("exit_time")) > float(t.get("entry_time"))
+    ]
+    avg_hold_min = round(sum(durations) / len(durations), 1) if durations else 0.0
+
+    avg_pnl_pct = round(sum(float(t.get("pnl_pct") or 0) for t in trades) / closed_count, 2) if closed_count > 0 else 0.0
+
+    # Ortalama gecikme (lead-lag latency)
+    avg_lat = 0.0
+    if _stats["latency_count"] > 0:
+        avg_lat = round(_stats["total_latency_ms"] / _stats["latency_count"], 1)
+
+    summary = {
+        "day": target_day,
+        "total_signals": len(filtered_signals) or len(recent_events),
+        "total_trades": closed_count + len(open_positions),
+        "open_trades_count": len(open_positions),
+        "closed_trades_count": closed_count,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": win_rate,
+        "target_touch_rate": target_touch_rate,
+        "net_pnl_try": round(net_pnl, 2),
+        "total_commission_try": round(total_commission, 2),
+        "avg_pnl_pct": avg_pnl_pct,
+        "avg_hold_minutes": avg_hold_min,
+        "avg_latency_ms": avg_lat,
+        "exit_reasons": reasons,
+    }
+
+    return {
+        "ok": True,
+        "day": target_day,
+        "summary": summary,
+        "open_positions": open_positions,
+        "closed_trades": trades[:100],
+        "recent_signals": recent_events[-50:],
+    }
+
