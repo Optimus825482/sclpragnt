@@ -167,7 +167,7 @@ cors_origins = _cors_origins_from_env()
 # broadened. The API only needs the methods below. G-25: `*` reddedilir.
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=True,
                    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-                   allow_headers=["Authorization", "Content-Type", "X-Real-IP"])
+                   allow_headers=["Authorization", "Content-Type", "X-Real-IP", "X-Bridge-Secret"])
 app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(maintenance_routes.router)
@@ -180,8 +180,10 @@ app.include_router(monitoring.router)
 
 from app.routers import auto_paper as auto_paper_routes
 from app.routers import macd_monitor as macd_monitor_routes
+from app.routers import bridge as bridge_routes
 app.include_router(auto_paper_routes.router)
 app.include_router(macd_monitor_routes.router)
+app.include_router(bridge_routes.router)
 
 
 _TTS_VOICE = "tr-TR-EmelNeural"
@@ -241,8 +243,10 @@ async def edge_tts_audio(payload: dict, request: Request = None):
 
 @app.middleware("http")
 async def require_admin_session(request: Request, call_next):
-    public_paths = {"/health", "/api/auth/status", "/api/auth/login"}
+    public_paths = {"/health", "/api/auth/status", "/api/auth/login", "/api/bridge/global-signal"}
     if request.method == "OPTIONS" or request.url.path in public_paths:
+        return await call_next(request)
+    if request.url.path.startswith("/api/bridge/") and request.headers.get("X-Bridge-Secret"):
         return await call_next(request)
     if not security.auth_configured():
         return JSONResponse({"detail": "Yönetici kimlik doğrulaması yapılandırılmamış"}, status_code=503)
@@ -4733,9 +4737,14 @@ async def get_strategy_stats():
             row["wins"] += 1
     for row in stats.values():
         row["win_rate"] = (row["wins"] / row["trades"] * 100) if row["trades"] else 0.0
-    return {"stats": stats, "active": ["CHAT_PREDICTION", "LLM_PAPER"]}
+    return {"stats": stats, "active": ["CHAT_PREDICTION", "LLM_PAPER", "GLOBAL_LEAD_LAG"]}
 
 
 runtime_deps.bind(llm_chat_routes, "get_strategy_stats", get_strategy_stats)
 runtime_deps.bind(runtime_routes, "llm_open_paper_trade", llm_open_paper_trade)
 runtime_deps.bind(runtime_routes, "gainers_radar", gainers_radar)
+
+from app import tr_bridge_receiver
+tr_bridge_receiver.set_daily_loss_guard_fn(daily_loss_guard)
+tr_bridge_receiver.set_wallet_invalidator_fn(runtime_routes.invalidate_wallet_caches)
+

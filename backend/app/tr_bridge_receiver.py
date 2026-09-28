@@ -1,0 +1,635 @@
+"""Binance Global -> Binance TR Lead-Lag (Öncü-Artçı) Sinyal Alıcısı (Receiver).
+
+Bu modül, Binance Global tarafından gönderilen öncü sinyalleri karşılar,
+`X-Bridge-Secret` ile doğrular, gecikmeyi (latency) ölçer, sembolü TR karşılığına
+dönüştürür ve yapılandırılan kurallara göre (auto_trade, min_score, cooldown)
+otonom paper trade pozisyonu açar ya da sinyali kaydedip WebSocket ile arayüze iletir.
+"""
+from __future__ import annotations
+
+import asyncio
+import hmac
+import logging
+import time
+import uuid
+from collections import deque
+from typing import Any, Callable, Dict, List, Optional
+
+from app.config import config
+from app import database
+from app.state import market, analyzer, extend_stream_universe
+from app.ws_runtime import ws_manager
+
+logger = logging.getLogger("scalper.tr_bridge_receiver")
+
+# In-memory dairesel tampon: Son 100 sinyal ve iletim geçmişi
+_HISTORY_LIMIT = 100
+_history: deque[Dict[str, Any]] = deque(maxlen=_HISTORY_LIMIT)
+
+# Cooldown takibi: (tr_symbol, signal_type) -> son_kabul_zamani
+_last_signal_times: Dict[tuple[str, str], float] = {}
+
+# İstatistik sayaçları
+_stats = {
+    "total_received": 0,
+    "pings_received": 0,
+    "signals_received": 0,
+    "trades_opened": 0,
+    "trades_blocked": 0,
+    "cooldown_skips": 0,
+    "auth_failures": 0,
+    "last_received_at": None,
+    "total_latency_ms": 0.0,
+    "latency_count": 0,
+}
+
+# main.py ve runtime_routes tarafından geç bağlanacak fonksiyonlar
+_daily_loss_guard_fn: Optional[Callable[..., Any]] = None
+_wallet_invalidator_fn: Optional[Callable[[], None]] = None
+
+
+def set_daily_loss_guard_fn(fn: Callable[..., Any]) -> None:
+    """main.py içindeki daily_loss_guard fonksiyonunu bağlar."""
+    global _daily_loss_guard_fn
+    _daily_loss_guard_fn = fn
+
+
+def set_wallet_invalidator_fn(fn: Callable[[], None]) -> None:
+    """runtime_routes.invalidate_wallet_caches fonksiyonunu bağlar."""
+    global _wallet_invalidator_fn
+    _wallet_invalidator_fn = fn
+
+
+def mask_secret(secret: str) -> str:
+    """Gizli anahtarın yalnızca ilk ve son 3 karakterini gösterir."""
+    sec = str(secret or "").strip()
+    if not sec:
+        return ""
+    if len(sec) <= 6:
+        return "***"
+    return f"{sec[:3]}***{sec[-3:]}"
+
+
+async def get_receiver_settings() -> Dict[str, Any]:
+    """Aktif alıcı ayarlarını döner. DB ayarları env varsayılanlarını ezer."""
+    db_enabled = await database.get_llm_setting("bridge_receiver_enabled")
+    if db_enabled is not None:
+        enabled = str(db_enabled).strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        enabled = bool(getattr(config, "BINANCE_TR_RECEIVER_ENABLED", True))
+
+    db_secret = await database.get_llm_setting("bridge_secret")
+    if db_secret is not None and str(db_secret).strip():
+        secret = str(db_secret).strip()
+    else:
+        secret = str(getattr(config, "BINANCE_TR_BRIDGE_SECRET", "")).strip()
+
+    db_auto_trade = await database.get_llm_setting("bridge_auto_trade")
+    if db_auto_trade is not None:
+        auto_trade = str(db_auto_trade).strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        auto_trade = bool(getattr(config, "BINANCE_TR_BRIDGE_AUTO_TRADE", True))
+
+    db_min_score = await database.get_llm_setting("bridge_min_score")
+    if db_min_score is not None:
+        try:
+            min_score = float(db_min_score)
+        except (ValueError, TypeError):
+            min_score = float(getattr(config, "BINANCE_TR_BRIDGE_MIN_SCORE", 0.0))
+    else:
+        min_score = float(getattr(config, "BINANCE_TR_BRIDGE_MIN_SCORE", 0.0))
+
+    db_cooldown = await database.get_llm_setting("bridge_cooldown_sec")
+    if db_cooldown is not None:
+        try:
+            cooldown_sec = float(db_cooldown)
+        except (ValueError, TypeError):
+            cooldown_sec = float(getattr(config, "BINANCE_TR_BRIDGE_COOLDOWN_SEC", 10.0))
+    else:
+        cooldown_sec = float(getattr(config, "BINANCE_TR_BRIDGE_COOLDOWN_SEC", 10.0))
+
+    return {
+        "enabled": enabled,
+        "secret": secret,
+        "masked_secret": mask_secret(secret),
+        "auto_trade": auto_trade,
+        "min_score": min_score,
+        "cooldown_sec": cooldown_sec,
+    }
+
+
+async def update_receiver_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Alıcı ayarlarını çalışma anında günceller ve DB'ye yazar."""
+    if "enabled" in updates:
+        val = "1" if bool(updates["enabled"]) else "0"
+        await database.set_llm_setting("bridge_receiver_enabled", val)
+
+    if "secret" in updates and updates["secret"] is not None:
+        sec = str(updates["secret"]).strip()
+        await database.set_llm_setting("bridge_secret", sec)
+
+    if "auto_trade" in updates:
+        val = "1" if bool(updates["auto_trade"]) else "0"
+        await database.set_llm_setting("bridge_auto_trade", val)
+
+    if "min_score" in updates:
+        try:
+            val = float(updates["min_score"])
+            await database.set_llm_setting("bridge_min_score", str(val))
+        except (ValueError, TypeError):
+            pass
+
+    if "cooldown_sec" in updates:
+        try:
+            val = max(1.0, float(updates["cooldown_sec"]))
+            await database.set_llm_setting("bridge_cooldown_sec", str(val))
+        except (ValueError, TypeError):
+            pass
+
+    return await get_receiver_settings()
+
+
+async def verify_bridge_secret(header_secret: Optional[str]) -> bool:
+    """X-Bridge-Secret başlığını zamanlama analizi saldırılarına dayanıklı karşılaştırır."""
+    settings = await get_receiver_settings()
+    configured_secret = settings.get("secret", "")
+    if not configured_secret:
+        logger.warning("[BridgeReceiver] BINANCE_TR_BRIDGE_SECRET yapılandırılmamış, istek reddedildi.")
+        _stats["auth_failures"] += 1
+        return False
+
+    if not header_secret:
+        _stats["auth_failures"] += 1
+        return False
+
+    is_valid = hmac.compare_digest(header_secret.strip(), configured_secret.strip())
+    if not is_valid:
+        _stats["auth_failures"] += 1
+        logger.warning("[BridgeReceiver] Geçersiz X-Bridge-Secret başlığı.")
+    return is_valid
+
+
+def map_to_tr_symbol(global_symbol: str = "", base_asset: str = "", tr_symbol: str = "") -> str:
+    """Binance Global sembolünü veya taban varlığını Binance TR karşılığına çevirir."""
+    # 1. Açıkça tr_symbol verilmişse
+    raw_tr = str(tr_symbol or "").strip().upper()
+    if raw_tr:
+        if not raw_tr.endswith("TRY"):
+            return f"{raw_tr}TRY"
+        return raw_tr
+
+    # 2. base_asset verilmişse (örn: SOL -> SOLTRY)
+    raw_base = str(base_asset or "").strip().upper()
+    if raw_base:
+        return f"{raw_base}TRY"
+
+    # 3. global_symbol verilmişse (örn: SOLUSDT -> SOLTRY)
+    raw_global = str(global_symbol or "").strip().upper()
+    if raw_global.endswith("USDT"):
+        return f"{raw_global[:-4]}TRY"
+    if raw_global.endswith("TRY"):
+        return raw_global
+    if raw_global:
+        return f"{raw_global}TRY"
+
+    return ""
+
+
+def get_bridge_status() -> Dict[str, Any]:
+    """Alıcının durum, sayaç, ortalama gecikme ve son olay özetini döner."""
+    avg_latency = 0.0
+    if _stats["latency_count"] > 0:
+        avg_latency = round(_stats["total_latency_ms"] / _stats["latency_count"], 2)
+
+    return {
+        "ok": True,
+        "total_received": _stats["total_received"],
+        "pings_received": _stats["pings_received"],
+        "signals_received": _stats["signals_received"],
+        "trades_opened": _stats["trades_opened"],
+        "trades_blocked": _stats["trades_blocked"],
+        "cooldown_skips": _stats["cooldown_skips"],
+        "auth_failures": _stats["auth_failures"],
+        "last_received_at": _stats["last_received_at"],
+        "avg_latency_ms": avg_latency,
+        "history_count": len(_history),
+    }
+
+
+def get_bridge_history(limit: int = 100) -> List[Dict[str, Any]]:
+    """Son alınan sinyallerin geçmişini döner."""
+    return list(_history)[-limit:]
+
+
+async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str] = None) -> Dict[str, Any]:
+    """Binance Global'den gelen sinyali işler, doğrular ve aksiyon alır."""
+    now = time.time()
+    _stats["total_received"] += 1
+    _stats["last_received_at"] = now
+
+    event_id = str(payload.get("event_id") or uuid.uuid4())
+    global_ts = float(payload.get("timestamp") or now)
+    lead_lag_latency_ms = max(0.0, (now - global_ts) * 1000.0)
+
+    # İstatistik ortalamasını güncelle
+    _stats["total_latency_ms"] += lead_lag_latency_ms
+    _stats["latency_count"] += 1
+
+    signal_type = str(payload.get("signal_type") or "signal").lower()
+    action = str(payload.get("action") or "BUY_SIGNAL").upper()
+
+    # 1. PING isteği kontrolü
+    if signal_type == "ping" or action == "PING":
+        _stats["pings_received"] += 1
+        record = {
+            "event_id": event_id,
+            "received_at": now,
+            "global_timestamp": global_ts,
+            "latency_ms": round(lead_lag_latency_ms, 2),
+            "signal_type": "ping",
+            "action": "PING",
+            "status": "pong",
+            "client_ip": client_ip,
+        }
+        _history.append(record)
+        return {
+            "ok": True,
+            "status": "pong",
+            "event_id": event_id,
+            "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
+            "server_time": now,
+        }
+
+    _stats["signals_received"] += 1
+    settings = await get_receiver_settings()
+
+    # 2. Alıcı aktiflik denetimi
+    if not settings.get("enabled", True):
+        record = {
+            "event_id": event_id,
+            "received_at": now,
+            "global_timestamp": global_ts,
+            "latency_ms": round(lead_lag_latency_ms, 2),
+            "signal_type": signal_type,
+            "action": action,
+            "status": "receiver_disabled",
+            "client_ip": client_ip,
+        }
+        _history.append(record)
+        return {
+            "ok": False,
+            "status": "disabled",
+            "event_id": event_id,
+            "message": "Binance TR sinyal alıcısı ayarlardan devre dışı bırakılmış.",
+        }
+
+    # 3. Yalnızca BUY_SIGNAL işlem açılışıdır (scalper-trade-manager sözleşmesi)
+    if action != "BUY_SIGNAL":
+        record = {
+            "event_id": event_id,
+            "received_at": now,
+            "signal_type": signal_type,
+            "action": action,
+            "status": "action_ignored",
+        }
+        _history.append(record)
+        return {
+            "ok": False,
+            "status": "action_ignored",
+            "event_id": event_id,
+            "message": f"Desteklenmeyen eylem: {action}. Yalnızca BUY_SIGNAL işlenir.",
+        }
+
+    # 4. Sembol çözümleme ve normalizasyon
+    global_symbol = str(payload.get("global_symbol") or "").upper()
+    base_asset = str(payload.get("base_asset") or "").upper()
+    tr_symbol = map_to_tr_symbol(global_symbol, base_asset, payload.get("tr_symbol"))
+
+    if not tr_symbol:
+        record = {
+            "event_id": event_id,
+            "received_at": now,
+            "signal_type": signal_type,
+            "status": "invalid_symbol",
+        }
+        _history.append(record)
+        return {"ok": False, "status": "invalid_symbol", "event_id": event_id, "message": "TR sembolü çözümlenemedi."}
+
+    # Sembolü anında akış evrenine dahil et (WS mum ve derinlik için)
+    try:
+        extend_stream_universe([tr_symbol], source="global_bridge")
+    except Exception as exc:
+        logger.debug("[BridgeReceiver] extend_stream_universe atlandı %s: %s", tr_symbol, exc)
+
+    # 5. Skor filtre denetimi
+    score = float(payload.get("score") or 0.0)
+    min_score = float(settings.get("min_score", 0.0))
+    if score < min_score:
+        record = {
+            "event_id": event_id,
+            "received_at": now,
+            "tr_symbol": tr_symbol,
+            "signal_type": signal_type,
+            "score": score,
+            "min_score": min_score,
+            "status": "score_below_minimum",
+        }
+        _history.append(record)
+        return {
+            "ok": True,
+            "status": "score_below_minimum",
+            "event_id": event_id,
+            "symbol": tr_symbol,
+            "score": score,
+            "min_score": min_score,
+        }
+
+    # 6. Cooldown (Deduplikasyon) koruması
+    cooldown_sec = float(settings.get("cooldown_sec", 10.0))
+    force = bool(payload.get("force", False))
+    cooldown_key = (tr_symbol, signal_type)
+    last_accepted = _last_signal_times.get(cooldown_key, 0.0)
+
+    if not force and (now - last_accepted) < cooldown_sec:
+        _stats["cooldown_skips"] += 1
+        remaining = round(cooldown_sec - (now - last_accepted), 2)
+        record = {
+            "event_id": event_id,
+            "received_at": now,
+            "tr_symbol": tr_symbol,
+            "signal_type": signal_type,
+            "status": "cooldown_skipped",
+            "remaining_sec": remaining,
+        }
+        _history.append(record)
+        return {
+            "ok": True,
+            "status": "cooldown_skipped",
+            "event_id": event_id,
+            "symbol": tr_symbol,
+            "remaining_sec": remaining,
+        }
+
+    _last_signal_times[cooldown_key] = now
+
+    # 7. Binance TR Ticker ve anlık fiyat tespiti
+    tr_price = 0.0
+    if market:
+        ticker = market.get_ticker(tr_symbol)
+        if ticker and ticker.get("last_price"):
+            tr_price = float(ticker["last_price"])
+
+    # Ticker hafızada yoksa REST üzerinden anında tek seferlik sorgula
+    if tr_price <= 0:
+        try:
+            from app.binance_tr_public import ticker_price as _fetch_tr_price
+            price_res = await _fetch_tr_price(tr_symbol)
+            if price_res and float(price_res.get("price") or 0) > 0:
+                tr_price = float(price_res["price"])
+                if isinstance(getattr(market, "tickers", None), dict):
+                    market.tickers[tr_symbol] = {
+                        "symbol": tr_symbol,
+                        "last_price": tr_price,
+                        "timestamp": int(now * 1000),
+                        "source": "tr_bridge_rest_hydrate",
+                    }
+        except Exception as exc:
+            logger.warning("[BridgeReceiver] %s fiyat hydration hatası: %s", tr_symbol, exc)
+
+    if tr_price <= 0:
+        record = {
+            "event_id": event_id,
+            "received_at": now,
+            "tr_symbol": tr_symbol,
+            "status": "price_unavailable",
+        }
+        _history.append(record)
+        return {
+            "ok": False,
+            "status": "price_unavailable",
+            "event_id": event_id,
+            "symbol": tr_symbol,
+            "message": f"{tr_symbol} için Binance TR fiyatı alınamadı.",
+        }
+
+    # 8. Sinyali kalıcı DB'ye kaydet (signals + decision_logs)
+    title = str(payload.get("title") or "Global Lead-Lag Sinyali")
+    message = str(payload.get("message") or "")
+    global_price = float(payload.get("price") or 0.0)
+
+    sig_record = {
+        "timestamp": now,
+        "symbol": tr_symbol,
+        "action": "BUY_SIGNAL",
+        "price": tr_price,
+        "reason": f"GLOBAL_BRIDGE:{signal_type}:{title}",
+        "strategy": "GLOBAL_LEAD_LAG",
+        "trade_id": None,
+        "score": score,
+        "global_symbol": global_symbol,
+        "global_price": global_price,
+        "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
+        "event_id": event_id,
+    }
+    try:
+        await database.save_signal(sig_record)
+    except Exception as exc:
+        logger.error("[BridgeReceiver] Sinyal DB kaydı başarısız: %s", exc)
+
+    # 9. WebSocket üzerinden canlı arayüze yayınla
+    try:
+        await ws_manager.broadcast({
+            "type": "global_bridge_signal",
+            "data": {
+                "event_id": event_id,
+                "global_symbol": global_symbol,
+                "base_asset": base_asset,
+                "tr_symbol": tr_symbol,
+                "signal_type": signal_type,
+                "action": action,
+                "score": score,
+                "global_price": global_price,
+                "tr_price": tr_price,
+                "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
+                "title": title,
+                "message": message,
+                "payload_data": payload.get("data") or {},
+                "timestamp": now,
+            }
+        })
+    except Exception as exc:
+        logger.debug("[BridgeReceiver] WebSocket yayını hatası: %s", exc)
+
+    # 10. Otonom Paper Trade Tetikleyici
+    auto_trade = settings.get("auto_trade", True)
+    trade_outcome: Dict[str, Any] = {"status": "disabled", "reason": "auto_trade_disabled"}
+
+    if auto_trade:
+        # 10.1 Global risk ve günlük zarar kapısı (daily_loss_guard)
+        if _daily_loss_guard_fn:
+            try:
+                guard = await _daily_loss_guard_fn()
+                if guard and guard.get("halt"):
+                    _stats["trades_blocked"] += 1
+                    trade_outcome = {"status": "blocked", "reason": f"daily_loss_guard:{guard.get('reason')}"}
+                    record = {
+                        "event_id": event_id,
+                        "received_at": now,
+                        "tr_symbol": tr_symbol,
+                        "status": "blocked_risk_guard",
+                        "trade": trade_outcome,
+                    }
+                    _history.append(record)
+                    return {
+                        "ok": True,
+                        "status": "blocked",
+                        "event_id": event_id,
+                        "symbol": tr_symbol,
+                        "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
+                        "trade": trade_outcome,
+                    }
+            except Exception as exc:
+                logger.warning("[BridgeReceiver] Risk kapısı kontrolü hatası: %s", exc)
+
+        # 10.2 Çift pozisyon (already_open) kontrolü
+        if analyzer and tr_symbol in analyzer.positions:
+            _stats["trades_blocked"] += 1
+            trade_outcome = {"status": "blocked", "reason": "position_already_open"}
+            record = {
+                "event_id": event_id,
+                "received_at": now,
+                "tr_symbol": tr_symbol,
+                "status": "blocked_already_open",
+                "trade": trade_outcome,
+            }
+            _history.append(record)
+            return {
+                "ok": True,
+                "status": "blocked",
+                "event_id": event_id,
+                "symbol": tr_symbol,
+                "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
+                "trade": trade_outcome,
+            }
+
+        # 10.3 Maksimum açık pozisyon sayısı kontrolü
+        max_positions = int(getattr(config, "MAX_OPEN_POSITIONS", 5) or 5)
+        if analyzer and max_positions > 0 and len(analyzer.positions) >= max_positions:
+            _stats["trades_blocked"] += 1
+            trade_outcome = {"status": "blocked", "reason": "max_open_positions_reached"}
+            record = {
+                "event_id": event_id,
+                "received_at": now,
+                "tr_symbol": tr_symbol,
+                "status": "blocked_max_positions",
+                "trade": trade_outcome,
+            }
+            _history.append(record)
+            return {
+                "ok": True,
+                "status": "blocked",
+                "event_id": event_id,
+                "symbol": tr_symbol,
+                "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
+                "trade": trade_outcome,
+            }
+
+        # 10.4 Hedef kâr, stop-loss ve ufuk hesaplaması
+        p_data = payload.get("data") or {}
+        target_pct = float(p_data.get("target_pct") or 2.0)
+        horizon_minutes = float(p_data.get("horizon_minutes") or 15.0)
+        take_profit_pct = max(0.005, target_pct / 100.0)
+        stop_loss_pct = config.HARD_STOP_LOSS_PCT
+        max_hold_sec = max(180, int(horizon_minutes * 60))
+
+        entry_context_extra = {
+            "source": "global_bridge",
+            "global_symbol": global_symbol,
+            "global_price": global_price,
+            "signal_type": signal_type,
+            "score": score,
+            "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
+            "target_pct": target_pct,
+            "horizon_minutes": horizon_minutes,
+            "event_id": event_id,
+            "signal_context": {
+                "no_initial_stop": False,
+            }
+        }
+
+        # 10.5 Pozisyon Açılışı
+        try:
+            trade_res = await analyzer.open_position(
+                symbol=tr_symbol,
+                entry_price=tr_price,
+                side="LONG",
+                strat_name="GLOBAL_LEAD_LAG",
+                order_value=None,
+                stop_loss_pct=stop_loss_pct,
+                take_profit_pct=take_profit_pct,
+                max_hold_sec=max_hold_sec,
+                entry_context_extra=entry_context_extra,
+            )
+
+            if trade_res and str(trade_res.get("action") or "").upper() == "BUY_SIGNAL":
+                trade_id = trade_res.get("trade_id")
+                _stats["trades_opened"] += 1
+                trade_outcome = {
+                    "status": "opened",
+                    "trade_id": trade_id,
+                    "entry_price": tr_price,
+                    "target_pct": target_pct,
+                    "horizon_minutes": horizon_minutes,
+                }
+                # Cüzdan önbelleklerini anında geçersiz kıl
+                if _wallet_invalidator_fn:
+                    try:
+                        _wallet_invalidator_fn()
+                    except Exception:
+                        pass
+                logger.info(
+                    "[BridgeReceiver] %s için GLOBAL_LEAD_LAG pozisyonu açıldı (trade_id=%s, fiyat=%.4f)",
+                    tr_symbol, trade_id, tr_price
+                )
+            else:
+                _stats["trades_blocked"] += 1
+                trade_outcome = {
+                    "status": "blocked",
+                    "reason": (trade_res or {}).get("reason", "risk_or_liquidity_gate"),
+                }
+                logger.info(
+                    "[BridgeReceiver] %s pozisyon açılışı engellendi: %s",
+                    tr_symbol, trade_outcome.get("reason")
+                )
+        except Exception as exc:
+            _stats["trades_blocked"] += 1
+            trade_outcome = {"status": "error", "reason": str(exc)}
+            logger.error("[BridgeReceiver] open_position istisnası (%s): %s", tr_symbol, exc, exc_info=True)
+
+    record = {
+        "event_id": event_id,
+        "received_at": now,
+        "global_symbol": global_symbol,
+        "tr_symbol": tr_symbol,
+        "signal_type": signal_type,
+        "action": action,
+        "score": score,
+        "global_price": global_price,
+        "tr_price": tr_price,
+        "latency_ms": round(lead_lag_latency_ms, 2),
+        "status": "executed" if trade_outcome.get("status") == "opened" else trade_outcome.get("status"),
+        "trade": trade_outcome,
+        "client_ip": client_ip,
+    }
+    _history.append(record)
+
+    return {
+        "ok": True,
+        "status": "executed" if trade_outcome.get("status") == "opened" else "processed",
+        "event_id": event_id,
+        "global_symbol": global_symbol,
+        "tr_symbol": tr_symbol,
+        "tr_price": tr_price,
+        "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
+        "trade": trade_outcome,
+    }
