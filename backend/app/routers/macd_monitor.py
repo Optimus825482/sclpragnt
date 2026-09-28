@@ -1783,6 +1783,29 @@ async def update_macd_settings_endpoint(payload: dict, request: Request):
     return {"paper_only": True, "ok": True, "settings": settings}
 
 
+@router.get("/api/macd-mtf/scan")
+@router.post("/api/macd-mtf/scan")
+async def scan_macd_mtf_endpoint(
+    scope: str = "active",
+    min_verdict: str | None = None,
+    fresh_only: bool = False,
+    parallel_only: bool = False,
+    force_refresh: bool = False,
+):
+    """Canlı MACD MTF (M1..M30) piyasa tarama uç noktası."""
+    from app import macd_mtf
+    tfs = macd_mtf.SCAN_DEFAULT_TFS
+    res = await macd_mtf.scan_market(
+        tfs=tfs,
+        min_verdict=min_verdict,
+        fresh_only=fresh_only,
+        parallel_only=parallel_only,
+        scope=scope,
+        force_refresh=force_refresh,
+    )
+    return res
+
+
 def start_macd_monitor_loop() -> bool:
     """Arka plan döngülerini başlat (idempotent; iki döngü BAĞIMSIZ yönetilir).
 

@@ -18,6 +18,7 @@ const MENU_ITEMS = [
     { href: "/monitoring", label: "Radar", icon: "📡", desc: "Otonom izleme ve hız avcısı" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
     { href: "/technical-charts", label: "Teknik Grafik", icon: "🖥️", desc: "4'lü çoklu TradingView ekranı", adminOnly: true },
+    { href: "/mtf-scanner", label: "MTF Tarama", icon: "🧠", desc: "MACD & Signal MTF canlı tarayıcı", adminOnly: true },
     { href: "/binance-tr", label: "Binance TR", icon: "🏛️", desc: "Kendi Binance TR hesabında canlı işlem" },
     { href: "/chat", label: "Chat", icon: "💬", desc: "Uzman trader LLM asistanı" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu", adminOnly: true },

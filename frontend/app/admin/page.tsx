@@ -34,6 +34,15 @@ const MacdMonitorView = dynamic(() => import("../macd-monitor/page"), {
   ssr: false,
 });
 
+const MtfScannerView = dynamic(() => import("../mtf-scanner/page"), {
+  loading: () => (
+    <div className="p-12 text-center font-mono text-sm text-bunker-muted animate-pulse">
+      🧠 MTF Tarama yükleniyor…
+    </div>
+  ),
+  ssr: false,
+});
+
 const UsersView = dynamic(() => import("../users/page"), {
   loading: () => (
     <div className="p-12 text-center font-mono text-sm text-bunker-muted animate-pulse">
@@ -75,12 +84,13 @@ export default function AdminPage() {
   );
 }
 
-type AdminTab = "database" | "audit-logs" | "macd-monitor" | "users" | "chat" | "system-health";
+type AdminTab = "database" | "audit-logs" | "macd-monitor" | "mtf-scanner" | "users" | "chat" | "system-health";
 
 const ALL_ADMIN_TABS: { key: AdminTab; label: string; icon: string; adminOnly: boolean }[] = [
   { key: "database", label: "Veritabanı", icon: "🗄️", adminOnly: true },
   { key: "audit-logs", label: "Olay Kayıtları", icon: "🛡️", adminOnly: true },
   { key: "macd-monitor", label: "MACD Monitör", icon: "📊", adminOnly: false },
+  { key: "mtf-scanner", label: "MTF Tarama", icon: "🧠", adminOnly: false },
   { key: "users", label: "Kullanıcı Yönetimi", icon: "👥", adminOnly: true },
   { key: "chat", label: "Chat Merkezi", icon: "💬", adminOnly: true },
   { key: "system-health", label: "Sistem Sağlığı", icon: "🩺", adminOnly: true },
@@ -184,6 +194,7 @@ function AdminPageInner() {
         {activeTab === "database" && isAdmin && <DatabaseView />}
         {activeTab === "audit-logs" && isAdmin && <AuditLogsView />}
         {activeTab === "macd-monitor" && <MacdMonitorView />}
+        {activeTab === "mtf-scanner" && <MtfScannerView />}
         {activeTab === "users" && isAdmin && <UsersView />}
         {activeTab === "chat" && isAdmin && <ChatView />}
         {activeTab === "system-health" && isAdmin && <SystemHealthView />}

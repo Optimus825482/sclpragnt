@@ -12,6 +12,7 @@ hücreleriyle AYNI kaynak (`green` değerleri birebir uyuşur, iki görünüm
 karşılaştırılabilir kalır). Eksik TF için `market.refresh_series` ile tek
 REST tazelemesi yapılır; sonuç 60 sn TTL ile önbelleklenir.
 """
+import asyncio
 import logging
 import time
 
@@ -23,6 +24,7 @@ from app.technical_analysis import _ema_series
 logger = logging.getLogger("scalper.macd_mtf")
 
 TFS = ("1m", "3m", "5m", "15m")
+SCAN_DEFAULT_TFS = ("1m", "3m", "5m", "15m", "30m")
 FAST, SLOW, SIGNAL = 12, 26, 9
 _MIN_CANDLES = SLOW + SIGNAL + 15          # anlamlı seri tabanı (50 bar)
 _SLOPE_WINDOW = 5                          # eğim penceresi (kapanmış bar)
@@ -111,6 +113,9 @@ def _tf_cell(symbol: str, tf: str) -> dict | None:
 
     macd_slope = _pct_slope(macd)
     signal_slope = _pct_slope(signal)
+    prev_hist = float(macd[-2] - signal[-2]) if len(macd) > 1 and macd[-2] is not None and signal[-2] is not None else float(macd[-1] - signal[-1])
+    curr_hist = float(macd[-1] - signal[-1])
+    expanding = bool(bullish_now and (curr_hist > prev_hist or macd_slope > signal_slope))
     return {
         "tf": tf,
         "macd": round(float(macd[-1]), 10),
@@ -121,20 +126,22 @@ def _tf_cell(symbol: str, tf: str) -> dict | None:
         "macd_slope_pct": macd_slope,
         "signal_slope_pct": signal_slope,
         "parallel_up": bool(macd_slope > 0 and signal_slope > 0),
+        "expanding": expanding,
         "fresh_bull_cross": bool(bullish_now and age <= _FRESH_CROSS_MAX_BARS),
     }
 
 
-def _summarize(symbol: str, cells: list[dict | None]) -> dict:
+def _summarize(symbol: str, cells: list[dict | None], tfs: tuple = TFS) -> dict:
     available = [c for c in cells if c]
     base = {
         "symbol": symbol,
-        "tfs": TFS,
+        "tfs": tfs,
         "coverage": len(available),
         "confluence": None,
         "verdict": "VERİ YOK",
         "green_count": 0,
         "parallel_up_count": 0,
+        "expanding_count": 0,
         "fresh_cross": [],
         "cells": [],
     }
@@ -142,6 +149,7 @@ def _summarize(symbol: str, cells: list[dict | None]) -> dict:
         return base
     green_count = sum(1 for c in available if c["green"])
     parallel_count = sum(1 for c in available if c["parallel_up"])
+    expanding_count = sum(1 for c in available if c.get("expanding"))
     fresh = [c["tf"] for c in available if c["fresh_bull_cross"]]
     # Ağırlık: yeşil (MACD>signal durumu) %60 + paralel yukarı (momentum) %40.
     # Taze kesişim bonusu: başlangıç profili (kullanıcının "baştan yakalama").
@@ -160,28 +168,31 @@ def _summarize(symbol: str, cells: list[dict | None]) -> dict:
         "verdict": verdict,
         "green_count": green_count,
         "parallel_up_count": parallel_count,
+        "expanding_count": expanding_count,
         "fresh_cross": fresh,
         "cells": available,
     })
     return base
 
 
-async def compute(symbol: str, *, force: bool = False) -> dict | None:
+async def compute(symbol: str, *, tfs: tuple[str, ...] | None = None, force: bool = False) -> dict | None:
     """Sembol için MACD MTF konfluansını hesaplar (60 sn TTL önbellekli)."""
     sym = _norm(symbol)
     if not sym:
         return None
+    active_tfs = tuple(tfs) if tfs else TFS
+    cache_key = sym if active_tfs == TFS else f"{sym}:{'_'.join(active_tfs)}"
     now = time.time()
-    cached = _cache.get(sym)
+    cached = _cache.get(cache_key)
     if cached and not force and now - cached[0] < _CACHE_TTL_SEC:
         return cached[1]
-    if sym in _inflight:
+    if cache_key in _inflight:
         # Aynı sembol için yarışan ikinci çağrı: bayat değer varsa onu dön.
         return cached[1] if cached else None
-    _inflight.add(sym)
+    _inflight.add(cache_key)
     try:
         cells: list[dict | None] = []
-        for tf in TFS:
+        for tf in active_tfs:
             try:
                 cell = _tf_cell(sym, tf)
                 if cell is None:
@@ -195,13 +206,13 @@ async def compute(symbol: str, *, force: bool = False) -> dict | None:
                 logger.debug("macd_mtf hücre %s/%s: %s", sym, tf, exc)
                 cell = None
             cells.append(cell)
-        result = _summarize(sym, cells)
+        result = _summarize(sym, cells, tfs=active_tfs)
         stamp = time.time()
         result["computed_at"] = stamp
-        _cache[sym] = (stamp, result)
+        _cache[cache_key] = (stamp, result)
         return result
     finally:
-        _inflight.discard(sym)
+        _inflight.discard(cache_key)
 
 
 def cached_compact(symbol: str) -> dict | None:
@@ -234,6 +245,148 @@ async def refresh_many(symbols: list[str]) -> int:
         except Exception as exc:
             logger.debug("macd_mtf refresh_many %s: %s", sym, exc)
     return refreshed
+
+
+async def scan_market(
+    *,
+    symbols: list[str] | None = None,
+    tfs: tuple[str, ...] = SCAN_DEFAULT_TFS,
+    min_verdict: str | None = None,
+    fresh_only: bool = False,
+    parallel_only: bool = False,
+    scope: str = "active",
+    force_refresh: bool = False,
+) -> dict:
+    """Aktif veya tüm Binance TR çiftlerinde MACD MTF taraması yapar.
+
+    M1, M3, M5, M15, M30 TF'lerinde MACD & Signal durumunu inceler.
+    Kullanıcı metoduna uygun (GÜÇLÜ/ORTA, Taze Kesişim, Paralel Yukarı)
+    adayları puanlayıp sıralar.
+    """
+    t0 = time.time()
+    from app.config import config
+    from app.state import analyzer
+
+    target_symbols: list[str] = []
+    if symbols:
+        target_symbols = [_norm(s) for s in symbols if _norm(s)]
+    elif scope == "all":
+        try:
+            from app.binance_tr_public import trading_symbols
+            all_try = await trading_symbols("TRY")
+            target_symbols = [_norm(s) for s in all_try if _norm(s).endswith("TRY")]
+        except Exception as exc:
+            logger.warning("scan_market trading_symbols error: %s", exc)
+            target_symbols = []
+
+    if not target_symbols:
+        pool = set()
+        for s in (getattr(config, "SYMBOLS", None) or []):
+            if s:
+                pool.add(_norm(s))
+        statuses = getattr(config, "SYMBOL_ACTIVITY_STATUS", None) or {}
+        for s, info in statuses.items():
+            st = (info.get("status") if isinstance(info, dict) else str(info)).upper()
+            if st == "ACTIVE":
+                pool.add(_norm(s))
+        for s in (analyzer.positions or {}):
+            pool.add(_norm(s))
+        for s in getattr(market, "symbols", []):
+            pool.add(_norm(s))
+        target_symbols = sorted([s for s in pool if s.endswith("TRY") and not s.startswith("USDT")])
+
+    if not target_symbols:
+        target_symbols = [_norm(s) for s in (config.SYMBOLS or [])]
+
+    # Eşzamanlı istek tavanı (REST limitlerine nazik)
+    sem = asyncio.Semaphore(12)
+
+    async def _scan_one(sym: str) -> dict | None:
+        async with sem:
+            try:
+                res = await compute(sym, tfs=tfs, force=force_refresh)
+                if not res or res.get("coverage", 0) < 2:
+                    return None
+                ticker = market.get_ticker(sym) or {}
+                price = float(ticker.get("last_price") or ticker.get("last") or 0.0)
+                if price <= 0:
+                    kline = market.get_ut_kline(sym, "5m") or {}
+                    closes = kline.get("closes") or []
+                    price = float(closes[-1]) if closes else 0.0
+                change_24h = None
+                for key in ("price_change_percent", "change_24h", "change_pct"):
+                    if ticker.get(key) is not None:
+                        try:
+                            change_24h = round(float(ticker[key]), 2)
+                            break
+                        except Exception:
+                            pass
+                return {
+                    "symbol": sym,
+                    "price": price,
+                    "change_24h_pct": change_24h,
+                    "confluence": res.get("confluence"),
+                    "verdict": res.get("verdict"),
+                    "green_count": res.get("green_count", 0),
+                    "parallel_up_count": res.get("parallel_up_count", 0),
+                    "expanding_count": res.get("expanding_count", 0),
+                    "fresh_cross": res.get("fresh_cross", []),
+                    "coverage": res.get("coverage", 0),
+                    "tfs": res.get("cells", []),
+                }
+            except Exception as exc:
+                logger.debug("scan_market error on %s: %s", sym, exc)
+                return None
+
+    tasks = [_scan_one(s) for s in target_symbols]
+    scanned_results = await asyncio.gather(*tasks)
+    valid_items = [r for r in scanned_results if r is not None]
+
+    # İstatistikler
+    guclu_count = sum(1 for r in valid_items if r["verdict"] == "GÜÇLÜ")
+    orta_count = sum(1 for r in valid_items if r["verdict"] == "ORTA")
+    zayif_count = sum(1 for r in valid_items if r["verdict"] == "ZAYIF")
+    fresh_cross_count = sum(1 for r in valid_items if len(r["fresh_cross"]) > 0)
+    parallel_up_count = sum(1 for r in valid_items if r["parallel_up_count"] >= 2)
+
+    # Filtreleme
+    filtered = valid_items
+    if min_verdict == "GÜÇLÜ":
+        filtered = [r for r in filtered if r["verdict"] == "GÜÇLÜ"]
+    elif min_verdict == "ORTA":
+        filtered = [r for r in filtered if r["verdict"] in ("GÜÇLÜ", "ORTA")]
+
+    if fresh_only:
+        filtered = [r for r in filtered if len(r["fresh_cross"]) > 0]
+    if parallel_only:
+        filtered = [r for r in filtered if r["parallel_up_count"] >= 2]
+
+    # Sıralama: GÜÇLÜ önce, sonra yüksek konfluans, taze kesişim sayısı ve paralel sayısı
+    order = {"GÜÇLÜ": 0, "ORTA": 1, "ZAYIF": 2, "VERİ YOK": 3}
+    filtered.sort(
+        key=lambda x: (
+            order.get(x["verdict"], 9),
+            -(x["confluence"] or 0),
+            -len(x["fresh_cross"]),
+            -x["parallel_up_count"],
+            -(x["change_24h_pct"] or 0),
+        )
+    )
+
+    return {
+        "total_scanned": len(target_symbols),
+        "valid_count": len(valid_items),
+        "guclu_count": guclu_count,
+        "orta_count": orta_count,
+        "zayif_count": zayif_count,
+        "fresh_cross_count": fresh_cross_count,
+        "parallel_up_count": parallel_up_count,
+        "tfs": list(tfs),
+        "scope": scope,
+        "duration_sec": round(time.time() - t0, 2),
+        "scanned_at": time.time(),
+        "items": filtered,
+    }
 
 
 def reset_state_for_tests() -> None:
