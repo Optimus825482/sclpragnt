@@ -16,5 +16,9 @@ RUN chmod +x ./entrypoint.sh
 RUN mkdir -p /data
 ENV SCALPER_DB_PATH=/data/scalper_db_v4.sqlite
 EXPOSE 8004
+# 2026-09-28: --timeout-keep-alive=65 nginx keepalive (60s) ile eşleşir;
+# backend tarafı nginx'ten ÖNCE bağlantıyı kapatmaz → broken pipe önlenir.
+# --backlog=4096 startup sırasında biriken bağlantı kuyruğunu genişletir
+# (varsayılan 2048 yetersiz kalabilir; kabul bekleyen istekler düşer → 502).
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004", "--timeout-keep-alive", "65", "--backlog", "4096"]

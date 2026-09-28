@@ -1039,54 +1039,101 @@ async def startup_services():
             await embedding_worker.start(_pg_pool, llm_analysis.embedding)
         except Exception as exc:
             print(f"[Memory] PostgreSQL/embedding worker başlatılamadı: {exc}")
-    # Startup must bind the HTTP listener quickly. Heavy history hydration
-    # runs in the background so a slow Binance response cannot trip the
-    # container healthcheck and force a restart loop.
-    # (G-19: market.timeframes/evren yukarıda, analyzer.load_state()'ten önce
-    #  atanır — burada tekrar atama yok.)
+    # -----------------------------------------------------------------------
+    # 2026-09-28 (Gateway Timeout düzeltmesi): arka plan görevlerini KADEMELİ
+    # başlat.
+    #
+    # ÖNCEKİ DURUM: 25+ görev eşzamanlı create_task ile event loop'a atılıyordu.
+    # Tamamı aynı anda Binance WS, DB, REST API bağlantılarını açıyordu ve
+    # event loop sırası meşgul olduğundan HTTP istekleri (healthcheck dahil)
+    # yanıt alamıyordu → nginx 504 Gateway Timeout → Coolify "unhealthy" →
+    # deploy başarısız veya kullanıcı timeout hatası.
+    #
+    # ÇÖZÜM: Her görev arasında asyncio.sleep(0) veya 0.05s ile event loop'a
+    # kontrol verilir; araya giren HTTP istekleri hemen yanıtlanır.
+    # Toplam ek gecikme ~1.5s ama Gateway Timeout tamamen ortadan kalkar.
+    #
+    # Kritik görevler (market bağlantısı, strateji döngüsü) önce,
+    # destek görevleri (learning, calibration, evidence) sonra başlatılır.
+    # -----------------------------------------------------------------------
+    _yield = 0.05  # event loop'a kontrol ver
+
+    # --- Faz 1: Temel altyapı (market verisi + strateji) ---
     _start_background(startup_market_warmup, "startup-market-warmup")
+    await asyncio.sleep(_yield)
     _start_background(backfill_missing_active_history, "historical-backfill-active")
+    await asyncio.sleep(_yield)
     _start_background(history_candle_loop, "history-candle-loop")
+    await asyncio.sleep(_yield)
     _start_background(lambda: market.connect(skip_history=True), "market-connect")
+    await asyncio.sleep(_yield)
     _start_background(microstructure_snapshot_loop, "microstructure-snapshot")
+    await asyncio.sleep(_yield)
     _start_background(strategy_loop, "strategy-loop")
-    # Canlı Hesap açık pozisyonları: WS fiyat + 24s hacim tick'leri (4 sn)
+    await asyncio.sleep(_yield)
+
+    # --- Faz 2: Fiyat ve hesap verileri ---
     _start_background(binance_price_tick_loop, "binance-price-tick")
-    # Binance TR hesap + pozisyon verisi: 15 sn'de bir WS push (REST polling yerine)
+    await asyncio.sleep(_yield)
     _start_background(binance_account_push_loop, "binance-account-push")
+    await asyncio.sleep(_yield)
+
+    # --- Faz 3: LLM ve tahmin döngüleri ---
     _start_background(llm_forecast_evaluation_loop, "llm-forecast-evaluator")
+    await asyncio.sleep(_yield)
     _start_background(chart_forecast_evaluation_loop, "chart-forecast-evaluator")
+    await asyncio.sleep(_yield)
     _start_background(chat_prediction_learning_loop, "chat-prediction-learner")
+    await asyncio.sleep(_yield)
     _start_background(chat_prediction_auto_trade_loop, "chat-prediction-auto-trade")
+    await asyncio.sleep(_yield)
+
+    # --- Faz 4: Velocity ve radar ---
     # Velocity ATR profillerini hemen yükle (ilk scan doğru eşikle çalışsın)
     await load_velocity_atr_profiles()
     _start_background(velocity_learning_loop, "velocity-learner")
-    # Otonom Hız Avcısı: her M5 kapanışında tarama yapıp en iyi adaya paper
-    # pozisyon açar. Kendi içinde kapılıdır (her turda VELOCITY_AUTO_ENABLED +
-    # llm_paper_trade_enabled yeniden okunur) → ayar kapatılınca tarama durur,
-    # yeniden açılınca restart gerekmeden devam eder. Paper-only; gerçek emir yok.
+    await asyncio.sleep(_yield)
     _start_background(autonomous_velocity_loop, "velocity-autonomous")
+    await asyncio.sleep(_yield)
     _start_background(radar_loop, "radar-loop")
+    await asyncio.sleep(_yield)
     _start_background(top_gainers_refresh_loop, "top-gainers-monitor")
+    await asyncio.sleep(_yield)
+
+    # --- Faz 5: Destek görevleri ---
     _start_background(symbol_activity_loop, "symbol-activity")
+    await asyncio.sleep(_yield)
     _start_background(llm_idle_trigger_loop, "llm-idle-trigger")
+    await asyncio.sleep(_yield)
     _start_background(llm_position_manager_loop, "llm-position-manager")
+    await asyncio.sleep(_yield)
     _start_background(learning_promotion_loop, "learning-promotion")
+    await asyncio.sleep(_yield)
     _start_background(retention_loop, "retention")
+    await asyncio.sleep(_yield)
     _start_background(ml_training_loop, "ml_training")
+    await asyncio.sleep(_yield)
     _start_background(calibration_refresh_loop, "calibration-refresh")
+    await asyncio.sleep(_yield)
     _start_background(correlation_refresh_loop, "correlation-refresh")
+    await asyncio.sleep(_yield)
     # 2026-09-26 denetimi (bölüm 2.3): türev + BTC makro cache'ini periyodik
     # dolduran döngü. Bu olmadan Master Surge'un EXTREME_LONG (-15) cezası ve
     # BTC panik kapısı yapısal olarak HİÇ uygulanmıyordu.
     _start_background(derivatives_refresh_loop, "derivatives-refresh")
+    await asyncio.sleep(_yield)
     _start_background(ws_broadcast_loop, "ws-broadcast")
+    await asyncio.sleep(_yield)
     _start_background(alert_loop, "alert-engine")
+    await asyncio.sleep(_yield)
     _start_background(monitoring_start_loop, "monitoring-start")
+    await asyncio.sleep(_yield)
     # Yükseliş sinyali kanıt doldurma: Raporlar > YÜKSELİŞ EĞİLİMİ Sonuç sütunu
     # bu döngü olmadan sonsuza dek BEKLİYOR kalıyordu (kolonlar vardı, dolduran yok).
     _start_background(rising_evidence_loop, "rising-evidence")
+    await asyncio.sleep(_yield)
     _start_background(auto_paper_start_loop, "auto-paper-start")
+    await asyncio.sleep(_yield)
     _start_background(macd_monitor_start_loop, "macd-monitor")
 
 async def monitoring_start_loop():
