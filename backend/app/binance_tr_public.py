@@ -101,6 +101,14 @@ class TransientDecodeError(RuntimeError):
     """Gövde geçici olarak bozuk/eksik — yeniden denenebilir (B-13)."""
 
 
+class PermanentAPIError(RuntimeError):
+    """İş kuralı hatası (code != 0 gövdesi) — YENİDEN DENENMEZ (B-13/W10).
+
+    RuntimeError alt sınıfıdır: `_get_json` çağıranları mevcut yakalama
+    desenlerini korur, yalnız retry makinesi bu hatayı kalıcı sayar.
+    """
+
+
 def _throttle_for_weight() -> None:
     """B-11: Sunucunun bildirdiği ağırlık tavana yaklaştıysa dinamik pacing uygula."""
     with _weight_lock:
@@ -186,7 +194,7 @@ def _decode_payload(raw: bytes):
     if not isinstance(payload, (dict, list)):
         raise TransientDecodeError("Binance TR public API beklenmeyen yanıt şeması döndürdü")
     if isinstance(payload, dict) and payload.get("code") not in (None, 0):
-        raise RuntimeError(str(payload.get("msg") or "Binance TR public API hatası"))
+        raise PermanentAPIError(str(payload.get("msg") or "Binance TR public API hatası"))
     data = payload.get("data", payload) if isinstance(payload, dict) else payload
     if data is None:
         raise TransientDecodeError("Binance TR public API boş veri döndürdü")
@@ -220,12 +228,21 @@ def _get_json(path: str, params: dict):
                     headers = dict(resp.headers)
                     raw_bytes = resp.data
                 else:
-                    # Yedek yol: urllib.request
+                    # Yedek yol: urllib.request. urlopen 4xx/5xx yanıtlarını
+                    # HTTPError İSTİSNASI olarak fırlatır; yanıt yine de durum
+                    # kodu + başlıklar (Retry-After / Ban) taşır — aynı durum
+                    # makinesine sokulur, aksi halde #31/#32 sözleşmeleri
+                    # yalnız urllib3 yolunda geçerli olur.
                     request = Request(url, headers={"User-Agent": "scalperagent-v4", "Accept": "application/json"})
-                    with urlopen(request, timeout=REST_TIMEOUT_SEC) as response:
-                        status_code = response.status
-                        headers = dict(response.headers)
-                        raw_bytes = response.read()
+                    try:
+                        with urlopen(request, timeout=REST_TIMEOUT_SEC) as response:
+                            status_code = response.status
+                            headers = dict(response.headers)
+                            raw_bytes = response.read()
+                    except HTTPError as exc:
+                        status_code = exc.code
+                        headers = dict(exc.headers or {})
+                        raw_bytes = exc.read() if exc.fp else b""
 
                 # Rate limit ağırlık takibi
                 try:
@@ -264,6 +281,10 @@ def _get_json(path: str, params: dict):
                         if attempt < REST_MAX_ATTEMPTS:
                             retry_delay = _retry_delay(attempt)
 
+            except PermanentAPIError:
+                # İş kuralı hatası kalıcıdır: yeniden denenmez, doğrudan
+                # yükseltilir (W10 sözleşmesi).
+                raise
             except Exception as exc:
                 last_error = exc
                 if attempt < REST_MAX_ATTEMPTS:

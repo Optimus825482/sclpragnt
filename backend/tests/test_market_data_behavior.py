@@ -32,9 +32,16 @@ class BinanceTrPublicTests(unittest.IsolatedAsyncioTestCase):
 
         response = mock.MagicMock()
         response.__enter__.return_value = response
+        # #82'den beri adaptör `response.status` + `response.headers` okur;
+        # taklit bu arayüzü sağlar. `_HTTP_POOL` None'a sabitlenir ki keep-alive
+        # havuzu (birincil yol) mock'lanan `urlopen` (yedek yol) yerine
+        # çağrılmasın.
+        response.status = 200
+        response.headers = {}
         response.read.return_value = json.dumps({"data": [{"symbol": "BTCTRY"}]}).encode()
         rate_limit = HTTPError("https://example", 429, "slow down", {"Retry-After": "0"}, None)
-        with mock.patch.object(binance_tr_public, "urlopen", side_effect=[rate_limit, response]) as opener:
+        with mock.patch.object(binance_tr_public, "_HTTP_POOL", None), \
+             mock.patch.object(binance_tr_public, "urlopen", side_effect=[rate_limit, response]) as opener:
             with mock.patch.object(binance_tr_public.time, "sleep"):
                 result = binance_tr_public._get_json("/api/v3/ticker/24hr", {})
 
