@@ -150,6 +150,37 @@ export default function TechnicalChartsPage() {
             if (savedSidebar === "1") setSidebarHidden(true);
         } catch { }
 
+        // URL Query Param (?symbol=...) varsa öncelikli olarak uygula
+        try {
+            const params = new URLSearchParams(window.location.search);
+            const querySymbol = params.get("symbol");
+            if (querySymbol) {
+                let clean = querySymbol.trim().toUpperCase();
+                if (!clean.endsWith("TRY") && !clean.endsWith("USDT")) {
+                    clean = clean + "TRY";
+                }
+                setGlobalSymbol(clean);
+                setGlobalSymbolInput(clean);
+                const mtfIntervals = ["1m", "3m", "5m", "15m"];
+                setSlots((prev) => {
+                    const next = prev.map((s, idx) => ({
+                        ...s,
+                        symbol: clean,
+                        interval: mtfIntervals[idx] || s.interval,
+                        indicators: {
+                            ...s.indicators,
+                            macd: true,
+                            bollinger: true,
+                        },
+                    }));
+                    try { localStorage.setItem(LS_KEY_SLOTS, JSON.stringify(next)); } catch { }
+                    return next;
+                });
+                setLayout("grid4");
+                setMaximizedId(null);
+            }
+        } catch { }
+
         // Binance TR'deki tüm aktif TRY işlem çiftlerini yükle (ör. SAGATRY)
         apiRequest(`${API_BASE}/api/market-symbols`)
             .then((r) => (r.ok ? r.json() : null))

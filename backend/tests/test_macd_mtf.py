@@ -155,6 +155,21 @@ class ComputeCacheTests(unittest.TestCase):
         self.assertEqual(n, macd_mtf._REFRESH_PER_CALL)
         self.assertEqual(len(calls), macd_mtf._REFRESH_PER_CALL)
 
+    def test_scan_market_shape_and_sort(self):
+        closes = _rising_closes()
+        with patch.object(macd_mtf, "market") as fake_market:
+            fake_market.get_ut_kline.return_value = _history(closes)
+            fake_market.get_ticker.return_value = {"last_price": "10.5", "price_change_percent": "4.2"}
+            res = asyncio.run(macd_mtf.scan_market(symbols=["TESTTRY", "DEMOTRY"]))
+        self.assertEqual(res["total_scanned"], 2)
+        self.assertEqual(res["valid_count"], 2)
+        self.assertIn("items", res)
+        self.assertGreaterEqual(len(res["items"]), 1)
+        item0 = res["items"][0]
+        self.assertEqual(item0["price"], 10.5)
+        self.assertEqual(item0["change_24h_pct"], 4.2)
+        self.assertEqual(item0["verdict"], "GÜÇLÜ")
+
 
 if __name__ == "__main__":
     unittest.main()
