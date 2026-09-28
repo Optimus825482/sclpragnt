@@ -692,6 +692,13 @@ class Config:
     DISCOVERY_FAST_SCAN_MIN_GAP_SEC = max(10, int(os.getenv("DISCOVERY_FAST_SCAN_MIN_GAP_SEC", "15")))
     DISCOVERY_FAST_SCAN_ENABLED = os.getenv("DISCOVERY_FAST_SCAN_ENABLED", "true").lower() == "true"
 
+    # Binance Global -> Binance TR Lead-Lag Signal Bridge Alıcısı
+    BINANCE_TR_BRIDGE_SECRET = os.getenv("BINANCE_TR_BRIDGE_SECRET", "")
+    BINANCE_TR_RECEIVER_ENABLED = os.getenv("BINANCE_TR_RECEIVER_ENABLED", "true").lower() == "true"
+    BINANCE_TR_BRIDGE_AUTO_TRADE = os.getenv("BINANCE_TR_BRIDGE_AUTO_TRADE", "true").lower() == "true"
+    BINANCE_TR_BRIDGE_MIN_SCORE = float(os.getenv("BINANCE_TR_BRIDGE_MIN_SCORE", "0.0"))
+    BINANCE_TR_BRIDGE_COOLDOWN_SEC = float(os.getenv("BINANCE_TR_BRIDGE_COOLDOWN_SEC", "10.0"))
+
     @classmethod
     def round_trip_cost(cls) -> float:
         """Gidiş-dönüş maliyet: iki bacak komisyon + iki bacak slippage (KESİR).

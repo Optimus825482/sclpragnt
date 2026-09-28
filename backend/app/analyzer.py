@@ -363,6 +363,7 @@ class ScalpAnalyzer:
         return {
             "LLM_PAPER": "5m",
             "CHAT_PREDICTION": "1m",
+            "GLOBAL_LEAD_LAG": "1m",
         }.get(strat_name, "5m")
 
     def _entry_volume_ratio(self, symbol: str, details: dict | None = None) -> float | None:
@@ -544,7 +545,7 @@ class ScalpAnalyzer:
             return None
         if pos and pos.get("strategy") != "LLM_PAPER":
             entry = float(pos.get("entry_price") or price)
-            if pos.get("strategy") == "CHAT_PREDICTION":
+            if pos.get("strategy") in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
                 fallback_stop_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
             else:
                 fallback_stop_pct = config.HARD_STOP_LOSS_PCT
@@ -587,7 +588,7 @@ class ScalpAnalyzer:
             # geçersiz kılma yalnızca kilitten ÖNCE uygulanır: "açılışta sert
             # stop yok" sözleşmesi korunur, kilitlendikten sonra zemin kalıcı
             # olur.
-            no_initial_stop = pos.get("strategy") == "CHAT_PREDICTION" and not lock_armed and \
+            no_initial_stop = pos.get("strategy") in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") and not lock_armed and \
                 bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop"))
             if no_initial_stop:
                 system_stop = float("-inf")
@@ -602,14 +603,14 @@ class ScalpAnalyzer:
                 if price <= emg_stop:
                     return await self.close_position(
                         symbol, self._trigger_fill_price(price, emg_stop, "stop"), "velocity_emergency_stop")
-            # Chat Prediction (velocity auto-trade) kâr koruma merdiveni:
+            # Chat Prediction (velocity auto-trade) ve Lead-Lag kâr koruma merdiveni:
             # 1) +%0.5 kâr görülünce stop, round-trip maliyetin üstüne çekilir
             #    → pozisyon artık zarara dönemez (D-01: eskiden dönüyordu).
             # 2) Dinamik trailing YOK: çıkış, açılışta tahmin edilen hedefe
             #    (target_pct → system_take_profit_price) göre TP'de yapılır;
             #    kâr kilidi stop'u sabit tutar (tepeyi takip etmez).
             # 3) Sert/acil stop: -%3 emergency stop + max-hold (30dk) korur.
-            if pos.get("strategy") == "CHAT_PREDICTION" and not lock_armed:
+            if pos.get("strategy") in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") and not lock_armed:
                 lock_trigger = entry * (1 + config.VELOCITY_TRAIL_TRIGGER_PCT / 100.0)
                 if float(pos.get("max_price") or entry) >= lock_trigger:
                     pos["velocity_protection_armed"] = True
@@ -653,8 +654,8 @@ class ScalpAnalyzer:
                 # zemindir; normal stop-loss çıkışı olarak işlenir.
                 return await self.close_position(
                     symbol, self._trigger_fill_price(price, system_stop, "stop"), "system_stop_loss")
-            if pos.get("strategy") == "CHAT_PREDICTION":
-                # Replay planı ve otonom hız avcısı çıkışları: sabit plan TP
+            if pos.get("strategy") in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
+                # Replay planı, otonom hız avcısı ve Lead-Lag çıkışları: sabit plan TP
                 # (hedef fiyat) ve max-hold. TP girişte
                 # system_take_profit_price olarak yazılır ve positions.take_profit
                 # kolonuna da düşer; restart sonrası restore'da system_ alanı
@@ -663,8 +664,9 @@ class ScalpAnalyzer:
                 # tetiklenmesin (15 dk scalp planı için aşırı).
                 plan_tp = float(pos.get("system_take_profit_price") or pos.get("take_profit") or 0)
                 if plan_tp and price >= plan_tp:
+                    reason_tp = "lead_lag_take_profit" if pos.get("strategy") == "GLOBAL_LEAD_LAG" else "chat_plan_take_profit"
                     return await self.close_position(
-                        symbol, self._trigger_fill_price(price, plan_tp, "take_profit"), "chat_plan_take_profit")
+                        symbol, self._trigger_fill_price(price, plan_tp, "take_profit"), reason_tp)
                 # velocity_max_hold_sec bellek alanıdır; restart sonrası
                 # restore edilen pozisyonlar için plan süresi kalıcı
                 # entry_context'ten okunur.
@@ -673,7 +675,8 @@ class ScalpAnalyzer:
                 if plan_hold > 0:
                     elapsed_hold = max(0.0, time.time() - float(pos.get("entry_time") or time.time()))
                     if elapsed_hold >= plan_hold:
-                        return await self.close_position(symbol, price, "chat_plan_max_hold")
+                        reason_hold = "lead_lag_max_hold" if pos.get("strategy") == "GLOBAL_LEAD_LAG" else "chat_plan_max_hold"
+                        return await self.close_position(symbol, price, reason_hold)
         if pos:
             elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
             entry = pos.get("entry_price", price)
@@ -860,14 +863,14 @@ class ScalpAnalyzer:
         current_bar = self._current_bar(symbol, tf)
         if current_bar is not None:
             cooldown_bars = (config.VELOCITY_REENTRY_COOLDOWN_BARS
-                             if closed_strategy == "CHAT_PREDICTION"
+                             if closed_strategy in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG")
                              else config.COOLDOWN_BARS)
             self._cooldown_until[symbol] = current_bar + cooldown_bars
         if reason.startswith("max_hold_") or reason in {"early_failure_no_progress", "stale_position_no_progress", "pump_fast_fail_no_progress"}:
             self._timeout_block_until[symbol] = time.time() + config.TIMEOUT_REENTRY_BLOCK_SEC
         elif reason in {"hard_stop_loss", "system_stop_loss", "llm_stop_loss", "pump_break_even_stop"}:
             hard_stop_block_sec = (config.VELOCITY_HARD_STOP_REENTRY_BLOCK_SEC
-                                   if closed_strategy == "CHAT_PREDICTION"
+                                   if closed_strategy in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG")
                                    else config.HARD_STOP_REENTRY_BLOCK_SEC)
             self._hard_stop_block_until[symbol] = time.time() + hard_stop_block_sec
         # A restart must not erase a documented 24h/2h re-entry block.
@@ -1098,7 +1101,7 @@ class ScalpAnalyzer:
         if order_value < config.MIN_PARTIAL_ORDER_TRY:
             return True, {"skipped": "order_value_below_minimum", "order_value_try": order_value}
         await self._refresh_liquidity_snapshot(symbol)
-        if strat_name in ("CHAT_PREDICTION", "AUTO_PAPER"):
+        if strat_name in ("CHAT_PREDICTION", "AUTO_PAPER", "GLOBAL_LEAD_LAG"):
             liquid, details = self.market.liquidity_status(
                 symbol, order_value, ignore_ws_freshness=True)
         else:
@@ -1119,12 +1122,11 @@ class ScalpAnalyzer:
         # Every entry path (strategy, LLM, alert, radar and pending orders)
         # converges here. A passive symbol must therefore be rejected at this
         # final writer boundary, not only skipped by the strategy scan loop.
-        # CHAT_PREDICTION (velocity) is exempt: its candidates come from
-        # Top-Gainer REST scans whose WS volume history the activity filter
-        # needs does not exist yet, and the velocity pipeline enforces its own
-        # stricter liquidity gates (depth, 24h volume) before opening.
+        # CHAT_PREDICTION (velocity) and GLOBAL_LEAD_LAG are exempt: their candidates come from
+        # live market signals whose WS volume history the activity filter
+        # needs may not exist yet, and they enforce their own liquidity checks.
         if (config.SYMBOL_ACTIVITY_FILTER_ENABLED and symbol in config.PASSIVE_SYMBOLS
-                and strat_name != "CHAT_PREDICTION"):
+                and strat_name not in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG")):
             activity = dict(config.SYMBOL_ACTIVITY_STATUS.get(symbol) or {})
             failed = [key for key, ok in activity.get("checks", {}).items() if not ok]
             reason = "symbol_activity:passive"
@@ -1349,7 +1351,7 @@ class ScalpAnalyzer:
             flow = self.market.get_orderflow(symbol) or {}
             liquid, details = self.market.liquidity_status(
                 symbol, order_value,
-                ignore_ws_freshness=(strat_name in ("CHAT_PREDICTION", "AUTO_PAPER")))
+                ignore_ws_freshness=(strat_name in ("CHAT_PREDICTION", "AUTO_PAPER", "GLOBAL_LEAD_LAG")))
             if not liquid:
                 reason = self._liquidity_reason(details, "entry_recheck_failed")
                 ineligible = {"symbol": symbol, "action": "ENTRY_INELIGIBLE", "price": entry_price,
@@ -1376,7 +1378,7 @@ class ScalpAnalyzer:
                                             "reason": "expected_net_below_floor", "strategy": strat_name,
                                             "timestamp": time.time()})
                 return ineligible
-        if strat_name == "CHAT_PREDICTION":
+        if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
             # İki giriş yolu, iki çıkış planı:
             # - Chat tahmin otomatı (replay planı TP %0.8 / SL %0.5 / 900 sn):
             #   caller plan parametrelerini gönderir. Eskiden bu parametreler
@@ -1522,11 +1524,10 @@ class ScalpAnalyzer:
                 technical_tf = self._strategy_tf(strat_name)
                 system_kline = self.market.get_ut_kline(symbol, technical_tf) if self.market else None
                 atr = self.calculate_atr(system_kline, config.SYSTEM_ATR_PERIOD) if system_kline else None
-                if strat_name == "CHAT_PREDICTION":
-                    # Replay planındaki SL (%0.5) burada gerçek stop olur.
-                    # CHAT_PREDICTION stop'u ATR'ye göre genişletilmez: plan
-                    # yüzdesi birebir uygulanır (stop = giriş × (1 - SL%)).
-                    strategy_stop_pct = planned_stop_loss_pct
+                if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
+                    # Replay planındaki SL (%0.5) veya Lead-Lag SL burada gerçek stop olur.
+                    # Stop ATR'ye göre genişletilmez: plan yüzdesi birebir uygulanır.
+                    strategy_stop_pct = planned_stop_loss_pct or config.HARD_STOP_LOSS_PCT
                     stop_distance = entry_price * strategy_stop_pct
                 else:
                     strategy_stop_pct = config.HARD_STOP_LOSS_PCT
@@ -1539,13 +1540,13 @@ class ScalpAnalyzer:
                 # no-initial-stop modunda (otonom hız avcısı) başlangıç stopu
                 # hiç konmaz — system_stop_price set edilmez, _manage_open_position
                 # bunu -inf gibi ele alır; +%1 kâr kilidi stop'u yukarı taşır.
-                if not (strat_name == "CHAT_PREDICTION" and no_initial_stop):
+                if not (strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") and no_initial_stop):
                     pos["system_stop_price"] = entry_price - stop_distance
-                elif strat_name == "CHAT_PREDICTION":
+                elif strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
                     # stop yok; yine de alanın varlığını koru (okuyanlar None'a dayanmasın)
                     pos["system_stop_price"] = None
-                if strat_name == "CHAT_PREDICTION":
-                    # Planlı yol (chat tahmin otomatı + otonom hız avcısı):
+                if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
+                    # Planlı yol (chat tahmin otomatı + otonom hız avcısı + lead-lag):
                     # TP açılışta sabitlenir — chat tahmin otomatında plan
                     # yüzdesi, otonom hız avcısında tahmin edilen hedef
                     # (target_pct: 5dk-%2 / 15dk-%3) take_profit_pct olarak
@@ -1560,8 +1561,9 @@ class ScalpAnalyzer:
                 pos["take_profit"] = pos.get("system_take_profit_price")
                 pos["system_atr"] = float(atr or 0)
                 pos["system_risk_reward"] = config.SYSTEM_RISK_REWARD
-                pos["system_exit_model"] = ("chat_replay_plan" if planned_take_profit_pct is not None
-                                            else "velocity_no_plan") if strat_name == "CHAT_PREDICTION" else "atr_trailing_after_rr_target"
+                pos["system_exit_model"] = ("lead_lag_plan" if strat_name == "GLOBAL_LEAD_LAG"
+                                            else ("chat_replay_plan" if planned_take_profit_pct is not None
+                                                  else "velocity_no_plan")) if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") else "atr_trailing_after_rr_target"
         if strat_name == "LLM_PAPER":
                 if requested_stop_pct is not None:
                     pos["llm_stop_price"] = entry_price * (1 - max(0.0001, float(requested_stop_pct)))
