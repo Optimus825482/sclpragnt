@@ -156,8 +156,9 @@ class TestBridgeReceiverCore(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(res1["ok"])
                 self.assertEqual(res1["status"], "executed")
 
-                # Hemen ardından gelen 2. sinyal cooldown nedeniyle atlanır
-                res2 = await tr_bridge_receiver.process_global_signal(payload)
+                # Hemen ardından gelen 2. sinyal (farklı signal_type olsa bile, örn: llm_second_eye) cooldown nedeniyle atlanır
+                payload_second_eye = dict(payload, signal_type="llm_second_eye", score=72.0)
+                res2 = await tr_bridge_receiver.process_global_signal(payload_second_eye)
                 self.assertTrue(res2["ok"])
                 self.assertEqual(res2["status"], "cooldown_skipped")
                 self.assertEqual(tr_bridge_receiver._stats["cooldown_skips"], 1)
@@ -243,6 +244,26 @@ class TestBridgeReceiverCore(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(tr_bridge_receiver._stats["trades_blocked"], 1)
 
         tr_bridge_receiver.set_daily_loss_guard_fn(None)
+
+    async def test_already_open_position_does_not_block_notification(self):
+        """Aynı sembolde zaten açık pozisyon varsa, trade açılmaz ('already_open') fakat sinyal ve bildirim işlenir."""
+        with patch.object(tr_bridge_receiver.analyzer, "positions", {"SOLTRY": {"symbol": "SOLTRY", "quantity": 1.0}}):
+            with patch("app.state.market.get_ticker") as mock_ticker:
+                mock_ticker.return_value = {"symbol": "SOLTRY", "last_price": 4900.0}
+
+                payload = {
+                    "source": "binance_global",
+                    "timestamp": time.time(),
+                    "global_symbol": "SOLUSDT",
+                    "tr_symbol": "SOLTRY",
+                    "signal_type": "radar",
+                    "action": "BUY_SIGNAL",
+                    "score": 90.0,
+                }
+                res = await tr_bridge_receiver.process_global_signal(payload)
+                self.assertTrue(res["ok"])
+                self.assertEqual(res["status"], "already_open")
+                self.assertEqual(res["trade"]["status"], "already_open")
 
 
 class TestBridgeRestEndpoints(unittest.IsolatedAsyncioTestCase):
