@@ -40,6 +40,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    exclude_from_hc: true
+    labels:
+      - "traefik.enable=false"
     logging: *default-logging
   backend:
     build:
@@ -157,6 +160,8 @@ services:
       # bundan kısa kalırsa komut iptal edilip TimeoutError yazılır.
       timeout: 12s
       retries: 10
+    labels:
+      - "traefik.enable=false"
     logging: *default-logging
 
   frontend:
@@ -191,6 +196,8 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    labels:
+      - "traefik.enable=false"
     logging: *default-logging
 
   gateway:
@@ -304,6 +311,9 @@ services:
           ls -1t /backups/scalper_*.dump 2>/dev/null | tail -n +3 | xargs -r rm -f
           sleep 86400
         done
+    exclude_from_hc: true
+    labels:
+      - "traefik.enable=false"
     logging: *default-logging
 
 volumes:
