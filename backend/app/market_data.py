@@ -359,19 +359,21 @@ class MarketData:
         )
         await self.refresh_24h_tickers()
 
-    async def ensure_history(self, timeframes, *, min_candles=55, candle_limit=120):
+    async def ensure_history(self, timeframes, *, min_candles=55, candle_limit=120, symbols=None):
         """Hydrate only cache series that cannot yet support a strategy decision.
 
         This is intentionally narrower than ``fetch_historical_data``: it
         avoids re-fetching already warm series and keeps full-universe feature
         monitors bounded to their required timeframes and history depth.
+        If ``symbols`` is provided, only that subset is hydrated (critical for fast startup).
         """
         requested = list(dict.fromkeys(str(tf) for tf in (timeframes or []) if str(tf)))
         if not requested:
             return {"requested": 0, "hydrated": 0, "already_ready": 0, "errors": []}
         required = max(1, int(min_candles))
         limit = max(required + 1, min(self.MAX_HISTORY_CANDLES, int(candle_limit)))
-        symbols = list(dict.fromkeys(str(symbol).upper() for symbol in self.symbols))
+        symbols_source = symbols if symbols is not None else self.symbols
+        symbols = list(dict.fromkeys(str(symbol).upper() for symbol in symbols_source))
         missing = [
             (timeframe, symbol)
             for timeframe in requested
