@@ -2809,6 +2809,7 @@ def _invalidate_binance_cost_cache(user_id: int, asset: str | None = None) -> No
 # ÇOK KULLANICILI: anahtar (user_id, date) — A kullanıcısının gün işlemleri
 # B kullanıcısına sızmasın.
 _binance_day_trades_cache: dict[tuple[int, str], tuple[float, dict]] = {}
+_binance_day_trades_inflight: dict[tuple[int, str], asyncio.Task] = {}
 
 
 async def _load_seen_binance_assets(username: str) -> set[str]:
@@ -3613,10 +3614,33 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
     user_id = int(user["id"]) if user else 0
 
     now_ts = time.time()
-    cache = _binance_day_trades_cache.get((user_id, date))
+    cache_key = (user_id, date)
+    cache = _binance_day_trades_cache.get(cache_key)
     if cache and cache[0] > now_ts:
         return cache[1]
 
+    # In-flight coalescing: aynı anda gelen paralel istekleri tek bir görevde birleştir
+    task = _binance_day_trades_inflight.get(cache_key)
+    if task is not None and not task.done():
+        return await asyncio.shield(task)
+
+    async def _do_fetch_day_trades():
+        try:
+            return await _compute_binance_trades_day(
+                api_key, api_secret, username, user_id, date, start_ms, end_ms, limit_per_symbol)
+        finally:
+            _binance_day_trades_inflight.pop(cache_key, None)
+
+    fetch_task = asyncio.create_task(_do_fetch_day_trades())
+    _binance_day_trades_inflight[cache_key] = fetch_task
+    return await asyncio.shield(fetch_task)
+
+
+async def _compute_binance_trades_day(
+    api_key: str, api_secret: str, username: str, user_id: int, date: str,
+    start_ms: int, end_ms: int, limit_per_symbol: int
+) -> dict:
+    now_ts = time.time()
     # Varlık havuzu: mevcut bakiyeler + daha önce görülmüş varlıklar
     # (tamamen satılmış varlıkların o günkü işlemleri kaçmasın).
     try:
