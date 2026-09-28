@@ -924,13 +924,18 @@ async def _ensure_admin_user():
 
 
 async def startup_market_warmup():
-    """Hydrate only active paper timeframes without blocking process startup."""
+    """Hydrate only active paper timeframes and priority symbols without blocking process startup."""
     priority_timeframes = list(config.PRIORITY_TIMEFRAMES)
     try:
+        # 2026-09-28: 309 sembol × 6 TF = 1854 REST isteği atıp Binance API'yi ve
+        # kuyruğu dakikalarca kilitlemek yerine, startup anında öncelikli evren
+        # (config.SYMBOLS + açık pozisyonlar) yüklenir. Diğer semboller on-demand yüklenir.
+        active_syms = list(dict.fromkeys(list(config.SYMBOLS) + list(getattr(analyzer, "positions", {}).keys())))
         hydration = await market.ensure_history(
             priority_timeframes,
             min_candles=55,
             candle_limit=120,
+            symbols=active_syms,
         )
         ready = int(hydration.get("hydrated", 0) or 0) + int(hydration.get("already_ready", 0) or 0)
         if ready:
@@ -1636,26 +1641,46 @@ async def get_market_symbols():
                             content={"ok": False, "error_code": "market_symbols_unavailable",
                                      "symbols": [], "quote_asset": "TRY"})
 
+_market_klines_cache: dict[tuple, tuple[float, list]] = {}
+_market_klines_inflight: dict[tuple, asyncio.Task] = {}
+_KLINES_CACHE_TTL_SEC = 4.0
+
 @app.get("/api/market-klines/{symbol}")
 async def get_market_klines(symbol: str, interval: str = "5m", limit: int = 200):
     """Single public market-data adapter used by all UI candle consumers."""
-    # "3m" (M3): teknik grafik sayfası seçilebilir ufuklar arasında sunuyor;
-    # listede yoktu ve uç 400 dönüyordu → M3 grafiği BOŞ çiziyordu.
     if interval not in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}:
         raise HTTPException(status_code=400, detail="Geçersiz timeframe")
-    rows = await fetch_klines(symbol, interval, limit=max(20, min(int(limit), 500)))
-    # CANLI AKIS (2026-09-16): grafik bu (sembol, ufuk) çiftini görüntülüyor →
-    # WS canlı yayınına al. Böylece `ws_live_candles` OLUŞAN mumu yalnızca
-    # gerçekten bakılan çift için yayınlar (70 sembol × 6 ufuk = ~420 stream'in
-    # tamamı için yayın yapmak gereksiz yüktü). Kayıt TTL'lidir ve grafik bu uç
-    # noktayı zaten 10 sn'de bir çağırdığı için kendiliğinden tazelenir —
-    # istemci tarafında değişiklik GEREKMEZ.
+    sym = symbol.replace("_", "").upper()
+    req_limit = max(20, min(int(limit), 500))
+    cache_key = (sym, interval, req_limit)
+    now = time.monotonic()
+
+    # 1. Hızlı RAM önbelleği: son 4 saniyede çekildiyse doğrudan dön (0.1ms)
+    cached = _market_klines_cache.get(cache_key)
+    if cached and (now - cached[0]) < _KLINES_CACHE_TTL_SEC:
+        rows = cached[1]
+    else:
+        # 2. Eşzamanlı istek birleştirme (Coalescing): aynı anda 5 istek gelirse Binance'e sadece 1 kere git
+        task = _market_klines_inflight.get(cache_key)
+        if task is None or task.done():
+            task = asyncio.create_task(fetch_klines(sym, interval, limit=req_limit))
+            _market_klines_inflight[cache_key] = task
+        try:
+            rows = await asyncio.shield(task)
+            _market_klines_cache[cache_key] = (time.monotonic(), rows)
+        except Exception:
+            _market_klines_cache.pop(cache_key, None)
+            raise
+        finally:
+            _market_klines_inflight.pop(cache_key, None)
+
+    # CANLI AKIS (2026-09-16): grafik bu (sembol, ufuk) çiftini görüntülüyor → WS canlı yayınına al.
     try:
         from app.ws_live_candles import note_viewed
-        note_viewed(symbol, interval)
+        note_viewed(sym, interval)
     except Exception as exc:
         logger.debug("canlı mum aboneliği kaydedilemedi: %s", exc)
-    return {"symbol": symbol.replace("_", "").upper(), "interval": interval,
+    return {"symbol": sym, "interval": interval,
             "candles": rows, "source": "binance_tr_public"}
 
 @app.get("/api/market-depth/{symbol}")
