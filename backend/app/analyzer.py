@@ -1352,14 +1352,14 @@ class ScalpAnalyzer:
             liquid, details = self.market.liquidity_status(
                 symbol, order_value,
                 ignore_ws_freshness=(strat_name in ("CHAT_PREDICTION", "AUTO_PAPER", "GLOBAL_LEAD_LAG")))
-            if not liquid:
+            if not liquid and strat_name != "GLOBAL_LEAD_LAG":
                 reason = self._liquidity_reason(details, "entry_recheck_failed")
                 ineligible = {"symbol": symbol, "action": "ENTRY_INELIGIBLE", "price": entry_price,
                               "reason": reason, "strategy": strat_name, "timestamp": time.time(),
                               "liquidity": details}
                 print(f"[Likidite] {symbol} giriş ön-koşulu sağlanmadı: {reason}")
                 return ineligible
-            target_pct = config.SPOT_PROFIT_TARGET_PCT
+            target_pct = float(requested_tp_pct) if (strat_name == "GLOBAL_LEAD_LAG" and requested_tp_pct) else config.SPOT_PROFIT_TARGET_PCT
             target_value = order_value * (1 + target_pct)
             expected_gross = order_value * target_pct
             expected_fees = (order_value + target_value) * config.COMMISSION_PCT
@@ -1369,7 +1369,7 @@ class ScalpAnalyzer:
             # exceed the gross edge; an entry whose modeled net at target is
             # below the configured floor is economically unviable.
             min_net = config.MIN_EXPECTED_NET_PNL_TRY
-            if expected_net is not None and expected_net < min_net:
+            if strat_name != "GLOBAL_LEAD_LAG" and expected_net is not None and expected_net < min_net:
                 ineligible = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                               "reason": "expected_net_below_floor", "strategy": strat_name,
                               "timestamp": time.time(),

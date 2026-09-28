@@ -75,12 +75,16 @@ const SOURCE_BADGE_META: Record<string, { label: string; cls: string }> = {
   jump: { label: "SIÇRAMA", cls: "border-sky-400/50 bg-sky-400/15 text-sky-300" },
   early: { label: "ERKEN", cls: "border-violet-400/50 bg-violet-400/15 text-violet-300" },
   rising: { label: "YÜKSELİŞ", cls: "border-amber-400/50 bg-amber-400/15 text-amber-300" },
+  global: { label: "🌐 GLOBAL", cls: "border-neon-cyan/60 bg-neon-cyan/20 text-neon-cyan" },
+  lead_lag: { label: "🌐 GLOBAL", cls: "border-neon-cyan/60 bg-neon-cyan/20 text-neon-cyan" },
 };
 const SOURCE_BADGE_COMPACT: Record<string, string> = {
   velocity: "RADAR",
   jump: "SIÇR.",
   early: "ERKEN",
   rising: "YÜKS.",
+  global: "GLOBAL",
+  lead_lag: "GLOBAL",
 };
 
 function ChannelBadge({ sentViaPush }: { sentViaPush?: boolean | null }) {

@@ -47,6 +47,8 @@ type BridgeHistoryItem = {
     trade_id?: string;
     reason?: string;
   };
+  remaining_sec?: number;
+  cooldown_sec?: number;
 };
 
 export default function BridgeSettingsPanel() {
@@ -61,7 +63,7 @@ export default function BridgeSettingsPanel() {
   const [enabled, setEnabled] = useState(true);
   const [autoTrade, setAutoTrade] = useState(true);
   const [minScore, setMinScore] = useState("0");
-  const [cooldownSec, setCooldownSec] = useState("10");
+  const [cooldownSec, setCooldownSec] = useState("60");
   const [secret, setSecret] = useState("");
   const [showSecret, setShowSecret] = useState(false);
 
@@ -137,7 +139,7 @@ export default function BridgeSettingsPanel() {
         enabled,
         auto_trade: autoTrade,
         min_score: parseFloat(minScore) || 0.0,
-        cooldown_sec: parseFloat(cooldownSec) || 10.0,
+        cooldown_sec: parseFloat(cooldownSec) || 60.0,
       };
 
       // Maskelenmemiş ve değişmişse secret'ı gönder
@@ -418,7 +420,7 @@ export default function BridgeSettingsPanel() {
               type="number"
               step="1"
               min="1"
-              max="120"
+              max="600"
               value={cooldownSec}
               onChange={(e) => setCooldownSec(e.target.value)}
               className="w-full rounded-lg border border-bunker-700 bg-bunker-900 px-3 py-1.5 font-mono text-xs text-white focus:border-neon-green focus:outline-none"
@@ -527,15 +529,21 @@ export default function BridgeSettingsPanel() {
                       ) : row.status === "executed" ? (
                         <span className="text-neon-green font-bold">🚀 İşlem Açıldı</span>
                       ) : row.status === "cooldown_skipped" ? (
-                        <span className="text-amber-400">⏱ Cooldown</span>
+                        <span className="text-amber-400 font-bold" title={`Kalan soğuma süresi: ${row.remaining_sec || 60} sn`}>
+                          ⏱ Cooldown ({row.remaining_sec ? `${Math.round(row.remaining_sec)}s` : "60s"})
+                        </span>
+                      ) : row.status === "already_open" || row.status === "blocked_already_open" ? (
+                        <span className="text-neon-cyan font-bold" title="Aynı sembolde zaten açık pozisyon mevcut">
+                          🔄 Açık Pozisyon
+                        </span>
                       ) : row.status === "score_below_minimum" ? (
                         <span className="text-bunker-muted">Düşük Skor</span>
                       ) : row.status === "blocked" ? (
                         <span className="text-neon-red" title={row.trade?.reason}>
-                          ⛔ Bloke
+                          ⛔ Bloke ({row.trade?.reason || "Filtre"})
                         </span>
                       ) : (
-                        <span className="text-bunker-muted">{row.status}</span>
+                        <span className="text-sky-300 font-bold">🔔 Bildirim Gönderildi</span>
                       )}
                     </td>
                   </tr>

@@ -103,10 +103,12 @@ async def get_receiver_settings() -> Dict[str, Any]:
     if db_cooldown is not None:
         try:
             cooldown_sec = float(db_cooldown)
+            if cooldown_sec <= 10.0:
+                cooldown_sec = 60.0
         except (ValueError, TypeError):
-            cooldown_sec = float(getattr(config, "BINANCE_TR_BRIDGE_COOLDOWN_SEC", 10.0))
+            cooldown_sec = float(getattr(config, "BINANCE_TR_BRIDGE_COOLDOWN_SEC", 60.0))
     else:
-        cooldown_sec = float(getattr(config, "BINANCE_TR_BRIDGE_COOLDOWN_SEC", 10.0))
+        cooldown_sec = float(getattr(config, "BINANCE_TR_BRIDGE_COOLDOWN_SEC", 60.0))
 
     return {
         "enabled": enabled,
@@ -321,13 +323,14 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
     except Exception as exc:
         logger.debug("[BridgeReceiver] extend_stream_universe atlandı %s: %s", tr_symbol, exc)
 
-    # 5. Skor filtre denetimi
+    # 5. Skor filtre denetimi (varsayılan 0.0, Global'den gelen sinyaller filtrelenmez)
     score = float(payload.get("score") or 0.0)
     min_score = float(settings.get("min_score", 0.0))
-    if score < min_score:
+    if min_score > 0 and score < min_score:
         record = {
             "event_id": event_id,
             "received_at": now,
+            "global_symbol": global_symbol,
             "tr_symbol": tr_symbol,
             "signal_type": signal_type,
             "score": score,
@@ -344,10 +347,10 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
             "min_score": min_score,
         }
 
-    # 6. Cooldown (Deduplikasyon) koruması
-    cooldown_sec = float(settings.get("cooldown_sec", 10.0))
+    # 6. Cooldown (Deduplikasyon) koruması: sembol bazlı 60 sn
+    cooldown_sec = float(settings.get("cooldown_sec", 60.0))
     force = bool(payload.get("force", False))
-    cooldown_key = (tr_symbol, signal_type)
+    cooldown_key = tr_symbol  # Sembol bazlı: radar, llm_second_eye, monitoring fark etmeksizin 60sn uygulanır
     last_accepted = _last_signal_times.get(cooldown_key, 0.0)
 
     if not force and (now - last_accepted) < cooldown_sec:
@@ -356,10 +359,14 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
         record = {
             "event_id": event_id,
             "received_at": now,
+            "global_symbol": global_symbol,
             "tr_symbol": tr_symbol,
             "signal_type": signal_type,
+            "score": score,
+            "latency_ms": round(lead_lag_latency_ms, 2),
             "status": "cooldown_skipped",
             "remaining_sec": remaining,
+            "cooldown_sec": cooldown_sec,
         }
         _history.append(record)
         return {
@@ -368,6 +375,7 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
             "event_id": event_id,
             "symbol": tr_symbol,
             "remaining_sec": remaining,
+            "message": f"{tr_symbol} için son sinyalden bu yana henüz {cooldown_sec} sn dolmadı ({remaining} sn kaldı).",
         }
 
     _last_signal_times[cooldown_key] = now
@@ -400,6 +408,7 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
         record = {
             "event_id": event_id,
             "received_at": now,
+            "global_symbol": global_symbol,
             "tr_symbol": tr_symbol,
             "status": "price_unavailable",
         }
@@ -436,7 +445,60 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
     except Exception as exc:
         logger.error("[BridgeReceiver] Sinyal DB kaydı başarısız: %s", exc)
 
-    # 9. WebSocket üzerinden canlı arayüze yayınla
+    # 9. TR BİLDİRİM SİSTEMİNE (MONITORING NOTIFICATIONS) KAYDET VE TÜM KANALLARA YAYINLA
+    p_data = payload.get("data") or {}
+    target_pct = float(p_data.get("target_pct") or 2.0)
+    horizon_minutes = float(p_data.get("horizon_minutes") or 15.0)
+    take_profit_pct = max(0.005, target_pct / 100.0)
+    stop_loss_pct = config.HARD_STOP_LOSS_PCT
+    max_hold_sec = max(180, int(horizon_minutes * 60))
+    expected_price = round(tr_price * (1.0 + target_pct / 100.0), 6) if tr_price > 0 else 0.0
+
+    notif_title = f"🌐 [GLOBAL] {tr_symbol}"
+    notif_message = (
+        f"Binance Global öncü sinyali ({global_symbol or tr_symbol}) | "
+        f"Tür: {signal_type.upper()} | Skor: {score:.1f} | Hedef: +%{target_pct:.1f}"
+    )
+
+    notif_entry = {
+        "symbol": tr_symbol,
+        "title": notif_title,
+        "message": notif_message,
+        "score": score,
+        "target_pct": target_pct,
+        "price": tr_price,
+        "expected_price": expected_price,
+        "horizon_minutes": int(horizon_minutes),
+        "mode": "global_lead_lag",
+        "detected_at": now,
+        "sent_via_push": False,
+        "sources": ["global"],
+        "url": f"/monitoring?symbol={tr_symbol}",
+        "tag": f"global-{tr_symbol}",
+    }
+    try:
+        await database.save_monitoring_notifications([notif_entry])
+    except Exception as exc:
+        logger.error("[BridgeReceiver] monitoring_notifications DB kaydı hatası: %s", exc)
+
+    # WebSocket üzerinden canlı arayüze yayınla (RadarAlertModal ve Monitoring)
+    ws_notif = dict(notif_entry)
+    ws_notif["alertKind"] = "global"
+    ws_notif["kind"] = "global"
+    ws_notif["source"] = "global"
+    ws_notif["sources"] = ["global"]
+    ws_notif["unified_sources"] = ["global"]
+    ws_notif["global_symbol"] = global_symbol
+    ws_notif["lead_lag_latency_ms"] = round(lead_lag_latency_ms, 2)
+
+    try:
+        await ws_manager.broadcast({
+            "type": "monitoring_alert",
+            "data": [ws_notif],
+        })
+    except Exception as exc:
+        logger.debug("[BridgeReceiver] WebSocket monitoring_alert yayını hatası: %s", exc)
+
     try:
         await ws_manager.broadcast({
             "type": "global_bridge_signal",
@@ -451,14 +513,23 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
                 "global_price": global_price,
                 "tr_price": tr_price,
                 "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
-                "title": title,
-                "message": message,
+                "title": notif_title,
+                "message": notif_message,
                 "payload_data": payload.get("data") or {},
                 "timestamp": now,
             }
         })
     except Exception as exc:
-        logger.debug("[BridgeReceiver] WebSocket yayını hatası: %s", exc)
+        logger.debug("[BridgeReceiver] WebSocket global_bridge_signal yayını hatası: %s", exc)
+
+    # Web Push gönderimi (cihaza push bildirim)
+    try:
+        from app.routers.monitoring import _send_push
+        push_ok = await _send_push(notif_entry)
+        if push_ok and notif_entry.get("id"):
+            await database.mark_monitoring_push_sent(notif_entry["id"])
+    except Exception as exc:
+        logger.debug("[BridgeReceiver] Web push gönderim hatası: %s", exc)
 
     # 10. Otonom Paper Trade Tetikleyici
     auto_trade = settings.get("auto_trade", True)
@@ -472,140 +543,83 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
                 if guard and guard.get("halt"):
                     _stats["trades_blocked"] += 1
                     trade_outcome = {"status": "blocked", "reason": f"daily_loss_guard:{guard.get('reason')}"}
-                    record = {
-                        "event_id": event_id,
-                        "received_at": now,
-                        "tr_symbol": tr_symbol,
-                        "status": "blocked_risk_guard",
-                        "trade": trade_outcome,
-                    }
-                    _history.append(record)
-                    return {
-                        "ok": True,
-                        "status": "blocked",
-                        "event_id": event_id,
-                        "symbol": tr_symbol,
-                        "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
-                        "trade": trade_outcome,
-                    }
             except Exception as exc:
                 logger.warning("[BridgeReceiver] Risk kapısı kontrolü hatası: %s", exc)
 
-        # 10.2 Çift pozisyon (already_open) kontrolü
-        if analyzer and tr_symbol in analyzer.positions:
-            _stats["trades_blocked"] += 1
-            trade_outcome = {"status": "blocked", "reason": "position_already_open"}
-            record = {
-                "event_id": event_id,
-                "received_at": now,
-                "tr_symbol": tr_symbol,
-                "status": "blocked_already_open",
-                "trade": trade_outcome,
-            }
-            _history.append(record)
-            return {
-                "ok": True,
-                "status": "blocked",
-                "event_id": event_id,
-                "symbol": tr_symbol,
-                "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
-                "trade": trade_outcome,
+        # 10.2 Çift pozisyon (already_open) kontrolü: Bildirim verildi, ancak tekrar pozisyon açılmaz
+        if trade_outcome.get("status") != "blocked" and analyzer and tr_symbol in analyzer.positions:
+            trade_outcome = {
+                "status": "already_open",
+                "reason": f"{tr_symbol} için zaten açık bir pozisyon mevcut.",
             }
 
         # 10.3 Maksimum açık pozisyon sayısı kontrolü
         max_positions = int(getattr(config, "MAX_OPEN_POSITIONS", 5) or 5)
-        if analyzer and max_positions > 0 and len(analyzer.positions) >= max_positions:
+        if trade_outcome.get("status") not in ("blocked", "already_open") and analyzer and max_positions > 0 and len(analyzer.positions) >= max_positions:
             _stats["trades_blocked"] += 1
             trade_outcome = {"status": "blocked", "reason": "max_open_positions_reached"}
-            record = {
-                "event_id": event_id,
-                "received_at": now,
-                "tr_symbol": tr_symbol,
-                "status": "blocked_max_positions",
-                "trade": trade_outcome,
-            }
-            _history.append(record)
-            return {
-                "ok": True,
-                "status": "blocked",
-                "event_id": event_id,
-                "symbol": tr_symbol,
+
+        # 10.4 Pozisyon Açılışı
+        if trade_outcome.get("status") not in ("blocked", "already_open"):
+            entry_context_extra = {
+                "source": "global_bridge",
+                "global_symbol": global_symbol,
+                "global_price": global_price,
+                "signal_type": signal_type,
+                "score": score,
                 "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
-                "trade": trade_outcome,
-            }
-
-        # 10.4 Hedef kâr, stop-loss ve ufuk hesaplaması
-        p_data = payload.get("data") or {}
-        target_pct = float(p_data.get("target_pct") or 2.0)
-        horizon_minutes = float(p_data.get("horizon_minutes") or 15.0)
-        take_profit_pct = max(0.005, target_pct / 100.0)
-        stop_loss_pct = config.HARD_STOP_LOSS_PCT
-        max_hold_sec = max(180, int(horizon_minutes * 60))
-
-        entry_context_extra = {
-            "source": "global_bridge",
-            "global_symbol": global_symbol,
-            "global_price": global_price,
-            "signal_type": signal_type,
-            "score": score,
-            "lead_lag_latency_ms": round(lead_lag_latency_ms, 2),
-            "target_pct": target_pct,
-            "horizon_minutes": horizon_minutes,
-            "event_id": event_id,
-            "signal_context": {
-                "no_initial_stop": False,
-            }
-        }
-
-        # 10.5 Pozisyon Açılışı
-        try:
-            trade_res = await analyzer.open_position(
-                symbol=tr_symbol,
-                entry_price=tr_price,
-                side="LONG",
-                strat_name="GLOBAL_LEAD_LAG",
-                order_value=None,
-                stop_loss_pct=stop_loss_pct,
-                take_profit_pct=take_profit_pct,
-                max_hold_sec=max_hold_sec,
-                entry_context_extra=entry_context_extra,
-            )
-
-            if trade_res and str(trade_res.get("action") or "").upper() == "BUY_SIGNAL":
-                trade_id = trade_res.get("trade_id")
-                _stats["trades_opened"] += 1
-                trade_outcome = {
-                    "status": "opened",
-                    "trade_id": trade_id,
-                    "entry_price": tr_price,
-                    "target_pct": target_pct,
-                    "horizon_minutes": horizon_minutes,
+                "target_pct": target_pct,
+                "horizon_minutes": horizon_minutes,
+                "event_id": event_id,
+                "signal_context": {
+                    "no_initial_stop": False,
                 }
-                # Cüzdan önbelleklerini anında geçersiz kıl
-                if _wallet_invalidator_fn:
-                    try:
-                        _wallet_invalidator_fn()
-                    except Exception:
-                        pass
-                logger.info(
-                    "[BridgeReceiver] %s için GLOBAL_LEAD_LAG pozisyonu açıldı (trade_id=%s, fiyat=%.4f)",
-                    tr_symbol, trade_id, tr_price
+            }
+
+            try:
+                trade_res = await analyzer.open_position(
+                    symbol=tr_symbol,
+                    entry_price=tr_price,
+                    side="LONG",
+                    strat_name="GLOBAL_LEAD_LAG",
+                    order_value=None,
+                    stop_loss_pct=stop_loss_pct,
+                    take_profit_pct=take_profit_pct,
+                    max_hold_sec=max_hold_sec,
+                    entry_context_extra=entry_context_extra,
                 )
-            else:
+
+                if trade_res and str(trade_res.get("action") or "").upper() == "BUY_SIGNAL":
+                    trade_id = trade_res.get("trade_id")
+                    _stats["trades_opened"] += 1
+                    trade_outcome = {
+                        "status": "opened",
+                        "trade_id": trade_id,
+                        "entry_price": tr_price,
+                        "target_pct": target_pct,
+                        "horizon_minutes": horizon_minutes,
+                    }
+                    if _wallet_invalidator_fn:
+                        try:
+                            _wallet_invalidator_fn()
+                        except Exception:
+                            pass
+                    logger.info(
+                        "[BridgeReceiver] %s için GLOBAL_LEAD_LAG pozisyonu açıldı (trade_id=%s, fiyat=%.4f)",
+                        tr_symbol, trade_id, tr_price
+                    )
+                else:
+                    _stats["trades_blocked"] += 1
+                    trade_outcome = {
+                        "status": "blocked",
+                        "reason": (trade_res or {}).get("reason", "risk_or_liquidity_gate"),
+                    }
+            except Exception as exc:
                 _stats["trades_blocked"] += 1
-                trade_outcome = {
-                    "status": "blocked",
-                    "reason": (trade_res or {}).get("reason", "risk_or_liquidity_gate"),
-                }
-                logger.info(
-                    "[BridgeReceiver] %s pozisyon açılışı engellendi: %s",
-                    tr_symbol, trade_outcome.get("reason")
-                )
-        except Exception as exc:
-            _stats["trades_blocked"] += 1
-            trade_outcome = {"status": "error", "reason": str(exc)}
-            logger.error("[BridgeReceiver] open_position istisnası (%s): %s", tr_symbol, exc, exc_info=True)
+                trade_outcome = {"status": "error", "reason": str(exc)}
+                logger.error("[BridgeReceiver] open_position hatası (%s): %s", tr_symbol, exc)
 
+    status_str = "executed" if trade_outcome.get("status") == "opened" else trade_outcome.get("status", "processed")
     record = {
         "event_id": event_id,
         "received_at": now,
@@ -617,7 +631,7 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
         "global_price": global_price,
         "tr_price": tr_price,
         "latency_ms": round(lead_lag_latency_ms, 2),
-        "status": "executed" if trade_outcome.get("status") == "opened" else trade_outcome.get("status"),
+        "status": status_str,
         "trade": trade_outcome,
         "client_ip": client_ip,
     }
@@ -625,7 +639,7 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
 
     return {
         "ok": True,
-        "status": "executed" if trade_outcome.get("status") == "opened" else "processed",
+        "status": status_str,
         "event_id": event_id,
         "global_symbol": global_symbol,
         "tr_symbol": tr_symbol,
