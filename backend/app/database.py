@@ -384,12 +384,15 @@ async def init_db():
         # Reconcile migrated cash with trades and open positions.
         # Portföy reseti sonrası yeniden init, reset ÖNCESİ PnL'i cüzdana
         # geri yüklememeli — reset cutoff'u burada da uygulanır.
-        # V-13: `virtual_wallet` TRY satırı ana defter + auto_paper tarafından
+        # V-13: `virtual_wallet` NAKİT satırı ana defter + auto_paper tarafından
         # PAYLAŞILIR; açılış mutabakatı da iki bacağı katmalı (reconcile_portfolio
         # ile aynı formül) — aksi halde açık auto-paper pozisyonu kadar FAZLA yazar.
+        # Nakit satırı `config.CASH_ASSET` (TR→TRY); 'TRY' literal'i kaldırıldı,
+        # aksi hâlde farklı quote'lu bir örnek mutabakatı yanlış satırda yapardı.
+        _cash = config.CASH_ASSET
         conn.execute("""UPDATE virtual_wallet SET amount=
             (SELECT COALESCE(
-                (SELECT amount FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0),
+                (SELECT amount FROM virtual_wallet WHERE asset=%s AND amount IS NOT NULL AND amount > 0),
                 %s
                 + COALESCE((SELECT SUM(pnl) FROM trades WHERE (%s = 0) OR (exit_time > %s)), 0)
                 + COALESCE((SELECT SUM(pnl) FROM auto_paper_trades WHERE status='closed' AND ((%s = 0) OR (exit_time > %s))), 0)
@@ -398,11 +401,13 @@ async def init_db():
                 - (COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
                    + COALESCE((SELECT SUM(order_value_try) FROM auto_paper_trades WHERE status='open'), 0)) * %s
             ) AS reconciled)
-        WHERE asset='TRY' AND NOT EXISTS (SELECT 1 FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0)""",
-            (config.INITIAL_BALANCE_TRY,
+        WHERE asset=%s AND NOT EXISTS (SELECT 1 FROM virtual_wallet WHERE asset=%s AND amount IS NOT NULL AND amount > 0)""",
+            (_cash,
+             config.INITIAL_BALANCE_TRY,
              _get_reset_cutoff_sync(conn), _get_reset_cutoff_sync(conn),
              _get_reset_cutoff_sync(conn), _get_reset_cutoff_sync(conn),
-             config.COMMISSION_PCT))
+             config.COMMISSION_PCT,
+             _cash, _cash))
         conn.conn.commit()
     await _run_db(pg_op)
     # Legacy pozisyonların eksik trade_id'leri açılışta BİR KEZ doldurulur;
@@ -451,7 +456,7 @@ async def reset_trading_data():
         conn.execute("DELETE FROM decision_logs WHERE strategy='AUTO_PAPER'")
         # Cüzdanı sıfırla
         conn.execute("DELETE FROM virtual_wallet")
-        conn.execute("INSERT INTO virtual_wallet (asset, amount) VALUES ('TRY', ?)", (config.INITIAL_BALANCE_TRY,))
+        conn.execute("INSERT INTO virtual_wallet (asset, amount) VALUES (?, ?)", (config.CASH_ASSET, config.INITIAL_BALANCE_TRY))
         conn.execute("INSERT INTO llm_settings(key,value) VALUES('portfolio_reset_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(now),))
         conn.commit()
         return {"reset_at": now, "wallet": config.INITIAL_BALANCE_TRY}
@@ -478,11 +483,12 @@ def _get_reset_cutoff_sync(conn) -> float:
         pass
     return 0.0
 
-async def get_wallet_balance(asset="TRY"):
-    """Virtual wallet balance. Defaults to TRY — the only asset the wallet
-    holds (legacy "USDT" default silently returned 0.0)."""
+async def get_wallet_balance(asset=None):
+    """Virtual wallet balance. Defaults to `config.CASH_ASSET` — the cash row
+    this deployment actually keeps (TR→TRY). Legacy "USDT"
+    default silently returned 0.0 on a TRY wallet."""
     def op(conn):
-        row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", (asset,)).fetchone()
+        row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", (asset or config.CASH_ASSET,)).fetchone()
         # V-17: `virtual_wallet.amount` şemada NOT NULL değil; eski kod NULL'u
         # olduğu gibi döndürüyordu ve `float(None)` çağıranlarda çöküyordu.
         # Sözleşme: bakiye her zaman bir sayıdır.
@@ -595,7 +601,7 @@ async def reconcile_portfolio():
         # değerini debit uygulanmadan yazabiliyor → o açılışın borcu cüzdandan
         # SİLİNİYORDU. Aynı anahtarla, transaction'ın ilk statement'ı olarak alınır.
         conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
-        before_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", ("TRY",)).fetchone()
+        before_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", (config.CASH_ASSET,)).fetchone()
         before = float(before_row[0]) if before_row else 0.0
         # Reset cutoff'u uygula: reset öncesi kapanmış işlemler cüzdana
         # geri yüklenemez (reset_trading_data belgelendiği gibi).
@@ -631,7 +637,7 @@ async def reconcile_portfolio():
                 open_cost = main_open_cost + auto_open_cost
                 entry_commission = open_cost * config.COMMISSION_PCT
                 after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
-        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", after))
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (config.CASH_ASSET, after))
         conn.commit()
         trade_count = int(conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0])
         position_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0])
@@ -2536,7 +2542,7 @@ async def get_dashboard_summary() -> dict:
         # auto_paper_trades) kapsamalıdır; aksi halde panel ile canlı terminal
         # farklı "toplam değer" gösterir.
         cash_row = conn.execute(
-            "SELECT amount FROM virtual_wallet WHERE asset='TRY'"
+            "SELECT amount FROM virtual_wallet WHERE asset=?", (config.CASH_ASSET,)
         ).fetchone()
         balance = float(cash_row[0]) if cash_row else 0.0
         pos_rows = conn.execute(
@@ -2807,13 +2813,13 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
         open_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] or 0)
         if int(config.MAX_OPEN_POSITIONS) > 0 and open_count >= int(config.MAX_OPEN_POSITIONS):
             raise RuntimeError("max_open_positions_reached")
-        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + " FOR UPDATE", ("TRY",)).fetchone()
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + " FOR UPDATE", (config.CASH_ASSET,)).fetchone()
         current_cash = float(cash_row[0] if cash_row else config.INITIAL_BALANCE_TRY)
         debit = float(asset_amount or 0) * float(sig.get("price") or pos.get("entry_price") or 0) * (1 + config.COMMISSION_PCT)
         if debit <= 0 or current_cash + 1e-9 < debit:
             raise RuntimeError("insufficient_paper_balance")
         next_cash = current_cash - debit
-        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", next_cash))
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (config.CASH_ASSET, next_cash))
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=virtual_wallet.amount+excluded.amount", (asset, asset_amount))
         conn.execute("INSERT OR REPLACE INTO positions (symbol,side,entry_price,stop_price,take_profit,peak_price,breakeven_hit,quantity,entry_time,strategy,entry_context,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                      (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), _json_safe_dumps(_position_entry_context(pos)), pos.get("trade_id")))
@@ -2850,11 +2856,11 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
         position_row = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + " FOR UPDATE", (symbol,)).fetchone()
         if not position_row:
             raise RuntimeError("paper_position_not_found")
-        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + " FOR UPDATE", ("TRY",)).fetchone()
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + " FOR UPDATE", (config.CASH_ASSET,)).fetchone()
         current_cash = float(cash_row[0] if cash_row else 0.0)
         exit_notional = float(trade.get("exit_price") or 0) * float(trade.get("quantity") or 0)
         next_cash = current_cash + exit_notional * (1 - config.COMMISSION_PCT)
-        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", next_cash))
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (config.CASH_ASSET, next_cash))
         position_qty = float(position_row[0] or 0)
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,0.0) ON CONFLICT(asset) DO NOTHING", (asset,))
         conn.execute("UPDATE virtual_wallet SET amount=amount-? WHERE asset=?", (position_qty, asset))
@@ -5355,7 +5361,7 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
         # `order_value_try` = `auto_paper.py`nin `max_cost = order_value/(1+commission)`
         # değeridir; yani risk bütçesinin KENDİSİ (notional + giriş komisyonu)
         # cüzdandan düşülür — burada ek bir çarpan uygulanmamalıdır.
-        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", ("TRY",)).fetchone()
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", (config.CASH_ASSET,)).fetchone()
         current_cash = float(cash_row[0] if cash_row else 0.0)
         order_value = float(trade.get("order_value_try") or 0)
         commission_pct = config.COMMISSION_PCT
@@ -5365,7 +5371,7 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
         next_cash = current_cash - debit
         conn.execute(
             "INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount",
-            ("TRY", next_cash)
+            (config.CASH_ASSET, next_cash)
         )
         row = conn.execute(
 """INSERT INTO auto_paper_trades
@@ -5447,6 +5453,18 @@ async def get_auto_paper_trade(trade_id: int) -> dict | None:
     def op(conn):
         row = conn.execute("SELECT * FROM auto_paper_trades WHERE id=?", (trade_id,)).fetchone()
         return dict(row) if row else None
+    return await _run_db(op)
+
+
+async def get_last_auto_paper_stop_loss_time(symbol: str) -> float | None:
+    """Sembolün son stop_loss kapanış zamanını getir (cooldown kontrolü için)."""
+    sym = str(symbol).upper()
+    def op(conn):
+        row = conn.execute(
+            "SELECT exit_time FROM auto_paper_trades WHERE symbol=? AND status='closed' AND exit_reason='stop_loss' ORDER BY exit_time DESC LIMIT 1",
+            (sym,)
+        ).fetchone()
+        return float(row[0]) if (row and row[0] is not None) else None
     return await _run_db(op)
 
 
@@ -5711,11 +5729,11 @@ async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: fl
         # kez sayılmaz) → `auto_paper._close_trade` PnL'i ile cüzdan ayrışmaz.
         exit_notional = exit_price * quantity
         proceed = exit_notional * (1 - commission_pct)
-        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", ("TRY",)).fetchone()
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", (config.CASH_ASSET,)).fetchone()
         current_cash = float(cash_row[0] if cash_row else 0.0)
         conn.execute(
             "INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount",
-            ("TRY", current_cash + proceed)
+            (config.CASH_ASSET, current_cash + proceed)
         )
         now = exit_time or time.time()
         conn.execute(

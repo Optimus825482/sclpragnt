@@ -27,6 +27,19 @@ class Config:
     # demand and do not need to block process startup.
     PRIORITY_TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "1d")
 
+    # ---- Borsa kimliği (2026-09-29, global'den port) ------------------------
+    # Global repo aynı kod tabanını iki borsada çalıştırıyor (EXCHANGE
+    # registry); v4 Binance TR kurulumudur, registry burada ölü kod olurdu.
+    # Yalnızca quote kimliği port edildi: kod "TRY" literalleri yerine bu
+    # sabitleri kullanır. TR'de davranış birebir aynı kalır; ileride USDT
+    # örneği gerekirse QUOTE_ASSET env'i ile geçilir.
+    QUOTE_ASSET = os.getenv("QUOTE_ASSET", "TRY").strip().upper() or "TRY"
+    # Paper cüzdanın NAKİT satırı bu cinsten tutulur (virtual_wallet.asset).
+    # DİKKAT: API alan adları (wallet_try, initial_balance_try) frontend
+    # sözleşmesi olduğu için BİLİNCİLDİR DEĞİŞTİRİLMEDİ — etiket eski, değer
+    # doğru (global repo'daki yaklaşımın aynısı).
+    CASH_ASSET = QUOTE_ASSET
+
     SYMBOLS = [
     "BTCTRY", "ETHTRY", "SOLTRY",   # Ana Hacimliler (Balinalar)
     "XRPTRY", "ADATRY", "AVAXTRY",  # Orta Hacimliler (Trend Takipçileri)
@@ -36,7 +49,8 @@ class Config:
     "INJTRY", "WLDTRY", "DOTTRY"               # Yüksek Volatilite (Agresif Skalp)
 ]
     MIN_NOTIONAL = 10.0
-    INITIAL_BALANCE_TRY = 10000.0
+    # Env (`INITIAL_BALANCE`) verilirse o kazanır; varsayılan TR ölçeği.
+    INITIAL_BALANCE_TRY = float(os.getenv("INITIAL_BALANCE", "10000.0"))
     # Spot paper işlemlerde varsayılan işlem tutarı (TRY cinsinden; adı tarihsel
     # olarak USDT kalmıştır, Binance TR tarafında bakiye TRY'dir).
     # Varsayılan paper işlem büyüklüğü (TRY). Arayüzden ayrıca değiştirilebilir.
@@ -44,7 +58,9 @@ class Config:
     # Aynı ayarın doğru adı; yeni kod bunu kullanmalı (eski ad geriye dönük uyum
     # için korunuyor, .env'deki DEFAULT_ORDER_USDT değişkeni hâlâ okunur).
     DEFAULT_ORDER_TRY = DEFAULT_ORDER_USDT
-    MIN_PARTIAL_ORDER_TRY = 100.0
+    # Likidite kapısının ATLANMA eşiği: emir değeri bu değerin altındayken
+    # likidite ön-kapısına bakılmaz. Env (`MIN_PARTIAL_ORDER`) verilirse o kazanır.
+    MIN_PARTIAL_ORDER_TRY = float(os.getenv("MIN_PARTIAL_ORDER", "100.0"))
     # Normal yüzde tutarı minimumun altına düştüğünde boş bakiyeyi eritmek
     # için kullanılacak kademeli paper işlem tutarı.
     FALLBACK_ORDER_TRY = float(os.getenv("FALLBACK_ORDER_TRY", "250.0"))

@@ -1864,6 +1864,34 @@ function AutoPaperSettingsPanel() {
           <input type="number" min="0.5" max="10" step="0.1" disabled={pending || !draft.breakeven_enabled} value={draft.breakeven_trigger_pct ?? 1.5} onChange={(e) => set("breakeven_trigger_pct", Number(e.target.value))} className="input" />
         </div>
         <div className="md:col-span-2 border-t border-bunker-800 pt-3">
+          <label className="text-xs font-mono text-neon-green block mb-2">KALİTE & KÂRLİLİK KORUMALARI (MTF & VOLATİLİTE)</label>
+          <p className="text-xs text-bunker-muted mb-3">Zayıf MTF (sahte kırılım riski %75) sinyallerini filtreler, stop olan sembollerde peş peşe işlem açılmasını (churn) engeller ve ATR ile volatiliteye nefes alma payı tanır.</p>
+          <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
+            <div>
+              <label className="text-xs font-mono text-bunker-muted block mb-1">Zayıf MTF Filtresi</label>
+              <select disabled={pending} value={draft.block_weak_mtf ? "1" : "0"} onChange={(e) => set("block_weak_mtf", e.target.value === "1")} className="input">
+                <option value="1">Açık (Önerilen)</option>
+                <option value="0">Kapalı</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-mono text-bunker-muted block mb-1">Min MTF Konfluans (0-100)</label>
+              <input type="number" min="0" max="100" disabled={pending || !draft.block_weak_mtf} value={draft.min_mtf_confluence ?? 45} onChange={(e) => set("min_mtf_confluence", Number(e.target.value))} className="input" />
+            </div>
+            <div>
+              <label className="text-xs font-mono text-bunker-muted block mb-1">Stop Sonrası Bekleme (dk)</label>
+              <input type="number" min="0" max="120" step="1" disabled={pending} value={draft.sl_cooldown_minutes ?? 5} onChange={(e) => set("sl_cooldown_minutes", Number(e.target.value))} className="input" />
+            </div>
+            <div>
+              <label className="text-xs font-mono text-bunker-muted block mb-1">Volatilite Stopu (ATR)</label>
+              <select disabled={pending} value={draft.volatility_sl_enabled ? "1" : "0"} onChange={(e) => set("volatility_sl_enabled", e.target.value === "1")} className="input">
+                <option value="1">Açık (Nefes Payı)</option>
+                <option value="0">Sabit Stop</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="md:col-span-2 border-t border-bunker-800 pt-3">
           <label className="text-xs font-mono text-neon-green block mb-2">TRAILING STOP MODÜLÜ</label>
           <p className="text-xs text-bunker-muted mb-3">Pozisyon %trigger kadar kâra geçince fiyatı %gap geriden takip eder; fiyat bu seviyeye düşerse pozisyon otomatik kapanır. Trailing devreye girdikten sonra take-profit uygulanmaz — çıkışı trailing stop yönetir. Varsayılan AÇIK.</p>
           <div className="grid gap-4 sm:grid-cols-3">
@@ -1880,13 +1908,13 @@ function AutoPaperSettingsPanel() {
             </div>
             <div>
               <label className="text-xs font-mono text-bunker-muted block mb-1">Takip Mesafesi (%)</label>
-              <input type="number" min="0.1" max="0.6" step="0.05" disabled={pending} value={draft.trailing_gap_pct ?? 0.6} onChange={(e) => set("trailing_gap_pct", Number(e.target.value))} className="input" />
+              <input type="number" min="0.1" max="2.0" step="0.05" disabled={pending} value={draft.trailing_gap_pct ?? 0.6} onChange={(e) => set("trailing_gap_pct", Number(e.target.value))} className="input" />
             </div>
           </div>
         </div>
         <div className="md:col-span-2 border-t border-bunker-800 pt-3">
           <label className="text-xs font-mono text-neon-green block mb-2">TRAILING/BREAKEVEN SONRASI YENİDEN AÇ</label>
-          <p className="text-xs text-bunker-muted mb-3">Trailing veya breakeven ile kapanan pozisyonda; sembol İzleme sayfasının "Uygun Adaylar" listesinde kaldığı sürece aynı sembole yeniden işlem açılır. Adaylıktan düşerse yeniden açılmaz. Varsayılan AÇIK.</p>
+          <p className="text-xs text-bunker-muted mb-3">Trailing veya breakeven ile kapanan pozisyonda; sembol İzleme sayfasının "Uygun Adaylar" listesinde kaldığı sürece aynı sembole yeniden işlem açılır. Adaylıktan düşerse yeniden açılmaz. Varsayılan KAPALI (2026-09-29 kâr koruması: koruma kapanışı sonrası hemen yeniden açma 9 işlemde +79.40 TRY kârı geri vermişti).</p>
           <div className="max-w-xs">
             <select disabled={pending} value={draft.reopen_after_protect_close ? "1" : "0"} onChange={(e) => set("reopen_after_protect_close", e.target.value === "1")} className="input">
               <option value="1">Açık</option>

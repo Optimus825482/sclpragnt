@@ -190,15 +190,22 @@ class InitDbReconcileTests(unittest.TestCase):
                       "açılış mutabakatı açık otonom maliyeti katmalı")
 
     def test_init_db_placeholder_count_matches_params(self):
-        """`%s` sayısı params demetiyle uyuşmalı (6 = INITIAL + 2×cutoff(trades)
-        + 2×cutoff(auto) + COMMISSION_PCT) — uyuşmazsa psycopg çalışma anında patlar."""
+        """`%s` sayısı params demetiyle uyuşmalı — uyuşmazsa psycopg çalışma
+        anında patlar.
+
+        9 = 1×CASH_ASSET (okuma) + INITIAL + 2×cutoff(trades) + 2×cutoff(auto)
+        + COMMISSION_PCT + 2×CASH_ASSET (UPDATE ... WHERE + NOT EXISTS).
+        2026-09-29: mutabakat satırı `asset='TRY'` literal'i yerine
+        `config.CASH_ASSET` alıp parametreleştirildi (global'den port);
+        bu 3 yeni placeholder ile 6 → 9 oldu.
+        """
         src = inspect.getsource(database.init_db)
         marker = "UPDATE virtual_wallet SET amount="
         start = src.index(marker)
         end = src.index('"""', start)
         sql = src[start:end]
-        self.assertEqual(6, sql.count("%s"),
-                         f"placeholder sayısı 6 olmalı, bulunan: {sql.count('%s')}")
+        self.assertEqual(9, sql.count("%s"),
+                         f"placeholder sayısı 9 olmalı, bulunan: {sql.count('%s')}")
 
 
 if __name__ == "__main__":

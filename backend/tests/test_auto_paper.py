@@ -324,10 +324,10 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
         close_mock.assert_awaited_once()
         self.assertEqual(close_mock.await_args.args[4], "symbol_deactivated")
 
-    async def test_trade_closes_when_symbol_dropped_from_market_symbols(self):
-        """Sembol market.symbols listesinden çıkarılmışsa symbol_deactivated ile kapatılır."""
+    async def test_trade_not_closed_when_outside_market_symbols(self):
+        """Açık pozisyonu olan sembol market.symbols'te olmasa bile kapatılmaz; stream'e eklenip TP/SL ile korunur."""
         now = time.time()
-        trade = self._sample_trade(symbol="DROPPEDTRY", entry_time=now - 5 * 60)
+        trade = self._sample_trade(symbol="STREAMTEST", entry_time=now - 5 * 60)
         close_mock = AsyncMock(return_value=None)
         mock_market = self._fresh_market()
         mock_market.symbols = ["btctry", "ethtry"]
@@ -336,8 +336,7 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
              patch.object(auto_paper, "_close_trade", close_mock):
             await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
 
-        close_mock.assert_awaited_once()
-        self.assertEqual(close_mock.await_args.args[4], "symbol_deactivated")
+        close_mock.assert_not_awaited()
 
     # --- D-02: bayat fiyatla kapanış engellenir -----------------------------
     async def test_max_hold_does_not_close_with_stale_ticker(self):
@@ -521,8 +520,7 @@ class AutoPaperTrailingTPExtensionTests(unittest.IsolatedAsyncioTestCase):
         }
 
         # Fiyat 102.5 (+%2.5 kâr) → trailing aktive olmalı ama TP (103.0) SİLİNMEMELİ
-        with patch.object(auto_paper.market, "symbols", ["TESTCOIN"]), \
-             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 102.5, "timestamp": now * 1000}), \
+        with patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 102.5, "timestamp": now * 1000}), \
              patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 0.0}), \
              patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
              patch.object(auto_paper.database, "update_auto_paper_trailing", AsyncMock()) as update_trailing_mock, \
@@ -553,8 +551,7 @@ class AutoPaperTrailingTPExtensionTests(unittest.IsolatedAsyncioTestCase):
         }
 
         # Fiyat 103.2 (TP'yi aştı)
-        with patch.object(auto_paper.market, "symbols", ["TESTCOIN"]), \
-             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 103.2, "timestamp": now * 1000}), \
+        with patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 103.2, "timestamp": now * 1000}), \
              patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 0.0}), \
              patch.object(auto_paper, "_close_trade", AsyncMock()) as close_mock:
 
@@ -564,6 +561,64 @@ class AutoPaperTrailingTPExtensionTests(unittest.IsolatedAsyncioTestCase):
             args = close_mock.await_args.args
             self.assertEqual(args[4], "take_profit")
             self.assertEqual(args[2], 103.0)
+
+
+class AutoPaperQualityFiltersTests(unittest.IsolatedAsyncioTestCase):
+    """Otonom işlem kalite ve kârlılık kapıları: Zayıf MTF ve Stop Loss bekleme süresi."""
+
+    async def test_weak_mtf_confluence_blocked(self):
+        notif = _make_notification(score=75.0, price=100.0)
+        notif["macd_mtf_verdict"] = "ZAYIF"
+        notif["macd_mtf_confluence"] = 20.0
+
+        with patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 1.0}), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 100.0, "timestamp": time.time() * 1000}):
+            res = await auto_paper.try_open_from_notification(notif)
+
+        self.assertIsNotNone(res)
+        self.assertEqual(res.get("status"), "blocked")
+        self.assertEqual(res.get("reason"), "weak_mtf_confluence")
+
+    async def test_stop_loss_cooldown_blocks_reentry(self):
+        sym = "APTEST"
+        auto_paper._stop_loss_cooldowns[sym] = time.time() + 300.0  # 5 dk bekleme
+        try:
+            notif = _make_notification(symbol=sym, score=80.0, price=100.0)
+            res = await auto_paper.try_open_from_notification(notif)
+            self.assertIsNotNone(res)
+            self.assertEqual(res.get("status"), "blocked")
+            self.assertEqual(res.get("reason"), "stop_loss_cooldown")
+        finally:
+            auto_paper._stop_loss_cooldowns.clear()
+
+    async def test_stop_loss_cooldown_from_db_blocks_reentry(self):
+        sym = "DBSLTEST"
+        now = time.time()
+        # Hafıza boş olsa dahi DB'de son 5 dk içinde stop_loss varsa engeller
+        auto_paper._stop_loss_cooldowns.clear()
+        with patch.object(auto_paper.database, "get_last_auto_paper_stop_loss_time", AsyncMock(return_value=now - 60.0)), \
+             patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 1.0}), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 100.0, "timestamp": now * 1000}):
+            notif = _make_notification(symbol=sym, score=80.0, price=100.0)
+            res = await auto_paper.try_open_from_notification(notif)
+            self.assertIsNotNone(res)
+            self.assertEqual(res.get("status"), "blocked")
+            self.assertEqual(res.get("reason"), "stop_loss_cooldown")
+
+    async def test_open_trade_discards_symbol_from_passive_symbols(self):
+        sym = "PASSDISCARD"
+        config.PASSIVE_SYMBOLS = {sym}
+        notif = _make_notification(symbol=sym, score=80.0, price=100.0)
+        with patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 1.0}), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 100.0, "timestamp": time.time() * 1000}), \
+             patch.object(auto_paper, "_open_new_trade", AsyncMock(return_value={"status": "opened"})):
+            await auto_paper.try_open_from_notification(notif)
+            self.assertNotIn(sym, config.PASSIVE_SYMBOLS)
+
+    def test_reset_state_clears_sl_cooldowns(self):
+        auto_paper._stop_loss_cooldowns["COIN1"] = time.time() + 100
+        auto_paper.reset_state()
+        self.assertNotIn("COIN1", auto_paper._stop_loss_cooldowns)
 
 
 class AutoPaperPostWinAndLLMGateTests(unittest.IsolatedAsyncioTestCase):
