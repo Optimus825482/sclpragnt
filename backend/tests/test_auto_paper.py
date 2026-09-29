@@ -566,6 +566,102 @@ class AutoPaperTrailingTPExtensionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(args[2], 103.0)
 
 
+class AutoPaperPostWinAndLLMGateTests(unittest.IsolatedAsyncioTestCase):
+    """Post-win cooldown, LLM İkinci Göz kapısı ve koruma kapanışı testleri (2026-09-29)."""
+
+    def setUp(self):
+        auto_paper.reset_state()
+
+    def tearDown(self):
+        auto_paper.reset_state()
+
+    def test_reset_state_clears_post_win_cooldowns(self):
+        auto_paper._post_win_cooldowns["WINCOIN"] = time.time() + 900
+        auto_paper.reset_state()
+        self.assertNotIn("WINCOIN", auto_paper._post_win_cooldowns)
+
+    async def test_post_win_cooldown_blocks_entry(self):
+        """Kârlı işlem sonrası post_win_cooldown süresi dolana kadar yeni giriş engellenmeli."""
+        sym = "WINNER"
+        now = time.time()
+        auto_paper._post_win_cooldowns[sym] = now + 600
+
+        notif = _make_notification(symbol=sym, score=85.0, price=50.0)
+        with patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 1.0}), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 50.0, "timestamp": now * 1000}), \
+             patch.object(auto_paper, "_open_new_trade", AsyncMock()) as open_mock:
+
+            res = await auto_paper.try_open_from_notification(notif)
+            self.assertIsNotNone(res)
+            self.assertEqual(res.get("status"), "blocked")
+            self.assertEqual(res.get("reason"), "post_win_cooldown")
+            open_mock.assert_not_awaited()
+
+    async def test_llm_fake_verdict_blocks_entry(self):
+        """LLM İkinci Göz FAKE/TUZAK tespiti yaptıysa (güven >= %50) işlem engellenmeli."""
+        sym = "TRAPCOIN"
+        now = time.time()
+        notif = _make_notification(symbol=sym, score=85.0, price=10.0)
+        notif["llm_verdict"] = "FAKE"
+        notif["llm_confidence"] = 75
+
+        with patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 1.0}), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 10.0, "timestamp": now * 1000}), \
+             patch.object(auto_paper, "_open_new_trade", AsyncMock()) as open_mock:
+
+            res = await auto_paper.try_open_from_notification(notif)
+            self.assertIsNotNone(res)
+            self.assertEqual(res.get("status"), "blocked")
+            self.assertEqual(res.get("reason"), "llm_fake_blocked")
+            open_mock.assert_not_awaited()
+
+    async def test_llm_low_confidence_devam_blocks_entry(self):
+        """LLM DEVAM kararı verse bile güven %60'ın altındaysa (örneğin %50) işlem engellenmeli."""
+        sym = "LOWCONF"
+        now = time.time()
+        notif = _make_notification(symbol=sym, score=85.0, price=20.0)
+        notif["llm_verdict"] = "DEVAM"
+        notif["llm_confidence"] = 50
+
+        with patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 1.0}), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 20.0, "timestamp": now * 1000}), \
+             patch.object(auto_paper, "_open_new_trade", AsyncMock()) as open_mock:
+
+            res = await auto_paper.try_open_from_notification(notif)
+            self.assertIsNotNone(res)
+            self.assertEqual(res.get("status"), "blocked")
+            self.assertEqual(res.get("reason"), "llm_low_confidence")
+            open_mock.assert_not_awaited()
+
+    async def test_reopen_disabled_on_trailing_close(self):
+        """reopen_after_protect_close=False iken trailing stop sonrası yeniden açma görevi başlatılmamalı."""
+        now = time.time()
+        trade = {
+            "id": 201, "symbol": "TESTREOPEN", "status": "open", "entry_price": 100.0,
+            "quantity": 10.0, "notification_id": "nid-201", "entry_time": now - 120,
+        }
+        with patch.object(auto_paper.database, "get_auto_paper_trade", AsyncMock(return_value=trade)), \
+             patch.object(auto_paper.database, "close_auto_paper_trade", AsyncMock(return_value={
+                "id": 201, "symbol": "TESTREOPEN", "entry_price": 100.0,
+                "exit_price": 102.0, "quantity": 10.0, "pnl": 20.0, "pnl_pct": 2.0,
+                "hold_seconds": 120, "exit_time": now, "exit_reason": "trailing_stop"
+             })), \
+             patch.object(auto_paper, "_start_background") as bg_mock, \
+             patch.object(auto_paper, "_broadcast_trade", AsyncMock()), \
+             patch.object(auto_paper, "get_auto_paper_settings", AsyncMock(return_value={
+                 "reopen_after_protect_close": False, "post_win_cooldown_minutes": 15.0
+             })):
+
+            await auto_paper._close_trade(201, "TESTREOPEN", 102.0, now, "trailing_stop")
+            # _start_background shouldn't be called for reopen
+            for call in bg_mock.call_args_list:
+                name = call.args[1] if len(call.args) > 1 else ""
+                self.assertNotIn("reopen", str(name))
+            # post_win_cooldowns should be set for TESTREOPEN
+            self.assertIn("TESTREOPEN", auto_paper._post_win_cooldowns)
+            self.assertGreater(auto_paper._post_win_cooldowns["TESTREOPEN"], now)
+
+
 if __name__ == "__main__":
     unittest.main()
 
