@@ -1,6 +1,6 @@
 """MACD MTF konfluans (2026-09-26): kullanıcının grafik metodunun makineye çevirisi.
 
-Kullanıcı kuralı (Erkan, 2026-09-26): M1/M3/M5/M15'te MACD çizgisi Signal'i
+Kullanıcı kuralı (Erkan, 2026-09-26): M1/M3/M5/M15/M30'da MACD çizgisi Signal'i
 AŞAĞIDAN YUKARI kesiyorsa YA DA her iki çizgi PARALEL YUKARI yönlü ise
 yükseliş gerçektir; yalnızca tek TF'de görünen hareket fake'tir. Bu modül o
 bakışı otomatikleştirir: her TF için kesişim durumu + yaşı, iki çizginin
@@ -84,13 +84,91 @@ def _macd_full_series(closes: list[float]) -> tuple[list, list] | None:
     return macd, signal
 
 
+
+def _detect_squeeze(highs: list[float], lows: list[float], closes: list[float], period: int = 20) -> bool:
+    """John Carter Squeeze: Bollinger Bantları Keltner Kanalı içinde mi (enerji sıkışması)?"""
+    if len(closes) < period + 1:
+        return False
+    wc = np.asarray(closes[-period:], dtype=float)
+    sma = float(np.mean(wc))
+    std = float(np.std(wc))
+    bb_upper = sma + 2.0 * std
+    bb_lower = sma - 2.0 * std
+
+    h = np.asarray(highs[-period:] if highs and len(highs) >= period else wc, dtype=float)
+    l = np.asarray(lows[-period:] if lows and len(lows) >= period else wc, dtype=float)
+    prev_c = np.asarray(closes[-period - 1:-1], dtype=float)
+    tr = np.maximum(h - l, np.maximum(np.abs(h - prev_c), np.abs(l - prev_c)))
+    atr = float(np.mean(tr))
+    kc_upper = sma + 1.5 * atr
+    kc_lower = sma - 1.5 * atr
+    return bool(bb_lower > kc_lower and bb_upper < kc_upper)
+
+
+def _dema_series(values: np.ndarray, period: int) -> list:
+    """Double Exponential Moving Average (DEMA) serisi (Zero-Lag yapıtaşı)."""
+    ema1 = _ema_series(values, period)
+    valid_ema1 = [v for v in ema1 if v is not None]
+    if len(valid_ema1) < period:
+        return [None] * len(values)
+    ema2 = _ema_series(valid_ema1, period)
+    dema = [None] * len(values)
+    valid_idx = [i for i, v in enumerate(ema1) if v is not None]
+    for pos, i in enumerate(valid_idx):
+        if ema2[pos] is not None:
+            dema[i] = 2.0 * ema1[i] - ema2[pos]
+    return dema
+
+
+def _zl_macd_status(closes: list[float]) -> tuple[bool, bool]:
+    """Zero-Lag MACD durumu: (zl_green, zl_fresh_cross)."""
+    if len(closes) < _MIN_CANDLES:
+        return False, False
+    arr = np.asarray(closes, dtype=float)
+    fast = _dema_series(arr, FAST)
+    slow = _dema_series(arr, SLOW)
+    zl_line = [f - s if (f is not None and s is not None) else None for f, s in zip(fast, slow)]
+    valid_pos = [i for i, v in enumerate(zl_line) if v is not None]
+    if len(valid_pos) < SIGNAL + 2:
+        return False, False
+    valid_vals = np.asarray([zl_line[i] for i in valid_pos], dtype=float)
+    sig_valid = _ema_series(valid_vals, SIGNAL)
+    if len(sig_valid) < 2 or sig_valid[-1] is None or sig_valid[-2] is None:
+        return False, False
+    curr_zl = valid_vals[-1]
+    curr_sig = sig_valid[-1]
+    prev_zl = valid_vals[-2]
+    prev_sig = sig_valid[-2]
+    zl_green = bool(curr_zl > curr_sig)
+    zl_fresh_cross = bool(zl_green and prev_zl <= prev_sig)
+    return zl_green, zl_fresh_cross
+
+
+def _wavetrend_status(highs: list[float], lows: list[float], closes: list[float]) -> tuple[bool, bool]:
+    """WaveTrend durumu: (wt_bullish, wt_oversold_cross)."""
+    from app.technical_analysis import _wavetrend
+    h = highs if highs and len(highs) == len(closes) else closes
+    l = lows if lows and len(lows) == len(closes) else closes
+    res = _wavetrend(h, l, closes)
+    if not res:
+        return False, False
+    wt1 = res.get("wt1")
+    wt2 = res.get("wt2")
+    wt_bullish = bool(wt1 is not None and wt2 is not None and wt1 > wt2)
+    wt_oversold_cross = bool(res.get("cross_up") and wt1 is not None and wt1 <= -45.0)
+    return wt_bullish, wt_oversold_cross
+
+
 def _tf_cell(symbol: str, tf: str) -> dict | None:
-    """Tek TF hücresi: kesişim durumu/yaşı + eğimler + paralel yukarı."""
+    """Tek TF hücresi: kesişim durumu/yaşı + eğimler + erken öncüler (trough, squeeze, ZL, WT)."""
     history = market.get_ut_kline(symbol, tf)
     closes = list((history or {}).get("closes") or [])
     if len(closes) < _MIN_CANDLES:
         return None
     closes = closes[-_MAX_SERIES:]
+    highs = list((history or {}).get("highs") or [])[-len(closes):]
+    lows = list((history or {}).get("lows") or [])[-len(closes):]
+
     series = _macd_full_series(closes)
     if series is None:
         return None
@@ -116,6 +194,22 @@ def _tf_cell(symbol: str, tf: str) -> dict | None:
     prev_hist = float(macd[-2] - signal[-2]) if len(macd) > 1 and macd[-2] is not None and signal[-2] is not None else float(macd[-1] - signal[-1])
     curr_hist = float(macd[-1] - signal[-1])
     expanding = bool(bullish_now and (curr_hist > prev_hist or macd_slope > signal_slope))
+
+    # --- ERKEN ÖNCÜ SİNYALLER (Leading Signals) ---
+    # 1. Histogram Dip Dönüşü (Hist Trough / Velocity):
+    # Henüz kesişim olmasa bile histogramın dipten yukarı bükülmesi (3-7 bar öncü)
+    hist_turn_up = bool(curr_hist > prev_hist)
+    hist_trough = bool(hist_turn_up and curr_hist < 0.0)
+
+    # 2. Squeeze (Volatilite Sıkışması / Bollinger-Keltner)
+    squeeze_on = _detect_squeeze(highs, lows, closes)
+
+    # 3. Zero-Lag MACD (ZLEMA / DEMA MACD)
+    zl_green, zl_fresh = _zl_macd_status(closes)
+
+    # 4. WaveTrend (Oversold Cross & Bullish)
+    wt_bullish, wt_os_cross = _wavetrend_status(highs, lows, closes)
+
     return {
         "tf": tf,
         "macd": round(float(macd[-1]), 10),
@@ -128,6 +222,14 @@ def _tf_cell(symbol: str, tf: str) -> dict | None:
         "parallel_up": bool(macd_slope > 0 and signal_slope > 0),
         "expanding": expanding,
         "fresh_bull_cross": bool(bullish_now and age <= _FRESH_CROSS_MAX_BARS),
+        # Erken öncüler:
+        "hist_turn_up": hist_turn_up,
+        "hist_trough": hist_trough,
+        "squeeze": squeeze_on,
+        "zl_green": zl_green,
+        "zl_fresh_cross": zl_fresh,
+        "wt_bullish": wt_bullish,
+        "wt_oversold_cross": wt_os_cross,
     }
 
 
@@ -143,6 +245,14 @@ def _summarize(symbol: str, cells: list[dict | None], tfs: tuple = TFS) -> dict:
         "parallel_up_count": 0,
         "expanding_count": 0,
         "fresh_cross": [],
+        "early_trough_count": 0,
+        "hist_turn_up_count": 0,
+        "squeeze_count": 0,
+        "zl_green_count": 0,
+        "zl_fresh_cross": [],
+        "wt_bullish_count": 0,
+        "wt_oversold_cross": [],
+        "early_spark": False,
         "cells": [],
     }
     if len(available) < 2:
@@ -151,6 +261,26 @@ def _summarize(symbol: str, cells: list[dict | None], tfs: tuple = TFS) -> dict:
     parallel_count = sum(1 for c in available if c["parallel_up"])
     expanding_count = sum(1 for c in available if c.get("expanding"))
     fresh = [c["tf"] for c in available if c["fresh_bull_cross"]]
+
+    # Erken Öncü Sayımları
+    early_trough_count = sum(1 for c in available if c.get("hist_trough"))
+    hist_turn_up_count = sum(1 for c in available if c.get("hist_turn_up"))
+    squeeze_count = sum(1 for c in available if c.get("squeeze"))
+    zl_green_count = sum(1 for c in available if c.get("zl_green"))
+    zl_fresh = [c["tf"] for c in available if c.get("zl_fresh_cross")]
+    wt_bullish_count = sum(1 for c in available if c.get("wt_bullish"))
+    wt_os_cross = [c["tf"] for c in available if c.get("wt_oversold_cross")]
+
+    # Erken Kıvılcım (Early Spark):
+    # En erken dip dönüşü (>=2 TF'de negatiften yukarı ivmelenme)
+    # VEYA Sıkışma + Eğim pozitif VEYA WaveTrend aşırı satım kesişimi
+    early_spark = bool(
+        early_trough_count >= 2 or
+        (squeeze_count >= 1 and hist_turn_up_count >= 2) or
+        bool(wt_os_cross) or
+        bool(zl_fresh)
+    )
+
     # Ağırlık: yeşil (MACD>signal durumu) %60 + paralel yukarı (momentum) %40.
     # Taze kesişim bonusu: başlangıç profili (kullanıcının "baştan yakalama").
     score = (0.6 * green_count + 0.4 * parallel_count) / len(available) * 80.0
@@ -170,9 +300,18 @@ def _summarize(symbol: str, cells: list[dict | None], tfs: tuple = TFS) -> dict:
         "parallel_up_count": parallel_count,
         "expanding_count": expanding_count,
         "fresh_cross": fresh,
+        "early_trough_count": early_trough_count,
+        "hist_turn_up_count": hist_turn_up_count,
+        "squeeze_count": squeeze_count,
+        "zl_green_count": zl_green_count,
+        "zl_fresh_cross": zl_fresh,
+        "wt_bullish_count": wt_bullish_count,
+        "wt_oversold_cross": wt_os_cross,
+        "early_spark": early_spark,
         "cells": available,
     })
     return base
+
 
 
 async def compute(symbol: str, *, tfs: tuple[str, ...] | None = None, force: bool = False) -> dict | None:
@@ -257,7 +396,7 @@ async def scan_market(
     scope: str = "active",
     force_refresh: bool = False,
 ) -> dict:
-    """Aktif veya tüm Binance TR çiftlerinde MACD MTF taraması yapar.
+    """Aktif veya tüm Binance (TR/Global) çiftlerinde MACD MTF taraması yapar.
 
     M1, M3, M5, M15, M30 TF'lerinde MACD & Signal durumunu inceler.
     Kullanıcı metoduna uygun (GÜÇLÜ/ORTA, Taze Kesişim, Paralel Yukarı)
@@ -267,14 +406,17 @@ async def scan_market(
     from app.config import config
     from app.state import analyzer
 
+    quote_asset = getattr(config, "QUOTE_ASSET", "TRY") or "TRY"
+    quote_asset = quote_asset.upper()
+
     target_symbols: list[str] = []
     if symbols:
         target_symbols = [_norm(s) for s in symbols if _norm(s)]
     elif scope == "all":
         try:
             from app.binance_tr_public import trading_symbols
-            all_try = await trading_symbols("TRY")
-            target_symbols = [_norm(s) for s in all_try if _norm(s).endswith("TRY")]
+            all_pairs = await trading_symbols(quote_asset)
+            target_symbols = [_norm(s) for s in all_pairs if _norm(s).endswith(quote_asset)]
         except Exception as exc:
             logger.warning("scan_market trading_symbols error: %s", exc)
             target_symbols = []
@@ -293,7 +435,10 @@ async def scan_market(
             pool.add(_norm(s))
         for s in getattr(market, "symbols", []):
             pool.add(_norm(s))
-        target_symbols = sorted([s for s in pool if s.endswith("TRY") and not s.startswith("USDT")])
+
+        target_symbols = sorted([s for s in pool if s.endswith(quote_asset)])
+        if not target_symbols:
+            target_symbols = sorted(list(pool))
 
     if not target_symbols:
         target_symbols = [_norm(s) for s in (config.SYMBOLS or [])]
@@ -331,6 +476,11 @@ async def scan_market(
                     "parallel_up_count": res.get("parallel_up_count", 0),
                     "expanding_count": res.get("expanding_count", 0),
                     "fresh_cross": res.get("fresh_cross", []),
+                    "early_trough_count": res.get("early_trough_count", 0),
+                    "squeeze_count": res.get("squeeze_count", 0),
+                    "wt_oversold_cross": res.get("wt_oversold_cross", []),
+                    "zl_fresh_cross": res.get("zl_fresh_cross", []),
+                    "early_spark": res.get("early_spark", False),
                     "coverage": res.get("coverage", 0),
                     "tfs": res.get("cells", []),
                 }
@@ -348,6 +498,9 @@ async def scan_market(
     zayif_count = sum(1 for r in valid_items if r["verdict"] == "ZAYIF")
     fresh_cross_count = sum(1 for r in valid_items if len(r["fresh_cross"]) > 0)
     parallel_up_count = sum(1 for r in valid_items if r["parallel_up_count"] >= 2)
+    early_trough_count = sum(1 for r in valid_items if r.get("early_trough_count", 0) >= 2)
+    squeeze_count = sum(1 for r in valid_items if r.get("squeeze_count", 0) >= 1)
+    early_spark_count = sum(1 for r in valid_items if r.get("early_spark"))
 
     # Filtreleme
     filtered = valid_items
@@ -381,12 +534,16 @@ async def scan_market(
         "zayif_count": zayif_count,
         "fresh_cross_count": fresh_cross_count,
         "parallel_up_count": parallel_up_count,
+        "early_trough_count": early_trough_count,
+        "squeeze_count": squeeze_count,
+        "early_spark_count": early_spark_count,
         "tfs": list(tfs),
         "scope": scope,
         "duration_sec": round(time.time() - t0, 2),
         "scanned_at": time.time(),
         "items": filtered,
     }
+
 
 
 def reset_state_for_tests() -> None:

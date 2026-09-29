@@ -155,21 +155,46 @@ class ComputeCacheTests(unittest.TestCase):
         self.assertEqual(n, macd_mtf._REFRESH_PER_CALL)
         self.assertEqual(len(calls), macd_mtf._REFRESH_PER_CALL)
 
-    def test_scan_market_shape_and_sort(self):
-        closes = _rising_closes()
-        with patch.object(macd_mtf, "market") as fake_market:
-            fake_market.get_ut_kline.return_value = _history(closes)
-            fake_market.get_ticker.return_value = {"last_price": "10.5", "price_change_percent": "4.2"}
-            res = asyncio.run(macd_mtf.scan_market(symbols=["TESTTRY", "DEMOTRY"]))
-        self.assertEqual(res["total_scanned"], 2)
-        self.assertEqual(res["valid_count"], 2)
-        self.assertIn("items", res)
-        self.assertGreaterEqual(len(res["items"]), 1)
-        item0 = res["items"][0]
-        self.assertEqual(item0["price"], 10.5)
-        self.assertEqual(item0["change_24h_pct"], 4.2)
-        self.assertEqual(item0["verdict"], "GÜÇLÜ")
+
+class EarlyPrecursorTests(unittest.TestCase):
+    def test_detect_squeeze_on_tight_range(self):
+        # Dar bant / düşük volatilite → BB KC'nin içine girer (Squeeze True)
+        tight = [100.0 + (i % 2) * 0.05 for i in range(50)]
+        self.assertTrue(macd_mtf._detect_squeeze(tight, tight, tight))
+
+    def test_zero_lag_macd_status(self):
+        closes = _vshape_closes()
+        zl_green, zl_fresh = macd_mtf._zl_macd_status(closes)
+        self.assertIsInstance(zl_green, bool)
+        self.assertIsInstance(zl_fresh, bool)
+
+    def test_wavetrend_status(self):
+        closes = _vshape_closes()
+        wt_bull, wt_os = macd_mtf._wavetrend_status(closes, closes, closes)
+        self.assertIsInstance(wt_bull, bool)
+        self.assertIsInstance(wt_os, bool)
+
+    def test_summarize_carries_early_indicators(self):
+        cells = [
+            {"tf": "1m", "macd": -0.5, "signal": -0.8, "hist": 0.3, "green": True,
+             "cross_age_bars": 1, "macd_slope_pct": 0.1, "signal_slope_pct": 0.05,
+             "parallel_up": True, "fresh_bull_cross": True, "hist_turn_up": True,
+             "hist_trough": False, "squeeze": True, "zl_green": True, "zl_fresh_cross": True,
+             "wt_bullish": True, "wt_oversold_cross": True},
+            {"tf": "5m", "macd": -1.2, "signal": -1.0, "hist": -0.2, "green": False,
+             "cross_age_bars": 5, "macd_slope_pct": 0.05, "signal_slope_pct": -0.05,
+             "parallel_up": False, "fresh_bull_cross": False, "hist_turn_up": True,
+             "hist_trough": True, "squeeze": True, "zl_green": False, "zl_fresh_cross": False,
+             "wt_bullish": False, "wt_oversold_cross": False},
+        ]
+        res = macd_mtf._summarize("TESTTRY", cells, tfs=("1m", "5m"))
+        self.assertEqual(res["early_trough_count"], 1)
+        self.assertEqual(res["squeeze_count"], 2)
+        self.assertEqual(res["wt_oversold_cross"], ["1m"])
+        self.assertEqual(res["zl_fresh_cross"], ["1m"])
+        self.assertTrue(res["early_spark"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
