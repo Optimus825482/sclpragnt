@@ -798,6 +798,54 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
+  /** Filtrelenmiş tabloyu CSV olarak indir (global'den port, 2026-09-29). */
+  const exportCsv = useCallback(() => {
+    if (filtered.length === 0) return;
+    const csvEscape = (v: string) => {
+      if (v.includes(",") || v.includes('"') || v.includes("\n")) {
+        return `"${v.replace(/"/g, '""')}"`;
+      }
+      return v;
+    };
+    const headers = ["Zaman", "Sembol", "Kanal", "Teyit", "Giriş Fiyatı", "Skor", "Hedef (TP %)", "Maksimum (MFE %)", "Otonom İşlem PnL", "Otonom İşlem PnL %", "Sonuç"];
+    const rows = filtered.map((n: any) => {
+      const dt = new Date(toMs(n.detected_at));
+      const timeStr = dt.toLocaleString("tr-TR", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+      const channel = n.sent_via_push ? "PUSH" : "PANEL";
+      const sources = (n.sources || []).join("+") || "velocity";
+      const price = n.price != null ? String(n.price) : "";
+      const score = n.score != null ? Number(n.score).toFixed(1) : "";
+      const target = n.target_pct != null ? `+${Number(n.target_pct).toFixed(1)}` : "";
+      const mfe = n.mfe_pct != null ? `+${Number(n.mfe_pct).toFixed(2)}` : "";
+      const tradePnl = n.trade?.pnl != null ? Number(n.trade.pnl).toFixed(2) : "";
+      const tradePnlPct = n.trade?.pnl_pct != null ? Number(n.trade.pnl_pct).toFixed(2) : "";
+      const mfePct = n.mfe_pct != null ? Number(n.mfe_pct) : null;
+      let sonuc = "";
+      if (n.status === "TAMAMEN BAŞARILI") sonuc = "TAMAMEN BAŞARILI";
+      else if (mfePct != null && mfePct >= 3.0) sonuc = "TP2 KOŞUSU";
+      else if (mfePct != null && mfePct >= 1.2) sonuc = "TP1 KİLİTLENDİ";
+      else if (n.status === "BAŞARILI") sonuc = "BAŞARILI";
+      else if (n.status === "KISMİ") sonuc = `KISMİ (+${mfePct?.toFixed(1)}%)`;
+      else if (n.outcome_details?.status_reason === "STOPPED_OUT") sonuc = "STOP (-%1.5)";
+      else if (n.status === "BAŞARISIZ") sonuc = "BAŞARISIZ";
+      else if (n.status === "ÖLÇÜLEMEDİ") sonuc = "ZAMAN AŞIMI";
+      else sonuc = "TAKİPTE";
+      return [timeStr, n.symbol || "", channel, sources, price, score, target, mfe, tradePnl, tradePnlPct, sonuc].map(csvEscape).join(",");
+    });
+    const bom = "\uFEFF";
+    const csv = bom + headers.map(csvEscape).join(",") + "\n" + rows.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const dayLabel = day || new Date().toISOString().slice(0, 10);
+    a.download = `sinyal_hedef_basarisi_${dayLabel}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [filtered, day]);
+
   const SortHeader = ({ label, field }: { label: string; field: string }) => (
     <th className="cursor-pointer select-none" onClick={() => toggleSort(field)} title="Sıralama için tıklayın">
       <span className="inline-flex items-center gap-1">
@@ -824,6 +872,15 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
             <div className="flex gap-1.5">
               <button onClick={load} className="ui-button ui-button-primary text-xs py-1.5 px-3">
                 Yenile
+              </button>
+              <button
+                type="button"
+                onClick={exportCsv}
+                disabled={filtered.length === 0}
+                className="ui-button ui-button-secondary text-xs min-h-[36px] py-1.5 px-3 flex items-center gap-1.5 disabled:opacity-30"
+                title={`Filtrelenmiş ${filtered.length} satırı CSV olarak indir`}
+              >
+                📥 CSV İndir
               </button>
             </div>
           </div>
