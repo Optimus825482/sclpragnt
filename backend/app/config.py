@@ -633,8 +633,15 @@ class Config:
     AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "0.6"))
     # Trailing/breakeven kapanışı sonrası aynı bildirimle yeniden açılış
     # (fiyat bildirim fiyatının üzerinde + ufuk süresi dolmadı + yükselme
-    # eğilimi varsa). Varsayılan AÇIK; false ile kapatılabilir.
-    AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE = os.getenv("AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE", "true").lower() == "true"
+    # eğilimi varsa). 2026-09-29 kârlılık analizi: koruma kapanışı sonrası
+    # hemen yeniden açma 9 işlemde +79.40 TRY kârı geri vermişti — varsayılan
+    # KAPALI; false ile kapatılabilir (zaten kapalı), true ile açılabilir.
+    AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE = os.getenv("AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE", "false").lower() == "true"
+    # 2026-09-29 kârlılık koruması: kârlı kapanış (TP/trailing/breakeven veya
+    # pozitif PnL) sonrası aynı sembole 15 dakika yeni pozisyon açılmaz.
+    # Kâr realizasyonunun hemen ardından tepeden yeniden girip kârı geri
+    # verme tuzağını (post-win churn) engeller.
+    AUTO_PAPER_POST_WIN_COOLDOWN_MINUTES = float(os.getenv("AUTO_PAPER_POST_WIN_COOLDOWN_MINUTES", "15.0"))
     # D-11 (2026-09-12): otonom paper için global maksimum açık pozisyon sayısı.
     # Eskiden varsayılan 0 (= sınırsız) idi; farklı sembollerden gelen bildirim
     # zinciri cüzdanı tek turda tüketebiliyordu. Güvenli varsayılan 3 idi;

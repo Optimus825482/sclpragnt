@@ -5450,6 +5450,20 @@ async def get_auto_paper_trade(trade_id: int) -> dict | None:
     return await _run_db(op)
 
 
+async def get_last_auto_paper_winning_trade_time(symbol: str) -> float | None:
+    """Sembolün son karlı kapanış zamanını getir (post-win cooldown kontrolü için)."""
+    sym = str(symbol).upper()
+    def op(conn):
+        row = conn.execute(
+            "SELECT exit_time FROM auto_paper_trades WHERE symbol=? AND status='closed' "
+            "AND (pnl > 0 OR exit_reason IN ('take_profit', 'trailing_stop', 'breakeven_stop')) "
+            "ORDER BY exit_time DESC LIMIT 1",
+            (sym,)
+        ).fetchone()
+        return float(row[0]) if (row and row[0] is not None) else None
+    return await _run_db(op)
+
+
 async def list_auto_paper_trades(
     status: str | None = None,
     limit: int = 100,
