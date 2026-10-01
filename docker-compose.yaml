@@ -155,11 +155,11 @@ services:
       # Yine de WS bağlantıları + sembol evreni kurulumu zaman alıyor;
       # hızlı tanıtmayı koruyup erken iptal riskini almamak için bırakıldı.
       start_period: 60s
-      interval: 15s
+      interval: 5s
       # probe komutunun kendi 10 sn timeout'ı ile eşleşir; probe `timeout`
       # bundan kısa kalırsa komut iptal edilip TimeoutError yazılır.
-      timeout: 12s
-      retries: 10
+      timeout: 8s
+      retries: 12
     labels:
       - "traefik.enable=false"
     logging: *default-logging
@@ -216,8 +216,10 @@ services:
           memory: 1G
           cpus: "1.0"
     depends_on:
-      - frontend
-      - backend
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
     expose:
       - "80"
     # Traefik (coolify-proxy) yalnızca kendi ağında bulduğu konteynerlere
