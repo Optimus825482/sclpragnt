@@ -50,12 +50,18 @@ export default function LlmVsRulesTab({ day }: { day?: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<"ALL" | "DEVAM" | "FAKE" | "DIFFERENCE">("ALL");
+  const [includeArchived, setIncludeArchived] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const q = day ? `?day=${encodeURIComponent(day)}&limit=500` : "?limit=500";
+      const qParams = [
+        day ? `day=${encodeURIComponent(day)}` : "",
+        "limit=500",
+        includeArchived ? "include_archived=true" : "",
+      ].filter(Boolean).join("&");
+      const q = qParams ? `?${qParams}` : "";
       const res = await apiRequest(`${API_BASE}/api/reports/llm-vs-rules${q}`, { cache: "no-store" });
       const body = await res.json();
       if (!res.ok) throw new Error(body.detail || "Karşılaştırma raporu yüklenemedi");
@@ -65,7 +71,7 @@ export default function LlmVsRulesTab({ day }: { day?: string }) {
     } finally {
       setLoading(false);
     }
-  }, [day]);
+  }, [day, includeArchived]);
 
   useEffect(() => {
     load();
@@ -85,7 +91,11 @@ export default function LlmVsRulesTab({ day }: { day?: string }) {
   });
 
   const downloadCsv = () => {
-    const q = day ? `?day=${encodeURIComponent(day)}` : "";
+    const qParams = [
+      day ? `day=${encodeURIComponent(day)}` : "",
+      includeArchived ? "include_archived=true" : "",
+    ].filter(Boolean).join("&");
+    const q = qParams ? `?${qParams}` : "";
     window.open(`${API_BASE}/api/reports/llm-vs-rules/csv${q}`, "_blank");
   };
 
@@ -144,7 +154,16 @@ export default function LlmVsRulesTab({ day }: { day?: string }) {
             Sistemin açtığı otonom işlemler ile LLM modelinin aynı sinyallere verdiği kararların (DEVAM/FAKE) paralel kârlılık kıyaslaması.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4 flex-wrap">
+          <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-mono text-bunker-muted hover:text-white transition-colors">
+            <input
+              type="checkbox"
+              checked={includeArchived}
+              onChange={(e) => setIncludeArchived(e.target.checked)}
+              className="rounded border-bunker-700 bg-bunker-900 text-neon-green focus:ring-0 w-3.5 h-3.5 cursor-pointer"
+            />
+            <span>Arşivlenmiş İşlemler</span>
+          </label>
           <button
             type="button"
             onClick={downloadCsv}

@@ -339,7 +339,7 @@ function SettingsPageInner() {
   });
 
   const resetTradingData = async () => {
-    if (!window.confirm("Tüm eski işlemler, sinyaller, karar logları ve snapshotlar silinecek. Cüzdan 10.000 TL ile başlayacak. Devam edilsin mi?")) return;
+    if (!window.confirm("Sanal portföy bakiyesi 10.000 TL olarak ayarlanacak. Açık pozisyonlar kapatılacak, önceki sanal portföy işlemleri arşivlenecek ve raporlarda yalnızca bu sıfırlamadan sonraki yeni işlemler analiz edilecektir. Devam etmek istiyor musunuz?")) return;
     setResetting(true);
     setError(null);
     setResetDone(false);
@@ -347,9 +347,13 @@ function SettingsPageInner() {
       const res = await apiRequest(`${API_BASE}/api/reset`, { method: "POST" });
       if (!res.ok) throw new Error("reset failed");
       setResetDone(true);
-      setTimeout(() => setResetDone(false), 3000);
+      setTimeout(() => setResetDone(false), 4000);
+      apiRequest(`${API_BASE}/api/config`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((d) => { if (d) { setCfg(d); setDraft(d); } })
+        .catch(() => undefined);
     } catch {
-      setError("Kayıtlar sıfırlanamadı - backend bağlantısını kontrol et");
+      setError("Sanal portföy sıfırlanamadı - backend bağlantısını kontrol et");
     } finally {
       setResetting(false);
     }
@@ -779,22 +783,27 @@ function SettingsPageInner() {
             <LlmManagement llm={llm} reload={reloadLlm} />
           </div>
 
-          <div className={`card border-neon-red/30 bg-neon-red/5 ${activeTab !== "app" ? "hidden" : ""}`}>
+          <div className={`card border-neon-cyan/40 bg-neon-cyan/5 ${activeTab !== "app" ? "hidden" : ""}`}>
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
               <div>
-                <p className="eyebrow text-neon-red">PAPER TRADING KAYITLARI</p>
-                <p className="font-mono text-sm text-white mt-2">Tüm eski paper-trading ve strateji geçmişini temizle</p>
-                <p className="text-xs text-bunker-muted mt-1">İşlemler, sinyaller, karar logları ve snapshotlar silinir. Ayarlar ve piyasa cache&apos;i korunur; yeni bakiye 10.000 TL olur.</p>
+                <div className="flex items-center gap-2">
+                  <p className="eyebrow text-neon-cyan">SANAL PORTFÖY RESETLEME</p>
+                  <span className="rounded bg-neon-cyan/20 px-2 py-0.5 font-mono text-[10px] font-bold text-neon-cyan border border-neon-cyan/40">10.000 TL</span>
+                </div>
+                <p className="font-mono text-sm text-white mt-2">Sanal portföy bakiyesini 10.000 TL&apos;ye sıfırla ve geçmiş işlemleri arşivle</p>
+                <p className="text-xs text-bunker-muted mt-1">
+                  Sanal portföy nakit bakiyesi 10.000 TL olarak ayarlanır, açık sanal pozisyonlar kapatılır. Bundan önceki tüm sanal portföy işlemleri arşivlenir ve raporlarda yalnızca bu sıfırlamadan itibaren olan işlemler listelenir.
+                </p>
               </div>
               <button
                 onClick={resetTradingData}
                 disabled={resetting}
-                className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${resetDone
-                  ? "border-neon-green/60 bg-neon-green/15 text-neon-green"
-                  : "border-neon-red/50 bg-neon-red/10 text-neon-red hover:bg-neon-red/20"
+                className={`shrink-0 px-4 py-2.5 rounded-lg border font-mono text-xs font-bold transition-all shadow-sm ${resetDone
+                  ? "border-neon-green/60 bg-neon-green/20 text-neon-green shadow-neon-green/20"
+                  : "border-neon-cyan/50 bg-neon-cyan/15 text-neon-cyan hover:bg-neon-cyan/25 hover:border-neon-cyan shadow-neon-cyan/10"
                   }`}
               >
-                {resetting ? "TEMİZLENİYOR..." : resetDone ? "✓ TEMİZLENDİ" : "ESKİ KAYITLARI TEMİZLE"}
+                {resetting ? "SIFIRLANIYOR..." : resetDone ? "✓ 10.000 TL AYARLANDI" : "SANAL PORTFÖYÜ SIFIRLA (10.000 TL)"}
               </button>
             </div>
           </div>
@@ -1736,7 +1745,7 @@ function AutoPaperSettingsPanel() {
   };
 
   const resetData = async () => {
-    if (!window.confirm("Portföy 10.000 TL'ye sıfırlanacak. Eski işlem kayıtları korunur ancak raporlara/hesaplamalara katılmaz. Devam etmek istiyor musunuz?")) return;
+    if (!window.confirm("Sanal portföy bakiyesi 10.000 TL olarak ayarlanacak. Açık pozisyonlar kapatılacak, önceki işlemler arşivlenecek ve raporlar bu sıfırlamadan itibaren başlayacaktır. Devam etmek istiyor musunuz?")) return;
     setResetting(true);
     try {
       const res = await apiRequest(`${API_BASE}/api/auto-paper/reset`, {
@@ -1928,8 +1937,8 @@ function AutoPaperSettingsPanel() {
         <button onClick={save} disabled={saving || pending} className="px-5 py-2 rounded-lg border border-neon-green/50 text-neon-green font-mono text-xs hover:bg-neon-green/10 disabled:opacity-50">
           {saving ? "KAYDEDİLİYOR..." : "KAYDET"}
         </button>
-        <button onClick={resetData} disabled={resetting} className="px-5 py-2 rounded-lg border border-neon-red/50 text-neon-red font-mono text-xs hover:bg-neon-red/10 disabled:opacity-50">
-          {resetting ? "SIFIRLANIYOR..." : "TÜM VERİYİ SIFIRLA"}
+        <button onClick={resetData} disabled={resetting} className="px-5 py-2 rounded-lg border border-neon-cyan/50 text-neon-cyan font-mono text-xs hover:bg-neon-cyan/10 disabled:opacity-50">
+          {resetting ? "SIFIRLANIYOR..." : "SANAL PORTFÖYÜ SIFIRLA (10.000 TL)"}
         </button>
       </div>
     </div>

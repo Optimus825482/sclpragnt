@@ -585,28 +585,29 @@ async def get_llm_tool_logs(limit: int = 500):
 
 
 @router.get("/api/reports/llm-vs-rules")
-async def get_llm_vs_rules_report(day: str | None = None, limit: int = 500):
+async def get_llm_vs_rules_report(day: str | None = None, limit: int = 500, include_archived: bool = False):
     """Kural bazlı otonom işlemler ile LLM İkinci Göz kararlarını karşılaştırır."""
     limit = max(1, min(int(limit), 2000))
-    res = await database.get_llm_vs_rules_comparison(day=day, limit=limit)
+    res = await database.get_llm_vs_rules_comparison(day=day, limit=limit, include_archived=include_archived)
     return {
         "paper_only": True,
         "day": day or "today",
         "stats": res["stats"],
         "trades": res["trades"],
         "total": len(res["trades"]),
+        "include_archived": include_archived,
     }
 
 
 @router.get("/api/reports/llm-vs-rules/csv")
-async def get_llm_vs_rules_csv(day: str | None = None, limit: int = 1000):
+async def get_llm_vs_rules_csv(day: str | None = None, limit: int = 1000, include_archived: bool = False):
     """Karşılaştırmalı analiz tablosunu Excel uyumlu UTF-8 CSV olarak dışa aktarır."""
     import csv
     import io
     from fastapi.responses import Response
 
     limit = max(1, min(int(limit), 5000))
-    res = await database.get_llm_vs_rules_comparison(day=day, limit=limit)
+    res = await database.get_llm_vs_rules_comparison(day=day, limit=limit, include_archived=include_archived)
     trades = res.get("trades", [])
 
     output = io.StringIO()

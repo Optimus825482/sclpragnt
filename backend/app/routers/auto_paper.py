@@ -1428,11 +1428,14 @@ async def list_trades_endpoint(
     limit: int = 100,
     offset: int = 0,
     day: str | None = None,
+    include_archived: bool = False,
 ):
     """Otonom paper trade kayıtlarını listele. Açık pozisyonlara güncel fiyat eklenir."""
     limit = max(1, min(int(limit), 500))
     offset = max(0, int(offset))
-    trades = await database.list_auto_paper_trades(status=status or None, limit=limit, offset=offset, day=day)
+    trades = await database.list_auto_paper_trades(
+        status=status or None, limit=limit, offset=offset, day=day, include_archived=include_archived
+    )
     # Açık pozisyonlar için güncel ticker fiyatını ekle (frontend PnL hesabı için)
     for t in trades:
         if t.get("status") == "open":
@@ -1455,17 +1458,27 @@ async def list_trades_endpoint(
                     t["notification_score"] = float(notif.get("score") or 0)
             else:
                 t["notification_price"] = float(t.get("entry_price") or 0)
-    return {"paper_only": True, "trades": trades, "total": len(trades), "day": day or "today"}
+    reset_at = await database.get_reset_cutoff()
+    return {
+        "paper_only": True,
+        "trades": trades,
+        "total": len(trades),
+        "day": day or "today",
+        "reset_at": reset_at,
+        "include_archived": include_archived,
+    }
 
 
 @router.get("/api/auto-paper/stats")
 async def get_stats_endpoint(day: str | None = None):
     """Otonom paper trade istatistikleri (seçilen gün / reset_at sonrasi; reset kapanışları hariç)."""
     stats = await database.get_auto_paper_stats(day=day)
+    reset_at = await database.get_reset_cutoff()
     return {
         "paper_only": True,
         "day": day or "today",
         "stats": stats,
+        "reset_at": reset_at,
         "state": dict(_AUTO_PAPER_STATE),
     }
 

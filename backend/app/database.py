@@ -5489,25 +5489,36 @@ async def list_auto_paper_trades(
     since: float | None = None,
     until: float | None = None,
     day: str | None = None,
+    include_archived: bool = False,
 ) -> list[dict]:
-    """Otonom paper trade'leri listele (yeni -> eski). offset pagination ve gün filtresi destekler."""
+    """Otonom paper trade'leri listele (yeni -> eski). offset pagination, gün filtresi ve arşivleme destekler."""
     eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=False)
     def op(conn):
+        cutoff = _get_reset_cutoff_sync(conn) if not include_archived else None
+        effective_since = eff_since
+        if cutoff is not None:
+            effective_since = max(cutoff, eff_since) if eff_since is not None else cutoff
+
         where_clauses = []
         params = []
         if status:
             where_clauses.append("status=?")
             params.append(status)
-        if eff_since is not None:
+
+        # Arşivlenen 'reset' çıkışlı kayıtları varsayılan olarak gizle
+        if not include_archived:
+            where_clauses.append("COALESCE(exit_reason, '') <> 'reset'")
+
+        if effective_since is not None:
             if status == "closed":
                 where_clauses.append("exit_time >= ?")
-                params.append(eff_since)
+                params.append(effective_since)
             elif status == "open":
                 where_clauses.append("entry_time >= ?")
-                params.append(eff_since)
+                params.append(effective_since)
             else:
                 where_clauses.append("((status='closed' AND exit_time >= ?) OR (status='open' AND entry_time >= ?))")
-                params.extend([eff_since, eff_since])
+                params.extend([effective_since, effective_since])
         if eff_until is not None:
             if status == "closed":
                 where_clauses.append("exit_time < ?")
@@ -5760,21 +5771,29 @@ async def get_llm_vs_rules_comparison(
     since: float | None = None,
     until: float | None = None,
     limit: int = 500,
+    include_archived: bool = False,
 ) -> dict:
     """Otonom paper işlemlerini LLM İkinci Göz (Second Eye) değerlendirmeleriyle karşılaştırır."""
     eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=False)
 
     def op(conn):
-        where_clauses = ["COALESCE(t.exit_reason, '') <> 'reset'"]
+        cutoff = _get_reset_cutoff_sync(conn) if not include_archived else None
+        filter_since = eff_since
+        if cutoff is not None:
+            filter_since = max(cutoff, eff_since) if eff_since is not None else cutoff
+
+        where_clauses = []
+        if not include_archived:
+            where_clauses.append("COALESCE(t.exit_reason, '') <> 'reset'")
         params: list = []
-        if eff_since is not None:
+        if filter_since is not None:
             where_clauses.append("t.entry_time >= ?")
-            params.append(eff_since)
+            params.append(filter_since)
         if eff_until is not None:
             where_clauses.append("t.entry_time < ?")
             params.append(eff_until)
 
-        where_sql = "WHERE " + " AND ".join(where_clauses)
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         sql = f"""
             SELECT 
                 t.id AS trade_id,

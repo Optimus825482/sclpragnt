@@ -4725,17 +4725,27 @@ async def set_risk_kill_switch(payload: dict = None, request: Request = None):
 @app.post("/api/reset")
 async def reset_all(request: Request = None):
     _require_admin(request)
-    """Eski paper-trading/strateji geçmişini sil, ayarları koru ve cüzdanı sıfırla."""
+    """Sanal portföy bakiyesini 10.000 TL olarak ayarla, açık pozisyonları kapat, eski işlemleri arşivle."""
     analyzer.positions.clear()
     analyzer.pending_orders.clear()
     analyzer._cooldown_until.clear()
     analyzer._timeout_block_until.clear()
     analyzer._hard_stop_block_until.clear()
     deleted = await database.reset_trading_data()
-    await ws_manager.broadcast({"type": "reset", "data": {"ok": True}})
+    try:
+        from app.routers.auto_paper import reset_state
+        reset_state()
+    except Exception:
+        pass
+    _actor, _actor_role = _session_identity(request)
+    await log_user_action(_actor, _actor_role, "portfolio", "PORTFOLIO_RESET",
+                          details={"reset_at": deleted.get("reset_at"), "wallet": deleted.get("wallet")}, request=request)
+    await ws_manager.broadcast({"type": "reset", "data": {"ok": True, "reset_at": deleted.get("reset_at"), "wallet": deleted.get("wallet")}})
     return {
         "ok": True,
-        "message": "Eski paper-trading kayıtları silindi, cüzdan 10.000 TRY'ye sıfırlandı",
+        "message": "Sanal portföy bakiyesi 10.000 TL olarak ayarlandı, önceki işlemler arşivlendi.",
+        "reset_at": deleted.get("reset_at"),
+        "wallet": deleted.get("wallet"),
         "deleted": deleted,
     }
 

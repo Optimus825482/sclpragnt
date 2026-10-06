@@ -141,6 +141,7 @@ function OverviewTab({ day }: { day?: string }) {
   const [breakdown, setBreakdown] = useState<any>(null);
   const [overall, setOverall] = useState<any>(null);
   const [autoPaperStats, setAutoPaperStats] = useState<any>(null);
+  const [resetAt, setResetAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -165,8 +166,10 @@ function OverviewTab({ day }: { day?: string }) {
       setBreakdown(nt.value.breakdown || null);
       setOverall(nt.value.overall || null);
     } else failures.push(`bildirimler (${reasonOf(nt.reason)})`);
-    if (ap.status === "fulfilled") setAutoPaperStats(ap.value.stats || null);
-    else failures.push(`otonom istatistik (${reasonOf(ap.reason)})`);
+    if (ap.status === "fulfilled") {
+      setAutoPaperStats(ap.value.stats || null);
+      if (ap.value.reset_at) setResetAt(ap.value.reset_at);
+    } else failures.push(`otonom istatistik (${reasonOf(ap.reason)})`);
 
     // Kısmi başarı da bilgidir: yalnızca hepsi düştüyse tam hata göster.
     if (failures.length === 3) setError(`Rapor verisi alınamadı: ${failures.join(", ")}`);
@@ -212,7 +215,12 @@ function OverviewTab({ day }: { day?: string }) {
             <span className="text-bunker-muted ml-1.5 hidden md:inline">Hız Avcısı, Sıçrama, Erken MACD ve Yükseliş Eğilimi. Push bildirimleri ve Panel uyarıları gerçek MFE ile ölçülür.</span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {resetAt && (
+            <span className="text-[11px] px-2 py-0.5 rounded bg-neon-cyan/20 border border-neon-cyan/40 text-neon-cyan font-bold" title="Sanal portföy sıfırlama zaman damgası">
+              ⚡ Sıfırlama: {fmtDt(resetAt)}
+            </span>
+          )}
           <span className="text-[11px] px-2 py-0.5 rounded bg-bunker-900/80 border border-sky-400/30 text-sky-300 font-bold">
             🔔 Push + 🖥️ Panel
           </span>
@@ -1228,25 +1236,31 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
 function UserPositionsTab({ day }: { day?: string }) {
   const [positions, setPositions] = useState<any[]>([]);
   const [trades, setTrades] = useState<any[]>([]);
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const [resetAt, setResetAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
     try {
       const dayParam = day ? (day === "all" ? "&day=all" : `&day=${encodeURIComponent(day)}`) : "";
+      const archiveParam = includeArchived ? "&include_archived=true" : "";
       const [posRes, apRes] = await Promise.all([
         apiRequest(`${API_BASE}/api/positions`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=100${dayParam}`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=100${dayParam}${archiveParam}`, { cache: "no-store" }),
       ]);
       const [pos, ap] = await Promise.all([posRes.json(), apRes.json()]);
       if (posRes.ok) setPositions((pos.positions || []).filter((p: any) => String(p.strategy || "").toUpperCase() === "AUTO_PAPER"));
-      if (apRes.ok) setTrades(ap.trades || []);
+      if (apRes.ok) {
+        setTrades(ap.trades || []);
+        if (ap.reset_at) setResetAt(ap.reset_at);
+      }
     } catch {
       setError("Pozisyon verisi alınamadı");
     } finally {
       setLoading(false);
     }
-  }, [day]);
+  }, [day, includeArchived]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1300,15 +1314,35 @@ function UserPositionsTab({ day }: { day?: string }) {
 
       {/* Kapanan Otonom İşlemler */}
       <section className="card p-5 rounded-2xl border border-bunker-800 bg-bunker-950/60 shadow-xl space-y-4">
-        <div className="flex items-center justify-between border-b border-bunker-800 pb-3">
-          <h2 className="font-mono text-base font-black text-white flex items-center gap-2">
-            <span>🏁</span> KAPANAN OTONOM İŞLEMLER ({trades.length})
-          </h2>
-          <span className="font-mono text-xs text-bunker-muted">Son 50 İşlem</span>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-bunker-800 pb-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="font-mono text-base font-black text-white flex items-center gap-2">
+              <span>🏁</span> KAPANAN OTONOM İŞLEMLER ({trades.length})
+            </h2>
+            {resetAt && (
+              <span className="font-mono text-[11px] text-neon-cyan border border-neon-cyan/40 bg-neon-cyan/10 px-2 py-0.5 rounded">
+                Sıfırlama: {fmtDt(resetAt)}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-mono text-bunker-muted hover:text-white transition-colors">
+              <input
+                type="checkbox"
+                checked={includeArchived}
+                onChange={(e) => setIncludeArchived(e.target.checked)}
+                className="rounded border-bunker-700 bg-bunker-900 text-neon-green focus:ring-0 w-3.5 h-3.5 cursor-pointer"
+              />
+              <span>Arşivlenmiş İşlemleri Göster</span>
+            </label>
+            <span className="font-mono text-xs text-bunker-muted hidden md:inline">Son 100 İşlem</span>
+          </div>
         </div>
 
         {trades.length === 0 ? (
-          <p className="py-6 text-center text-sm text-bunker-muted font-mono">Henüz tamamlanan otonom işlem yok.</p>
+          <p className="py-6 text-center text-sm text-bunker-muted font-mono">
+            {includeArchived ? "Kayıtlı otonom işlem bulunmuyor." : "Bu sıfırlamadan sonra henüz tamamlanan otonom işlem yok."}
+          </p>
         ) : (
           <div className="table-scroll">
             <table className="data-table table-compact">
@@ -1326,7 +1360,10 @@ function UserPositionsTab({ day }: { day?: string }) {
                 {trades.map((t: any) => {
                   const is4Way = Boolean(t.confluence_4way);
                   const reason = String(t.exit_reason || "AUTO");
-                  const reasonBadge = reason.includes("TP1") ? (
+                  const isArchived = reason === "reset" || Boolean(resetAt && t.exit_time && t.exit_time < resetAt);
+                  const reasonBadge = reason === "reset" ? (
+                    <Badge tone="neutral">ARŞİV SIFIRLAMA</Badge>
+                  ) : reason.includes("TP1") ? (
                     <Badge tone="ok">TP1 KİLİTLENDİ</Badge>
                   ) : reason.includes("TP2") || reason.includes("TAKE_PROFIT") ? (
                     <Badge tone="ok">TP2 HEDEF</Badge>
@@ -1341,8 +1378,13 @@ function UserPositionsTab({ day }: { day?: string }) {
                   );
 
                   return (
-                    <tr key={t.id}>
-                      <td className="font-mono text-xs text-bunker-muted">{fmtDt(t.exit_time || t.entry_time)}</td>
+                    <tr key={t.id} className={isArchived ? "opacity-60 bg-bunker-950/40" : ""}>
+                      <td className="font-mono text-xs text-bunker-muted">
+                        <div className="flex items-center gap-1.5">
+                          <span>{fmtDt(t.exit_time || t.entry_time)}</span>
+                          {isArchived && <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-bunker-800 text-bunker-muted border border-bunker-700">ARŞİV</span>}
+                        </div>
+                      </td>
                       <td><SymbolLink symbol={t.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                       <td className="font-mono text-xs text-bunker-muted">
                         <div className="flex items-center gap-1.5">
