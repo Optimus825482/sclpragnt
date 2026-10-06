@@ -474,6 +474,7 @@ class Config:
     # 4 Katmanlı Hibrit Mimari + Dinamik Uyarlanabilir Hedefler (TP1/TP2)
     # ---------------------------------------------------------------------
     MASTER_SURGE_ENABLED = os.getenv("MASTER_SURGE_ENABLED", "true").lower() == "true"
+    BTC_REGIME_SHIELD_ENABLED = os.getenv("BTC_REGIME_SHIELD_ENABLED", "true").lower() == "true"
     MASTER_SURGE_MIN_SCORE = float(os.getenv("MASTER_SURGE_MIN_SCORE", "70.0"))
     MASTER_SURGE_REQUIRE_4WAY = os.getenv("MASTER_SURGE_REQUIRE_4WAY", "true").lower() == "true"
     MASTER_SURGE_MAX_SPREAD_PCT = float(os.getenv("MASTER_SURGE_MAX_SPREAD_PCT", "0.45"))

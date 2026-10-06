@@ -44,6 +44,7 @@ export default function Sidebar() {
     const [unread, setUnread] = useState(0);
     const [notificationsOpen, setNotificationsOpen] = useState(false);
     const [health, setHealth] = useState<any>(null);
+    const [macroRegime, setMacroRegime] = useState<any>(null);
     const liveStatus = useLiveStatus();
     const onLiveMessage = useCallback((message: any) => {
         if (message.type !== "alert") return;
@@ -106,7 +107,14 @@ export default function Sidebar() {
     }, []);
     useEffect(() => { loadHealth(); }, [loadHealth]);
     useVisibleInterval(loadHealth, 10_000);
+
+    const loadMacroRegime = useCallback(() => {
+        apiFetch("/api/signals/macro-regime").then(setMacroRegime).catch(() => setMacroRegime(null));
+    }, []);
+    useEffect(() => { loadMacroRegime(); }, [loadMacroRegime]);
+    useVisibleInterval(loadMacroRegime, 15_000);
     const isStandalone = typeof window !== "undefined" && (window.matchMedia?.("(display-mode: standalone)").matches || (window.navigator as any)?.standalone === true);
+    const isBearRegime = Boolean(macroRegime?.regime_shield_active || macroRegime?.is_btc_above_ema200 === false);
     const install = async () => {
         if (!installEvent) return;
         await installEvent.prompt();
@@ -136,6 +144,23 @@ export default function Sidebar() {
                     </button>
                 </div>
                 <p className="eyebrow mt-2">V4 · Paper Trading</p>
+                {isBearRegime && (
+                    <div
+                        title="BTC 1H EMA200 altında: Makro ayı rejim kalkanı aktif."
+                        className="mt-2.5 flex items-center justify-between rounded-lg border border-red-500/70 bg-red-950/60 px-2.5 py-1.5 animate-pulse text-xs font-mono shadow-[0_0_12px_rgba(239,68,68,0.25)]"
+                    >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="relative flex h-2 w-2 shrink-0">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                            </span>
+                            <span className="font-bold text-red-400 text-[11px] truncate">🛡️ BTC BEAR REGIME</span>
+                        </div>
+                        <span className="text-[10px] font-bold text-red-300 bg-red-900/70 px-1 py-0.5 rounded border border-red-700/60 shrink-0">
+                            [KALKAN AKTİF]
+                        </span>
+                    </div>
+                )}
                 <button
                     type="button"
                     onClick={() => { setNotificationsOpen(true); setUnread(0); }}

@@ -572,11 +572,15 @@ def evaluate_master_surge(
                 "raw_composite_before_bias": raw_composite_index,
             }
 
-    # BTC Makro Panik Kapısı (BTC Compass Gate)
+    # BTC Makro Panik Kapısı (BTC Compass Gate) ve Makro Rejim Kalkanı (1H BTC EMA200)
     btc_panic_blocked = False
+    btc_regime_blocked = False
+    regime_shield_enabled = bool(getattr(config, "BTC_REGIME_SHIELD_ENABLED", True))
     if macro_sentiment and isinstance(macro_sentiment, dict):
         if macro_sentiment.get("is_btc_panic") and sym not in ("BTCTRY", "BTCUSDT"):
             btc_panic_blocked = True
+        if regime_shield_enabled and macro_sentiment.get("is_btc_above_ema200") is False and sym not in ("BTCTRY", "BTCUSDT"):
+            btc_regime_blocked = True
 
     # ATR bilgisi
     atr_pct = None
@@ -608,8 +612,11 @@ def evaluate_master_surge(
         else:
             gate_reason = "COMPOSITE_BELOW_MIN"
 
-    # Koruma filtreleri: BTC panik şelalesi veya aşırı şişkin long tasfiye riski
-    if btc_panic_blocked and sym not in ("BTCTRY", "BTCUSDT"):
+    # Koruma filtreleri: BTC 1H EMA200 makro rejim kalkanı, BTC panik şelalesi veya aşırı şişkin long tasfiye riski
+    if btc_regime_blocked and sym not in ("BTCTRY", "BTCUSDT"):
+        passed = False
+        block_reason = "BTC_BEAR_REGIME_SHIELD"
+    elif btc_panic_blocked and sym not in ("BTCTRY", "BTCUSDT"):
         passed = False
         block_reason = "BTC_PANIC_DOWNTREND"
     elif applied_derivatives and applied_derivatives.get("funding_state") == "EXTREME_LONG":
@@ -644,6 +651,9 @@ def evaluate_master_surge(
             "btc_15m_change_pct": macro_sentiment.get("btc_15m_change_pct"),
             "market_stress_level": macro_sentiment.get("market_stress_level"),
             "is_btc_panic": macro_sentiment.get("is_btc_panic"),
+            "is_btc_above_ema200": macro_sentiment.get("is_btc_above_ema200"),
+            "btc_1h_ema200": macro_sentiment.get("btc_1h_ema200"),
+            "regime_shield_active": macro_sentiment.get("regime_shield_active"),
         }
     if applied_bias:
         result["learning_bias"] = applied_bias
