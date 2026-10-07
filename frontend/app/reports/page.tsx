@@ -262,9 +262,9 @@ function OverviewTab({ day }: { day?: string }) {
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <StatCard label="HEDEFE ULAŞTI" value={String(breakdown.counts?.["TAMAMEN BAŞARILI"] || 0)} tone="text-neon-green" icon="✓" />
-            <StatCard label="TP1 KÂR KİLİTLENDİ" value={breakdown.tp1_count != null ? `${breakdown.tp1_count}` : String(breakdown.counts?.["BAŞARILI"] || 0)} tone="text-neon-green" sub={breakdown.tp1_rate != null ? `%${breakdown.tp1_rate.toFixed(1)} (≥%1.2)` : undefined} icon="🔒" />
-            <StatCard label="POZİTİF HAREKET" value={breakdown.mfe_positive_count != null ? `${breakdown.mfe_positive_count}` : String(breakdown.counts?.["KISMİ"] || 0)} tone="text-neon-green" sub={breakdown.mfe_positive_rate != null ? `%${breakdown.mfe_positive_rate.toFixed(1)} Kazanç` : undefined} icon="📈" />
-            <StatCard label="TP2 ZİRVE KOŞUSU" value={breakdown.tp2_count != null ? `${breakdown.tp2_count}` : "0"} tone="text-amber-300" sub={breakdown.tp2_rate != null ? `%${breakdown.tp2_rate.toFixed(1)} (≥%3.0)` : undefined} icon="⚡" />
+            <StatCard label="TEPE ≥%1,2 (kilit DEĞİL)" value={breakdown.tp1_count != null ? `${breakdown.tp1_count}` : String(breakdown.counts?.["BAŞARILI"] || 0)} tone="text-amber-300" sub={breakdown.tp1_rate != null ? `%${breakdown.tp1_rate.toFixed(1)} tepe noktası` : undefined} icon="📊" />
+            <StatCard label="POZİTİF HAREKET" value={breakdown.mfe_positive_count != null ? `${breakdown.mfe_positive_count}` : String(breakdown.counts?.["KISMİ"] || 0)} tone="text-sky-300" sub={breakdown.mfe_positive_rate != null ? `%${breakdown.mfe_positive_rate.toFixed(1)} tepe >0` : undefined} icon="📈" />
+            <StatCard label="TEPE ≥%3,0 (kilit DEĞİL)" value={breakdown.tp2_count != null ? `${breakdown.tp2_count}` : "0"} tone="text-amber-300" sub={breakdown.tp2_rate != null ? `%${breakdown.tp2_rate.toFixed(1)} tepe noktası` : undefined} icon="⚡" />
             <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.["BAŞARISIZ"] || 0)} tone="text-neon-red" icon="✗" />
             <StatCard label="ÖLÇÜLEN BAŞARI" value={overall?.success_rate != null ? `%${overall.success_rate.toFixed(1)}` : "—"} tone="text-sky-300" sub={`${overall?.success_count ?? 0}/${overall?.evaluated ?? 0} Ölçülen`} />
           </div>
@@ -593,9 +593,9 @@ function OverviewTab({ day }: { day?: string }) {
                         )}
                       </td>
                       <td>
-                        {n.status === "TAMAMEN BAŞARILI" ? <Badge tone="ok">TAMAMEN</Badge>
-                          : (n.mfe_pct != null && n.mfe_pct >= 3.0) ? <Badge tone="ok">TP2 KOŞUSU</Badge>
-                          : (n.mfe_pct != null && n.mfe_pct >= 1.2) ? <Badge tone="ok">TP1 KİLİTLENDİ</Badge>
+                        {n.status === "TAMAMEN BAŞARILI" ? <Badge tone="ok">HEDEFE DEĞDİ</Badge>
+                          : (n.mfe_pct != null && n.mfe_pct >= 3.0) ? <Badge tone="ok">TEPE ≥3,0</Badge>
+                          : (n.mfe_pct != null && n.mfe_pct >= 1.2) ? <Badge tone="warn">TEPE ≥1,2</Badge>
                           : n.status === "BAŞARILI" ? <Badge tone="ok">BAŞARILI</Badge>
                           : n.status === "KISMİ" ? <Badge tone="warn">KISMİ</Badge>
                           : n.status === "BAŞARISIZ" ? <Badge tone="bad">BAŞARISIZ</Badge>
@@ -828,15 +828,23 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
       const tradePnl = n.trade?.pnl != null ? Number(n.trade.pnl).toFixed(2) : "";
       const tradePnlPct = n.trade?.pnl_pct != null ? Number(n.trade.pnl_pct).toFixed(2) : "";
       const mfePct = n.mfe_pct != null ? Number(n.mfe_pct) : null;
+      // DÜRÜSTLÜK DÜZELTMESİ (2026-10-07): MFE yalnızca TEPE noktasıdır — bir
+      // kilitleme/realizasyon DEĞİLDİR. Eski etiketler ("TP1 KİLİTLENDİ",
+      // "TP2 KOŞUSU") gerçekleşmemiş bir kârı raporluyordu: 2026-10-07
+      // incelemesinde "TP1 KİLİTLENDİ" satırları ortalama -%4,32 zararla
+      // kapanmıştı. Ayrıca bu kontroller `KISMİ`'den ÖNCE geldiği için hedefe
+      // hiç dokunmamış satırlar da bu etiketi alıyordu. Etiketler artık
+      // yalnızca ÖLÇÜLEN olguyu söyler (tepe noktası), realizasyon iddiası yok.
+      // Gerçekleşen sonuç için "Otonom İşlem PnL %" kolonuna bakılmalıdır.
       let sonuc = "";
-      if (n.status === "TAMAMEN BAŞARILI") sonuc = "TAMAMEN BAŞARILI";
-      else if (mfePct != null && mfePct >= 3.0) sonuc = "TP2 KOŞUSU";
-      else if (mfePct != null && mfePct >= 1.2) sonuc = "TP1 KİLİTLENDİ";
+      if (n.status === "TAMAMEN BAŞARILI") sonuc = "HEDEFE DEĞDİ";
+      else if (mfePct != null && mfePct >= 3.0) sonuc = "TEPE ≥%3,0 (hedefe değmedi)";
+      else if (mfePct != null && mfePct >= 1.2) sonuc = "TEPE ≥%1,2 (hedefe değmedi)";
       else if (n.status === "BAŞARILI") sonuc = "BAŞARILI";
       else if (n.status === "KISMİ") sonuc = `KISMİ (+${mfePct?.toFixed(1)}%)`;
       else if (n.outcome_details?.status_reason === "STOPPED_OUT") sonuc = "STOP (-%1.5)";
       else if (n.status === "BAŞARISIZ") sonuc = "BAŞARISIZ";
-      else if (n.status === "ÖLÇÜLEMEDİ") sonuc = "ZAMAN AŞIMI";
+      else if (n.status === "ÖLÇÜLEMEDİ") sonuc = "ÖLÇÜLEMEDİ (1m mum yok)";
       else sonuc = "TAKİPTE";
       return [timeStr, n.symbol || "", channel, sources, price, score, target, mfe, tradePnl, tradePnlPct, sonuc].map(csvEscape).join(",");
     });
@@ -920,9 +928,9 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
         {breakdown && (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-1">
             <StatCard label="HEDEFE ULAŞTI" value={String(breakdown.counts?.["TAMAMEN BAŞARILI"] || 0)} tone="text-neon-green" icon="✓" />
-            <StatCard label="TP1 KİLİTLENDİ (≥%1.2)" value={String(breakdown.tp1_count || 0)} tone="text-neon-green" sub={`%${(breakdown.tp1_rate || 0).toFixed(1)} Başarı`} />
-            <StatCard label="POZİTİF HAREKET" value={String(breakdown.mfe_positive_count || 0)} tone="text-sky-300" sub={`%${(breakdown.mfe_positive_rate || 0).toFixed(1)} Pozitif MFE`} />
-            <StatCard label="TP2 ZİRVE KOŞUSU" value={String(breakdown.tp2_count || 0)} tone="text-neon-green" sub={`%${(breakdown.tp2_rate || 0).toFixed(1)} Koşu (≥%3)`} />
+            <StatCard label="TEPE ≥%1,2 (kilit DEĞİL)" value={String(breakdown.tp1_count || 0)} tone="text-amber-300" sub={`%${(breakdown.tp1_rate || 0).toFixed(1)} tepe noktası`} />
+            <StatCard label="POZİTİF HAREKET" value={String(breakdown.mfe_positive_count || 0)} tone="text-sky-300" sub={`%${(breakdown.mfe_positive_rate || 0).toFixed(1)} tepe >0`} />
+            <StatCard label="TEPE ≥%3,0 (kilit DEĞİL)" value={String(breakdown.tp2_count || 0)} tone="text-amber-300" sub={`%${(breakdown.tp2_rate || 0).toFixed(1)} tepe noktası`} />
             <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.["BAŞARISIZ"] || 0)} tone="text-neon-red" icon="✗" />
             <StatCard label="FARKLI SEMBOL" value={String(breakdown.unique_symbols ?? 0)} sub={breakdown.dominant_symbol ? `Lider: ${breakdown.dominant_symbol}` : ""} />
           </div>
@@ -1187,9 +1195,9 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
                               TAMAMEN {n.outcome_details?.touched_at_minute != null ? `(${n.outcome_details.touched_at_minute}. dk)` : ""}
                             </Badge>
                           ) : (mfePct != null && mfePct >= 3.0) ? (
-                            <Badge tone="ok">TP2 KOŞUSU</Badge>
+                            <Badge tone="ok">TEPE ≥3,0</Badge>
                           ) : (mfePct != null && mfePct >= 1.2) ? (
-                            <Badge tone="ok">TP1 KİLİTLENDİ</Badge>
+                            <Badge tone="warn">TEPE ≥1,2</Badge>
                           ) : n.status === "BAŞARILI" ? (
                             <Badge tone="ok">BAŞARILI</Badge>
                           ) : n.status === "KISMİ" ? (

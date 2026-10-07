@@ -717,6 +717,94 @@ class AutoPaperPostWinAndLLMGateTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(auto_paper._post_win_cooldowns["TESTREOPEN"], now)
 
 
+class AutoPaperModeFilterTests(unittest.TestCase):
+    """2026-10-07 incelemesi: mod filtresi + bildirim dedup kapıları."""
+
+    def _run(self, notification, settings):
+        """try_open_from_notification'ı sabit ayarlarla çalıştır; sonucu döndür."""
+        async def scenario():
+            orig_settings = auto_paper.get_auto_paper_settings
+            fake = dict(settings)
+            fake.setdefault("enabled", True)
+            fake.setdefault("min_score", 0.0)
+            auto_paper.get_auto_paper_settings = AsyncMock(return_value=fake)
+            try:
+                return await auto_paper.try_open_from_notification(notification)
+            finally:
+                auto_paper.get_auto_paper_settings = orig_settings
+        import asyncio
+        return asyncio.run(scenario())
+
+    def test_mode_outside_allowlist_blocked(self):
+        """İzin listesinde olmayan mod engellenmeli (mode_not_allowed)."""
+        n = _make_notification(score=90.0, notif_id=9001)
+        n["mode"] = "global_lead_lag"
+        res = self._run(n, {"allowed_modes": ["trend_devam"]})
+        self.assertIsNotNone(res)
+        self.assertEqual(res.get("reason"), "mode_not_allowed")
+        self.assertEqual(res.get("mode"), "global_lead_lag")
+
+    def test_mode_in_allowlist_not_blocked_by_mode_gate(self):
+        """İzinli mod mod kapısına takılmamalı (başka bir kapıda durabilir)."""
+        n = _make_notification(score=90.0, notif_id=9002)
+        n["mode"] = "trend_devam"
+        res = self._run(n, {"allowed_modes": ["trend_devam"]})
+        if res is not None:
+            self.assertNotEqual(res.get("reason"), "mode_not_allowed")
+
+    def test_empty_allowlist_allows_every_mode(self):
+        """Boş liste = filtre kapalı (eski davranış); mod kapısı devreye girmez."""
+        n = _make_notification(score=90.0, notif_id=9003)
+        n["mode"] = "notr"
+        res = self._run(n, {"allowed_modes": []})
+        if res is not None:
+            self.assertNotEqual(res.get("reason"), "mode_not_allowed")
+
+    def test_symbol_dedup_blocks_recent_entry(self):
+        """Aynı sembolde yakın zamanda giriş varsa engellenmeli (symbol_dedup)."""
+        n = _make_notification(symbol="DEDUPX", score=90.0, notif_id=9004)
+        n["mode"] = "trend_devam"
+        orig = auto_paper.database.get_last_auto_paper_entry_time
+        auto_paper.database.get_last_auto_paper_entry_time = AsyncMock(
+            return_value=time.time() - 60.0)  # 1 dk önce giriş
+        try:
+            res = self._run(n, {"dedup_cooldown_minutes": 60.0})
+        finally:
+            auto_paper.database.get_last_auto_paper_entry_time = orig
+        self.assertIsNotNone(res)
+        self.assertEqual(res.get("reason"), "symbol_dedup")
+
+    def test_symbol_dedup_disabled_when_zero(self):
+        """dedup_cooldown_minutes=0 iken kapı devre dışı (eski davranış)."""
+        n = _make_notification(symbol="DEDUPY", score=90.0, notif_id=9005)
+        n["mode"] = "trend_devam"
+        orig = auto_paper.database.get_last_auto_paper_entry_time
+        called = []
+
+        async def fake_entry(symbol):
+            called.append(symbol)
+            return time.time() - 10.0
+
+        auto_paper.database.get_last_auto_paper_entry_time = fake_entry
+        try:
+            res = self._run(n, {"dedup_cooldown_minutes": 0.0})
+        finally:
+            auto_paper.database.get_last_auto_paper_entry_time = orig
+        self.assertEqual(called, [], "0 iken DB sorgusu yapılmamalı")
+        if res is not None:
+            self.assertNotEqual(res.get("reason"), "symbol_dedup")
+
+    def test_settings_roundtrip_preserves_new_keys(self):
+        """Yeni ayarlar şemada tanınmalı: allowed_modes listesi + dedup sayısı."""
+        from app.routers.auto_paper import get_default_settings
+        import asyncio
+        defaults = asyncio.run(get_default_settings())
+        self.assertIn("allowed_modes", defaults)
+        self.assertIn("dedup_cooldown_minutes", defaults)
+        self.assertEqual(defaults["allowed_modes"], [])
+        self.assertEqual(defaults["dedup_cooldown_minutes"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

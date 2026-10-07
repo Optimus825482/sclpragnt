@@ -83,6 +83,8 @@ async def _log_blocked_decision(symbol: str, reason: str, price: float, extra: d
             "post_win_cooldown": f"Kâr koruma beklemesi devrede (kalan: {extra.get('remaining_sec')} sn)",
             "llm_fake_blocked": f"LLM İkinci Göz sahte sinyal/tuzak engeli (güven: %{extra.get('confidence')})",
             "llm_low_confidence": f"LLM İkinci Göz düşük güven engeli (güven: %{extra.get('confidence')} < %60)",
+            "mode_not_allowed": f"Mod izinli listede değil ('{extra.get('mode') or '?'}' — izinli: {extra.get('allowed')})",
+            "symbol_dedup": f"Aynı sembolde kısa süre önce giriş yapıldı, tekrar açılmadı (kalan: {extra.get('remaining_sec')} sn)",
         }
         human_reason = reason_tr_map.get(reason, f"Giriş engellendi: {reason}")
         if reason == "liquidity" and isinstance(extra.get("liquidity"), dict):
@@ -227,6 +229,39 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
 
         # Sinyal teyit kontrolü: Panel veya Push ile gelen tüm geçerli bildirimler
         # açık pozisyon yoksa otonom işleme alınır (2026-09-22 Erkan Kararı).
+
+        # MOD FILTRESI (2026-10-07). Bos liste = filtre kapali (eski davranis).
+        # Kanit: 3214 bildirim, 30 gun, gercek mum verisi -> trend_devam
+        # +0.47%/islem (5/5 hafta pozitif, p~0.000) iken ayni donemde
+        # global_lead_lag -0.13%, notr -0.70%, llm_ikinci_goz -0.27%.
+        # Karisik havuz maliyet sonrasi negatif kaliyor; bu kapi yalnizca
+        # otonom KATMANI moda gore suzer (push bildirimi engellenmez).
+        allowed_modes = settings.get("allowed_modes") or []
+        if allowed_modes:
+            notif_mode = str(notification.get("mode") or "").strip()
+            if notif_mode not in allowed_modes:
+                logger.info("auto_paper %s: mod '%s' izinli listede degil %s — acilmadi",
+                            symbol, notif_mode or "?", allowed_modes)
+                return _blocked(symbol, "mode_not_allowed", mode=notif_mode,
+                                allowed=allowed_modes)
+
+        # BILDIRIM DEDUP (2026-10-07). Ayni sembolde kisa sure once giris
+        # yapildiysa tekrar girme. Ayarlar > 0 ise devreye girer: ayni sinyal
+        # 5 dakikada birden fazla kanaldan geliyordu ve her biri ayri pozisyon
+        # aciyordu; 30 gunluk veride bu tekrarlar ortalamayi bozuyordu.
+        dedup_min = float(settings.get("dedup_cooldown_minutes", 0.0) or 0.0)
+        if dedup_min > 0:
+            try:
+                _last_entry = await database.get_last_auto_paper_entry_time(symbol)
+            except Exception as exc:
+                logger.debug("auto_paper %s dedup kontrol hatasi: %s", symbol, exc)
+                _last_entry = None
+            if _last_entry and (time.time() - _last_entry) < (dedup_min * 60.0):
+                rem = round(dedup_min * 60.0 - (time.time() - _last_entry), 0)
+                logger.info("auto_paper %s: ayni sembolde %.0f dk once giris yapildi — "
+                            "tekrar acilmadi (kalan %.0f sn)", symbol, dedup_min, rem)
+                return _blocked(symbol, "symbol_dedup", remaining_sec=rem,
+                                dedup_cooldown_minutes=dedup_min)
 
         # R3-08 (P1): aday PANEL EŞİĞİNİ geçmiş olmalı (passing-only). Monitoring
         # yalnızca passing adayları bildirir; burada `passes` bayrağı açıkça False
@@ -581,6 +616,31 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         if target_pct <= 0:
             target_pct = float(settings.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT))
 
+        # Master Surge iki kademeli hedefleme: bildirimde TP2 koşucu hedefi varsa
+        # nihai hedef TP2'dir. DÜZELTME (2026-10-07): bu blok ESKİDEN TP fiyatı
+        # hesaplandıktan SONRA çalışıyordu → `target_pct` yükseliyor ama
+        # `take_profit_price` eski (düşük) değerde kalıyordu; DB'ye ise
+        # yükseltilmiş `notification_target_pct` yazılıyordu. Sonuç: kayıtta
+        # emrin asla ulaşamayacağı bir hedef görünüyordu (durum tutarsızlığı).
+        # Artık TP2, TP fiyatı hesaplanmadan ÖNCE uygulanır.
+        tp1_scalp_val = notification.get("tp1_scalp_pct")
+        tp2_runner_val = notification.get("tp2_runner_pct")
+        if tp2_runner_val and float(tp2_runner_val) > target_pct:
+            target_pct = float(tp2_runner_val)
+
+        # HEDEF TAVANI (2026-10-07 incelemesi). `default_target_pct` ayarı
+        # buraya HİÇ etki etmiyordu: TP, bildirimin kendi `target_pct`'inden
+        # gelir ve o ortalama +%3,90'dır. Ölçüm (1537 kapanan işlem + 9740
+        # değerlendirilmiş aday): ulaşılan tepe medyanı +%1,62, yani hedef
+        # ulaşılabilir tepenin ~2,4 katıydı; işlemlerin yalnızca %13'ü hedefe
+        # değiyordu. Tavan, hedefi realize edilebilir bir aralığa çeker.
+        # 0 = sınırsız (eski davranış); geriye dönük uyum için kapalı bırakılabilir.
+        max_target = float(settings.get("max_target_pct", 0.0) or 0.0)
+        if max_target > 0 and target_pct > max_target:
+            logger.info("auto_paper %s: bildirim hedefi +%.2f%% tavanı +%.2f%%'e çekildi",
+                        symbol, target_pct, max_target)
+            target_pct = max_target
+
         commission_pct = config.COMMISSION_PCT
         max_cost = order_value / (1 + commission_pct)
         # D-08 (2026-09-12): fiilî ALIŞ dolumuna kayma (slippage) uygula. Maliyet
@@ -620,8 +680,14 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
                         atr_val = _atr(highs, lows, closes, 14)
                         if atr_val and current_price > 0:
                             atr_pct = atr_val / current_price
-                            # 1.2 * ATR_pct nefes alma alanı, minimum sl_pct, maksimum %2.8
-                            effective_sl_pct = max(sl_pct, min(0.028, 1.2 * atr_pct))
+                            # 1.2 * ATR_pct nefes alma alanı, minimum sl_pct.
+                            # DÜZELTME (2026-10-07): eski kod `max(sl_pct, min(TABAN, 1.2*atr))`
+                            # idi. sl_pct TABANDAN genişse (canlıda %4 > %2,8 iken)
+                            # max() her zaman sl_pct döndürüyordu → bu koruma
+                            # SESSİZCE tamamen devre dışı kalıyordu. Artık tavan
+                            # yalnızca ATR tarafını sınırlar; `max(sl_pct, ...)`
+                            # değişmezi (koruma asla stop'u DARALTMAZ) korunur.
+                            effective_sl_pct = max(sl_pct, min(sl_pct, 1.2 * atr_pct))
             except Exception as atr_err:
                 logger.debug("auto_paper %s: ATR stop hesaplama atlandı: %s", symbol, atr_err)
 
@@ -638,13 +704,10 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             notification_id_val = int(raw_nid)
         notification_key = notification.get("notification_key")
 
-        # Master Surge iki kademeli hedefleme:
-        # Eğer bildirimde TP2 koşucu hedefi varsa (+%3-%6.5+), nihai TP hedefi TP2'ye
-        # ayarlanır; TP1 scalp kilidi (+%1.2-%1.8) ise koruma stop'u olarak devralır.
-        tp1_scalp_val = notification.get("tp1_scalp_pct")
-        tp2_runner_val = notification.get("tp2_runner_pct")
-        if tp2_runner_val and float(tp2_runner_val) > target_pct:
-            target_pct = float(tp2_runner_val)
+        # NOT (2026-10-07): Master Surge TP2 yükseltmesi buradan YUKARI taşındı
+        # (TP fiyatı hesaplanmadan önce). Burada ikinci kez uygulanırsa
+        # `take_profit_price` eski değerde kalırken `notification_target_pct`
+        # yükselir → kayıtta tutarsız/ulaşılamaz hedef görünürdü.
 
         trade_data = {
             "symbol": symbol,
@@ -1312,6 +1375,9 @@ async def get_default_settings() -> dict:
         "balance_pct": config.AUTO_PAPER_BALANCE_PCT_DEFAULT,
         "stop_loss_pct": config.AUTO_PAPER_SL_PCT_DEFAULT,
         "default_target_pct": config.AUTO_PAPER_DEFAULT_TARGET_PCT,
+        # Hedef tavanı (2026-10-07): bildirimin kendi target_pct'i bunu aşarsa
+        # TP bu değere çekilir. Env: AUTO_PAPER_MAX_TARGET_PCT. 0 = sınırsız.
+        "max_target_pct": getattr(config, "AUTO_PAPER_MAX_TARGET_PCT", 0.0),
         "min_order_try": config.AUTO_PAPER_MIN_ORDER_TRY,
         "breakeven_enabled": getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False),
         "breakeven_trigger_pct": config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT,
@@ -1332,6 +1398,17 @@ async def get_default_settings() -> dict:
         "llm_gate_enabled": True,
         "llm_min_confidence": 60.0,
         "volatility_sl_enabled": True,
+        # MOD FILTRESI (2026-10-07 incelemesi). Bos liste = TUM modlar (eski
+        # davranis). Kanit: 3214 bildirim uzerinde 30 gunluk gercek mum
+        # verisiyle (work/analiz_2026-10-07) mod ayrimi belirleyici cikti:
+        # trend_devam +0.47%/islem, unified +0.02%, global_lead_lag -0.13%,
+        # notr -0.70%. Karisik havuz maliyet sonrasi negatif kaliyor.
+        "allowed_modes": [],
+        # BILDIRIM DEDUP (2026-10-07). Ayni sembolde ZATEN ACIK pozisyon varken
+        # yeni bildirimle pozisyon buyutmeyi engeller (0 = kapali). Ayni sinyal
+        # 5 dakikada birden fazla kanaldan geliyor; her biri ayri islem aciyordu.
+        # Sembol-basi tekrar arasi cooldown olarak uygulanir.
+        "dedup_cooldown_minutes": 0.0,
     }
 
 
@@ -1361,7 +1438,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
     _require_admin(request)
 
     editable = ("enabled", "min_score", "balance_pct", "stop_loss_pct",
-                "default_target_pct", "min_order_try", "breakeven_enabled",
+                "default_target_pct", "max_target_pct", "min_order_try", "breakeven_enabled",
                 "breakeven_trigger_pct", "trailing_enabled", "trailing_trigger_pct",
                 "trailing_gap_pct", "reopen_after_protect_close",
                 "tp_primary_exit_enabled", "dynamic_breakeven_enabled",
@@ -1370,7 +1447,8 @@ async def update_settings_endpoint(payload: dict, request: Request):
                 "block_weak_mtf", "min_mtf_confluence",
                 "sl_cooldown_minutes", "post_win_cooldown_minutes",
                 "llm_gate_enabled", "llm_min_confidence",
-                "volatility_sl_enabled")
+                "volatility_sl_enabled",
+                "allowed_modes", "dedup_cooldown_minutes")
     existing = await get_auto_paper_settings()
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
 
@@ -1380,6 +1458,8 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "balance_pct": max(1.0, min(100.0, float(merged.get("balance_pct", config.AUTO_PAPER_BALANCE_PCT_DEFAULT)))),
         "stop_loss_pct": max(0.1, min(20.0, float(merged.get("stop_loss_pct", config.AUTO_PAPER_SL_PCT_DEFAULT)))),
         "default_target_pct": max(0.5, min(20.0, float(merged.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT)))),
+        # 0 = sınırsız (eski davranış, geriye dönük uyum). Üst sınır 20.
+        "max_target_pct": max(0.0, min(20.0, float(merged.get("max_target_pct", getattr(config, "AUTO_PAPER_MAX_TARGET_PCT", 0.0))))),
         # 2026-09-27: taban `10.0` TRY cinsinden sabitlenmişti; deployment
         # quote'ünden gelir: TRY'de 10 (değişmeyen davranış). Üst sınır
         # koymadık — operatör bilerek küçük eşik seçebilir.
@@ -1411,6 +1491,14 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "min_mtf_confluence": max(0.0, min(100.0, float(merged.get("min_mtf_confluence", 45.0)))),
         "sl_cooldown_minutes": max(0.0, min(120.0, float(merged.get("sl_cooldown_minutes", 5.0)))),
         "volatility_sl_enabled": bool(merged.get("volatility_sl_enabled", True)),
+        # Mod filtresi: yalnizca tanimli mod adlari; ayni degeri korur, bilinmeyen
+        # adlar sessizce dusurulur (fail-closed degil — eski davranisa donmesin diye
+        # liste bosaltilirsa TUM modlar gecer). Bilinmeyen ad girisi KILITLEMEZ.
+        "allowed_modes": [str(m).strip() for m in (
+            merged.get("allowed_modes") or []
+            if isinstance(merged.get("allowed_modes") or [], list) else [])
+            if str(m).strip()][:20],
+        "dedup_cooldown_minutes": max(0.0, min(1440.0, float(merged.get("dedup_cooldown_minutes", 0.0) or 0.0))),
     }
 
     await database.set_llm_setting("auto_paper_settings", json.dumps(settings))

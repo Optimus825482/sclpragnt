@@ -5468,6 +5468,24 @@ async def get_last_auto_paper_stop_loss_time(symbol: str) -> float | None:
     return await _run_db(op)
 
 
+async def get_last_auto_paper_entry_time(symbol: str) -> float | None:
+    """Sembolün en son açılan (halen açık veya kapanmış) işleminin giriş zamanı.
+
+    Bildirim dedup'ı için (2026-10-07): aynı sembolde ARDIŞIK girişler arasındaki
+    süreyi ölçer. `entry_time` kullanılır (exit_time değil) — hâlâ açık bir
+    pozisyon da tekrarı engellemeli.
+    """
+    sym = str(symbol).upper()
+
+    def op(conn):
+        row = conn.execute(
+            "SELECT entry_time FROM auto_paper_trades WHERE symbol=? "
+            "ORDER BY entry_time DESC LIMIT 1", (sym,)
+        ).fetchone()
+        return float(row[0]) if (row and row[0] is not None) else None
+    return await _run_db(op)
+
+
 async def get_last_auto_paper_winning_trade_time(symbol: str) -> float | None:
     """Sembolün son karlı kapanış zamanını getir (post-win cooldown kontrolü için)."""
     sym = str(symbol).upper()

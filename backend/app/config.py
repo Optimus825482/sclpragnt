@@ -632,6 +632,12 @@ class Config:
     AUTO_PAPER_SL_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_SL_PCT", "1.5"))  # Eski varsayılan 3.0 → 1.5 (2026-09-17, Erkan kararı: replay geometrisi + canlı 50 işlem verisi).
     AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "1.5"))  # Eski varsayılan 2.0 → 1.5 (2026-09-17, Erkan kararı: radar/velocity bildirimlerinin hedefi MFE tavanına otursun; replay geometrisi + canlı 50 işlem verisi).
     AUTO_PAPER_MIN_ORDER_TRY = float(os.getenv("AUTO_PAPER_MIN_ORDER_TRY", "50.0"))
+    # Hedef tavanı (2026-10-07): bildirimin kendi `target_pct`'i bu değeri aşarsa
+    # TP buraya çekilir. NEDEN VAR: `AUTO_PAPER_DEFAULT_TARGET_PCT` yalnızca
+    # bildirimde hedef YOKSA kullanılır; canlıda hedef ort. +%3,90 geliyordu,
+    # ulaşılan tepe medyanı +%1,62 — yani işlemlerin %87'si hedefe hiç değmiyordu.
+    # 0 = sınırsız (eski davranış).
+    AUTO_PAPER_MAX_TARGET_PCT = float(os.getenv("AUTO_PAPER_MAX_TARGET_PCT", "0"))
     # Başabaş (Breakeven) koruması: erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI (2026-09-22 Erkan kararı). Ayarlardan isteğe bağlı açılabilir.
     AUTO_PAPER_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_BREAKEVEN_ENABLED", "true").lower() == "true"
