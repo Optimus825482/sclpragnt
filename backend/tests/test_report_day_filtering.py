@@ -13,7 +13,20 @@ from app.routers import reports, monitoring, auto_paper
 
 
 class TestReportDayFiltering(unittest.IsolatedAsyncioTestCase):
-    """Raporlama Merkezi gün bazlı izolasyon testi (2026-09-22 güncellemesi)."""
+    """Raporlama Merkezi gün bazlı izolasyon testi (2026-09-22 güncellemesi).
+
+    Bu sınıf YALNIZ gün penceresi mantığını sınar. Rapor başlangıcı sınırı
+    (2026-10-07) burada nötrlenir; aksi halde "bugün 00:01" satırı 11:30
+    sınırının öncesine düştüğü için test konusundan bağımsız olarak düşerdi.
+    Sınırın kendi davranışı `TestReportsBaselineFiltering`'de sınanır.
+    """
+
+    def setUp(self):
+        self._orig_baseline = database._get_reports_baseline_sync
+        database._get_reports_baseline_sync = lambda conn: 0.0
+
+    def tearDown(self):
+        database._get_reports_baseline_sync = self._orig_baseline
 
     async def test_report_day_filtering_isolated(self):
         await database.init_db()

@@ -3141,6 +3141,7 @@ async def report_notifications(
     master_surge_only: bool = False,
     channel: str = "all",
     source: str = "all",
+    include_archived: bool = False,
 ):
     """Radar bildirim raporu - gercek kapanis M1 olcmeye dayali basari.
     day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
@@ -3148,6 +3149,8 @@ async def report_notifications(
     confluence_min / master_surge_only: Çoklu teyit filtresi.
     channel: 'all', 'push' (sent_via_push=True), 'panel' (sent_via_push=False).
     source: 'all', 'velocity', 'jump', 'early', 'rising'.
+    include_archived: True ise RAPOR BAŞLANGICI öncesi bildirimler de listelenir
+    ("arşivi göster"). Varsayılan False → yalnız deploy sonrası sinyaller.
     """
     limit = max(1, min(int(limit), 1000))
     if day == "all":
@@ -3164,7 +3167,8 @@ async def report_notifications(
     settings = await get_user_notification_settings()
     # Tek eşik ilkesi: belirtilmediyse admin etkin eşiği kullanılır.
     threshold = float(min_score) if min_score is not None else _effective_min_score(settings)
-    rows = await database.get_monitoring_velocity_matches(limit=limit, day=effective_day)
+    rows = await database.get_monitoring_velocity_matches(
+        limit=limit, day=effective_day, ignore_reports_baseline=include_archived)
     # Eşik filtresi panel (0-100) skoru üzerinden; eski ham kayıtlar tek kez
     # normalize edilir (bkz. _stored_panel_score).
     rows = [r for r in rows
@@ -3407,7 +3411,9 @@ async def report_notifications(
 
     # Seçilen gün / dönem genel başarı dökümü (day=all ise tüm zamanlar)
     # slim=True: agregasyon message/title kullanmaz → kolon transferini atla.
-    all_rows = await database.get_monitoring_velocity_matches(limit=None, day=effective_day, slim=True)
+    all_rows = await database.get_monitoring_velocity_matches(
+        limit=None, day=effective_day, slim=True,
+        ignore_reports_baseline=include_archived)
     all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
     if req_conf > 1:
         all_rows = [r for r in all_rows if len(_parse_sources(r.get("sources"))) >= req_conf]

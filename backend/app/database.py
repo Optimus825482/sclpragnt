@@ -483,6 +483,117 @@ def _get_reset_cutoff_sync(conn) -> float:
         pass
     return 0.0
 
+
+# ---------------------------------------------------------------------------
+# RAPOR BAŞLANGICI (2026-10-07) — "bu deploy" sınırı
+# ---------------------------------------------------------------------------
+# Raporlar (sinyal + otonom işlem) ve KPI'lar yalnızca bu andan SONRAKİ veriyle
+# hesaplanır; öncesi "arşiv" sayılır ve varsayılan olarak gizlenir.
+#
+# NEDEN: 2026-10-07'de otonom trade ayarları kanıta dayalı değerlere çevrildi
+# (docs/OTONOM_TRADE_TESHIS_2026-10-07.md §6). O tarihten önceki işlemler eski
+# (zarar eden) kurguyla açıldığı için yeni kurgunun gerçek performansını
+# kirletiyordu.
+#
+# Bu, `_get_reset_cutoff_sync` ile AYNI desendir (llm_settings'te epoch float,
+# okuma senkron yardımcıyla, tüketicilerde `max(...)` ile taban olarak) ve
+# İKİ AYRI SINIRDIR: portföy sıfırlama (bakiye/işlem) ayrı, rapor başlangıcı
+# (ne görünür) ayrıdır. İkisi de uygulanır; hangisi yeniyse o kazanır.
+_REPORTS_BASELINE_KEY = "reports_baseline_at"
+
+
+def _parse_reports_baseline(raw) -> float:
+    """Sınır değerini epoch saniyeye çevir (0.0 = filtre kapalı).
+
+    Kabul edilen biçimler:
+      - epoch saniye:      "1791388800" / "1791388800.5"
+      - gün:               "2026-10-07"
+      - gün + saat:dakika: "2026-10-07 11:30" / "2026-10-07T11:30"
+    Saat verilmezse gün 00:00 kabul edilir. Duvarsaati UTC+3 (Türkiye) olarak
+    yorumlanır — operatör ekranda ne görüyorsa onu girer, tüketiciler
+    (`_resolve_time_bounds`, `get_monitoring_velocity_matches`) da UTC+3
+    kullanır; ayrışırlarsa sınır kayar.
+
+    Boş/NULL/"0"/anlaşılamayan değer → 0.0 (kapalı). Anlaşılamayan bir değeri
+    "şimdi" yapmak yanlış olurdu: kullanıcı yazım hatası yaptığında tüm
+    geçmişi sessizce arşive atmak yerine filtreyi kapatıyoruz.
+    """
+    if raw is None:
+        return 0.0
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    text = str(raw).strip()
+    if not text or text == "0":
+        return 0.0
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        pass
+    else:
+        return value
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        return parsed.replace(tzinfo=timezone(timedelta(hours=3))).timestamp()
+    return 0.0
+
+
+def _report_floor_sync(conn, ignore_reports_baseline: bool = False) -> float:
+    """Rapor sorgularının ALT SINIRI = max(portföy reset cutoff, rapor başlangıcı).
+
+    İkisi de `llm_settings`'te epoch float tutulur ve İKİSİ DE uygulanmalıdır:
+    reset cutoff bakiyeyi/geçmişi sıfırlar, rapor başlangıcı ise "bu deploy'dan
+    öncesi arşiv" der. Hangisi daha yeniyse o kazanır.
+
+    `ignore_reports_baseline=True` (arşivi göster) yalnız RAPOR BAŞLANGICI'nı
+    kaldırır; reset cutoff KALIR — reset öncesi işlemler farklı bir cüzdana ait
+    olduğu için her koşulda dışarıda kalmalıdır.
+
+    Dönen 0.0 = sınır yok.
+    """
+    cutoff = _get_reset_cutoff_sync(conn)
+    if not ignore_reports_baseline:
+        cutoff = max(cutoff, _get_reports_baseline_sync(conn))
+    return cutoff
+
+
+def _get_reports_baseline_sync(conn) -> float:
+    """Rapor başlangıcı (epoch) — DB değeri varsa o, yoksa config varsayılanı."""
+    raw = None
+    try:
+        row = conn.execute(
+            "SELECT value FROM llm_settings WHERE key=?", (_REPORTS_BASELINE_KEY,)).fetchone()
+        if row:
+            raw = row[0]
+    except Exception:
+        # Şema/erişim hatasında config varsayılanına düşeriz (rapor uçları
+        # sınır yüzünden 500 vermemeli — sınır bir görünüm filtresidir).
+        raw = None
+    if raw is None or not str(raw).strip():
+        raw = getattr(config, "REPORTS_BASELINE_DEFAULT", "")
+    return _parse_reports_baseline(raw)
+
+
+async def get_reports_baseline() -> float:
+    """Rapor başlangıcını (epoch float) döndür; 0.0 = filtre kapalı."""
+    def op(conn):
+        return _get_reports_baseline_sync(conn)
+    return await _run_db(op)
+
+
+async def set_reports_baseline(raw) -> float:
+    """Rapor başlangıcını yaz; ETKİN sınırı (epoch) döndür.
+
+    Boş değer DB satırını boşaltır → `_get_reports_baseline_sync` config
+    varsayılanına döner. `set_reports_baseline(None)` = "koda gömülü varsayılana
+    dön", `set_reports_baseline("0")` = "filtreyi kapat" (ikisi ayrı şeydir).
+    """
+    text = "" if raw is None else str(raw).strip()
+    await set_llm_setting(_REPORTS_BASELINE_KEY, text)
+    return _parse_reports_baseline(text) if text else await get_reports_baseline()
+
 async def get_wallet_balance(asset=None):
     """Virtual wallet balance. Defaults to `config.CASH_ASSET` — the cash row
     this deployment actually keeps (TR→TRY). Legacy "USDT"
@@ -1238,8 +1349,14 @@ async def mark_rising_alert_trade(alert_id: int, trade_id: int) -> None:
 
 
 async def list_rising_alerts(limit: int = 100, kind: str | None = None,
-                             symbol: str | None = None) -> list[dict]:
-    """Son yükseliş sinyalleri (en yeni önce)."""
+                             symbol: str | None = None,
+                             ignore_reports_baseline: bool = False) -> list[dict]:
+    """Son yükseliş sinyalleri (en yeni önce).
+
+    `ignore_reports_baseline=True` → RAPOR BAŞLANGICI alt sınırı uygulanmaz.
+    (Bu fonksiyon EN YENİ satırları döndürdüğü için sınır normalde etkisizdir;
+    yine de "arşivi göster" kapalıyken sınır öncesi bir satır sızmamalıdır.)
+    """
     limit = max(1, min(1000, int(limit)))
     def op(conn):
         _ensure_rising_evidence_schema(conn)
@@ -1252,6 +1369,11 @@ async def list_rising_alerts(limit: int = 100, kind: str | None = None,
         if symbol:
             where.append("symbol=?")
             params.append(str(symbol).upper())
+        if not ignore_reports_baseline:
+            _base = _get_reports_baseline_sync(conn)
+            if _base:
+                where.append("created_at >= ?")
+                params.append(_base)
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at DESC LIMIT ?"
@@ -1330,20 +1452,28 @@ async def journal_coverage() -> dict:
     return await _run_db(op)
 
 
-async def get_rising_stats(days: float = 7.0) -> dict:
+async def get_rising_stats(days: float = 7.0, ignore_reports_baseline: bool = False) -> dict:
     """Yükseliş sinyali kalibrasyon özeti — Raporlar sekmesi için.
 
     Dönen alanlar: toplam sinyal, sınıf dağılımı, ölçülen (evaluate edilmiş)
     sayısı, **isabet oranı** (`touched` = MFE hedefi aştı), ortalama MFE/MAE.
     İsabet, sinyalin `target_pct`ine göre değerlendirilir; henüz ölçülmemiş
     satırlar orana GİRMEZ (uydurma başarı yok).
+
+    `ignore_reports_baseline=True` → RAPOR BAŞLANGICI alt sınırı uygulanmaz.
     """
     since = time.time() - max(0.0, float(days)) * 86400.0
     def op(conn):
         _ensure_rising_evidence_schema(conn)
+        # DİKKAT: `since` closure değişkenidir; `op` içinde yeniden ATANIRSA
+        # Python onu yerel sayar ve yukarıdaki okuma UnboundLocalError verir.
+        # Bu yüzden ayrı bir yerel kullanılır.
+        lower = since
+        if not ignore_reports_baseline:
+            lower = max(lower, _get_reports_baseline_sync(conn))
         rows = conn.execute(
             "SELECT kind, target_pct, mfe_pct, mae_pct, outcome_state, created_at, peak_at "
-            "FROM rising_alerts WHERE created_at >= ?", (since,)).fetchall()
+            "FROM rising_alerts WHERE created_at >= ?", (lower,)).fetchall()
         total = 0
         by_kind: dict[str, int] = {}
         measured = 0
@@ -2425,6 +2555,7 @@ async def get_report_trade_breakdown(
     since: float | None = None,
     until: float | None = None,
     day: str | None = None,
+    ignore_reports_baseline: bool = False,
 ):
     """Salt-okunur admin raporu: strateji/sembol bazlı kapanmış işlem özetleri (seçilen gün / reset_at sonrası).
 
@@ -2433,11 +2564,16 @@ async def get_report_trade_breakdown(
     geriye dönük uyum için korunur; yanlarına açık birimli ikizler eklenir:
     `avg_max_favorable_ratio` (kesir) + `avg_max_favorable_pct` (yüzde, ×100) ve
     aynı şekilde `avg_max_adverse_*`. `pnl_pct` (varsa) YÜZDE'dir.
+
+    `ignore_reports_baseline=True` → RAPOR BAŞLANGICI sınırı uygulanmaz ("arşivi
+    göster"). Portföy reset cutoff'u yine uygulanır.
     """
     eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=False)
 
     def op(conn):
         cutoff = _get_reset_cutoff_sync(conn)
+        if not ignore_reports_baseline:
+            cutoff = max(cutoff or 0.0, _get_reports_baseline_sync(conn))
         if eff_since is not None:
             cutoff = max(cutoff or 0.0, float(eff_since))
         where_clauses = []
@@ -2580,12 +2716,16 @@ def _day_start_epoch() -> float:
     return datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
-async def get_report_autonomous_log(limit: int = 200, offset: int = 0, symbol: str = "", strategy: str = ""):
-    """Geçmiş otonom işlem akışı: sinyaller + karar logları (reset_at sonrasi)."""
+async def get_report_autonomous_log(limit: int = 200, offset: int = 0, symbol: str = "",
+                                    strategy: str = "", ignore_reports_baseline: bool = False):
+    """Geçmiş otonom işlem akışı: sinyaller + karar logları (reset_at sonrasi).
+
+    `ignore_reports_baseline=True` → RAPOR BAŞLANGICI sınırı uygulanmaz.
+    """
     limit = max(1, min(int(limit) or 200, 500))
     offset = max(0, int(offset) or 0)
     def op(conn):
-        cutoff = _get_reset_cutoff_sync(conn)
+        cutoff = _report_floor_sync(conn, ignore_reports_baseline)
         clauses, values = [], []
         if cutoff: clauses.append("timestamp > ?"); values.append(cutoff)
         if symbol: clauses.append("symbol=?"); values.append(str(symbol).upper())
@@ -2618,15 +2758,22 @@ async def get_report_symbol_velocity_quality(
     since: float | None = None,
     until: float | None = None,
     day: str | None = None,
+    ignore_reports_baseline: bool = False,
 ):
-    """Hız avcısı sembol kalite istatistikleri (velocity_candidates, salt okunur)."""
+    """Hız avcısı sembol kalite istatistikleri (velocity_candidates, salt okunur).
+
+    `ignore_reports_baseline=True` → RAPOR BAŞLANGICI sınırı uygulanmaz ("arşivi göster").
+    """
     eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=True)
     def op(conn):
+        lower = eff_since
+        if not ignore_reports_baseline:
+            lower = max(lower or 0.0, _get_reports_baseline_sync(conn)) or None
         where_clauses = ["status='evaluated'"]
         params = []
-        if eff_since is not None:
+        if lower is not None:
             where_clauses.append("created_at >= ?")
-            params.append(eff_since)
+            params.append(lower)
         if eff_until is not None:
             where_clauses.append("created_at < ?")
             params.append(eff_until)
@@ -4052,7 +4199,8 @@ async def mark_monitoring_push_sent(notification_id):
 
 
 async def get_monitoring_velocity_matches(limit: int | None = 1000, day: str | None = None,
-                                          slim: bool = False):
+                                          slim: bool = False,
+                                          ignore_reports_baseline: bool = False):
     """Bildirimleri ayni andaki velocity adayiyla karsilastir (salt okunur).
 
 monitoring_notifications VE velocity_candidates ayni tarama turunda
@@ -4070,6 +4218,10 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
     slim: PERFORMANS (2026-09-26) — ``message``/``title`` kolonlarını SELECT'ten
     çıkarır (agregasyon tüketicileri bunları kullanmaz; satır başına ~hundreds of
     bytes transfer ve dict kurulumu tasarrufu). Semantik DEĞİŞMEZ.
+
+    `ignore_reports_baseline=True` → RAPOR BAŞLANGICI alt sınırı uygulanmaz
+    ("arşivi göster"). `day` verilmişse pencere ile birlikte uygulanır: sınırın
+    ÖNCESİndeki bir gün seçilirse sonuç boş döner (doğru davranış — o gün arşiv).
     """
     from datetime import datetime, timezone, timedelta
     def op(conn):
@@ -4081,14 +4233,23 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
             " FROM monitoring_notifications"
         )
         params: list = []
+        lower = None
+        upper = None
         if day:
             try:
                 day_start = datetime.strptime(str(day), '%Y-%m-%d').replace(tzinfo=timezone(timedelta(hours=3)))
             except ValueError:
                 raise ValueError(f"Geçersiz tarih: {day!r} (YYYY-MM-DD bekleniyor)") from None
-            day_end = day_start + timedelta(days=1)
-            base_sql += " WHERE detected_at >= %s AND detected_at < %s"
-            params.extend([day_start.timestamp(), day_end.timestamp()])
+            lower = day_start.timestamp()
+            upper = (day_start + timedelta(days=1)).timestamp()
+        if not ignore_reports_baseline:
+            lower = max(lower or 0.0, _get_reports_baseline_sync(conn)) or None
+        if lower is not None:
+            base_sql += " WHERE detected_at >= %s"
+            params.append(lower)
+            if upper is not None:
+                base_sql += " AND detected_at < %s"
+                params.append(upper)
         base_sql += " ORDER BY detected_at DESC"
         if limit is not None:
             base_sql += " LIMIT %s"
@@ -4362,20 +4523,25 @@ async def update_monitoring_notification_outcome(notification_id, status, mfe_pc
     return await _run_db(op)
 
 
-async def list_macd_mtf_report(days: int = 14, limit: int = 1000):
+async def list_macd_mtf_report(days: int = 14, limit: int = 1000,
+                               ignore_reports_baseline: bool = False):
     """MACD MTF konfluans raporu satırları (yeni → eski; verdict'sizler dahil).
 
     Agregasyon rapor ucunda yapılır; burada yalnız ham satırlar okunur.
+    `ignore_reports_baseline=True` → RAPOR BAŞLANGICI alt sınırı uygulanmaz.
     """
     cutoff = time.time() - max(1, int(days)) * 86400.0
 
     def op(conn):
+        lower = cutoff
+        if not ignore_reports_baseline:
+            lower = max(lower, _get_reports_baseline_sync(conn))
         rows = conn.execute(
             "SELECT id,symbol,macd_mtf_verdict,macd_mtf_confluence,outcome_status,"
             "mfe_pct,mae_pct,score,target_pct,horizon_minutes,detected_at,mode,sources "
             "FROM monitoring_notifications WHERE detected_at >= %s "
             "ORDER BY detected_at DESC LIMIT %s",
-            (cutoff, max(1, min(int(limit), 2000))),
+            (lower, max(1, min(int(limit), 2000))),
         ).fetchall()
         result = []
         for row in rows:
@@ -5537,12 +5703,18 @@ async def list_auto_paper_trades(
     day: str | None = None,
     include_archived: bool = False,
 ) -> list[dict]:
-    """Otonom paper trade'leri listele (yeni -> eski). offset pagination, gün filtresi ve arşivleme destekler."""
+    """Otonom paper trade'leri listele (yeni -> eski). offset pagination, gün filtresi ve arşivleme destekler.
+
+    `include_archived=True` → HEM portföy reset cutoff'u HEM RAPOR BAŞLANGICI
+    sınırı atlanır ("arşivi göster" kutusu ikisini birden açar; kullanıcı için
+    ikisi de "eski veri"dir ve iki ayrı kutu kafa karıştırırdı).
+    """
     eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=False)
     def op(conn):
-        cutoff = _get_reset_cutoff_sync(conn) if not include_archived else None
+        cutoff = None if include_archived else max(
+            _get_reset_cutoff_sync(conn), _get_reports_baseline_sync(conn))
         effective_since = eff_since
-        if cutoff is not None:
+        if cutoff:
             effective_since = max(cutoff, eff_since) if eff_since is not None else cutoff
 
         where_clauses = []
@@ -5589,16 +5761,19 @@ async def get_auto_paper_stats(
     since: float | None = None,
     until: float | None = None,
     day: str | None = None,
+    ignore_reports_baseline: bool = False,
 ) -> dict:
     """Otonom paper trade istatistikleri (seçilen gün veya reset_at sonrası, SQL agregatı).
 
     Portföy reseti sırasında pnl'siz kapatılan 'reset' satırları hariçtir;
     böylece reset sonrasi win_rate/net PnL eski verilerle kirletilmez.
     ``confluence_4way_only=True`` ise yalnızca Master Surge (4'lü teyitli) işlemler sayılır.
+
+    `ignore_reports_baseline=True` → RAPOR BAŞLANGICI sınırı uygulanmaz ("arşivi göster").
     """
     eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=True)
     def op(conn):
-        cutoff = _get_reset_cutoff_sync(conn)
+        cutoff = _report_floor_sync(conn, ignore_reports_baseline)
         if eff_since is not None:
             cutoff = max(cutoff or 0.0, float(eff_since))
 
@@ -5660,11 +5835,15 @@ async def get_auto_paper_symbol_breakdown(
     since: float | None = None,
     until: float | None = None,
     day: str | None = None,
+    ignore_reports_baseline: bool = False,
 ) -> list[dict]:
-    """Otonom paper trade sembol bazlı özet (seçilen gün / reset_at sonrası, reset kapanışları hariç)."""
+    """Otonom paper trade sembol bazlı özet (seçilen gün / reset_at sonrası, reset kapanışları hariç).
+
+    `ignore_reports_baseline=True` → RAPOR BAŞLANGICI sınırı uygulanmaz ("arşivi göster").
+    """
     eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=True)
     def op(conn):
-        cutoff = _get_reset_cutoff_sync(conn)
+        cutoff = _report_floor_sync(conn, ignore_reports_baseline)
         if eff_since is not None:
             cutoff = max(cutoff or 0.0, float(eff_since))
 
@@ -5819,13 +5998,16 @@ async def get_llm_vs_rules_comparison(
     limit: int = 500,
     include_archived: bool = False,
 ) -> dict:
-    """Otonom paper işlemlerini LLM İkinci Göz (Second Eye) değerlendirmeleriyle karşılaştırır."""
+    """Otonom paper işlemlerini LLM İkinci Göz (Second Eye) değerlendirmeleriyle karşılaştırır.
+
+    `include_archived=True` → HEM reset cutoff'u HEM RAPOR BAŞLANGICI sınırını atlar.
+    """
     eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=False)
 
     def op(conn):
-        cutoff = _get_reset_cutoff_sync(conn) if not include_archived else None
+        cutoff = _report_floor_sync(conn, include_archived)
         filter_since = eff_since
-        if cutoff is not None:
+        if cutoff:
             filter_since = max(cutoff, eff_since) if eff_since is not None else cutoff
 
         where_clauses = []

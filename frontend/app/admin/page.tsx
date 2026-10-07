@@ -70,6 +70,15 @@ const SystemHealthView = dynamic(() => import("../system-health/page"), {
   ssr: false,
 });
 
+const ReportsBaselineView = dynamic(() => import("./ReportsBaselineTab"), {
+  loading: () => (
+    <div className="p-12 text-center font-mono text-sm text-bunker-muted animate-pulse">
+      📌 Rapor başlangıcı yükleniyor…
+    </div>
+  ),
+  ssr: false,
+});
+
 export default function AdminPage() {
   return (
     <Suspense
@@ -84,7 +93,7 @@ export default function AdminPage() {
   );
 }
 
-type AdminTab = "database" | "audit-logs" | "macd-monitor" | "mtf-scanner" | "users" | "chat" | "system-health";
+type AdminTab = "database" | "audit-logs" | "macd-monitor" | "mtf-scanner" | "users" | "chat" | "system-health" | "reports-baseline";
 
 const ALL_ADMIN_TABS: { key: AdminTab; label: string; icon: string; adminOnly: boolean }[] = [
   { key: "database", label: "Veritabanı", icon: "🗄️", adminOnly: true },
@@ -94,6 +103,7 @@ const ALL_ADMIN_TABS: { key: AdminTab; label: string; icon: string; adminOnly: b
   { key: "users", label: "Kullanıcı Yönetimi", icon: "👥", adminOnly: true },
   { key: "chat", label: "Chat Merkezi", icon: "💬", adminOnly: true },
   { key: "system-health", label: "Sistem Sağlığı", icon: "🩺", adminOnly: true },
+  { key: "reports-baseline", label: "Rapor Başlangıcı", icon: "📌", adminOnly: true },
 ];
 
 function AdminPageInner() {
@@ -154,7 +164,7 @@ function AdminPageInner() {
               <span className="text-neon-green">YÖNETİM</span> MERKEZİ
             </h1>
             <p className="eyebrow mt-0.5">
-              Veritabanı · Olay Kayıtları · MACD Monitör · Kullanıcılar · Chat · Sistem Sağlığı
+              Veritabanı · Olay Kayıtları · MACD Monitör · Kullanıcılar · Chat · Sistem Sağlığı · Rapor Başlangıcı
             </p>
           </div>
           <span className="rounded-lg border border-neon-green/40 bg-neon-green/10 px-2.5 py-1 font-mono text-[11px] font-bold text-neon-green">
@@ -198,6 +208,7 @@ function AdminPageInner() {
         {activeTab === "users" && isAdmin && <UsersView />}
         {activeTab === "chat" && isAdmin && <ChatView />}
         {activeTab === "system-health" && isAdmin && <SystemHealthView />}
+        {activeTab === "reports-baseline" && isAdmin && <ReportsBaselineView />}
       </div>
     </div>
   );

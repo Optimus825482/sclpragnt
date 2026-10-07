@@ -45,12 +45,17 @@ type ComparisonTrade = {
   comparison_label: string;
 };
 
-export default function LlmVsRulesTab({ day }: { day?: string }) {
+export default function LlmVsRulesTab({ day, includeArchived: initialArchived = false }:
+  { day?: string; includeArchived?: boolean }) {
   const [data, setData] = useState<{ stats: LlmVsRulesStats; trades: ComparisonTrade[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<"ALL" | "DEVAM" | "FAKE" | "DIFFERENCE">("ALL");
-  const [includeArchived, setIncludeArchived] = useState(false);
+  // Üstteki "Arşivi göster" anahtarı varsayılanı verir; sekmedeki kutu onu
+  // ezebilir (aynı davranış `UserPositionsTab`'de de var).
+  const [includeArchived, setIncludeArchived] = useState(initialArchived);
+
+  useEffect(() => { setIncludeArchived(initialArchived); }, [initialArchived]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -162,7 +167,7 @@ export default function LlmVsRulesTab({ day }: { day?: string }) {
               onChange={(e) => setIncludeArchived(e.target.checked)}
               className="rounded border-bunker-700 bg-bunker-900 text-neon-green focus:ring-0 w-3.5 h-3.5 cursor-pointer"
             />
-            <span>Arşivlenmiş İşlemler</span>
+            <span>Arşivi göster</span>
           </label>
           <button
             type="button"

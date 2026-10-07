@@ -1565,15 +1565,21 @@ async def list_trades_endpoint(
 
 
 @router.get("/api/auto-paper/stats")
-async def get_stats_endpoint(day: str | None = None):
-    """Otonom paper trade istatistikleri (seçilen gün / reset_at sonrasi; reset kapanışları hariç)."""
-    stats = await database.get_auto_paper_stats(day=day)
+async def get_stats_endpoint(day: str | None = None, include_archived: bool = False):
+    """Otonom paper trade istatistikleri (seçilen gün / reset_at sonrasi; reset kapanışları hariç).
+
+    `include_archived=True` → "arşivi göster": RAPOR BAŞLANGICI öncesi işlemler
+    de KPI'lara sayılır. Varsayılan False → yalnız deploy sonrası işlemler.
+    """
+    stats = await database.get_auto_paper_stats(
+        day=day, ignore_reports_baseline=include_archived)
     reset_at = await database.get_reset_cutoff()
     return {
         "paper_only": True,
         "day": day or "today",
         "stats": stats,
         "reset_at": reset_at,
+        "include_archived": include_archived,
         "state": dict(_AUTO_PAPER_STATE),
     }
 

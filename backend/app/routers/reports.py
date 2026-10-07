@@ -5,7 +5,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from functools import partial
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from app.config import config
 from app import database
@@ -20,6 +21,70 @@ from app.routers.llm_chat import (_forecast_evaluation_state, _chat_prediction_l
 
 logger = logging.getLogger("scalper.reports")
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# RAPOR BAŞLANGICI ("bu deploy" sınırı) — 2026-10-07
+# ---------------------------------------------------------------------------
+# Raporlar ve KPI'lar yalnızca bu andan SONRAKİ veriyle hesaplanır; öncesi
+# "arşiv" sayılır ve varsayılan olarak gizlenir. Değer `llm_settings`'te
+# tutulur (anahtar `reports_baseline_at`); DB'de kayıt yoksa
+# `config.REPORTS_BASELINE_DEFAULT` (koda gömülü varsayılan) kullanılır.
+class ReportsBaselinePayload(BaseModel):
+    value: str | None = None
+
+
+def _baseline_response(effective_ts: float) -> dict:
+    """Sınırın hem ham hem çözümlenmiş hâlini döndür (panel ikisini de gösterir)."""
+    return {
+        "paper_only": True,
+        "effective_ts": effective_ts,
+        # epoch→yerel gösterim `database._parse_reports_baseline` ile AYNI saat
+        # dilimini (UTC+3) kullanır; ayrışırsa panel yanlış saat gösterirdi.
+        "effective_local": (
+            datetime.fromtimestamp(effective_ts, timezone(timedelta(hours=3)))
+            .strftime("%Y-%m-%d %H:%M") if effective_ts else None
+        ),
+        "default_value": getattr(config, "REPORTS_BASELINE_DEFAULT", ""),
+        "enabled": bool(effective_ts),
+    }
+
+
+@router.get("/api/reports/baseline")
+async def get_reports_baseline_endpoint():
+    """Etkin rapor başlangıcını döndür (0/None = filtre kapalı)."""
+    return _baseline_response(await database.get_reports_baseline())
+
+
+@router.put("/api/reports/baseline")
+async def set_reports_baseline_endpoint(payload: ReportsBaselinePayload, request: Request):
+    """Rapor başlangıcını AYARLA (admin).
+
+    `value` kabul edilen biçimler: "YYYY-MM-DD HH:MM", "YYYY-MM-DD", epoch
+    saniye, "" (koda gömülü varsayılana dön), "0" (filtreyi kapat).
+    Geçersiz metin 400 döner — sessizce filtreyi kapatmak yerine operatör
+    yazım hatasını GÖRSÜN.
+    """
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+
+    raw = "" if payload.value is None else str(payload.value).strip()
+    # _parse_reports_baseline anlaşılmayan metinde 0.0 döner; burada ayırt edilir.
+    if raw and raw != "0" and database._parse_reports_baseline(raw) == 0.0:
+        raise HTTPException(
+            status_code=400,
+            detail="Geçersiz tarih/saat. Beklenen: 'YYYY-MM-DD HH:MM', "
+                   "'YYYY-MM-DD', epoch saniye, '' (varsayılana dön) veya '0' (kapat).")
+
+    effective = await database.set_reports_baseline(raw)
+    try:
+        from app.api_common import log_user_action
+        await log_user_action(None, None, "reports", "REPORTS_BASELINE_UPDATE",
+                              details={"value": raw, "effective_ts": effective},
+                              request=request)
+    except Exception as exc:
+        logger.debug("rapor başlangıcı denetim kaydı yazılamadı: %s", exc)
+    return {**_baseline_response(effective), "ok": True, "value": raw}
 
 
 @router.get("/api/signals")
@@ -264,14 +329,19 @@ async def get_chat_prediction_replay(lookback_hours: int = 6, horizons: str = "5
 
 
 @router.get("/api/reports/overview")
-async def get_report_overview(day: str | None = None):
+async def get_report_overview(day: str | None = None, include_archived: bool = False):
     """Admin Rapor Merkezi Özet sekmesi: yalnız AUTO_PAPER (monitoring bildiriminden
     tetiklenen otonom) işlem verilerini gösterir. Belirtilen güne (varsayılan: bugün) göre filtrelenir.
+
+    `include_archived=True` → "arşivi göster": RAPOR BAŞLANGICI öncesi veri de sayılır.
     """
     decision_summary = await database.get_report_decision_summary()
-    ap_stats = await database.get_auto_paper_stats(day=day)
-    master_surge_stats = await database.get_auto_paper_stats(confluence_4way_only=True, day=day)
-    symbols = await database.get_auto_paper_symbol_breakdown(day=day)
+    ap_stats = await database.get_auto_paper_stats(
+        day=day, ignore_reports_baseline=include_archived)
+    master_surge_stats = await database.get_auto_paper_stats(
+        confluence_4way_only=True, day=day, ignore_reports_baseline=include_archived)
+    symbols = await database.get_auto_paper_symbol_breakdown(
+        day=day, ignore_reports_baseline=include_archived)
     try:
         balance = await database.get_wallet_balance("TRY")
     except Exception:
@@ -309,7 +379,7 @@ async def get_report_overview(day: str | None = None):
 
 @router.get("/api/reports/rising-signals")
 async def get_report_rising_signals(limit: int = 100, kind: str | None = None,
-                                    days: float = 7.0):
+                                    days: float = 7.0, include_archived: bool = False):
     """YÜKSELİŞ EĞİLİMİ sekmesi (R4, 2026-09-14).
 
     MACD MONITOR'ün kanıtlanmış öncülerinden türeyen erken/yükseliş sinyallerinin
@@ -318,10 +388,13 @@ async def get_report_rising_signals(limit: int = 100, kind: str | None = None,
 
     `live`: MACD snapshot'ından şu an geçerli adaylar (canlı durum).
     `stats`: seçilen dönem için toplam / ölçülen / isabet oranı / ort. MFE-MAE.
+    `include_archived=True` → RAPOR BAŞLANGICI öncesi veri de sayılır.
     """
     limit = max(1, min(500, int(limit)))
-    stats = await database.get_rising_stats(days=float(days))
-    signals = await database.list_rising_alerts(limit=limit, kind=kind or None)
+    stats = await database.get_rising_stats(
+        days=float(days), ignore_reports_baseline=include_archived)
+    signals = await database.list_rising_alerts(
+        limit=limit, kind=kind or None, ignore_reports_baseline=include_archived)
     try:
         from app import rising_signals as rising
         live = rising.rising_summary_payload()
@@ -333,7 +406,7 @@ async def get_report_rising_signals(limit: int = 100, kind: str | None = None,
 
 
 @router.get("/api/reports/macd-mtf")
-async def get_macd_mtf_report(days: int = 14, limit: int = 1000):
+async def get_macd_mtf_report(days: int = 14, limit: int = 1000, include_archived: bool = False):
     """MACD MTF konfluans ölçüm raporu (2026-09-26).
 
     Bildirim ANINDAKI konfluans snapshot'ı (`macd_mtf_verdict/confluence`) ile
@@ -345,9 +418,13 @@ async def get_macd_mtf_report(days: int = 14, limit: int = 1000):
     grubun dokunma oranı ZAYIF'tan en az +10 puan yüksek VE grup başına
     >= 30 ölçülmüş olay varsa konfluans eşiklere girer (warm terfisi /
     fake kapısı); aksi halde yalnız bilgi rozeti olarak kalır.
+
+    `include_archived=True` → RAPOR BAŞLANGICI öncesi bildirimler de sayılır.
     """
     days = max(1, min(int(days), 60))
-    rows = await database.list_macd_mtf_report(days=days, limit=max(1, min(int(limit), 2000)))
+    rows = await database.list_macd_mtf_report(
+        days=days, limit=max(1, min(int(limit), 2000)),
+        ignore_reports_baseline=include_archived)
     order = {"GÜÇLÜ": 0, "ORTA": 1, "ZAYIF": 2, "YOK": 3}
     groups: dict[str, dict] = {}
     fake_threshold_pct = -float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5))
@@ -402,14 +479,20 @@ async def get_macd_mtf_report(days: int = 14, limit: int = 1000):
 
 
 @router.get("/api/reports/symbols")
-async def get_report_symbols(limit: int = 200, day: str | None = None):
-    """Sembol bazlı detaylı rapor: net PnL, başarı, MFE/DD ve ilk/son işlem."""
+async def get_report_symbols(limit: int = 200, day: str | None = None,
+                             include_archived: bool = False):
+    """Sembol bazlı detaylı rapor: net PnL, başarı, MFE/DD ve ilk/son işlem.
+
+    `include_archived=True` → RAPOR BAŞLANGICI öncesi veri de sayılır.
+    """
     limit = max(1, min(int(limit) or 200, 500))
-    breakdown = await database.get_report_trade_breakdown(day=day)
+    breakdown = await database.get_report_trade_breakdown(
+        day=day, ignore_reports_baseline=include_archived)
     symbols = [dict(row) for row in breakdown.get("symbols", [])][:limit]
-    
+
     # Auto paper sembollerini de ekle / birleştir
-    ap_symbols = await database.get_auto_paper_symbol_breakdown(day=day)
+    ap_symbols = await database.get_auto_paper_symbol_breakdown(
+        day=day, ignore_reports_baseline=include_archived)
     existing_syms = {str(s.get("symbol", "")).upper() for s in symbols}
     for ap in ap_symbols:
         sym = str(ap.get("symbol", "")).upper()
@@ -428,7 +511,8 @@ async def get_report_symbols(limit: int = 200, day: str | None = None):
             })
             existing_syms.add(sym)
 
-    velocity = await database.get_report_symbol_velocity_quality(day=day)
+    velocity = await database.get_report_symbol_velocity_quality(
+        day=day, ignore_reports_baseline=include_archived)
     velocity_by_symbol = {str(row.get("symbol", "")).upper(): row for row in velocity}
     for row in symbols:
         sym = str(row.get("symbol", "")).upper()
@@ -442,12 +526,17 @@ async def get_report_symbols(limit: int = 200, day: str | None = None):
 
 @router.get("/api/reports/autonomous-log")
 async def get_report_autonomous_log(limit: int = 200, offset: int = 0,
-                                    symbol: str = "", strategy: str = ""):
-    """Geçmiş otonom işlem akışı (signals) — yönetici raporu için salt okunur."""
+                                    symbol: str = "", strategy: str = "",
+                                    include_archived: bool = False):
+    """Geçmiş otonom işlem akışı (signals) — yönetici raporu için salt okunur.
+
+    `include_archived=True` → RAPOR BAŞLANGICI öncesi kayıtlar da listelenir.
+    """
     limit = max(1, min(int(limit) or 200, 500))
     offset = max(0, int(offset) or 0)
     rows = await database.get_report_autonomous_log(
-        limit=limit, offset=offset, symbol=symbol, strategy=strategy)
+        limit=limit, offset=offset, symbol=symbol, strategy=strategy,
+        ignore_reports_baseline=include_archived)
     return {"paper_only": True, "rows": rows, "limit": limit, "offset": offset,
             "next_offset": offset + len(rows) if len(rows) == limit else None}
 

@@ -293,6 +293,12 @@ class ReportUnitContractTests(unittest.IsolatedAsyncioTestCase):
                 (symbol, "MOMENTUM", "LONG", 100.0, 101.0, 10.0, 9.5, 0.95, 1.0, 2.0, 0.15, mfe, mae))
         self.conn.commit()
         self._orig_run_db = db._run_db
+        # Bu sınıf MFE/MAE birim ikizlerini (V-14) sınar, tarih filtresini
+        # değil. Satırlar epoch 1.0/2.0 (1970) tarihli olduğu için 2026-10-07
+        # RAPOR BAŞLANGICI sınırı hepsini arşive atar ve sorgu boş döner.
+        # Sınırı burada nötrlemek testi konusunda tutar.
+        self._orig_reports_baseline = db._get_reports_baseline_sync
+        db._get_reports_baseline_sync = lambda conn: 0.0
 
         async def runner(operation):
             return operation(self.conn)
@@ -301,6 +307,7 @@ class ReportUnitContractTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         db._run_db = self._orig_run_db
+        db._get_reports_baseline_sync = self._orig_reports_baseline
         self.conn.close()
 
     async def test_twins_expose_ratio_and_percent(self):

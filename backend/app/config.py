@@ -500,6 +500,25 @@ class Config:
     MASTER_SURGE_BE_GAP_PCT = float(os.getenv("MASTER_SURGE_BE_GAP_PCT", "0.40"))
 
     # ---------------------------------------------------------------------
+    # RAPOR BAŞLANGICI (2026-10-07)
+    # ---------------------------------------------------------------------
+    # Raporlar (sinyal + otonom işlem) ve KPI'lar yalnızca bu andan SONRAKİ
+    # veriyle hesaplanır; öncesi "arşiv" sayılır ve varsayılan olarak gizlenir.
+    #
+    # NEDEN SABİT VARSAYILAN: 2026-10-07'de otonom trade ayarları kanıta dayalı
+    # değerlere çevrildi (bkz. docs/OTONOM_TRADE_TESHIS_2026-10-07.md §6). O
+    # tarihten ÖNCEKİ işlemler eski (zarar eden) kurguyla açıldığı için yeni
+    # kurgunun gerçek performansını kirletir. Sınır bu yüzden koda gömülüdür.
+    #
+    # DEĞİŞTİRME: /admin → "Rapor Başlangıcı" sekmesinden tarih+saat girilip
+    # kaydedilir (llm_settings: 'reports_baseline_at'). DB'de değer varsa
+    # BURADAKİ varsayılanı ezer. `REPORTS_BASELINE_AT` env'i ile de verilebilir
+    # (epoch saniye, ya da YYYY-MM-DD / YYYY-MM-DD HH:MM — yerel saat UTC+3).
+    #
+    # 0 / boş = filtre KAPALI (eski davranış: tüm geçmiş görünür).
+    REPORTS_BASELINE_DEFAULT = os.getenv("REPORTS_BASELINE_AT", "2026-10-07 11:30").strip()
+
+    # ---------------------------------------------------------------------
     # SAKLAMA (RETENTION) PENCERELERİ — disk bütçesi (2026-09-16)
     #
     # Sunucu ölçümü: DB 21 GB ama CANLI veri ~1-2 GB; kalanı BUDANMIŞ ama

@@ -59,7 +59,7 @@ const outcomeLabel = (status: string | null): { label: string; cls: string } => 
 const pct = (v: number | null | undefined, digits = 2): string =>
   v == null ? "—" : `${v >= 0 ? "+" : ""}${Number(v).toFixed(digits)}%`;
 
-export default function MacdMtfTab() {
+export default function MacdMtfTab({ includeArchived = false }: { includeArchived?: boolean }) {
   const [days, setDays] = useState(14);
   const [report, setReport] = useState<MtfReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -69,7 +69,8 @@ export default function MacdMtfTab() {
     setLoading(true);
     setError("");
     try {
-      const res = await apiRequest(`${API_BASE}/api/reports/macd-mtf?days=${d}`, { cache: "no-store" });
+      const archParam = includeArchived ? "&include_archived=true" : "";
+      const res = await apiRequest(`${API_BASE}/api/reports/macd-mtf?days=${d}${archParam}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setReport(await res.json());
     } catch (e) {
@@ -77,7 +78,7 @@ export default function MacdMtfTab() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [includeArchived]);
 
   useEffect(() => {
     void load(days);

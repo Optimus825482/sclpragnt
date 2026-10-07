@@ -135,7 +135,7 @@ function SourceBadges({ sources, compact = false }: { sources?: string[] | null;
 /* ==========================================================================
    1. GENEL BAKIŞ (OVERVIEW TAB)
    ========================================================================== */
-function OverviewTab({ day }: { day?: string }) {
+function OverviewTab({ day, includeArchived = false }: { day?: string; includeArchived?: boolean }) {
   const [overview, setOverview] = useState<any>(null);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [breakdown, setBreakdown] = useState<any>(null);
@@ -148,14 +148,18 @@ function OverviewTab({ day }: { day?: string }) {
   const load = useCallback(async () => {
     const dayParam = day ? (day === "all" ? "?day=all" : `?day=${encodeURIComponent(day)}`) : "";
     const dayNotif = day ? `&day=${encodeURIComponent(day)}` : "";
+    // Rapor başlangıcı sınırı: yalnız "arşivi göster" işaretliyse kaldırılır.
+    // `dayParam` her zaman `?` ya da boş olduğu için önce ayırıcı seçilir.
+    const sep = dayParam ? "&" : "?";
+    const archParam = includeArchived ? `${sep}include_archived=true` : "";
     // Denetim #47: `Promise.all([...]).json()` deseni biri 500 dönünce TÜM
     // yüklemeyi düşürüyordu ve hangi uçtan geldiği belli olmuyordu. `getJSON`
     // (res.ok + `detail` taşıyan hata) üç uç için bağımsız sonuç döndürüyor;
     // `allSettled` ile biri başarısız olsa bile diğer ikisi ekrana basılıyor.
     const [ov, nt, ap] = await Promise.allSettled([
-      getJSON<any>(`/api/reports/overview${dayParam}`),
-      getJSON<any>(`/api/reports/notifications?limit=500${dayNotif}`),
-      getJSON<any>(`/api/auto-paper/stats${dayParam}`),
+      getJSON<any>(`/api/reports/overview${dayParam}${archParam}`),
+      getJSON<any>(`/api/reports/notifications?limit=500${dayNotif}${archParam}`),
+      getJSON<any>(`/api/auto-paper/stats${dayParam}${archParam}`),
     ]);
 
     const failures: string[] = [];
@@ -176,7 +180,7 @@ function OverviewTab({ day }: { day?: string }) {
     else if (failures.length) setError(`Kısmi yükleme hatası — ${failures.join(", ")}`);
     else setError("");
     setLoading(false);
-  }, [day]);
+  }, [day, includeArchived]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -228,7 +232,9 @@ function OverviewTab({ day }: { day?: string }) {
             🤖 Otonom İşlem Aktif
           </span>
           <span className="text-[11px] px-2 py-0.5 rounded bg-bunker-900/80 border border-neon-green/30 text-white font-bold">
-            📅 {day === "all" ? "Tüm Zamanlar" : (day || "Bugün")}
+            📅 {day === "all"
+              ? (includeArchived ? "Tüm Zamanlar" : "Deploy Sonrası")
+              : (day || "Bugün")}
           </span>
         </div>
       </div>
@@ -671,7 +677,7 @@ interface RadarOverall {
   tp2_rate?: number | null;
 }
 
-function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: string; setDay?: (d: string) => void }) {
+function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArchived = false }: { day?: string; setDay?: (d: string) => void; includeArchived?: boolean }) {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [breakdown, setBreakdown] = useState<RadarBreakdown | null>(null);
   const [overall, setOverall] = useState<RadarOverall | null>(null);
@@ -699,6 +705,7 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
       const params = new URLSearchParams();
       params.set("limit", "1000");
       if (day) params.set("day", day);
+      if (includeArchived) params.set("include_archived", "true");
       if (channelFilter !== "all") params.set("channel", channelFilter);
       if (sourceFilter !== "all") params.set("source", sourceFilter);
       if (confluenceFilter === "surge") {
@@ -1241,13 +1248,19 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
 /* ==========================================================================
    3. OTONOM POZİSYONLAR VE İŞLEMLER (USER POSITIONS TAB)
    ========================================================================== */
-function UserPositionsTab({ day }: { day?: string }) {
+function UserPositionsTab({ day, includeArchived: initialArchived = false }:
+  { day?: string; includeArchived?: boolean }) {
   const [positions, setPositions] = useState<any[]>([]);
   const [trades, setTrades] = useState<any[]>([]);
-  const [includeArchived, setIncludeArchived] = useState(false);
+  // Sayfa düzeyindeki "Arşivi göster" varsayılanı burada yerel olarak
+  // ezilebilir; kullanıcı sekmeye girip kendi seçimini yapabilir.
+  const [includeArchived, setIncludeArchived] = useState(initialArchived);
   const [resetAt, setResetAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  // Üstteki genel anahtar değişince yerel seçimi ona hizala.
+  useEffect(() => { setIncludeArchived(initialArchived); }, [initialArchived]);
 
   const load = useCallback(async () => {
     try {
@@ -1341,7 +1354,7 @@ function UserPositionsTab({ day }: { day?: string }) {
                 onChange={(e) => setIncludeArchived(e.target.checked)}
                 className="rounded border-bunker-700 bg-bunker-900 text-neon-green focus:ring-0 w-3.5 h-3.5 cursor-pointer"
               />
-              <span>Arşivlenmiş İşlemleri Göster</span>
+              <span>Arşivi göster</span>
             </label>
             <span className="font-mono text-xs text-bunker-muted hidden md:inline">Son 100 İşlem</span>
           </div>
@@ -1424,7 +1437,7 @@ function UserPositionsTab({ day }: { day?: string }) {
 /* ==========================================================================
    4. SEMBOL BAZLI RAPOR (SYMBOLS TAB)
    ========================================================================== */
-function SymbolsTab({ day }: { day?: string }) {
+function SymbolsTab({ day, includeArchived = false }: { day?: string; includeArchived?: boolean }) {
   const [symbols, setSymbols] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1435,7 +1448,8 @@ function SymbolsTab({ day }: { day?: string }) {
     setError("");
     try {
       const dayParam = day ? (day === "all" ? "&day=all" : `&day=${encodeURIComponent(day)}`) : "";
-      const res = await apiRequest(`${API_BASE}/api/reports/symbols?limit=300${dayParam}`, { cache: "no-store" });
+      const archiveParam = includeArchived ? "&include_archived=true" : "";
+      const res = await apiRequest(`${API_BASE}/api/reports/symbols?limit=300${dayParam}${archiveParam}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setSymbols(data.symbols || []);
@@ -1444,7 +1458,7 @@ function SymbolsTab({ day }: { day?: string }) {
     } finally {
       setLoading(false);
     }
-  }, [day]);
+  }, [day, includeArchived]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1609,7 +1623,7 @@ function VelocityTab() {
   );
 }
 
-function AutonomousTab() {
+function AutonomousTab({ includeArchived = false }: { includeArchived?: boolean }) {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1617,7 +1631,8 @@ function AutonomousTab() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await apiRequest(`${API_BASE}/api/reports/autonomous-log?limit=50`, { cache: "no-store" });
+        const archParam = includeArchived ? "&include_archived=true" : "";
+        const res = await apiRequest(`${API_BASE}/api/reports/autonomous-log?limit=50${archParam}`, { cache: "no-store" });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Karar günlüğü alınamadı");
         setRows(data.rows || []);
@@ -1627,7 +1642,7 @@ function AutonomousTab() {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [includeArchived]);
 
   if (loading) return <div className="card p-6 text-center font-mono text-xs text-bunker-muted">Yükleniyor…</div>;
   if (error) return <div className="card p-4 border-neon-red/40 text-neon-red font-mono text-xs">{error}</div>;
@@ -1733,8 +1748,19 @@ export default function ReportsPage() {
   const isAdmin = role === "admin";
   const [tab, setTab] = useState<"overview" | "bridge" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "advanced">("overview");
   const [advancedSubTab, setAdvancedSubTab] = useState("velocity");
-  const [selectedDay, setSelectedDay] = useState<string>(() => localDateInput());
+  // VARSAYILAN: "bu deploy" görünümü. `day=all` + arşiv kapalı = yalnız rapor
+  // başlangıcı (2026-10-07 11:30) SONRASI veri. `selectedDay` bir güne
+  // ayarlanırsa o günün tamamı görünür (sınır yalnız alt kat olarak kalır).
+  const [selectedDay, setSelectedDay] = useState<string>("all");
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const [baselineLabel, setBaselineLabel] = useState<string | null>(null);
   const todayStr = localDateInput();
+
+  useEffect(() => {
+    getJSON<{ effective_local?: string | null; enabled?: boolean }>("/api/reports/baseline")
+      .then((d) => setBaselineLabel(d.enabled ? (d.effective_local || null) : null))
+      .catch(() => undefined);
+  }, []);
 
   const MAIN_TABS = [
     { id: "overview", label: "📊 Performans Özeti", icon: "📊" },
@@ -1771,6 +1797,24 @@ export default function ReportsPage() {
           <span className="text-xs font-mono text-bunker-muted uppercase tracking-wider mr-1">Dönem:</span>
           <button
             type="button"
+            onClick={() => setSelectedDay("all")}
+            className={`rounded-xl px-3 py-1.5 font-mono text-xs font-bold transition-all flex items-center gap-1.5 ${
+              selectedDay === "all"
+                ? "bg-neon-green/20 text-neon-green border border-neon-green/40 shadow-sm"
+                : "text-bunker-muted hover:text-white bg-bunker-900 border border-bunker-800"
+            }`}
+            title={baselineLabel
+              ? `Yalnız ${baselineLabel} (UTC+3) sonrası sinyaller ve otonom işlemler`
+              : "Tüm geçmiş (rapor başlangıcı kapalı)"}
+          >
+            <span className="inline-block w-2 h-2 rounded-full bg-neon-green animate-pulse"></span>
+            <span>
+              🚀 Deploy Sonrası
+              {baselineLabel ? ` (${baselineLabel})` : ""}
+            </span>
+          </button>
+          <button
+            type="button"
             onClick={() => setSelectedDay(todayStr)}
             className={`rounded-xl px-3 py-1.5 font-mono text-xs font-bold transition-all flex items-center gap-1.5 ${
               selectedDay === todayStr
@@ -1778,35 +1822,48 @@ export default function ReportsPage() {
                 : "text-bunker-muted hover:text-white bg-bunker-900 border border-bunker-800"
             }`}
           >
-            <span className="inline-block w-2 h-2 rounded-full bg-neon-green animate-pulse"></span>
-            <span>🟢 Bugün ({todayStr})</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedDay("all")}
-            className={`rounded-xl px-3 py-1.5 font-mono text-xs font-bold transition-all flex items-center gap-1.5 ${
-              selectedDay === "all"
-                ? "bg-amber-400/20 text-amber-300 border border-amber-400/40 shadow-sm"
-                : "text-bunker-muted hover:text-white bg-bunker-900 border border-bunker-800"
-            }`}
-          >
-            <span>🌐</span>
-            <span>Tüm Zamanlar (Arşiv)</span>
+            <span>🟢</span>
+            <span>Bugün ({todayStr})</span>
           </button>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-bunker-muted">📅 Tarih Seç:</span>
-          <input
-            type="date"
-            value={selectedDay === "all" ? "" : selectedDay}
-            onChange={(e) => {
-              if (e.target.value) setSelectedDay(e.target.value);
-            }}
-            className="rounded-xl border border-bunker-700 bg-bunker-900 px-2.5 py-1 text-xs font-mono text-white focus:border-neon-green focus:outline-none"
-          />
+        <div className="flex flex-wrap items-center gap-3">
+          <label
+            className="flex items-center gap-2 cursor-pointer select-none text-xs font-mono text-bunker-muted hover:text-white transition-colors"
+            title={baselineLabel
+              ? `${baselineLabel} (UTC+3) ÖNCESİ sinyal ve işlemleri de göster`
+              : "Rapor başlangıcı sınırı kapalı"}
+          >
+            <input
+              type="checkbox"
+              checked={includeArchived}
+              onChange={(e) => setIncludeArchived(e.target.checked)}
+              className="rounded border-bunker-700 bg-bunker-900 text-neon-green focus:ring-0 w-3.5 h-3.5 cursor-pointer"
+            />
+            <span>Arşivi göster</span>
+          </label>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-mono text-bunker-muted">📅 Tarih Seç:</span>
+            <input
+              type="date"
+              value={selectedDay === "all" ? "" : selectedDay}
+              onChange={(e) => {
+                if (e.target.value) setSelectedDay(e.target.value);
+              }}
+              className="rounded-xl border border-bunker-700 bg-bunker-900 px-2.5 py-1 text-xs font-mono text-white focus:border-neon-green focus:outline-none"
+            />
+          </div>
         </div>
       </div>
+
+      {baselineLabel && (
+        <p className="-mt-3 px-1 font-mono text-[11px] text-bunker-muted">
+          📌 Rapor başlangıcı <span className="text-neon-green">{baselineLabel}</span> (UTC+3).
+          Bu andan öncesi <span className="text-white">arşiv</span> sayılır ve yalnız
+          &quot;Arşivi göster&quot; işaretliyken listelenir. Sınırı Yönetim Merkezi →
+          <span className="text-white"> Rapor Başlangıcı</span> sekmesinden değiştirebilirsiniz.
+        </p>
+      )}
 
       {/* Sekmeler — Yatay scrollbar oluşturmayan, responsive buton ızgarası */}
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-8 gap-2 p-1.5 bg-bunker-950/70 border border-bunker-800/80 rounded-2xl shadow-inner">
@@ -1830,18 +1887,18 @@ export default function ReportsPage() {
       </div>
 
       {/* Sekme İçerikleri */}
-      {tab === "overview" && <OverviewTab day={selectedDay} />}
+      {tab === "overview" && <OverviewTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "bridge" && <GlobalBridgeTab day={selectedDay} />}
-      {tab === "radar" && <UserRadarTab day={selectedDay} setDay={setSelectedDay} />}
-      {tab === "positions" && <UserPositionsTab day={selectedDay} />}
-      {tab === "llm_compare" && <LlmVsRulesTab day={selectedDay} />}
-      {tab === "symbols" && <SymbolsTab day={selectedDay} />}
-      {tab === "mtf" && <MacdMtfTab />}
+      {tab === "radar" && <UserRadarTab day={selectedDay} setDay={setSelectedDay} includeArchived={includeArchived} />}
+      {tab === "positions" && <UserPositionsTab day={selectedDay} includeArchived={includeArchived} />}
+      {tab === "llm_compare" && <LlmVsRulesTab day={selectedDay} includeArchived={includeArchived} />}
+      {tab === "symbols" && <SymbolsTab day={selectedDay} includeArchived={includeArchived} />}
+      {tab === "mtf" && <MacdMtfTab includeArchived={includeArchived} />}
       {tab === "advanced" && isAdmin && (
         <div className="space-y-4">
           <AdvancedAdminTabs subTab={advancedSubTab} setSubTab={setAdvancedSubTab} />
           {advancedSubTab === "velocity" && <VelocityTab />}
-          {advancedSubTab === "autonomous" && <AutonomousTab />}
+          {advancedSubTab === "autonomous" && <AutonomousTab includeArchived={includeArchived} />}
           {advancedSubTab === "llm" && <LlmTab />}
           {advancedSubTab === "learning" && <SelfLearningTab />}
         </div>

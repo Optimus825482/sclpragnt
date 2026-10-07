@@ -242,9 +242,81 @@ Bu değişiklikler **kod içindedir**; çalışan sunucu bunları almaz. Canlı
   `COMMISSION_PCT` ortam değişkeni.
 - `trend_devam` modunun **neden** edge taşıdığı incelenmeli (sinyal üretimi
   tarafı) — bu, edge'i güçlendirmenin ya da çoğaltmanın yolu.
-- **Test seti sağlığı**: tam set artık **1690 + 4 alt-test** geçiyor (§5.10'un
-  kilit testi dâhil; `exit=0`, iki kez koşuldu). §5.9'daki ağ asılıması, `-x`
-  olmadan koşulduğunda 16 testin daha düşmesine yol açıyordu
+- **Test seti sağlığı**: tam set artık **1713 + 13 alt-test** geçiyor (§5.10'un
+  kilit testi ve §8'in baseline testleri dâhil; `exit=0`). §5.9'daki ağ asılıması,
+  `-x` olmadan koşulduğunda 16 testin daha düşmesine yol açıyordu
   (`test_execution_fixes` dahil) — sıra bozulup global durum kirli kalıyordu.
   Asılıma giderilince bu ikincil düşüşler de kendiliğinden kalktı; bağımsız
   bir kusur değillerdi.
+
+## 8. RAPOR BAŞLANGICI — "bu deploy" sınırı (2026-10-07)
+
+**İstek:** Raporlar bölümünde yalnız bu deploy'dan SONRA oluşan sinyalleri ve
+otonom işlemleri göster; öncesi **arşiv** olarak görünsün; başarı KPI'ları
+yalnız deploy sonrası veriden hesaplansın.
+
+**Neden gerekli:** §6'daki ayar değişikliği sonrası eski (zarar eden) kurguyla
+açılmış işlemler raporların tepesinde duruyordu. Yeni kurgunun gerçek
+performansı, eski kurgunun zararıyla aynı toplamda eriyip görünmez oluyordu.
+
+### 8.1 Sınır nerede tutulur
+
+| Katman | Değer |
+| --- | --- |
+| Koda gömülü varsayılan | `config.REPORTS_BASELINE_DEFAULT = "2026-10-07 11:30"` |
+| Ortam değişkeni | `REPORTS_BASELINE_AT` (epoch saniye veya `YYYY-MM-DD[ HH:MM]`) |
+| Çalışma zamanı geçersiz kılma | `llm_settings.reports_baseline_at` (DB satırı varsayılanı EZER) |
+| Yönetim arayüzü | `/admin` → **📌 Rapor Başlangıcı** sekmesi (`GET`/`PUT /api/reports/baseline`) |
+
+Duvarsaati **UTC+3**'tür (`_parse_reports_baseline`). `"0"` filtreyi kapatır;
+`""` (boş kayıt) koda gömülü varsayılana döner — ikisi ayrı anlam taşır.
+
+### 8.2 Uygulama biçimi (neden böyle)
+
+Alt sınır **iki mevcut eşiğin maksimumu** alınarak uygulanır:
+
+```
+_sınır = max(portföy_reset_cutoff, rapor_başlangıcı)     # _report_floor_sync
+```
+
+Bu, gün penceresiyle birlikte de geçerlidir: `get_auto_paper_stats` gibi
+fonksiyonlarda `cutoff = max(cutoff, eff_since)` yazıldığı için **gün penceresi
+sınırı ezmez, en büyüğü kazanır**. Sınır-öncesi bir gün seçilirse sonuç boş
+döner (o gün arşivdir); sınır-sonrası bir gün seçilirse sınırın kendisi zaten
+gün başından daha büyük olduğu için **gece yarısı kırpılması** olmaz. Bu yüzden
+ayrı bir `day_from` parametresi GEREKMEDİ — `day=all` + arşiv kapalı zaten
+"deploy sonrası" görünümüdür.
+
+`include_archived=true` parametresi (panellerde **"Arşivi göster"** kutusu)
+`ignore_reports_baseline=True`'ya eşlenir: rapor başlangıcı kaldırılır ama
+portföy reset cutoff'u **kalır** (reset sonrası ekonomi kirlenmesin).
+
+### 8.3 Sınırın uygulandığı yerler
+
+**Sinyal / bildirim:** `get_monitoring_velocity_matches`, `list_macd_mtf_report`,
+`get_rising_stats`, `list_rising_alerts`.
+**Otonom işlem:** `get_auto_paper_stats`, `get_auto_paper_symbol_breakdown`,
+`list_auto_paper_trades`, `get_report_autonomous_log`.
+**Ortak raporlar:** `get_report_trade_breakdown`,
+`get_report_symbol_velocity_quality`, `get_llm_vs_rules_comparison`.
+
+Arayüzde varsayılan dönem **🚀 Deploy Sonrası**'dır (eski varsayılan "Bugün"
+değil). `🌐 Tüm Zamanlar (Arşiv)` düğmesi kaldırıldı; aynı sonuç artık
+"Arşivi göster" kutusuyla alınıyor, böylece arşiv ana akıştan ayrı bir
+"bilinçli bakış" hâline geldi.
+
+### 8.4 Kapsam dışı
+
+`/api/bridge/performance` (Global Lead-Lag, ayrı strateji) ve
+`/api/reports/velocity`, `/api/reports/self-learning`, `/api/reports/llm-forecasts`
+(teşhis/araştırma uçları) kapsam dışında bırakıldı: bunlar otonom işlem
+KPI'larına girmiyor ve ham evrim geçmişini göstermeleri gerekiyor.
+
+### 8.5 Testler
+
+`tests/test_reports_baseline.py` — ayrıştırıcı biçimleri (UTC+3 kanıtı dâhil),
+DB ↔ varsayılan geçişi, `GET`/`PUT` ucu, admin kapısı, geçersiz girişte 400, ve
+sınırın gerçekten veri kestiği uçtan uca senaryo (satırlar sınıra göre
+konumlandırılır → takvimden bağımsız). Sınırın konusu olmayan iki eski test
+(`test_report_day_filtering`, `test_w19_database_residual`) sınırı nötrler;
+gerekçesi o testlerin docstring'lerinde yazılıdır.
