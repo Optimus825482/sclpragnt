@@ -427,12 +427,6 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
         if horizon not in HORIZONS:
             continue
         mfe = float(row["max_favorable_pct"])
-        # P1-9: regressor hedefi GERÇEKLEŞTİRİLEBİLİR çıkış. Journal satırı
-        # ölçülen gerçek ufuk-sonu getirisini taşır (outcome_return_pct); yoksa
-        # (kolon öncesi satırlar) MFE'ye düşülür — ama o zaman satır İYİMSER
-        # kalır, bu yüzden yalnız güvenli geri-uyumluluk için tercih edilir.
-        realized = row.get("outcome_return_pct")
-        y_target.append(float(realized) if realized is not None else mfe)
         ts = row.get("timestamp") or row.get("created_at") or row.get("decision_at")
         if isinstance(ts, (int, float)):
             if ts < 1e11:
@@ -448,6 +442,15 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
                            for k in ("atr_pct", "ret3_pct", "rsi", "aroon_up"))
         if not core_present:
             continue
+        # P1-9: regressor hedefi GERÇEKLEŞTİRİLEBİLİR çıkış. Journal satırı
+        # ölçülen gerçek ufuk-sonu getirisini taşır (outcome_return_pct); yoksa
+        # (kolon öncesi satırlar) MFE'ye düşülür — ama o zaman satır İYİMSER
+        # kalır, bu yüzden yalnız güvenli geri-uyumluluk için tercih edilir.
+        # DİKKAT: append YUKARIDAKİ ``continue``den SONRA olmalıdır; aksi halde
+        # elenen satır ``y_target``'a eklenip diğer dizilerle boyut uyuşmazlığı
+        # yaratır (bkz. tests/test_p1_9_target_label.py regresyon testi).
+        realized = row.get("outcome_return_pct")
+        y_target.append(float(realized) if realized is not None else mfe)
         hour = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).hour
         hour = (hour + 3) % 24
         day_quarter = hour // 6

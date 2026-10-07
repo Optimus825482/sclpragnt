@@ -432,7 +432,11 @@ class ActiveSymbolsCacheTests(_MacdBase):
         from app import database
         calls = {"n": 0}
 
-        async def fake_list(status="open"):
+        # P0-3 (2026-10-07): `_active_symbols` artık açık pozisyonları rapor
+        # görünüm sınırından bağımsız okur — `apply_reports_baseline=False`
+        # geçirir. Mock bu kwarg'ı da kabul etmeli, yoksa TypeError sessizce
+        # yutulur ve evren hiç okunmaz (sayaç 0'da kalır).
+        async def fake_list(status="open", **kwargs):
             calls["n"] += 1
             return []
 

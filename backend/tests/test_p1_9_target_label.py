@@ -248,6 +248,39 @@ class TrainWiringTests(unittest.TestCase):
         # Journal katkısı hedefin SON elemanıdır ve DÜZELTİLMİŞ değeri taşır.
         self.assertAlmostEqual(float(reg.fit_y[-1]), 0.004, places=6)
 
+    def test_journal_target_length_matches_other_arrays_when_rows_dropped(self):
+        """REGRESYON (2026-10-07): core_present ile ELENEN journal satırı
+        ``y_target``'a eklenmemeli.
+
+        Hata: ``y_target.append(...)`` ``core_present`` guard'ından ÖNCE
+        yapılıyordu; snapshot'ı özellik alanı taşımayan satırlar elenirken
+        ``y_target`` şişiyor, dizi uzunlukları uyuşmuyordu. Canlıda bu,
+        ``train`` içinde ``journal_target[in_split_ts]`` boolean maskesinin
+        boyut uyuşmazlığıyla patlamasına (IndexError) ve ``/api/ml/train``
+        → 500 → tüm ``/api/chart/*/forecast`` → 503 zincirine yol açtı.
+        """
+        rows = [
+            {   # KALIR: çekirdek özellikler dolu.
+                "direction": "up", "symbol": "BTCUSDT", "horizon_minutes": 5,
+                "max_favorable_pct": 1.0, "outcome_return_pct": 0.01,
+                "timestamp": 1.0, "snapshot": {"atr_pct": 1.0, "ret3_pct": 0.5, "rsi": 55},
+            },
+            {   # ELENİR: snapshot'ta çekirdek özellik yok (chat-candidate).
+                "direction": "up", "symbol": "BTCUSDT", "horizon_minutes": 5,
+                "max_favorable_pct": 2.0, "outcome_return_pct": 0.02,
+                "timestamp": 2.0, "snapshot": {"trend": "up"},
+            },
+        ]
+        (X, y_target, y_hit, hid, weights, ts) = prepare_journal_samples(
+            rows, {"BTCUSDT": 0})
+        # İki satırdan yalnız BİRİ kaldı; her dizi bu tek satırla aynı boyutta.
+        self.assertEqual(len(X), 1)
+        self.assertEqual(len(y_target), 1, "elenen satır y_target'ı şişirmemeli")
+        self.assertEqual(len(y_hit), 1)
+        self.assertEqual(len(hid), 1)
+        self.assertEqual(len(weights), 1)
+        self.assertEqual(len(ts), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
