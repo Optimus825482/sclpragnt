@@ -136,6 +136,13 @@ class PendingOutcomeTests(unittest.TestCase):
 
 class ReportAggregationTests(unittest.TestCase):
     def test_macd_mtf_report_groups(self):
+        # `fake_rate_pct` eşiği = -`AUTO_PAPER_SL_PCT_DEFAULT` (ayarlanabilir).
+        # Sabit -1.5 gömülüydü; stop 2026-10-07'de genişleyince iki MAE de
+        # eşiğin ÜSTÜNDE kalıp sahte-oranı sessizce 0'a düşürdü. Eşiği
+        # config'ten türetip MAE'leri ona göre kuruyoruz.
+        from app.config import config
+        thr = -float(config.AUTO_PAPER_SL_PCT_DEFAULT)
+        deep_mae, deeper_mae = thr - 0.5, thr - 1.5
         rows = [
             {"id": 1, "symbol": "A", "macd_mtf_verdict": "GÜÇLÜ", "macd_mtf_confluence": 90.0,
              "outcome_status": "HEDEFE_ULTI", "mfe_pct": 4.0, "mae_pct": -0.5,
@@ -147,10 +154,10 @@ class ReportAggregationTests(unittest.TestCase):
              "outcome_status": None, "mfe_pct": None, "mae_pct": None,
              "score": 70.0, "target_pct": 2.0, "detected_at": time.time(), "mode": "x"},
             {"id": 4, "symbol": "D", "macd_mtf_verdict": "ZAYIF", "macd_mtf_confluence": 20.0,
-             "outcome_status": "SURE_DOLDU", "mfe_pct": 0.3, "mae_pct": -2.0,
+             "outcome_status": "SURE_DOLDU", "mfe_pct": 0.3, "mae_pct": deep_mae,
              "score": 60.0, "target_pct": 2.0, "detected_at": time.time(), "mode": "x"},
             {"id": 5, "symbol": "E", "macd_mtf_verdict": "ZAYIF", "macd_mtf_confluence": 10.0,
-             "outcome_status": "STOP", "mfe_pct": 0.1, "mae_pct": -3.0,
+             "outcome_status": "STOP", "mfe_pct": 0.1, "mae_pct": deeper_mae,
              "score": 55.0, "target_pct": 2.0, "detected_at": time.time(), "mode": "x"},
             {"id": 6, "symbol": "F", "macd_mtf_verdict": "ORTA", "macd_mtf_confluence": 50.0,
              "outcome_status": None, "mfe_pct": None, "mae_pct": None,
@@ -172,7 +179,8 @@ class ReportAggregationTests(unittest.TestCase):
         zayif = groups["ZAYIF"]
         self.assertEqual(zayif["measured"], 2)
         self.assertAlmostEqual(zayif["touch_rate_pct"], 0.0)
-        self.assertAlmostEqual(zayif["fake_rate_pct"], 100.0)  # iki MAE de ≤ -1.5
+        self.assertAlmostEqual(zayif["fake_rate_pct"], 100.0)  # iki MAE de eşiğin altında
+        self.assertAlmostEqual(result["fake_threshold_pct"], thr)
         yok = groups["YOK"]
         self.assertEqual(yok["count"], 1)
         self.assertAlmostEqual(yok["touch_rate_pct"], 100.0)

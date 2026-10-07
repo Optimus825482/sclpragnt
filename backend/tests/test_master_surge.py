@@ -302,7 +302,8 @@ class AutoPaperMasterSurgeIsolationTests(unittest.IsolatedAsyncioTestCase):
                 trade=trade,
                 now=now,
                 breakeven_trigger_pct=2.0,  # Standart tetikleyici 2.0 olsa bile tp1 1.3 devreye girer
-                settings={"trailing_enabled": False},
+                # breakeven AÇIKÇA açık: config varsayılanı 2026-10-07'den beri kapalı.
+                settings={"trailing_enabled": False, "breakeven_enabled": True},
             )
             mock_be.assert_awaited_once()
             # Stop seviyesi zirvenin (%101.5) %0.40 gerisinden takip etmeli: 101.5 * (1 - 0.0040) = 101.094
@@ -326,7 +327,9 @@ class AutoPaperMasterSurgeIsolationTests(unittest.IsolatedAsyncioTestCase):
             # tp1_scalp_pct YOK, confluence_4way YOK
         }
         mock_market = MagicMock()
-        mock_market.get_ticker.return_value = {"last_price": 103.0, "timestamp": now * 1000}
+        # Güncel fiyat, standart açıklıkla hesaplanan stop'un ÜSTÜNDE olmalı;
+        # yoksa kod stop'u bilerek yazmaz (anında kapanma olurdu).
+        mock_market.get_ticker.return_value = {"last_price": 103.3, "timestamp": now * 1000}
         mock_market.symbols = None
         with patch.object(auto_paper, "market", mock_market), \
              patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
@@ -336,12 +339,14 @@ class AutoPaperMasterSurgeIsolationTests(unittest.IsolatedAsyncioTestCase):
                 trade=trade,
                 now=now,
                 breakeven_trigger_pct=2.0,
-                settings={"trailing_enabled": False},
+                settings={"trailing_enabled": False, "breakeven_enabled": True},
             )
             mock_be.assert_awaited_once()
-            # Standart işlemde taban açıklık 0.60 korunmalı: 103.5 * (1 - 0.0060) = 102.879
+            # Standart işlem Master Surge sıkı açıklığını ALMAMALI: taban açıklık
+            # `AUTO_PAPER_TRAILING_GAP_PCT`'tir (ayarlanabilir), sabit 0.60 değil.
+            std_gap = float(config.AUTO_PAPER_TRAILING_GAP_PCT)
             called_stop = mock_be.await_args.args[2]
-            self.assertAlmostEqual(called_stop, 103.5 * (1 - 0.006), places=3)
+            self.assertAlmostEqual(called_stop, 103.5 * (1 - std_gap / 100), places=3)
 
 
 if __name__ == "__main__":

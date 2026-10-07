@@ -694,8 +694,25 @@ class RrGateTests(unittest.TestCase):
 
     def test_ratio_is_target_over_stop(self):
         from app.config import config
-        self.assertAlmostEqual(2.0 / 1.5, self.m._rr_ratio(2.0), places=6)
-        self.assertAlmostEqual(1.0, self.m._rr_ratio(float(config.MONITORING_RR_SL_PCT)), places=6)
+        sl = float(config.MONITORING_RR_SL_PCT)
+        self.assertAlmostEqual(2.0 / sl, self.m._rr_ratio(2.0), places=6)
+        self.assertAlmostEqual(1.0, self.m._rr_ratio(sl), places=6)
+
+    def test_effective_threshold_unchanged_by_sl_widening(self):
+        """SL dayanağı genişletilirken R/R kapısının ELEME EŞİĞİ sabit kalmalı.
+
+        2026-10-07: `stop_loss_pct` 1.5 → 5.0 olunca `MONITORING_RR_SL_PCT` da
+        5.0 oldu. `MONITORING_RR_MIN` eski efektif eşiğe (%0.90 hedef = 0.6×1.5)
+        kalibre edilmeseydi 0.6×5.0 = %3.00 olur ve bildirimlerin %37,7'si
+        sessizce elenirdi (ölçüm: work/rr_impact.py). Bu test o kaymayı engeller.
+        """
+        from app.config import config
+        effective_target_min = (float(config.MONITORING_RR_MIN)
+                                * float(config.MONITORING_RR_SL_PCT))
+        self.assertAlmostEqual(0.90, effective_target_min, places=6)
+        # Eşiğin hemen altındaki hedef elenir, hemen üstü geçer.
+        self.assertTrue(self.m._rr_gate_blocks(100.0, 0.85))
+        self.assertFalse(self.m._rr_gate_blocks(100.0, 0.95))
 
     def test_ratio_none_when_unmeasurable(self):
         self.assertIsNone(self.m._rr_ratio(0))
@@ -728,13 +745,17 @@ class RrGateTests(unittest.TestCase):
         self.assertFalse(self.m._rr_gate_blocks(None, 2.0))
 
     def test_notification_carries_rr_and_sl_basis(self):
-        """Frontend kendi SL sabitini varsaymasın: rr/sl_pct payload'da olmalı."""
+        """Frontend kendi SL sabitini varsaymasın: rr/sl_pct payload'da olmalı.
+
+        `rr` sabit bir sayı DEĞİL — SL dayanağına bölünür ve o da ayarlanabilir
+        (`stop_loss_pct`). Beklenen değer config'ten türetilir.
+        """
         with patch.object(self.m, "_ticker_price", return_value=None):
             notif = self.m._build_notification(
                 "AAAATRY", {"target_pct": 3.0, "price": 10.0, "velocity_score": 100.0}, {})
-        self.assertAlmostEqual(2.0, notif["rr"], places=6)
-        self.assertAlmostEqual(float(self.m.config.MONITORING_RR_SL_PCT),
-                               notif["sl_pct"], places=6)
+        sl_pct = float(self.m.config.MONITORING_RR_SL_PCT)
+        self.assertAlmostEqual(3.0 / sl_pct, notif["rr"], places=6)
+        self.assertAlmostEqual(sl_pct, notif["sl_pct"], places=6)
 
     def test_notification_rr_none_when_target_missing(self):
         with patch.object(self.m, "_ticker_price", return_value=None):
@@ -852,6 +873,73 @@ class MacdRefireGateTests(unittest.IsolatedAsyncioTestCase):
         await self._notify([self._cand(10.0, 50.0)], {"macd_refire_gate": True})
         second = await self._notify([self._cand(10.1, 45.0)], {"macd_refire_gate": False})
         self.assertEqual(["HISTTRY"], [n["symbol"] for n in second])
+
+
+class LlmVerdictWriteBackTests(unittest.IsolatedAsyncioTestCase):
+    """LLM kararı ASIL bildirim satırına yazılmalı (2026-10-07 düzeltmesi).
+
+    NEDEN KİLİT: `llm_second_eye.evaluate()` bildirim kaydedildikten SONRA,
+    fire-and-forget çalışır; karar yalnız INSERT anında yazılabildiği için
+    canlıda `llm_verdict` 1234/1254 satırda NULL kalmış ve `auto_paper`'ın LLM
+    kapısı fiilen hiç devreye girmemişti. Test, yazma yolu KALDIRILIRSA düşer.
+    """
+
+    ENVELOPE = {
+        "symbol": "HEMITRY", "mode": "llm_ikinci_goz", "source": "llm_second_eye",
+        "llm_verdict": "DEVAM", "llm_confidence": 80,
+        "llm_reasons": '{"reasons": ["cvd_pozitif"]}',
+    }
+
+    async def _run(self, notif, update_mock, broadcast=None):
+        """Görevi yamalar AKTİFKEN bekler.
+
+        DİKKAT: `with` bloğu coroutine'i DÖNDÜREREK terk edilirse yamalar
+        çözülür ve görev gerçek DB fonksiyonunu çağırır (mock hiç beklemez).
+        Bu yüzden burada `await` edilir.
+        """
+        from app.routers import monitoring
+        with patch.object(monitoring.llm_second_eye, "evaluate",
+                          AsyncMock(return_value=dict(self.ENVELOPE))), \
+             patch.object(monitoring, "quiet_hours_active",
+                          AsyncMock(return_value=False)), \
+             patch.object(monitoring, "_record_history",
+                          AsyncMock(return_value=None)), \
+             patch.object(monitoring.ws_manager, "broadcast",
+                          broadcast or AsyncMock(return_value=None)), \
+             patch.object(monitoring.database,
+                          "update_monitoring_notification_llm_verdict",
+                          update_mock), \
+             patch.dict(os.environ, {"VAPID_PRIVATE_KEY": ""}):
+            await monitoring._llm_second_eye_task(notif)
+
+    async def test_verdict_written_back_to_notification_row(self):
+        """`notif["id"]` varsa karar o satıra yazılmalı (verdict/güven/gerekçe)."""
+        update = AsyncMock(return_value=True)
+        notif = {"symbol": "HEMITRY", "price": 1.23, "id": 4242,
+                 "score": 72.0, "mode": "trend_devam"}
+        await self._run(notif, update)
+        update.assert_awaited_once()
+        args = update.await_args.args
+        self.assertEqual(args[0], 4242, "karar DOĞRU satıra bağlanmalı")
+        self.assertEqual(args[1], "DEVAM")
+        self.assertEqual(update.await_args.kwargs.get("confidence"), 80)
+        self.assertEqual(update.await_args.kwargs.get("reasons"),
+                         self.ENVELOPE["llm_reasons"])
+
+    async def test_no_id_skips_write_back_without_error(self):
+        """Eşleşen DB satırı yoksa (id yok) sessizce atlanır, çökmemeli."""
+        update = AsyncMock(return_value=False)
+        await self._run({"symbol": "HEMITRY", "price": 1.23, "score": 72.0},
+                        update)
+        update.assert_not_awaited()
+
+    async def test_write_back_failure_does_not_break_task(self):
+        """DB hatası bildirim akışını (WS yayını) durdurmamalı."""
+        update = AsyncMock(side_effect=RuntimeError("db down"))
+        broadcast = AsyncMock(return_value=None)
+        await self._run({"symbol": "HEMITRY", "price": 1.23, "id": 7,
+                         "score": 72.0}, update, broadcast=broadcast)
+        broadcast.assert_awaited_once()
 
 
 class MacdRefireGateSettingsTests(unittest.IsolatedAsyncioTestCase):

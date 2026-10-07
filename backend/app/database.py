@@ -4313,6 +4313,34 @@ async def update_monitoring_notification(
         return True
     return await _run_db(op)
 
+
+async def update_monitoring_notification_llm_verdict(notification_id, verdict,
+                                                    confidence=None, reasons=None):
+    """LLM ikinci-göz kararını İLGİLİ bildirim satırına yaz (2026-10-07).
+
+    NEDEN: LLM değerlendirmesi bildirim kaydedildikten SONRA, fire-and-forget
+    bir görevde çalışıyor. Karar yalnız `save_monitoring_notifications`
+    INSERT'ünde yazılabiliyordu; o an karar HENÜZ YOK → kolon canlıda
+    1234/1254 satırda NULL kaldı ve `auto_paper`'ın LLM kapısı
+    (`llm_verdict`/`llm_confidence`) ile rapordaki "LLM onaylı" kırılımı
+    fiilen hiç çalışmadı. Bu yol kararı asıl satıra bağlar.
+
+    `notification_id` None ise (eşleşen DB satırı yok) sessizce False döner.
+    """
+    if not notification_id:
+        return False
+    def op(conn):
+        conn.execute(
+            "UPDATE monitoring_notifications SET "
+            "llm_verdict=%s, llm_confidence=%s, llm_reasons=%s "
+            "WHERE id=%s",
+            (verdict or None, confidence, reasons, notification_id),
+        )
+        conn.commit()
+        return True
+    return await _run_db(op)
+
+
 async def update_monitoring_notification_outcome(notification_id, status, mfe_pct=None, mae_pct=None):
     """Bildirim sonucunu kalıcı yaz (MACD MTF konfluans ölçümü — 2026-09-26).
 

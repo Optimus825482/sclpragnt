@@ -212,8 +212,13 @@ class LadderParityTests(unittest.TestCase):
         self.assertGreater(out["net_pct"], 0)
 
     def test_stop_loss_is_detected(self):
-        rows = _bars(T0_MS, [100.0, 96.0])               # %4 düşüş → SL (%3)
-        out = self.replay._simulate_ladder(rows, 100.0, 2.0, 60.0)
+        # SL eşiği config'ten gelir (ayarlanabilir); düşüş onun ALTINA inmeli.
+        # Sabit -%4 gömmek, stop genişlediğinde (2026-10-07: %1.5 → %5.0) testi
+        # yanlışlıkla kırardı — eşik artık okunur.
+        sl_pct = float(config.AUTO_PAPER_SL_PCT_DEFAULT)
+        entry = 100.0
+        rows = _bars(T0_MS, [entry, entry * (1 - (sl_pct + 1.0) / 100)])
+        out = self.replay._simulate_ladder(rows, entry, 2.0, 60.0)
         self.assertEqual("stop_loss", out["exit_reason"])
         self.assertLess(out["net_pct"], 0)
 
@@ -749,6 +754,12 @@ class LadderParityTests(unittest.TestCase):
         async def _cov():
             return {"velocity_count": 2, "rising_count": 2}
 
+        # MACD journal ayağı da sahtelenir: sahtelenmezse yerel DB'de MACD satırı
+        # varsa sinyal üretilir ve `historical_klines` GERÇEK ağa çıkar — test
+        # asılır (ağ yoksa Timeout, varsa yavaş/ağ bağımlı koşum).
+        async def _empty_macd(*_a, **_k):
+            return []
+
         def _kline_rows(_symbol, _interval, _days, end_ms):
             out: list = []
             t = int((now - 7200) // 60 * 60)
@@ -766,6 +777,7 @@ class LadderParityTests(unittest.TestCase):
 
         with patch.object(replay.database, "list_velocity_candidates_since", _v), \
                 patch.object(replay.database, "list_rising_alerts_since", _r), \
+                patch.object(replay.database, "list_macd_monitor_alerts_since", _empty_macd), \
                 patch.object(replay.database, "journal_coverage", _cov), \
                 patch.object(replay, "historical_klines", _klines):
             # Izgara parametreleri KASTEN verilmez: `sweep=True` + None ızgaranın
@@ -835,6 +847,7 @@ class LadderParityTests(unittest.TestCase):
 
         with patch.object(replay.database, "list_velocity_candidates_since", _empty), \
                 patch.object(replay.database, "list_rising_alerts_since", _empty), \
+                patch.object(replay.database, "list_macd_monitor_alerts_since", _empty), \
                 patch.object(replay.database, "journal_coverage", _cov):
             result = asyncio.run(replay.build_report(
                 hours=6, symbols=None, max_signals=10, confluence_window=None,
@@ -1032,6 +1045,7 @@ class LadderParityTests(unittest.TestCase):
 
         with patch.object(replay.database, "list_velocity_candidates_since", _empty), \
                 patch.object(replay.database, "list_rising_alerts_since", _empty), \
+                patch.object(replay.database, "list_macd_monitor_alerts_since", _empty), \
                 patch.object(replay.database, "journal_coverage", _cov):
             result = asyncio.run(replay.build_report(
                 hours=24, symbols=None, max_signals=400, confluence_window=None,

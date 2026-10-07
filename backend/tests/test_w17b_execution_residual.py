@@ -160,7 +160,10 @@ class AutoPaperTakeProfitTests(unittest.IsolatedAsyncioTestCase):
                                                     "timestamp": now * 1000})
         close = AsyncMock(return_value=None)
         settings = {"breakeven_trigger_pct": 1.5, "trailing_enabled": True,
-                    "trailing_trigger_pct": 2.0, "trailing_gap_pct": 0.8}
+                    "trailing_trigger_pct": 2.0, "trailing_gap_pct": 0.8,
+                    # TP birincil çıkışı açıkça aç — config varsayılanı 2026-10-07
+                    # optimizasyonuyla kapalı, bu testin konusu TP'nin ÇALIŞMASI.
+                    "tp_primary_exit_enabled": True}
         with patch("app.routers.auto_paper.market", market), \
              patch.object(auto_paper, "_close_trade", close):
             await auto_paper._manage_single_trade(trade, now, 1.5, settings)
@@ -190,7 +193,14 @@ class AutoPaperExitLadderTests(unittest.IsolatedAsyncioTestCase):
         return trade
 
     async def _manage(self, trade, price, settings):
-        """Pozisyonu tek turda yönet; (close_mock, breakeven_mock, trailing_mock) döndür."""
+        """Pozisyonu tek turda yönet; (close_mock, breakeven_mock, trailing_mock) döndür.
+
+        TP birincil çıkışı AÇIKÇA açılır: config varsayılanı 2026-10-07
+        optimizasyonuyla kapalı ve bu sınıfın konusu TP yolu. Breakeven ise
+        yalnızca onu sınayan testlerde açılır — kapalıyken (config varsayılanı)
+        trailing gap'e kırpma uygulanmaz (bkz. `_manage_single_trade` B3 bloğu).
+        """
+        settings = {"tp_primary_exit_enabled": True, **settings}
         now = time.time()
         market = MagicMock()
         market.get_ticker = MagicMock(
@@ -241,14 +251,16 @@ class AutoPaperExitLadderTests(unittest.IsolatedAsyncioTestCase):
     async def test_breakeven_trigger_deferred_to_tp_fraction(self):
         """Hedef %4 → 2026-09-21: breakeven kâr korumayı geciktirmez; +%2.0'de kilitler."""
         trade = self._trade()  # tp_gain = 4.0
-        _, be, _ = await self._manage(trade, 102.0, {})  # gross +2.0 >= 1.5 baz eşik
+        _, be, _ = await self._manage(
+            trade, 102.0, {"breakeven_enabled": True})  # gross +2.0 >= 1.5 baz eşik
         be.assert_awaited()
 
     async def test_breakeven_trigger_is_not_deferred_when_dynamic_disabled(self):
         """`dynamic_breakeven_enabled=false` → sabit eşik (%1.5) geçerli."""
         trade = self._trade()
         _, be, _ = await self._manage(
-            trade, 102.0, {"dynamic_breakeven_enabled": False})
+            trade, 102.0, {"breakeven_enabled": True,
+                           "dynamic_breakeven_enabled": False})
         be.assert_awaited()
 
     async def test_trailing_trigger_deferred_to_tp_fraction(self):
@@ -279,26 +291,30 @@ class AutoPaperExitLadderTests(unittest.IsolatedAsyncioTestCase):
     async def test_trailing_gap_cannot_be_looser_than_breakeven(self):
         """SHADOW KİLİDİ: gevşek ayar KIRPILIR, sıkı ayar etki eder.
 
-        Neden: breakeven ratchet'i (BREAKEVEN_TRAIL_GAP_PCT = %0.60) hem daha sıkı
-        hem bu bloktan ÖNCE değerlendiriliyor. 0.8'lik ayar pratikte hiç
-        uygulanmıyordu (471 işlemlik gerçek replay'de `trailing_stop` 0 kez); ayar
-        sessizce yok sayılmak yerine kırpılır. (Mutasyon: kırpma kaldırılırsa
-        aşağıdaki ilk beklenti 103.5*(1-0.015) olurdu.)
+        Neden: breakeven ratchet'i (`BREAKEVEN_TRAIL_GAP_PCT`, varsayılan
+        `AUTO_PAPER_TRAILING_GAP_PCT`) hem daha sıkı hem bu bloktan ÖNCE
+        değerlendiriliyor. Gevşek bir ayar pratikte hiç uygulanmıyordu (471
+        işlemlik gerçek replay'de `trailing_stop` 0 kez); ayar sessizce yok
+        sayılmak yerine kırpılır. (Mutasyon: kırpma kaldırılırsa aşağıdaki ilk
+        beklenti 103.5*(1-0.015) olurdu.) Tavan config'ten okunur.
         """
+        from app.config import config as _cfg
+        cap = float(_cfg.AUTO_PAPER_TRAILING_GAP_PCT)
         loose = {"trailing_enabled": True, "trailing_trigger_pct": 2.0,
-                 "trailing_gap_pct": 1.5}
+                 "trailing_gap_pct": 1.5, "breakeven_enabled": True}
         trade = self._trade()
         _, _, trail = await self._manage(trade, 103.5, dict(loose))
         trail.assert_awaited()
-        self.assertAlmostEqual(103.5 * (1 - 0.006), trail.await_args.args[2], places=6)
+        self.assertAlmostEqual(103.5 * (1 - cap / 100), trail.await_args.args[2], places=6)
 
-        # Sıkı ayar GERÇEKTEN etki eder: 0.3 → tepeye daha yakın kilitler.
+        # Tavandan KESİN sıkı bir ayar gerçekten etki eder (tepeye daha yakın kilitler).
+        tight_gap = cap / 2.0
         tight = {"trailing_enabled": True, "trailing_trigger_pct": 2.0,
-                 "trailing_gap_pct": 0.3}
+                 "trailing_gap_pct": tight_gap, "breakeven_enabled": True}
         trade = self._trade()
         _, _, trail = await self._manage(trade, 103.5, dict(tight))
         trail.assert_awaited()
-        self.assertAlmostEqual(103.5 * (1 - 0.003), trail.await_args.args[2], places=6)
+        self.assertAlmostEqual(103.5 * (1 - tight_gap / 100), trail.await_args.args[2], places=6)
 
 
 # ---------------------------------------------------------------------------

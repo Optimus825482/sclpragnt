@@ -138,45 +138,113 @@ global_lead_lag -0.13, notr -0.70) → edge modun kendisinde, çıkış kuralın
    07:41 NMRTRY "TP1 KİLİTLENDİ" derken otonom PnL **-%4,32**.
    Etiketler "TEPE ≥%1,2 (hedefe değmedi)" oldu; "ZAMAN AŞIMI" →
    "ÖLÇÜLEMEDİ (1m mum yok)".
-5. **YENİ — mod filtresi kapısı** (`allowed_modes`, varsayılan boş = kapalı).
-6. **YENİ — bildirim dedup kapısı** (`dedup_cooldown_minutes`, varsayılan 0 =
-   kapalı). Aynı sembolde kısa süre önce giriş varsa tekrar açmaz.
-   `database.get_last_auto_paper_entry_time` eklendi.
+5. **YENİ — mod filtresi kapısı** (`allowed_modes`; varsayılan artık
+   `["trend_devam"]` — boş liste verilerek kapatılır).
+6. **YENİ — bildirim dedup kapısı** (`dedup_cooldown_minutes`; varsayılan artık
+   `60` — 0 verilerek kapatılır). Aynı sembolde kısa süre önce giriş varsa
+   tekrar açmaz. `database.get_last_auto_paper_entry_time` eklendi.
+7. **R/R kapısı dayanak hizası** (`config.py`): `MONITORING_RR_SL_PCT` artık
+   `AUTO_PAPER_SL_PCT`'ten türetilir (tek kaynak); `MONITORING_RR_MIN` eski
+   efektif eşiği korur. `monitoring.py`'deki 4 yedek varsayılan da hizalandı.
+   Detay §6.1.
+8. **Testler varsayılanları sabit kodluyordu** (bu değişiklikle ortaya çıktı):
+   `test_w17b`, `test_master_surge`, `test_monitoring`, `test_macd_mtf`,
+   `test_combined_radar` içinde eşikler (`1.5`, `0.6`, `-1.5`, `%3` düşüş)
+   gömülüydü; varsayılan değişince anlamlarını yitirdiler. Hepsi artık değeri
+   `config`'ten türetir, böylece bir sonraki ayar değişiminde sessizce
+   yanlış şeyi ölçmezler.
+9. **`test_combined_radar` GERÇEK AĞA çıkıyordu** (önceden var olan kusur):
+   `list_macd_monitor_alerts_since` sahtelenmediği için yerel DB'de MACD satırı
+   varsa test kline çekmeye çalışıp asılıyordu (internet yoksa `Timeout`).
+   Üç çağrı noktası da sahtelendi; dosya artık ağsız ve deterministik koşuyor.
+10. **LLM kararı DB'ye HİÇ yazılmıyordu** (`monitoring.py` + `database.py`;
+    önceden var olan kusur, bkz. §7 kapandı): `llm_second_eye.evaluate()`
+    bildirim kaydedildikten SONRA fire-and-forget çalışır, ama karar yalnız
+    `save_monitoring_notifications` INSERT'ünde yazılabiliyordu — o an karar
+    henüz YOK. Canlıda `llm_verdict` **1234/1254 satırda NULL** kalmıştı;
+    `auto_paper`'ın LLM kapısı ve rapordaki "LLM onaylı" kırılımı fiilen hiç
+    çalışmadı. Artık `update_monitoring_notification_llm_verdict()` kararı
+    `notif["id"]` ile ASIL satıra yazar (INSERT dönüş kimliği aynı nesneye
+    yazıldığı için). Kilit testi:
+    `test_monitoring.LlmVerdictWriteBackTests`.
 
 ## 6. UYGULAMA NOTU (önemli)
 
-Yukarıdaki kapıların ikisi de **varsayılan olarak kapalı**. Kod değişikliğini
-canlıya almak hiçbir davranışı değiştirmez; etki **ayarlar** üzerinden açılır:
+**Kanıta dayalı değerler artık KOD VARSAYILANIDIR** (2026-10-07). Etki için
+ayar girmek gerekmez; deploy edildiği anda bu kurgu yürürlüğe girer. Hepsi
+ortam değişkeniyle geri alınabilir (geri dönüş yolu aşağıda).
 
-| Ayar | Önerilen | Etki |
-| --- | --- | --- |
-| `allowed_modes` | `["trend_devam"]` | yalnızca edge taşıyan modu işle |
-| `dedup_cooldown_minutes` | `60` | aynı sembole saatte en fazla bir giriş |
-| `trailing_trigger_pct` | `1.0` | kârı erken kilitle |
-| `trailing_gap_pct` | `0.3` | dar geri çekilme |
-| `max_hold_minutes` | `120` | 5 dk'lık sinyale uygun tavan |
-| `stop_loss_pct` | `5.0` | **felaket stopu** (kuyruğu -%28,5 → -%5,3) |
+| Ayar | Yeni varsayılan | Eski | Etki |
+| --- | --- | --- | --- |
+| `AUTO_PAPER_SL_PCT` | **5.0** | 1.5 | felaket stopu; kuyruk -%28,5 → -%5,3 |
+| `AUTO_PAPER_TP_PRIMARY_ENABLED` | **false** | true | hedef tavanı kazananları kesmez — en büyük kazanç |
+| `AUTO_PAPER_TRAILING_TRIGGER_PCT` | **1.0** | 1.8 | kârı erken kilitle |
+| `AUTO_PAPER_TRAILING_GAP_PCT` | **0.3** | 0.6 | dar geri çekilme |
+| `AUTO_PAPER_BREAKEVEN_ENABLED` | **false** | true | ralliyi erken kesmez |
+| `AUTO_PAPER_MAX_HOLD_MINUTES` | **120** | 60 | 5 dk'lık sinyale nefes payı |
+| `allowed_modes` | **`["trend_devam"]`** | `[]` | yalnızca edge taşıyan modu işle |
+| `dedup_cooldown_minutes` | **60** | 0 | aynı sembole saatte en fazla bir giriş |
 
-**Dikkat:** canlıdaki `stop_loss_pct` şu an **4,0**. Backtest'te 5,0 daha iyi
-(+0,375 vs +0,332) ama fark küçük; 4,0'ı bırakmak da savunulabilir.
+**Geri dönüş (deploy sonrası, tek komut gerekmez — env ile):**
 
-**Backtest iddiası (aynı 30 gün, aynı maliyet):**
+```bash
+AUTO_PAPER_TP_PRIMARY_ENABLED=true AUTO_PAPER_SL_PCT=1.5
+```
+
+veya çalışma anında ayar API'sinden: `allowed_modes`'u `[]` yapmak mod
+filtresini, `dedup_cooldown_minutes`'ı `0` yapmak dedup'ı kapatır.
+
+### 6.1 R/R kapısı dayanağı da hizalandı
+
+`MONITORING_RR_SL_PCT` (bildirim üretilirken R/R'nin bölündüğü stop dayanağı)
+stop'un kendisiyle AYNI olmak zorundadır; ayrışırsa panelde gösterilen `rr`
+yalan olur. Stop 5,0'a çıkınca dayanak da 5,0 oldu — ama `MONITORING_RR_MIN`
+o zaman 0,6 × 5,0 = **%3,00 hedef** eşiği demek olurdu ve bildirimlerin
+**%37,7'si** sessizce elenirdi. Ölçtük: bu ek eleme sonucu iyileştirmiyor
+(trend_devam dar havuzda +1,446%/işlem, n=379 ↔ tüm havuzda +1,375%, n=540 —
+işlem başı fark yok, hacim %30 eksik). Bu yüzden `MONITORING_RR_MIN` eski
+efektif eşiği (**%0,90** hedef) koruyacak şekilde 0,18'e kalibre edildi;
+**davranış değişmedi**. Kilit testi:
+`test_monitoring.RrGateTests.test_effective_threshold_unchanged_by_sl_widening`.
+
+### 6.2 Backtest iddiası (aynı 30 gün, aynı maliyet)
+
 - Mevcut kurgu (tüm sinyaller): **-0,143%/işlem** ≈ -22.168 TRY
-- Önerilen kurgu: **+0,375%/işlem** ≈ +9.782 TRY
+- Yeni varsayılan kurgu: **+1,375%/işlem** (trend_devam) — train +1,746 / test +0,508
+- Mod filtresi olmadan aynı çıkış kuralları: **+0,550%/işlem**
 - İşlem hacmi 107/gün → 17/gün
 
-Bu bir **backtest**tir, garanti değildir. Devreye alındıktan sonra ilk 1-2 hafta
-gerçekleşen sonuç bu aralıkta mı diye izlenmelidir; ayrışırsa `allowed_modes`
-boşaltılarak eski davranışa dönülür.
+Bu bir **backtest**tir, garanti değildir. Deploy sonrası ilk 1-2 hafta
+gerçekleşen sonuç izlenmelidir; ayrışırsa `allowed_modes` boşaltılarak eski
+davranışa dönülür.
+
+### 6.3 Deploy gerekir
+
+Bu değişiklikler **kod içindedir**; çalışan sunucu bunları almaz. Canlı
+`/api/auto-paper/settings` hâlâ 25 anahtar döndürüyor (`max_target_pct`,
+`allowed_modes`, `dedup_cooldown_minutes` YOK) → backend yeniden başlatılmalıdır.
 
 ## 7. Açık kalan işler
 
-- `llm_verdict` 1234/1254 işlemde `None` → **LLM kapısı fiilen hiç çalışmamış**.
-  Çalışsa da §4'te ayırt edici sinyal bulunamadı; ama kapının neden hiç
-  dolmadığı ayrıca incelenmeli.
+- ~~`llm_verdict` 1234/1254 işlemde `None`~~ → **ÇÖZÜLDÜ (2026-10-07, §5.10)**.
+  Kök neden "LLM karar vermiyor" değil, **kararın yazılacağı satırın artık yok
+  olmasıydı**: değerlendirme bildirim INSERT'ünden SONRA çalışıyor, karar
+  yalnız INSERT anında yazılabiliyordu. Karar artık `notif["id"]` ile o satıra
+  UPDATE ediliyor. *Not: kapı dolduğunda da §4'te ayırt edici sinyal
+  bulunamamıştı — bu düzeltme ölçümü mümkün kılar, tek başına edge getirmez.*
+- `llm_verdict` artık dolduğuna göre **LLM kapısının gerçek etkisi yeniden
+  ölçülmeli**: kapı `llm_verdict == "FAKE"` sinyallerini eliyor; yeni veri
+  biriktikten sonra "LLM onaylı" ↔ "LLM'siz" kırılımı tekrar karşılaştırılmalı
+  (depoyu daraltıp daraltmadığına karar vermek için).
 - **Komisyon doğrulaması**: tüm hesap %0,325'e duyarlı. Gerçek komisyon maker
   (%0,075-0,1) ise tur maliyeti %0,2'ye iner ve sonuçlar iyileşir. Tek başına
   sistemi etkileyen en büyük dış değişken. `SCALPER_COMMISSION_PCT` /
   `COMMISSION_PCT` ortam değişkeni.
 - `trend_devam` modunun **neden** edge taşıdığı incelenmeli (sinyal üretimi
   tarafı) — bu, edge'i güçlendirmenin ya da çoğaltmanın yolu.
+- **Test seti sağlığı**: tam set artık **1690 + 4 alt-test** geçiyor (§5.10'un
+  kilit testi dâhil; `exit=0`, iki kez koşuldu). §5.9'daki ağ asılıması, `-x`
+  olmadan koşulduğunda 16 testin daha düşmesine yol açıyordu
+  (`test_execution_fixes` dahil) — sıra bozulup global durum kirli kalıyordu.
+  Asılıma giderilince bu ikincil düşüşler de kendiliğinden kalktı; bağımsız
+  bir kusur değillerdi.

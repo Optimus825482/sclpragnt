@@ -1403,12 +1403,19 @@ async def get_default_settings() -> dict:
         # verisiyle (work/analiz_2026-10-07) mod ayrimi belirleyici cikti:
         # trend_devam +0.47%/islem, unified +0.02%, global_lead_lag -0.13%,
         # notr -0.70%. Karisik havuz maliyet sonrasi negatif kaliyor.
-        "allowed_modes": [],
-        # BILDIRIM DEDUP (2026-10-07). Ayni sembolde ZATEN ACIK pozisyon varken
-        # yeni bildirimle pozisyon buyutmeyi engeller (0 = kapali). Ayni sinyal
-        # 5 dakikada birden fazla kanaldan geliyor; her biri ayri islem aciyordu.
-        # Sembol-basi tekrar arasi cooldown olarak uygulanir.
-        "dedup_cooldown_minutes": 0.0,
+        #
+        # 2026-10-07 OPTIMIZASYON: yalnizca edge tasiyan mod islenir.
+        # trend_devam+dedup+cikis kurallari: +1.375%/islem, train +1.746 /
+        # test +0.508, 5/5 hafta pozitif, p~0.000 (null testi 400 orneklem).
+        # TUM havuz ayni kurallarla +0.550% — yani diger modlar getiriyi
+        # yariya indiriyor. Bos liste verilerek eski davranisa donulur.
+        "allowed_modes": ["trend_devam"],
+        # BILDIRIM DEDUP (2026-10-07). Ayni sembolde kisa sure once giris
+        # yapildiysa tekrar girmez (0 = kapali). Ayni sinyal 5 dakikada birden
+        # fazla kanaldan geliyor; her biri ayri pozisyon aciyordu.
+        # OPTIMIZASYON: 60 dk. Canlida islem hacmi 107/gun -> 17/gun; ort.
+        # bozulmadan (-%0.20 -> +0.55% @30dk dedup) tekrarli islemler atilir.
+        "dedup_cooldown_minutes": 60.0,
     }
 
 

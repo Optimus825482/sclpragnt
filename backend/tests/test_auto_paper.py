@@ -21,12 +21,17 @@ from app.routers import auto_paper
 
 
 def _make_notification(symbol="APTEST", score=60.0, target_pct=2.0, price=100.0, notif_id=None):
+    # `mode` (2026-10-07): varsayılan `trend_devam` — otonom katmanın varsayılan
+    # olarak işlediği tek mod (`allowed_modes`). Diğer kapıları sınayan testler
+    # mod kapısına takılmasın diye fixture geçerli bir mod taşır; mod davranışını
+    # sınayan testler `mode`'u açıkça değiştirir.
     return {
         "id": notif_id,
         "symbol": symbol,
         "score": score,
         "target_pct": target_pct,
         "price": price,
+        "mode": "trend_devam",
         "expected_price": price * (1 + target_pct / 100),
     }
 
@@ -795,14 +800,18 @@ class AutoPaperModeFilterTests(unittest.TestCase):
             self.assertNotEqual(res.get("reason"), "symbol_dedup")
 
     def test_settings_roundtrip_preserves_new_keys(self):
-        """Yeni ayarlar şemada tanınmalı: allowed_modes listesi + dedup sayısı."""
+        """Yeni ayarlar şemada tanınmalı: allowed_modes listesi + dedup sayısı.
+
+        Varsayılanlar 2026-10-07 optimizasyonuyla AKTİF: yalnızca
+        `trend_devam` işlenir ve aynı sembole 60 dk içinde tekrar girilmez
+        (bkz. docs/OTONOM_TRADE_TESHIS_2026-10-07.md §3.1)."""
         from app.routers.auto_paper import get_default_settings
         import asyncio
         defaults = asyncio.run(get_default_settings())
         self.assertIn("allowed_modes", defaults)
         self.assertIn("dedup_cooldown_minutes", defaults)
-        self.assertEqual(defaults["allowed_modes"], [])
-        self.assertEqual(defaults["dedup_cooldown_minutes"], 0.0)
+        self.assertEqual(defaults["allowed_modes"], ["trend_devam"])
+        self.assertEqual(defaults["dedup_cooldown_minutes"], 60.0)
 
 
 if __name__ == "__main__":

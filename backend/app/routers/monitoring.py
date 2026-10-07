@@ -445,8 +445,8 @@ def _threshold_fields(settings) -> dict:
         "monitoring_min_raw_score": _effective_min_raw_score(settings),
         "monitoring_min_score_panel": _effective_min_score(settings),
         "rr_enabled": bool(getattr(config, "MONITORING_RR_ENABLED", True)),
-        "rr_min": float(getattr(config, "MONITORING_RR_MIN", 0.6)),
-        "rr_sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 3.0)),
+        "rr_min": float(getattr(config, "MONITORING_RR_MIN", 0.18)),
+        "rr_sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 5.0)),
         "rr_blocked": int(_monitoring_state.get("rr_blocked", 0)),
         # 2026-09-26: Master Surge risk kapısı ölçümü.
         "surge_blocked": int(_monitoring_state.get("surge_blocked", 0)),
@@ -953,13 +953,13 @@ def _ticker_price(symbol: str) -> float | None:
 def _rr_ratio(target_pct: float) -> float | None:
     """Adayın ödül/risk oranı: TP mesafesi / SL mesafesi (ikisi de YÜZDE).
 
-    SL dayanağı GERÇEK çıkış stop'udur (`MONITORING_RR_SL_PCT`, varsayılan %3 →
+    SL dayanağı GERÇEK çıkış stop'udur (`MONITORING_RR_SL_PCT`, varsayılan %5 →
     `AUTO_PAPER_SL_PCT_DEFAULT` ile hizalı; pozisyonlar `stop_loss =
     fill_entry*(1-sl_pct)` ile açılır). Ölçülemeyen durumlarda None.
     """
     if not target_pct or target_pct <= 0:
         return None
-    sl_pct = float(getattr(config, "MONITORING_RR_SL_PCT", 3.0) or 0.0)
+    sl_pct = float(getattr(config, "MONITORING_RR_SL_PCT", 5.0) or 0.0)
     if sl_pct <= 0:
         return None
     return float(target_pct) / sl_pct
@@ -1025,7 +1025,7 @@ def _rr_gate_blocks(price: float, target_pct: float) -> bool:
     Kalibrasyon (2026-09-14, gerçek DB): hedef bandı → dokunma oranı
     %2.00 → %8.8 (n=13137), %3.00 → %11.5 (n=15889), %4.00 → %1.3 (n=204).
     Yani yüksek hedef DAHA KÖTÜ vuruyor; "RR'yi yükselt" yönlü sıkı bir kapı
-    isabeti en düşük bandı seçer. Bu yüzden eşik (`MONITORING_RR_MIN`, 0.6)
+    isabeti en düşük bandı seçer. Bu yüzden eşik (`MONITORING_RR_MIN`)
     yalnızca ödülü riskine göre anlamsız olan adayı eler (hedef < %1.8);
     tipik %2.0/%3.0 hedefleri geçer. Detay: `config.py` A4 bloğu.
     """
@@ -1036,7 +1036,7 @@ def _rr_gate_blocks(price: float, target_pct: float) -> bool:
     rr = _rr_ratio(target_pct)
     if rr is None:
         return False
-    return rr < float(getattr(config, "MONITORING_RR_MIN", 0.6))
+    return rr < float(getattr(config, "MONITORING_RR_MIN", 0.18))
 
 
 def _build_notification(sym, c, settings, first_price: float | None = None) -> dict:
@@ -1120,7 +1120,7 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         # A4: ödül/risk oranı ve dayanağı backend'den yayınlanır. Frontend
         # kendi SL sabitini varsaymasın (kalibrasyon tek kaynaktan gelsin).
         "rr": round(_rr_ratio(target), 3) if _rr_ratio(target) is not None else None,
-        "sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 3.0) or 0.0),
+        "sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 5.0) or 0.0),
         # A3: satırın yazıldığı ölçek sürümü + cap. Okuma tarafı bu etiketle
         # doğru haritayı uygular (etiket yoksa kayıt lineer kabul edilir).
         "norm_version": MONITORING_SCORE_NORM_VERSION,
@@ -1617,6 +1617,20 @@ async def _llm_second_eye_task(notif: dict) -> None:
         if not ok:
             logger.warning("LLM ikinci göz push'u gönderilemedi: %s", sym)
     await _record_history([envelope])
+    # KARARI ASIL BİLDİRİM SATIRINA BAĞLA (2026-10-07): değerlendirme bildirim
+    # kaydedildikten SONRA çalıştığı için karar yalnız INSERT anında
+    # yazılabiliyordu → kolon canlıda %98 NULL kalıyordu ve `auto_paper`'ın LLM
+    # kapısı fiilen hiç devreye girmiyordu. `notif["id"]` yeni bildirimlerde
+    # `save_monitoring_notifications` tarafından doldurulur.
+    try:
+        _nid = notif.get("id")
+        if _nid is not None:
+            await database.update_monitoring_notification_llm_verdict(
+                _nid, envelope.get("llm_verdict"),
+                confidence=envelope.get("llm_confidence"),
+                reasons=envelope.get("llm_reasons"))
+    except Exception as exc:
+        logger.debug("LLM kararı bildirim satırına yazılamadı %s: %s", sym, exc)
     try:
         await ws_manager.broadcast({"type": "monitoring_alert", "data": [envelope]})
         logger.info("LLM ikinci göz kararı yayınlandı: %s → %s",
@@ -1919,7 +1933,7 @@ def _rising_summary_safe() -> dict | None:
         logger.debug("rising özeti alınamadı: %s", exc)
         return None
     try:
-        sl_pct = float(getattr(config, "MONITORING_RR_SL_PCT", 3.0) or 0.0)
+        sl_pct = float(getattr(config, "MONITORING_RR_SL_PCT", 5.0) or 0.0)
         for cand in payload.get("candidates") or []:
             price = _ticker_price(str(cand.get("symbol") or ""))
             target = float(cand.get("target_pct") or 0)

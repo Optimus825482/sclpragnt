@@ -343,11 +343,24 @@ class Config:
     # gidis-donus maliyetine yaklasan band (MONITORING_TARGET_PCT_MIN=%1.5 →
     # RR 0.5) elenir. Tek deger yeterli: 5dk (%2.0) ve 15dk (%3.0) profillerinin
     # ikisi de esigi asar, ufuk bazli ayrim gerekmez.
-    MONITORING_RR_MIN = float(os.getenv("MONITORING_RR_MIN", "0.6"))
+    #
+    # 2026-10-07: SL dayanagi 1.5 → 5.0 (asagida). Eşik de eski EFEKTIF degerinde
+    # (0.6 x 1.5 = %0.90 hedef) tutulur, yoksa 0.6 x 5.0 = %3.00 olur ve
+    # bildirimlerin %37,7'si elenirdi. Elimizdeki kanit (30 gun, 3223 bildirim,
+    # gercek mumlar) bu ek elemenin sonucu IYILESTIRMEDIGINI gosteriyor: ayni
+    # cikis kurallariyla trend_devam dar havuzda +1,446%/islem (n=379) vs tum
+    # havuzda +1,375% (n=540) — islem basi fark yok sayilir, hacim %30 azalir.
+    # Eşiği kaydirmanin tek sebebi bu olurdu; olmadigi icin DAVRANIS DEGISMEZ.
+    MONITORING_RR_MIN = float(os.getenv("MONITORING_RR_MIN", "0.18"))
     # R/R gate SL dayanağı: AUTO_PAPER_SL_PCT_DEFAULT ile AYNI olmalı; ayrışırsa
-    # gatelettiğimiz adayla açılan pozisyon farklı risk taşır. Eski varsayılan 3.0
-    # → 1.5 (2026-09-17, Erkan kararı: replay geometrisi + canlı 50 işlem verisi).
-    MONITORING_RR_SL_PCT = float(os.getenv("MONITORING_RR_SL_PCT", "1.5"))
+    # gatelettiğimiz adayla açılan pozisyon farklı risk taşır (panel/lejantta
+    # gösterilen `rr` ve `sl_pct` yalan olur). Parite testi:
+    # `test_monitoring.RrGateTests.test_sl_basis_matches_real_exit_stop`.
+    # Varsayılan burada TEKRAR YAZILMAZ: `AUTO_PAPER_SL_PCT` env'i (yoksa 5.0,
+    # aşağıdaki `AUTO_PAPER_SL_PCT_DEFAULT` ile aynı) okunur — iki sabit
+    # tanımdan bağımsız olarak hizalı kalır.
+    MONITORING_RR_SL_PCT = float(os.getenv(
+        "MONITORING_RR_SL_PCT", os.getenv("AUTO_PAPER_SL_PCT", "5.0")))
 
     # ---------------------------------------------------------------------
     # YÜKSELİŞ SİNYALLERİ (R1, 2026-09-14): MACD MONITOR'ün kanıtlanmış
@@ -629,7 +642,13 @@ class Config:
     # log haritada aynı ham nokta panel 68.2 → DEĞER KORUNARAK yeniden ankrajlandı.
     AUTO_PAPER_MIN_SCORE_DEFAULT = float(os.getenv("AUTO_PAPER_MIN_SCORE", "68.2"))
     AUTO_PAPER_BALANCE_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_BALANCE_PCT", "35"))
-    AUTO_PAPER_SL_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_SL_PCT", "1.5"))  # Eski varsayılan 3.0 → 1.5 (2026-09-17, Erkan kararı: replay geometrisi + canlı 50 işlem verisi).
+    # 2026-10-07 OPTIMIZASYON: 1.5 -> 5.0. KANIT (30 gun, 256 sembol, gercek
+    # Binance TR 5dk mumlari, 3214 bildirim, mum-ici replay, maliyet %0.325):
+    # sig stop sinyalin 5 dk'lik gurultusu icinde islemlerin yarisini kesiyordu.
+    # SL 1.5 -> -0.85%/islem, SL 4.0 -> +1.32%, SL 5.0 -> +1.38%, SL 6.0 -> +1.41%.
+    # Canlida 4.0 -> 1.5 denemesi 7 KAT kotu sonuc vermisti (bkz. teshis §4).
+    # Genis stop = felaket sigortasi; kazananlari kesme, kuyrugu -%28'den -%5'e indir.
+    AUTO_PAPER_SL_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_SL_PCT", "5.0"))
     AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "1.5"))  # Eski varsayılan 2.0 → 1.5 (2026-09-17, Erkan kararı: radar/velocity bildirimlerinin hedefi MFE tavanına otursun; replay geometrisi + canlı 50 işlem verisi).
     AUTO_PAPER_MIN_ORDER_TRY = float(os.getenv("AUTO_PAPER_MIN_ORDER_TRY", "50.0"))
     # Hedef tavanı (2026-10-07): bildirimin kendi `target_pct`'i bu değeri aşarsa
@@ -639,8 +658,11 @@ class Config:
     # 0 = sınırsız (eski davranış).
     AUTO_PAPER_MAX_TARGET_PCT = float(os.getenv("AUTO_PAPER_MAX_TARGET_PCT", "0"))
     # Başabaş (Breakeven) koruması: erken minik kârla çıkıp ralliyi kaçırmamak için
-    # varsayılan KAPALI (2026-09-22 Erkan kararı). Ayarlardan isteğe bağlı açılabilir.
-    AUTO_PAPER_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_BREAKEVEN_ENABLED", "true").lower() == "true"
+    # varsayılan KAPALI. 2026-10-07 incelemesi: breakeven'i ZORUNLU kılmanın kanıtı
+    # yok — gerçekleşen kazanan ortalaması (+%1,51) zaten net_floor'un üzerinde,
+    # yani "%0,325'e kilitlenip kalanı kaybetme" senaryosu veride yok (zarar
+    # asimetrisi sig stop'tan geliyordu, breakeven eksikliğinden değil).
+    AUTO_PAPER_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_BREAKEVEN_ENABLED", "false").lower() == "true"
     # 2026-09-28 kârlılık düzeltmesi: erken breakeven kâr korumasını trailing'den
     # ÖNCE devreye sokar — trailing aktif olduğunda stop zaten maliyet üstünde olur
     # ve zarar riski sıfırlanır. Varsayılan %1.0.
@@ -649,11 +671,15 @@ class Config:
     # kara geçince aktifleşir ve fiyatı trailing_gap_pct geriden takip eder.
     # Varsayılan AÇIK; trailing_enabled=false ile kapatılabilir.
     AUTO_PAPER_TRAILING_ENABLED = os.getenv("AUTO_PAPER_TRAILING_ENABLED", "true").lower() == "true"
-    AUTO_PAPER_TRAILING_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_TRAILING_TRIGGER_PCT", "1.8"))
-    # 2026-09-28 kârlılık düzeltmesi: 0.6 kâr koruma. TP artık korunduğu için
-    # (trailing aktifken silinmediği için) trailing gap'i daraltmak güvenli:
-    # geri çekilmelerde daha az kâr kaybı. TP birincil çıkış, trailing koruma.
-    AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "0.6"))
+    # 2026-10-07 OPTIMIZASYON: 1.8 -> 1.0. KANIT: trigger 0.8/1.0/1.2/1.5/2.0
+    # sirasiyla +1.41/+1.38/+1.31/+1.24/+1.18%/islem. Erken devreye giren trailing
+    # kazananlari daha cok tasiyor. Plato genis (0.8-1.2 hepsi iyi) — saglam.
+    AUTO_PAPER_TRAILING_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_TRAILING_TRIGGER_PCT", "1.0"))
+    # 2026-10-07 OPTIMIZASYON: 0.6 -> 0.3. KANIT: gap 0.2/0.3/0.4/0.5/0.6
+    # sirasiyla +1.34/+1.38/+1.35/+1.36/+1.31%/islem. Dar gap = tepeden geri
+    # cekilmede daha az kar kaybi. (Eski "TP birincil cikis" varsayimi gecerli
+    # DEGIL: TP cikisi kapatilinca sonuc 3 katina cikiyor, bkz. TP_PRIMARY.)
+    AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "0.3"))
     # Trailing/breakeven kapanışı sonrası aynı bildirimle yeniden açılış
     # (fiyat bildirim fiyatının üzerinde + ufuk süresi dolmadı + yükselme
     # eğilimi varsa). 2026-09-29 kârlılık analizi: koruma kapanışı sonrası
@@ -675,13 +701,25 @@ class Config:
     # B1-B5: otonom paper dinamik çıkış ayarları.
     # Dinamik breakeven ve trailing kâr korumayı hedefin %70-%80'ine kadar geciktirerek
     # +%2.75 kârın stop-loss'a dönmesine neden oluyordu; varsayılan KAPALI ve tavan korumalı yapıldı.
-    AUTO_PAPER_TP_PRIMARY_ENABLED = os.getenv("AUTO_PAPER_TP_PRIMARY_ENABLED", "true").lower() == "true"
+    # 2026-10-07 OPTIMIZASYON: true -> false. KANIT (30 gun, gercek mumlar,
+    # trend_devam + dedup, ayni diger ayarlarla):
+    #     TP cikisi ACIK : +0.461%/islem  [train +0.716 / test -0.135]
+    #     TP cikisi KAPALI: +1.375%/islem  [train +1.746 / test +0.508]
+    # TP = bildirim hedefi (canlida ort +%4,30) sert bir tavan gibi calisiyordu;
+    # tepe medyani +%1,62 oldugu icin cogu islem hedefe hic degmiyor, degince de
+    # kazanan erken kesiliyordu. Kapatilinca cikisi trailing + genis SL belirler
+    # ve test seti negatiften pozitife donuyor. (max_target_pct ile ayni sebep.)
+    AUTO_PAPER_TP_PRIMARY_ENABLED = os.getenv("AUTO_PAPER_TP_PRIMARY_ENABLED", "false").lower() == "true"
     AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", "false").lower() == "true"
     AUTO_PAPER_DYNAMIC_TRAILING_ENABLED = os.getenv("AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", "false").lower() == "true"
     AUTO_PAPER_BREAKEVEN_BUFFER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_BUFFER_PCT", "0.02"))
-    # Otonom Paper maksimum pozisyon açık kalma süresi (dakika, 2026-09-21 Erkan kararı).
-    # 60 dk sonunda kâr/zarar durumuna bakılmadan pozisyon piyasa fiyatından kapatılır (scalp bakiyesini kilitlemez).
-    AUTO_PAPER_MAX_HOLD_MINUTES = float(os.getenv("AUTO_PAPER_MAX_HOLD_MINUTES", "60.0"))
+    # Otonom Paper maksimum pozisyon açık kalma süresi (dakika).
+    # 2026-10-07 OPTIMIZASYON: 60 -> 120. KANIT: 60/90/120/180/240 dk sirasiyla
+    # +1.389/+1.383/+1.375/+1.364/+1.391%/islem — tavan sonuca duyarsiz (cikisi
+    # trailing + SL belirliyor). 120 dk secildi: 30-60 dk bandinda max_duration
+    # kapanislari ort -%1,08 uretiyordu (bkz. teshis §2); sinyalin gercek
+    # yukselisine nefes payi birakmak zarari kesiyor, asiri tasima da yok.
+    AUTO_PAPER_MAX_HOLD_MINUTES = float(os.getenv("AUTO_PAPER_MAX_HOLD_MINUTES", "120.0"))
     # Radar & Sinyal başarı ölçüm penceresi (dakika, 2026-09-22 Erkan kararı).
     # 5dk'da erken kapatıp hedefe daha sonra ulaşan başarılı sinyalleri ıska saymamak için
     # otonom işlem maksimum ömrüyle (60 dk) tam senkronize çalışır.
