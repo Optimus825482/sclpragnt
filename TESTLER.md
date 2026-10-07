@@ -4,15 +4,20 @@
 > PUMP araştırma raporuydu ve **güncel test koşma komutunu içermiyordu**. Aşağıdaki
 > bölüm test tabanının güncel durumunu tanımlar; altındaki PUMP araştırma
 > içeriği tarihsel kayıt olarak korunmuştur.
+>
+> **2026-10-07 düzeltmesi:** Önceki tabloda "Frontend test dosyası | 0 (vitest yok)"
+> yazıyordu — bu **yanlıştı**. Frontend'de vitest kuruludur (`frontend/vitest.config.ts`,
+> `frontend/package.json` → `"test": "vitest run"`) ve 3 dosyadaki **67 test geçer**.
+> Backend sayıları da güncellendi: **113** test dosyası, **1713** toplanan test.
 
-## Güncel Durum (2026-09-26)
+## Güncel Durum (2026-10-07)
 
 | Metrik | Değer |
 | --- | --- |
-| Test dosyası | **97** |
-| Toplanan test | **1489** (`pytest --collect-only`) |
+| Backend test dosyası | **113** |
+| Toplanan test | **1713** (`pytest --collect-only`) |
 | Kapsama (coverage) | **%57** (`pytest --cov=app`) — CI eşiği `%55` |
-| Frontend test dosyası | 0 (vitest yok) |
+| Frontend test dosyası | **3** (vitest) — **67 test geçiyor** |
 | CI hedef Python | 3.11 (üretim) + 3.13 (uyumluluk) |
 
 ## Güncel Koşma Komutları
@@ -20,7 +25,7 @@
 ```powershell
 # Tüm backend testleri
 cd D:\scalperagent_v4\backend
-python -m pytest tests -q
+.\venv\Scripts\python.exe -m pytest tests -q
 
 # Coverage ile (CI'daki komut)
 python -m pytest tests -q --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=55
@@ -34,9 +39,13 @@ ruff check --select E,F,W,I,B,SIM,UP --output-format=concise app tests scripts
 
 # Biçim kontrolü — danışma (kapı DEĞİLDİR)
 ruff format --check app tests scripts
+
+# Frontend testleri (vitest; 3 dosyada 67 test)
+cd D:\scalperagent_v4\frontend
+npm test            # eşdeğeri: npx vitest run
 ```
 
-Yapılandırma: `backend/ruff.toml` (kural kümesi), `backend/pytest.ini` (zaman aşımı), `backend/requirements-dev.txt` (pinned araçlar).
+Yapılandırma: `backend/ruff.toml` (kural kümesi), `backend/pytest.ini` (zaman aşımı), `backend/requirements-dev.txt` (pinned araçlar), `frontend/vitest.config.ts` (vitest kapsamı — `app/lib/*.test.ts` ve `app/charts/*.test.ts` altındaki saf matematik modülleri).
 
 ## Test Zaman Aşımı
 

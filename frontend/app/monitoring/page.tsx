@@ -213,6 +213,28 @@ const parseSettings = (raw: unknown): NotificationSettings | null => {
   };
 };
 
+/**
+ * P2-9: `parseWarmCandidates`/`parsePulseCandidates` `macd_mtf` alanını
+ * KOPYALAMIYORDU → `WarmCandidate`/`PulseCandidate` üzerinde alan hep
+ * `undefined` kalıyor, satırlardaki `mtfBadge(...)` hiçbir zaman nesne üretmiyor
+ * ve MTF MACD rozeti ekranda HİÇ görünmüyordu. Backend bu alanı her iki katmanda
+ * da (`warm`/`pulse`) yayınlar; savunmacı biçimde normalize edilir.
+ */
+const parseMacdMtf = (raw: unknown): MacdMtfCompact | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const v = raw as Record<string, unknown>;
+  return {
+    symbol: typeof v.symbol === "string" ? v.symbol : undefined,
+    coverage: numOrNull(v.coverage) ?? undefined,
+    confluence: numOrNull(v.confluence),
+    verdict: typeof v.verdict === "string" ? v.verdict : null,
+    green_count: numOrNull(v.green_count) ?? undefined,
+    parallel_up_count: numOrNull(v.parallel_up_count) ?? undefined,
+    fresh_cross: Array.isArray(v.fresh_cross) ? v.fresh_cross.filter((s): s is string => typeof s === "string") : undefined,
+    age_sec: numOrNull(v.age_sec) ?? undefined,
+  };
+};
+
 const SCAN_INTERVAL_MS = 30_000;
 
 /** Isınan sebep kodu → Türkçe etiket (bilinmeyen kod ham haliyle gösterilir). */
@@ -251,6 +273,7 @@ const parseWarmCandidates = (raw: unknown): WarmCandidate[] => {
       horizon_minutes: numOrNull(v.horizon_minutes),
       profile,
       detected_at: numOrNull(v.detected_at),
+      macd_mtf: parseMacdMtf(v.macd_mtf),
     });
   }
   return list;
@@ -272,6 +295,7 @@ const parsePulseCandidates = (raw: unknown): PulseCandidate[] => {
       volume_burst: numOrNull(v.volume_burst),
       sample_age_sec: numOrNull(v.sample_age_sec),
       detected_at: numOrNull(v.detected_at),
+      macd_mtf: parseMacdMtf(v.macd_mtf),
     });
   }
   return list;

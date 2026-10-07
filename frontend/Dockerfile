@@ -24,5 +24,13 @@ ENV HOSTNAME=0.0.0.0
 COPY --from=build /app/public ./public
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
+# 2026-10-07 (P1-11 #4): Next.js runner root çalışıyordu. Next standalone
+# sunucusu build çıktısını yalnızca OKUR (runtime'da diske yazmaz), bu yüzden
+# dosyaları node kullanıcısına devretmek gerekmez; imaja GÖMÜLÜ `node`
+# kullanıcısı (uid 1000, Alpine'da hazır gelir) yeterli ve en az ayrıcalıklıdır.
+# `chown` yalnızca COPY ile oluşan sahipliği netleştirmek için değil,
+# gelecekte bir runtime yazımı eklenirse fail-closed olmasın diye de var.
+RUN chown -R node:node /app
+USER node
 EXPOSE 3004
 CMD ["node", "server.js"]

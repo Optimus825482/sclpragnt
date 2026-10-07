@@ -47,6 +47,27 @@ try:
 except Exception:  # pragma: no cover - psycopg absent in minimal-env
     _PG_FATAL_ERRORS = ()
 
+# --- Şema DDL dayanıklılığı (Denetim 2026-10-07) ---------------------------
+# Migration dosyaları TEK KAYNAKTAN glob ile (scripts/run_postgres_migration.py
+# ile AYNI desen/sıra) okunur → iki koşucu birebir aynı sha üretir.
+_MIGRATION_FILE_RE = re.compile(r"^\d+_.+\.sql$")
+# Geçici (retry edilebilir) PostgreSQL SQLSTATE'leri. İsim tabanlı küme
+# psycopg sürümüne bağlıdır; SQLSTATE daha dayanıklıdır.
+#   55P03 lock_not_available · 40P01 deadlock_detected ·
+#   57P03 cannot_connect_now · 53300 too_many_connections ·
+#   08006/08003 connection failure/does_not_exist
+_TRANSIENT_SQLSTATES = frozenset({"55P03", "40P01", "57P03", "53300", "08006", "08003"})
+# DDL'e özel DAHA UZUN kilit sınırı: havuzun genel 5 sn'lik `lock_timeout`'u tek
+# bir DDL penceresine yetmez (canlı backend kilitleri rastgele aralıklarla açılır);
+# migration koşucusu da 30 sn kullanır.
+_SCHEMA_DDL_LOCK_TIMEOUT = "30s"
+_SCHEMA_DDL_MAX_ATTEMPTS = 5
+
+
+def _sqlstate_of(exc) -> str | None:
+    """İstisnadan PostgreSQL SQLSTATE'ini çıkar (psycopg3 + DB-API uyumlu)."""
+    return getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None)
+
 DEFAULT_SCALPER_SKILL_NAME = "Scalper Trade Manager"
 DEFAULT_SCALPER_SKILL_INSTRUCTIONS = (
     "Paper-only scalper trade manager. Build a symbol-specific setup from 5m, 15m and 1h data; "
@@ -260,6 +281,51 @@ def _execute(operation):
         raise
 
 
+def _apply_schema_ddl(conn, schema_sql: str, schema_sha: str, attempts: int = _SCHEMA_DDL_MAX_ATTEMPTS) -> None:
+    """Şema DDL'ini DAHA UZUN kilit sınırı ile uygula; geçici kilit hatalarında tekrar dene.
+
+    Denetim 1 (2026-10-07): eski yol havuzun genel 5 sn'lik ``lock_timeout``'u ile
+    koşuyordu. Canlı bir backend aynı nesneler üzerinde ACCESS EXCLUSIVE kilit
+    tutarken ``init_db`` 5 sn içinde hata veriyor ve bu hata ``main.py``den
+    yükselip uvicorn'u restart döngüsüne sokuyordu. Artık DDL'e ``SET LOCAL
+    lock_timeout = '30s'`` (migration koşucusuyla aynı) verilir ve geçici
+    SQLSTATE'ler (lock_timeout / deadlock) kısa bekleyip TEKRAR denenir; kalıcı
+    hatalar hâlâ yükseltilir (sessizce yutulmaz).
+
+    ``pg_op`` transaction'ı otomatik başlattığı için ``SET LOCAL`` bu DDL
+    penceresine kapsanır; başarısız denemeden sonra transaction rollback edilip
+    yeni bir deneme başlatılır.
+    """
+    last_exc = None
+    for attempt in range(1, max(1, int(attempts)) + 1):
+        try:
+            # V-15 + Denetim 1: DDL'e özel daha uzun kilit sınırı ve statement üst sınırı.
+            conn.conn.execute(f"SET LOCAL lock_timeout = '{_SCHEMA_DDL_LOCK_TIMEOUT}'")
+            conn.conn.execute("SET LOCAL statement_timeout = '300s'")
+            conn.conn.execute(schema_sql)
+            conn.execute(
+                "INSERT INTO llm_settings(key,value) VALUES('schema_sha256',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (schema_sha,))
+            return
+        except Exception as exc:
+            if _sqlstate_of(exc) not in _TRANSIENT_SQLSTATES or attempt == attempts:
+                raise
+            last_exc = exc
+            logger.warning(
+                "init_db DDL geçici kilit hatası (SQLSTATE=%s), deneme %s/%s — kısa bekleyip yeniden denenecek",
+                _sqlstate_of(exc), attempt, attempts)
+            try:
+                conn.conn.rollback()
+            except Exception:
+                pass
+            # Artan backoff: canlı backend kilidi bırakana kadar bekle. Bu kod
+            # _run_db'nin executor thread'inde koşar; event loop bloklanmaz.
+            time.sleep(0.5 * attempt)
+    if last_exc is not None:  # pragma: no cover - yalnız attempts tükendiğinde
+        raise last_exc
+
+
 async def init_db():
     """Initialize the PostgreSQL schema (single backend)."""
     def pg_op(conn):
@@ -268,12 +334,14 @@ async def init_db():
         # MACD kanıt kolonları yalnız çalışma anındaki gecikmeli DDL ile var
         # oluyordu (şema sürümlemesi yanıltıcıydı).
         migrations_dir = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations"))
+        # Denetim 2 (2026-10-07): liste ARTIK hard-code DEĞİL. `run_postgres_migration.py`
+        # ile AYNI glob/sıra kullanılır → 6. migration eklendiğinde burada hiçbir
+        # şey güncellenmeden sha eşleşir ve her restart tam DDL koşmaz.
         schema_sql = ""
-        for filename in ("001_pgvector_schema.sql", "002_macd_evidence_lift.sql",
-                         "003_rising_signals.sql", "004_bloat_prevention.sql",
-                         "005_user_binance_keys.sql"):
+        for filename in sorted(name for name in os.listdir(migrations_dir)
+                               if _MIGRATION_FILE_RE.match(name)):
             path = os.path.join(migrations_dir, filename)
-            if os.path.exists(path):
+            if os.path.isfile(path):
                 with open(path, encoding="utf-8") as schema_file:
                     schema_sql += schema_file.read() + "\n"
         schema_sha = hashlib.sha256(schema_sql.encode("utf-8")).hexdigest()
@@ -285,15 +353,7 @@ async def init_db():
             mrow = conn.execute("SELECT value FROM llm_settings WHERE key='schema_sha256'").fetchone()
             marker = mrow[0] if mrow else None
         if marker != schema_sha:
-            # V-15: DDL'e işlem kapsamlı bir üst sınır (lock_timeout havuz
-            # yapılandırmasından gelir). SET LOCAL dışında bir işlemde
-            # çalıştırılırsa PostgreSQL uyarı verip yok sayar — zararsız.
-            conn.conn.execute("SET LOCAL statement_timeout = '300s'")
-            conn.conn.execute(schema_sql)
-            conn.execute(
-                "INSERT INTO llm_settings(key,value) VALUES('schema_sha256',?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (schema_sha,))
+            _apply_schema_ddl(conn, schema_sql, schema_sha)
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_skills_name ON llm_skills(name)")
         # V-07: `signals.trade_id` üzerinde index yoktu; `reconcile_portfolio`
         # ve `purge_legacy_trade_records` bu kolonla DELETE atıyordu -> tam
@@ -673,6 +733,27 @@ def _chronological_overallocation_candidates(conn):
                 candidates.append({"symbol": row[0], "entry_time": row[1], "entry_price": row[2], "quantity": row[3], "cost": float(row[2] or 0) * float(row[3] or 0), "reason": "entry_cash_was_insufficient"})
     return candidates
 
+def _overallocation_removal_justified(realized: float, open_cost: float) -> bool:
+    """Denetim P2-5 (2026-10-07) DEĞİŞMEZİ — aşırı-tahsis aşırı-iddiası.
+
+    `reconcile_portfolio` bir pozisyonu yalnızca `_chronological_overallocation_candidates`
+    onu "aşırı-tahsisli" işaretlediğinde siler; o aday taraması bakiyeyi
+    `INITIAL_BALANCE_TRY`'den başlatıp geçmiş debit/credit'leri yeniden oynatır
+    (bir MODEL varsayımı). Geçmiş nakde çevirmeler / harici fon / reset sonrası
+    kesilen kapanmış satırlar bu modeli negatife düşürüp GEÇERLİ bir pozisyonu
+    "over-allocated" gibi gösterebiliyordu.
+
+    Karar artık gerçek rakamlarla verilir (`realized`, `open_cost` =
+    `_portfolio_reconcile_figures`'ten): yalnız KĞRÇDEĞERİNDE gerçek nakit
+    (INITIAL + realize) açık yükümlülüğünü (giriş komisyonu dahil)
+    karşılamıyorsa silme gerekçelidir. Teminatlı bir defterde model varsayımı
+    tek başına pozisyon silemez.
+    """
+    genuine_cash = float(config.INITIAL_BALANCE_TRY) + float(realized)
+    open_obligation = float(open_cost) * (1.0 + config.COMMISSION_PCT)
+    return genuine_cash < open_obligation - 1e-9
+
+
 def _portfolio_reconcile_figures(conn, cutoff: float):
     """Mutabakat rakamlarının TEK kaynağı (V-01/V-13).
 
@@ -723,7 +804,11 @@ async def reconcile_portfolio():
         after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
         removed = []
         candidates = _chronological_overallocation_candidates(conn)
-        if candidates:
+        # Denetim P2-5 (2026-10-07): aday taraması bir MODEL varsayımıdır
+        # (bakiye INITIAL_BALANCE_TRY'den oynatılır). Silme yalnız gerçek
+        # rakamlarla gerekçelenebilirse yapılır — teminatlı bir defterde model
+        # varsayımı GEÇERLİ bir pozisyonu düşüremez.
+        if candidates and _overallocation_removal_justified(realized, open_cost):
             for candidate in candidates:
                 symbol, entry_time, entry_price, quantity = candidate["symbol"], candidate["entry_time"], candidate["entry_price"], candidate["quantity"]
                 position_cost = float(entry_price or 0) * float(quantity or 0)
@@ -774,6 +859,11 @@ async def preview_portfolio_reconcile():
         realized, main_open_cost, auto_open_cost = _portfolio_reconcile_figures(conn, cutoff)
         open_cost = main_open_cost + auto_open_cost
         candidates = _chronological_overallocation_candidates(conn)
+        # Denetim P2-5: preview ve apply AYNI gerçek-rakam kapısını kullanmalı;
+        # aksi halde preview "silinecek" derken apply pozisyonu korur (parite
+        # kırılır). Gerekçelenmeyen adaylar preview'da da silinecek sayılmaz.
+        if candidates and not _overallocation_removal_justified(realized, open_cost):
+            candidates = []
         projected_open_cost = open_cost - sum(float(item["cost"] or 0) for item in candidates)
         projected_try = config.INITIAL_BALANCE_TRY + realized - projected_open_cost - projected_open_cost * config.COMMISSION_PCT
         return {"would_remove": candidates, "projected_try": projected_try, "realized_pnl": realized,
@@ -3826,7 +3916,22 @@ async def cleanup_stale_velocity_candidates(max_age_seconds: int = 6 * 3600):
 
 
 async def read_only_query(sql: str, limit: int = 500):
-    """Execute a narrowly validated, read-only query for LLM inspection."""
+    """Execute a narrowly validated, read-only query for LLM inspection.
+
+    Denetim P1-6 (2026-10-07) — İKİ sertleştirme:
+
+    1. **Sütun izin listesi.** Eskiden yalnız TABLO adları doğrulanıyordu; tüm
+       sütunlar (JSONB `metadata`/`payload`/`arguments`/`entry_context` dahil)
+       LLM'e akabiliyordu. Bu bloblar opak ve içlerinde anahtar/kişisel veri
+       bulunabilir; salt-okunur analitik için gereksizdirler. Aşağıdaki
+       `_allowed_columns` her tablonun modele açık sütunlarını listeler; niteliği
+       bir tabloya çözülen her `tablo.sütun` izin listesinde olmalıdır. Ayrıca
+       opak ve sır çağrıştıran adlar (niteliksiz kullanımda da) reddedilir.
+    2. **LIMIT bypass'i kapatıldı.** Eskiden iç sorgu zaten bir `LIMIT`
+       içeriyorsa dış sarmalayıcı LIMIT HİÇ uygulanmıyordu → `LIMIT 1000000`
+       ile sınırsız JOIN sonucu dönebiliyordu. Artık iç LIMIT'ler cap'e
+       İNDİRİLİR (küçük değerler büyütülmez) ve dış LIMIT KOŞULSUZ uygulanır.
+    """
     statement = str(sql or "").strip()
     if not statement or ";" in statement:
         raise ValueError("Tek bir SELECT sorgusu gerekli; çoklu ifade veya noktalı virgül yasak")
@@ -3835,6 +3940,27 @@ async def read_only_query(sql: str, limit: int = 500):
     if re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|PRAGMA|COPY|GRANT|REVOKE|CALL|DO|VACUUM|ATTACH|DETACH)\b", statement, re.I):
         raise ValueError("Yazma, DDL veya yönetim komutu tespit edildi")
     allowed = frozenset({"positions", "trades", "signals", "decision_logs", "virtual_wallet", "analysis_snapshots", "llm_tool_logs"})
+    # P1-6: tablo başına MODELE AÇIK sütunlar. JSONB/opak sütunlar
+    # (entry_context, metadata, payload, arguments) KASITLI olarak listelenmez.
+    allowed_columns = {
+        "positions": frozenset({"symbol", "side", "entry_price", "stop_price", "take_profit",
+                                 "peak_price", "breakeven_hit", "quantity", "entry_time",
+                                 "strategy", "trade_id"}),
+        "trades": frozenset({"id", "symbol", "strategy", "side", "entry_price", "exit_price",
+                             "quantity", "pnl", "pnl_pct", "entry_time", "exit_time",
+                             "commission", "reason", "max_favorable_pct", "max_adverse_pct",
+                             "hold_seconds", "trade_id"}),
+        "signals": frozenset({"id", "timestamp", "symbol", "action", "price", "reason",
+                              "strategy", "trade_id"}),
+        "decision_logs": frozenset({"id", "timestamp", "symbol", "strategy", "decision",
+                                    "reason", "price"}),
+        "virtual_wallet": frozenset({"asset", "amount"}),
+        "analysis_snapshots": frozenset({"id", "symbol", "timeframe", "captured_at", "source",
+                                         "methodology_version", "regime", "regime_confidence",
+                                         "confluence_score", "trade_id"}),
+        "llm_tool_logs": frozenset({"id", "timestamp", "scope", "tool_name", "result_summary",
+                                    "duration_ms", "success"}),
+    }
     # FROM/JOIN sonrası tablo adlarını çıkar (alt sorguları da kontrol et)
     referenced = set(re.findall(r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)", statement, re.I))
     # Alt sorgulardaki tabloları da kontrol et (nested SELECT)
@@ -3842,11 +3968,54 @@ async def read_only_query(sql: str, limit: int = 500):
     all_referenced = referenced | subquery_tables
     if not all_referenced or not all_referenced.issubset(allowed):
         raise ValueError(f"Sorgu yalnızca izin verilen uygulama tablolarını kullanabilir: {allowed}")
-    bounded = statement
-    if not re.search(r"\bLIMIT\s+\d+\b", bounded, re.I):
-        bounded = f"SELECT * FROM ({bounded}) AS llm_read_only_result LIMIT {max(1, min(int(limit), 500))}"
-    else:
-        bounded = re.sub(r"(\bLIMIT\s+)\d+", lambda m: f"{m.group(1)}{max(1, min(int(limit), 500))}", bounded, count=1, flags=re.I)
+
+    # --- P1-6 sütun doğrulaması ------------------------------------------
+    # String literallerini nötrle: içerikte geçen bir sözcük (ör. '%token%')
+    # sütun adı sanılıp yanlış redde yol açmasın.
+    _lit_stripped = re.sub(r"'(?:[^']|'')*'", " ", statement)
+    _blocked_columns = frozenset({"entry_context", "metadata", "payload", "arguments"})
+    _secret_re = re.compile(r"(api_?key|secret|passw|credential|private_?key|token|encrypted)", re.I)
+    for ident in set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", _lit_stripped)):
+        low = ident.lower()
+        if low in _blocked_columns:
+            raise ValueError(f"Opak/hassas sütunlar izinli değil: {sorted(_blocked_columns)}")
+        if _secret_re.search(low):
+            raise ValueError("Sır içerebilecek sütun adlarına izin verilmez")
+    # Alias haritası: `FROM/JOIN tablo [AS] alias` → tablo adı (tablo adı da kendi alias'ı).
+    _sql_keywords = frozenset({
+        "where", "order", "group", "limit", "offset", "join", "on", "left", "right",
+        "inner", "outer", "cross", "full", "natural", "union", "set", "values", "using",
+        "having", "window", "fetch", "for", "as", "and", "or",
+    })
+    alias_map: dict[str, str] = {}
+    for tbl, alias in re.findall(
+            r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?",
+            _lit_stripped, re.I):
+        tlow = tbl.lower()
+        if tlow not in allowed:
+            continue
+        alias_map[tlow] = tlow
+        if alias and alias.lower() not in _sql_keywords:
+            alias_map[alias.lower()] = tlow
+    # Niteliği bir tabloya çözülen sütun izin listesinde olmalı (izin listesi uygulanır).
+    for qual, col in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)", _lit_stripped):
+        table = alias_map.get(qual.lower())
+        if table and col.lower() not in allowed_columns[table]:
+            raise ValueError(f"{table}.{col} izinli sütunlar arasında değil")
+
+    # --- P1-6 LIMIT zorlaması (koşulsuz) ---------------------------------
+    cap = max(1, min(int(limit), 500))
+
+    def _clamp(match):
+        inner = match.group(2)
+        if inner.upper() == "ALL":
+            return f"{match.group(1)}{cap}"
+        return f"{match.group(1)}{min(int(inner), cap)}"  # yalnız küçült, büyütme
+
+    bounded = re.sub(r"(\bLIMIT\s+)(\d+|ALL)\b", _clamp, statement, flags=re.I)
+    # Dış LIMIT her koşulda uygulanır → sonuç kümesi asla cap'i aşamaz.
+    bounded = f"SELECT * FROM ({bounded}) AS llm_read_only_result LIMIT {cap}"
+
     def op(conn):
         # V-19: hazır SQL `?` içerebilir; compat'ın yer tutucu dönüşümü atlanır.
         cur = conn.raw_execute(bounded)
@@ -5075,6 +5244,22 @@ async def get_user_binance_keys(user_id: int) -> dict | None:
     return await _run_db(op)
 
 
+async def get_user_binance_key_presence() -> bool:
+    """HERHANGİ bir kullanıcı için kayıtlı (şifreli) Binance anahtarı var mı?
+
+    `main._binance_ticks_configured` eşik olarak kullanır: canlı tick/WS
+    altyapısının yayın yapıp yapamayacağı sorusu "admin global anahtarı var mı"
+    DEĞİL, "herhangi bir kullanıcı anahtar kaydetmiş mi" olmalıdır.
+    """
+    def op(conn):
+        row = conn.execute(
+            "SELECT 1 FROM user_binance_keys "
+            "WHERE api_key_encrypted <> '' AND api_secret_encrypted <> '' LIMIT 1"
+        ).fetchone()
+        return bool(row)
+    return await _run_db(op)
+
+
 async def get_user_binance_real_sell(user_id: int) -> bool:
     def op(conn):
         row = conn.execute("SELECT real_sell_enabled FROM user_binance_keys WHERE user_id=%s", (int(user_id),)).fetchone()
@@ -5496,6 +5681,19 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
     notification_id = trade.get("notification_id")
 
     def op(conn):
+        # Denetim P0-5 (2026-10-07): cüzdan yazımı TEK anahtarda serileşmeli.
+        # `virtual_wallet` TRY satırına MUTLAK degerle yazan DÖRT yol var:
+        #   reset_trading_data, reconcile_portfolio (portföy anahtarı) ve bu
+        #   açma/kapatma (auto_paper) yolları. Ayrı anahtar kullanıldığında
+        #   reset/mutabakat ile eşzamanlı bir açılış/kapanışın debit/credit'i
+        #   sessizce silinebiliyordu (okuma-kopyala-yaz yarışı; satır kilidi ya da
+        #   SELECT..FOR UPDATE bu mutlak deger yazımını korumaz — yalnız anahtar
+        #   serileştirir). Bu yüzden portföy anahtarı transaction'ın İLK
+        #   statement'ı olarak alınır: cüzdan bakiyesi herhangi bir okumadan önce
+        #   kilitlidir. `auto_paper_open_<symbol>` ek olarak DURUR: farklı
+        #   sembollerin açılışını gereksiz yere serileştirmemek için sembol
+        #   kapsamlı churn/çakışma denetimini hâlâ kendi anahtarı korur.
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
         conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"auto_paper_open_{symbol}",))
         # Açık pozisyon kontrolü
         open_row = conn.execute(
@@ -5651,11 +5849,19 @@ async def get_auto_paper_trade(trade_id: int) -> dict | None:
 
 
 async def get_last_auto_paper_stop_loss_time(symbol: str) -> float | None:
-    """Sembolün son stop_loss kapanış zamanını getir (cooldown kontrolü için)."""
+    """Sembolün son KORUYUCU-DURUŞ (stop) kapanış zamanını getir (cooldown kontrolü için).
+
+    Denetim (2026-10-07): yalnız `exit_reason='stop_loss'` sorgulanıyordu; ama
+    breakeven koruması da bir stop çıkışıdır (fiyat girişe geri döndüğünde
+    kapatır). Cooldown mantığı breakeven'i kapsayacak şekilde genişletilmişken
+    DB okuması hâlâ onu atlıyordu → breakeven çıkışından hemen sonra anında
+    yeniden giriş mümkün oluyordu. İkisi birlikte sayılır.
+    """
     sym = str(symbol).upper()
     def op(conn):
         row = conn.execute(
-            "SELECT exit_time FROM auto_paper_trades WHERE symbol=? AND status='closed' AND exit_reason='stop_loss' ORDER BY exit_time DESC LIMIT 1",
+            "SELECT exit_time FROM auto_paper_trades WHERE symbol=? AND status='closed' "
+            "AND exit_reason IN ('stop_loss','breakeven_stop') ORDER BY exit_time DESC LIMIT 1",
             (sym,)
         ).fetchone()
         return float(row[0]) if (row and row[0] is not None) else None
@@ -5702,17 +5908,30 @@ async def list_auto_paper_trades(
     until: float | None = None,
     day: str | None = None,
     include_archived: bool = False,
+    apply_reports_baseline: bool = True,
 ) -> list[dict]:
     """Otonom paper trade'leri listele (yeni -> eski). offset pagination, gün filtresi ve arşivleme destekler.
 
     `include_archived=True` → HEM portföy reset cutoff'u HEM RAPOR BAŞLANGICI
     sınırı atlanır ("arşivi göster" kutusu ikisini birden açar; kullanıcı için
     ikisi de "eski veri"dir ve iki ayrı kutu kafa karıştırırdı).
+
+    `apply_reports_baseline=False` → YALNIZ RAPOR BAŞLANGICI görünüm sınırı
+    kaldırılır; portföy reset cutoff'u KALIR (reset öncesi işlemler farklı bir
+    cüzdana ait olduğu için her koşulda dışarıda kalmalıdır).
+
+    Denetim P0-3 (2026-10-07): RAPOR BAŞLANGICI bir TELEMETRİ/görünüm
+    filtresidir ve İŞLEM YÖNETİMİNİ yönetmemeli. Açık pozisyon yönetimi
+    (`status="open"`) ve açık-pozisyon risk tavanı bu fonksiyonu çağırırken
+    `apply_reports_baseline=False` GEÇMEK ZORUNDADIR; aksi halde sınırdan önce
+    açılmış pozisyonlar hiç yönetilmez (SL/TP/max_hold/trailing uygulanmaz) ve
+    risk tavanından muaf kalır. Varsayılan `True` bırakıldı: rapor/telemetri
+    tüketicilerinin davranışı DEĞİŞMEZ.
     """
     eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=False)
     def op(conn):
-        cutoff = None if include_archived else max(
-            _get_reset_cutoff_sync(conn), _get_reports_baseline_sync(conn))
+        cutoff = None if include_archived else _report_floor_sync(
+            conn, ignore_reports_baseline=not apply_reports_baseline)
         effective_since = eff_since
         if cutoff:
             effective_since = max(cutoff, eff_since) if eff_since is not None else cutoff
@@ -5770,6 +5989,12 @@ async def get_auto_paper_stats(
     ``confluence_4way_only=True`` ise yalnızca Master Surge (4'lü teyitli) işlemler sayılır.
 
     `ignore_reports_baseline=True` → RAPOR BAŞLANGICI sınırı uygulanmaz ("arşivi göster").
+
+    Denetim P0-3 (2026-10-07): `ignore_reports_baseline=True` (arşiv raporu)
+    verildiğinde AÇIK sayımının da sınırdan muaf olması gerekir; aksi halde
+    "arşivi göster" TEK bir rapor gövdesinde iki TUTARSIZ sayı üretiyordu
+    (kapanmış=arşiv dahil, açık=arşiv hariç). Açık pozisyonlar zaten her zaman
+    "yönetilen"dir ve rapordaki diğer alanlarla aynı sınırı paylaşmalıdır.
     """
     eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=True)
     def op(conn):
@@ -5798,11 +6023,18 @@ async def get_auto_paper_stats(
             closed_params,
         ).fetchone()
 
+        # Açık pozisyonlar "arşiv" DEĞİLDİR: reset cutoff (portföy sınırı) yine
+        # uygulanır ama RAPOR BAŞLANGICI görünüm sınırı açık sayımını kırpmamalı
+        # (bkz. P0-3 — bu bir işlem yönetimi/rapor tutarlılığıdır).
+        open_cutoff = _report_floor_sync(conn, ignore_reports_baseline=True)
+        if eff_since is not None:
+            open_cutoff = max(open_cutoff or 0.0, float(eff_since))
+
         open_where = "WHERE status='open'"
         open_params: list = []
-        if cutoff:
+        if open_cutoff:
             open_where += " AND entry_time >= ?"
-            open_params.append(cutoff)
+            open_params.append(open_cutoff)
         if eff_until:
             open_where += " AND entry_time < ?"
             open_params.append(eff_until)
@@ -5895,39 +6127,74 @@ async def update_auto_paper_trade_tp(trade_id: int, new_tp: float, score: float 
 
 
 async def update_auto_paper_breakeven(trade_id: int, activated: bool, breakeven_stop: float | None = None) -> bool:
-    """Breakeven korumasını güncelle."""
+    """Breakeven korumasını güncelle.
+
+    Denetim P2-1 (2026-10-07): stop yalnız KORUYUCU yönde (yukarı) hareket
+    edebilir. Çağırandaki `max(new, current)` niyetine ek olarak DB katmanında
+    da monotonic bekçi uygulanır (savunma derinliği): yalnız mevcut değerden
+    yüksek/eşit bir stop yazılır. Aksi halde 0 satır etkilenir ve `False` döner;
+    uzun pozisyonun stop'u asla aşağı kaydırılmaz.
+    """
     def op(conn):
-        conn.execute(
-            "UPDATE auto_paper_trades SET breakeven_activated=?, breakeven_stop=?, updated_at=? WHERE id=? AND status='open'",
-            (activated, breakeven_stop, time.time(), trade_id)
-        )
+        if not activated:
+            # Devre dışı bırakma stop'u TEMİZLER (eski davranış korunur): pasif
+            # bir korumada bayat bir stop satırı kalmamalı.
+            cur = conn.execute(
+                "UPDATE auto_paper_trades SET breakeven_activated=?, breakeven_stop=NULL, updated_at=? WHERE id=? AND status='open'",
+                (activated, time.time(), trade_id)
+            )
+        elif breakeven_stop is None:
+            # Değer taşımıyor: yalnız bayrak güncellenir.
+            cur = conn.execute(
+                "UPDATE auto_paper_trades SET breakeven_activated=?, updated_at=? WHERE id=? AND status='open'",
+                (activated, time.time(), trade_id)
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE auto_paper_trades SET breakeven_activated=?, breakeven_stop=?, updated_at=? "
+                "WHERE id=? AND status='open' AND (breakeven_stop IS NULL OR breakeven_stop <= ?)",
+                (activated, breakeven_stop, time.time(), trade_id, breakeven_stop)
+            )
         conn.commit()
-        return True
+        return cur.rowcount > 0
     return await _run_db(op)
 
 
 async def update_auto_paper_peak(trade_id: int, peak_price: float) -> bool:
     """Peak fiyatı güncelle."""
     def op(conn):
-        conn.execute(
-            "UPDATE auto_paper_trades SET peak_price=?, updated_at=? WHERE id=? AND status='open' AND peak_price < ?",
+        cur = conn.execute(
+            "UPDATE auto_paper_trades SET peak_price=?, updated_at=? WHERE id=? AND status='open' AND (peak_price IS NULL OR peak_price < ?)",
             (peak_price, time.time(), trade_id, peak_price)
         )
         conn.commit()
-        return True
+        return cur.rowcount > 0
     return await _run_db(op)
 
 
 async def update_auto_paper_trailing(trade_id: int, activated: bool, trailing_stop: float | None = None) -> bool:
-    """Trailing stop korumasını güncelle (sadece fiyat yukarı hareket edince yazılır)."""
+    """Trailing stop korumasını güncelle (monotonic: stop YALNIZ yukarı hareket eder).
+
+    Denetim P2-1 (2026-10-07): eski sürüm koşulsuz `True` dönüyor ve DB
+    katmanında üst-sınır koruması yoktu; daha DÜŞÜK bir trailing değeri yazılıp
+    stop pozisyona KARŞI aşağı kaydırılabiliyordu (çıkış garantisi bozulur).
+    Artık yalnız mevcut değerden yüksek/eşit değer yazılır; koruyucu olmayan
+    güncelleme 0 satır etkiler ve `False` döner.
+    """
     def op(conn):
-        conn.execute(
-            "UPDATE auto_paper_trades SET trailing_activated=?, trailing_stop=?, updated_at=? "
-            "WHERE id=? AND status='open'",
-            (activated, trailing_stop, time.time(), trade_id)
-        )
+        if trailing_stop is None:
+            cur = conn.execute(
+                "UPDATE auto_paper_trades SET trailing_activated=?, updated_at=? WHERE id=? AND status='open'",
+                (activated, time.time(), trade_id)
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE auto_paper_trades SET trailing_activated=?, trailing_stop=?, updated_at=? "
+                "WHERE id=? AND status='open' AND (trailing_stop IS NULL OR trailing_stop <= ?)",
+                (activated, trailing_stop, time.time(), trade_id, trailing_stop)
+            )
         conn.commit()
-        return True
+        return cur.rowcount > 0
     return await _run_db(op)
 
 
@@ -5940,6 +6207,12 @@ async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: fl
     Arada hata olursa her şey geri alınır — para iadesiz 'closed' kayıt kalmaz.
     """
     def op(conn):
+        # Denetim P0-5 (2026-10-07): portföy anahtarı transaction'ın İLK
+        # statement'ı — kapanış cüzdana MUTLAK degerle yazar; anahtar olmadan
+        # eşzamanlı `reset_trading_data`/`reconcile_portfolio` bu iadeyi
+        # silebiliyordu. Gerekçenin tamamı `open_auto_paper_trade` başındaki
+        # yorumda (dört yol da aynı anahtarı paylaşır).
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
         conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"auto_paper_close_{trade_id}",))
         row = conn.execute(
             "SELECT * FROM auto_paper_trades WHERE id=? AND status='open' FOR UPDATE",

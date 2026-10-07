@@ -7,9 +7,10 @@ otonom paper trade pozisyonu açar ya da sinyali kaydedip WebSocket ile arayüze
 """
 from __future__ import annotations
 
-import asyncio
 import hmac
 import logging
+import os
+import threading
 import time
 import uuid
 from collections import deque
@@ -29,6 +30,24 @@ _history: deque[Dict[str, Any]] = deque(maxlen=_HISTORY_LIMIT)
 # Cooldown takibi: (tr_symbol, signal_type) -> son_kabul_zamani
 _last_signal_times: Dict[tuple[str, str], float] = {}
 
+# #36/P2-11 (A): event_id idempotent dedupe. Aynı köprü olayı ağ yeniden
+# denemesi veya kötü niyetli tekrar nedeniyle yeniden gelebilir; event_id
+# bazlı bu defter ikinci işlemeyi engeller. TTL'li ve üst sınırlıdır →
+# bellekte sınırsız büyümez (persist edilmez; süreç yeniden başlarsa sıfırlanır,
+# bu da normaldir çünkü ağ yeniden denemeleri kısa ömürlüdür).
+_EVENT_DEDUP_TTL_SEC = 600.0
+_EVENT_DEDUP_MAX_ENTRIES = 1000
+_seen_events: Dict[str, float] = {}
+_seen_events_lock = threading.Lock()
+
+# #36/P2-11 (B): köprü olaylarının zaman damgası için makul saat kayması
+# penceresi (sn). Bu pencerenin dışındaki olaylar reddedilir.
+_MAX_TIMESTAMP_SKEW_SEC = float(os.getenv("BRIDGE_MAX_TIMESTAMP_SKEW_SEC", "300"))
+
+# #36/P2-11 (C): `force` cooldown'u tamamen atlamaz; yalnızca bu minimum
+# aralığa kısaltır (force kötüye kullanımına karşı).
+_FORCE_MIN_INTERVAL_SEC = float(os.getenv("BRIDGE_FORCE_MIN_INTERVAL_SEC", "10"))
+
 # İstatistik sayaçları
 _stats = {
     "total_received": 0,
@@ -38,10 +57,36 @@ _stats = {
     "trades_blocked": 0,
     "cooldown_skips": 0,
     "auth_failures": 0,
+    "replay_skipped": 0,
+    "clock_skew_rejected": 0,
     "last_received_at": None,
     "total_latency_ms": 0.0,
     "latency_count": 0,
 }
+
+
+def _is_duplicate_event(event_id: str, now: float) -> bool:
+    """event_id daha önce işlendi mi? Süresi geçmiş kayıtları budayarak sorar."""
+    with _seen_events_lock:
+        stale = [key for key, ts in _seen_events.items() if now - ts > _EVENT_DEDUP_TTL_SEC]
+        for key in stale:
+            _seen_events.pop(key, None)
+        return event_id in _seen_events
+
+
+def _remember_event(event_id: str, now: float) -> None:
+    """Kabul edilen olayın event_id'sini kaydet (üst sınırda en eskisini düşür)."""
+    with _seen_events_lock:
+        if len(_seen_events) >= _EVENT_DEDUP_MAX_ENTRIES:
+            oldest = min(_seen_events, key=_seen_events.get)
+            _seen_events.pop(oldest, None)
+        _seen_events[event_id] = now
+
+
+def clear_replay_state() -> None:
+    """Replay/de-dupe durumunu sıfırlar (testler ve bakım için)."""
+    with _seen_events_lock:
+        _seen_events.clear()
 
 # main.py ve runtime_routes tarafından geç bağlanacak fonksiyonlar
 _daily_loss_guard_fn: Optional[Callable[..., Any]] = None
@@ -212,6 +257,8 @@ def get_bridge_status() -> Dict[str, Any]:
         "trades_blocked": _stats["trades_blocked"],
         "cooldown_skips": _stats["cooldown_skips"],
         "auth_failures": _stats["auth_failures"],
+        "replay_skipped": _stats["replay_skipped"],
+        "clock_skew_rejected": _stats["clock_skew_rejected"],
         "last_received_at": _stats["last_received_at"],
         "avg_latency_ms": avg_latency,
         "history_count": len(_history),
@@ -232,6 +279,54 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
     event_id = str(payload.get("event_id") or uuid.uuid4())
     global_ts = float(payload.get("timestamp") or now)
     lead_lag_latency_ms = max(0.0, (now - global_ts) * 1000.0)
+
+    # #36/P2-11 (A): replay koruması — aynı event_id ikinci kez İŞLENMEZ.
+    # Ağ yeniden denemesi veya tekrar oynatma aynı sinyali iki kez açmasın.
+    if _is_duplicate_event(event_id, now):
+        _stats["replay_skipped"] += 1
+        logger.warning("[BridgeReceiver] Yinelendiği için atlandı: event_id=%s", event_id)
+        _history.append({
+            "event_id": event_id,
+            "received_at": now,
+            "status": "replay_skipped",
+            "client_ip": client_ip,
+        })
+        return {
+            "ok": True,
+            "status": "replay_skipped",
+            "event_id": event_id,
+            "message": "Bu event_id daha önce işlendi (replay koruması).",
+        }
+
+    # #36/P2-11 (B): saat kayması denetimi. Yalnızca AÇIKÇA verilen pozitif
+    # `timestamp` denetlenir; timestamp yoksa `now` kullanılır ve denetim
+    # anlamsız olur (ping'ler de böyle çalışır).
+    _raw_ts = payload.get("timestamp")
+    try:
+        _have_ts = _raw_ts is not None and float(_raw_ts) > 0
+    except (TypeError, ValueError):
+        _have_ts = False
+    if _have_ts and abs(now - global_ts) > _MAX_TIMESTAMP_SKEW_SEC:
+        _stats["clock_skew_rejected"] += 1
+        logger.warning("[BridgeReceiver] Saat kayması reddi: event_id=%s skew=%.1fs",
+                       event_id, now - global_ts)
+        _history.append({
+            "event_id": event_id,
+            "received_at": now,
+            "global_timestamp": global_ts,
+            "clock_skew_sec": round(now - global_ts, 2),
+            "status": "clock_skew_rejected",
+            "client_ip": client_ip,
+        })
+        return {
+            "ok": False,
+            "status": "clock_skew_rejected",
+            "event_id": event_id,
+            "message": f"Olay zaman damgası makul saat penceresinin dışında "
+                       f"({abs(now - global_ts):.0f} sn > {_MAX_TIMESTAMP_SKEW_SEC:.0f} sn).",
+        }
+
+    _remember_event(event_id, now)
 
     # İstatistik ortalamasını güncelle
     _stats["total_latency_ms"] += lead_lag_latency_ms
@@ -347,9 +442,16 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
     cooldown_key = tr_symbol  # Sembol bazlı: radar, llm_second_eye, monitoring fark etmeksizin 60sn uygulanır
     last_accepted = _last_signal_times.get(cooldown_key, 0.0)
 
-    if not force and (now - last_accepted) < cooldown_sec:
+    # #36/P2-11 (C): `force` artık cooldown'u TAMAMEN atlamaz. Eskiden force=True
+    # 60 sn'lik sembol cooldown'unu tümüyle bypass ediyordu; bu, tek bir
+    # bayrakla sinyal bombardımanına (ve emir/pozisyon spam'ine) kapı açıyordu.
+    # Artık force yalnızca bekleme süresini _FORCE_MIN_INTERVAL_SEC'e (varsayılan
+    # 10 sn) kısaltır; bu minimum aralık da uygulanır.
+    effective_cooldown = min(cooldown_sec, _FORCE_MIN_INTERVAL_SEC) if force else cooldown_sec
+
+    if (now - last_accepted) < effective_cooldown:
         _stats["cooldown_skips"] += 1
-        remaining = round(cooldown_sec - (now - last_accepted), 2)
+        remaining = round(effective_cooldown - (now - last_accepted), 2)
         record = {
             "event_id": event_id,
             "received_at": now,
@@ -360,7 +462,8 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
             "latency_ms": round(lead_lag_latency_ms, 2),
             "status": "cooldown_skipped",
             "remaining_sec": remaining,
-            "cooldown_sec": cooldown_sec,
+            "cooldown_sec": effective_cooldown,
+            "forced": force,
         }
         _history.append(record)
         return {
@@ -369,7 +472,7 @@ async def process_global_signal(payload: Dict[str, Any], client_ip: Optional[str
             "event_id": event_id,
             "symbol": tr_symbol,
             "remaining_sec": remaining,
-            "message": f"{tr_symbol} için son sinyalden bu yana henüz {cooldown_sec} sn dolmadı ({remaining} sn kaldı).",
+            "message": f"{tr_symbol} için son sinyalden bu yana henüz {effective_cooldown} sn dolmadı ({remaining} sn kaldı).",
         }
 
     _last_signal_times[cooldown_key] = now

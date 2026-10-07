@@ -743,12 +743,17 @@ function BinanceTrPageInner() {
     setBuyMsg(null);
     buyAssetRef.current = asset;
     try {
-      await apiRequest(`${API_BASE}/api/binance/watch`, {
+      const r = await apiRequest(`${API_BASE}/api/binance/watch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol: asset }),
       });
-    } catch { /* */ }
+      // P0-4: `apiRequest` non-ok'da throw etmez. Watch başarısızsa canlı fiyat
+      // gelmez; kullanıcı bunu bilmeli ki "fiyat dondu" şaşkınlığı yaşamasın.
+      if (!r.ok) setBuyMsg({ ok: false, text: `${asset} canlı takibe alınamadı (HTTP ${r.status}) — fiyat güncellenmeyebilir.` });
+    } catch {
+      setBuyMsg({ ok: false, text: `${asset} canlı takibe alınamadı (bağlantı hatası).` });
+    }
   };
 
   const confirmBuy = async () => {
@@ -1028,17 +1033,34 @@ function BinanceTrPageInner() {
     if (!window.confirm(`${openOrders.length} adet bekleyen emrin tamamını iptal etmek istediğinize emin misiniz?`)) return;
     setOpenOrdersLoading(true);
     let successCount = 0;
+    let failCount = 0;
     for (const ord of openOrders) {
       try {
-        await apiRequest(`${API_BASE}/api/binance/cancel-order`, {
+        const r = await apiRequest(`${API_BASE}/api/binance/cancel-order`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ order_id: ord.orderId, symbol: ord.symbol }),
         });
-        successCount++;
-      } catch { /* */ }
+        // P0-4: `apiRequest` non-ok yanıtta THROW ETMEZ (yalnız apiFetch/getJSON
+        // eder). Burada `r.ok` kontrol edilmezse başarısız iptaller de sayılır ve
+        // canlı SL/TP emirleri durmaya devam ederken "N emir iptal edildi" denir.
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && d?.ok !== false) successCount++;
+        else failCount++;
+      } catch {
+        // Ağ hatası: emir iptal EDİLMEDİ — başarı sayma.
+        failCount++;
+      }
     }
-    showToast(`${successCount} emir başarıyla iptal edildi.`, "info");
+    // Gerçeği söyle: kısmi başarısızlık gizlenmez (aksi halde kullanıcı iptal
+    // edildiğini sanıp korumasız pozisyonla kalır).
+    if (failCount === 0) {
+      showToast(`${successCount} emir başarıyla iptal edildi.`, "success");
+    } else if (successCount === 0) {
+      showToast(`${failCount} emir iptal EDİLEMEDİ — emirler hâlâ aktif olabilir.`, "error");
+    } else {
+      showToast(`${successCount} emir iptal edildi, ${failCount} emir iptal EDİLEMEDİ — emirler hâlâ aktif olabilir.`, "error");
+    }
     loadOrd();
     loadOpenOrders();
     loadAcct();

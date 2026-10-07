@@ -388,6 +388,13 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
     const lastBarsRef = useRef<Bar[]>([]);
     // Son tam gösterge yeniden kurulumunun zaman damgası (bkz. INDICATOR_REBUILD_MIN_MS).
     const lastIndicatorRebuildAtRef = useRef(0);
+    // P2-9: `fetchKlines` yalnız [config.symbol, config.interval] ile memoize;
+    // `rebuildIndicators` ise [config.indicators] ile. Kullanıcı bir göstergeyi
+    // açtığında `fetchKlines`'ın kapattığı `rebuildIndicators` referansı BAYAT
+    // kalıyordu → 6 sn'lik turda ESKİ `config.indicators` ile seriler yeniden
+    // kuruluyor ve yeni eklenen gösterge grafikten SİLİNİYORDU. Ref üzerinden
+    // her zaman GÜNCEL kurucu çağrılır (render'da atanır, aşağıda).
+    const rebuildIndicatorsRef = useRef<(bars: Bar[]) => void>(() => {});
 
     // Fullscreen API handler
     const toggleFullscreen = useCallback(() => {
@@ -520,7 +527,8 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
             const barClosed = !sameWindow;
             if (barClosed || nowAt - lastIndicatorRebuildAtRef.current >= INDICATOR_REBUILD_MIN_MS) {
                 lastIndicatorRebuildAtRef.current = nowAt;
-                rebuildIndicators(bars);
+                // GÜNCEL kurucuyu çağır (bayat closure değil) — P2-9.
+                rebuildIndicatorsRef.current(bars);
             }
             setLoading(false);
         } catch (err) {
@@ -688,6 +696,12 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
             }
         }
     }, [config.indicators]);
+
+    // Render sırasında ref'i güncel kurucuya bağla: `fetchKlines`'ın çağırdığı
+    // `rebuildIndicatorsRef.current` böylece HER ZAMAN en son `config.indicators`
+    // ile üretilmiş fonksiyonu gösterir (P2-9 stale closure). Render'da ref yazımı
+    // idiomatiktir ve burada yalnız gelecek bir olay işleyicisi (6 sn tiki) okur.
+    rebuildIndicatorsRef.current = rebuildIndicators;
 
     useEffect(() => { setLoading(true); fetchKlines().then(() => chartRef.current?.timeScale().fitContent()); }, [fetchKlines]);
     useEffect(() => { if (lastBarsRef.current.length > 0) rebuildIndicators(lastBarsRef.current); }, [config.indicators, rebuildIndicators]);

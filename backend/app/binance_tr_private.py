@@ -108,6 +108,25 @@ class BinanceTrApiError(RuntimeError):
         return False
 
 
+class BinanceTrPartialFillError(RuntimeError):
+    """MARKET SELL kısmi doldu — istenen miktarın tamamı satılamadı (#36/P1-8).
+
+    Emir borsada KABUL edilmiştir ve `executedQty` kadar dolmuştur; kalan
+    miktar pozisyonda AÇIK kalır. Hata fırlatmak, çağıranı bunu sessizce tam
+    dolum sayıp pozisyonu yanlış kapatmasından korur: `remaining_qty` ile
+    mutabakat yapmalıdır (`reconcile_sell_fill`).
+    """
+
+    def __init__(self, message: str, *, requested_qty: float, executed_qty: float,
+                 remaining_qty: float, result: dict | None = None):
+        super().__init__(message)
+        self.requested_qty = requested_qty
+        self.executed_qty = executed_qty
+        self.remaining_qty = remaining_qty
+        # Borsa cevabından türetilen kısmi sonuç (order_id/avg_price/...).
+        self.result = result or {}
+
+
 def _unwrap(payload: dict) -> dict | list:
     """Binance TR zarfını aç: code != 0 ise hata, yoksa data'yı döndür."""
     if not isinstance(payload, dict):
@@ -268,7 +287,8 @@ def _server_time_offset_ms() -> float:
 
 def _signed_request(method: str, path: str, params: dict | None,
                     api_key: str, api_secret: str,
-                    idempotent: bool = True) -> dict | list:
+                    idempotent: bool = True,
+                    idempotency_key: str | None = None) -> dict | list:
     """HMAC-SHA256 imzalı Binance TR isteği.
 
     Parametreler (recvWindow+timestamp+signature dahil) query string'te
@@ -288,6 +308,12 @@ def _signed_request(method: str, path: str, params: dict | None,
     aldım ama cevabım bozuk" durumu ayırt edilemez. `place_*` fonksiyonları
     ayrıca benzersiz bir `clientOrderId` (UUID) gönderir; borsa tarafında aynı
     anahtarı taşıyan ikinci gönderim reddedilir (bkz. `new_client_order_id`).
+
+    #36/P1-8: `idempotency_key` (veya POST gövdesindeki `clientOrderId`) varsa
+    bir 5xx yeniden denemesi ARTIK güvenlidir ve yapılır — borsa aynı anahtarı
+    taşıyan ikinci gönderimi duplicate olarak reddeder, yani emir iki kez
+    oluşmaz. Anahtar YOKSA eski davranış korunur: POST 5xx/timeout'ta tekrar
+    denenmez.
     """
     base_params = dict(params or {})
     base_params["recvWindow"] = RECV_WINDOW_MS
@@ -295,6 +321,11 @@ def _signed_request(method: str, path: str, params: dict | None,
     headers = {"X-MBX-APIKEY": api_key}
     last_error: Exception | None = None
     is_post = method.upper() == "POST"
+    # #36/P1-8: idempotency anahtarı. Açıkça verilmezse emir gönderen POST'ların
+    # gövdesindeki `clientOrderId`'den türetilir. Bu anahtar varsa borsa aynı
+    # emri bir kez kabul eder → 5xx sonrası yeniden deneme çift emir üretmez.
+    idem_key = idempotency_key or (_request_idempotency_key(base_params) if is_post else None)
+    can_retry_post = bool(idem_key)
     # #33: imzalı uçlara ortak eşzamanlılık sınırı. Sembol taraması gibi
     # yüzlerce çağrılık patlamalar bakiye/emir uçlarını tek anda doyuruyordu.
     with _PRIVATE_SEMAPHORE:
@@ -315,7 +346,9 @@ def _signed_request(method: str, path: str, params: dict | None,
                 last_error = exc
                 if exc.is_transient:
                     # 1008 / -1008 (Server Busy / Request Throttled) / 1003 (Rate limit)
-                    if not idempotent:
+                    # #36/P1-8: idempotency anahtarı olan POST yeniden denebilir
+                    # (borsa duplicate'i reddeder); anahtarsız POST asla.
+                    if not idempotent and not can_retry_post:
                         raise exc
                     if attempt == REST_MAX_ATTEMPTS:
                         break
@@ -364,7 +397,11 @@ def _signed_request(method: str, path: str, params: dict | None,
                     time.sleep(delay)
                     continue
                 if exc.code == 429 or (500 <= exc.code < 600) or binance_err.is_transient:
-                    if not idempotent and exc.code != 429 and not binance_err.is_transient:
+                    # #36/P1-8: 429'da borsa isteği ALMAMIŞTIR → her hâlükârda
+                    # güvenli. 5xx/geçici ancak idempotency anahtarı varsa
+                    # (borsa duplicate'i reddeder) veya çağıran idempotent=True
+                    # dediyse yeniden denenir.
+                    if exc.code != 429 and not idempotent and not can_retry_post:
                         raise binance_err
                     if attempt == REST_MAX_ATTEMPTS:
                         break
@@ -408,6 +445,160 @@ def new_client_order_id(prefix: str = "sc") -> str:
     yeniden denediğinde borsa iki ayrı emir oluşturmaz.
     """
     return f"{prefix}{uuid.uuid4().hex}"[:36]
+
+
+def _qty_to_float(value) -> float:
+    """`origQty`/`executedQty` gibi miktar alanlarını güvenle float'a çevir."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def reconcile_sell_fill(result: dict, symbol_underscore: str, requested_qty: float,
+                        last_price: float | None = None, step_size: float | None = None,
+                        client_order_id: str | None = None,
+                        api_key: str = "", api_secret: str = "") -> dict:
+    """Kısmi dolan bir satış emrinin kalanını mutabık kılar (#36/P1-8).
+
+    Kalan miktar toz eşiğinin (min_notional) ALTINDA ise tekrar satılamaz;
+    bu durum sonuçta `dust_remaining: True` olarak işaretlenir. Toz eşiği
+    bilinmiyorsa (fiyat yoksa) güvenli tarafta kalınır ve kalan satılmaya
+    çalışılır. Kalan emir, `remaining_qty` ile yeni bir MARKET SELL gönderir;
+    bu yol `idempotent=False` olduğundan yalnızca gerçek bir dolum sonrası
+    çağrılır (kısmi dolumun kendisi yeniden gönderilmez).
+    """
+    out = {
+        "order_id": str(result.get("order_id") or ""),
+        "symbol": symbol_underscore,
+        "requested_qty": requested_qty,
+        "executed_qty": float(result.get("executed_qty") or 0.0),
+        "quantity": result.get("quantity") or f"{requested_qty:.8f}".rstrip("0").rstrip("."),
+        "remaining_qty": float(result.get("remaining_qty") or 0.0),
+        "partial": True,
+        "dust_remaining": False,
+        "client_order_id": client_order_id,
+    }
+    if result.get("avg_price") is not None:
+        out["avg_price"] = result["avg_price"]
+    if result.get("cummulative_quote_qty") is not None:
+        out["cummulative_quote_qty"] = result["cummulative_quote_qty"]
+
+    remaining = float(out["remaining_qty"] or 0.0)
+    if step_size and step_size > 0:
+        remaining = math.floor(remaining / float(step_size)) * float(step_size)
+        remaining = round(remaining, 12)
+    out["remaining_qty"] = remaining
+    if remaining <= 0:
+        return out
+
+    min_notional = None
+    with _symbols_lock:
+        entry = _symbols_cache["filters"].get(symbol_underscore) or {}
+        if not step_size:
+            step_size = float(entry.get("step_size") or 0) or None
+        min_notional = float(entry.get("min_notional") or 0) or None
+    if step_size and step_size > 0:
+        remaining = math.floor(remaining / float(step_size)) * float(step_size)
+        remaining = round(remaining, 12)
+
+    # Toz koruması: kalan miktar tekrar satılamayacak kadar küçükse yeni emir
+    # göndermeyiz — yoksa borsa 400/minNotional hatası verir ve kısmi sonuç
+    # kaybolur. Çağıran `dust_remaining=True` görür.
+    if min_notional and min_notional > 0 and last_price and last_price > 0:
+        if remaining * float(last_price) < float(min_notional):
+            out["dust_remaining"] = True
+            out["remaining_qty"] = remaining
+            logger.warning(
+                "Binance TR satış kısmi doldu ve kalan miktar toz eşiğinin altında: "
+                "%s kalan=%s (tahmini %s < min %s) — yeni emir gönderilmedi",
+                symbol_underscore, remaining, remaining * float(last_price), min_notional
+            )
+            return out
+
+    try:
+        retry = place_market_sell(
+            api_key, api_secret, symbol_underscore, remaining, step_size=step_size,
+            min_notional=min_notional, last_price=last_price,
+            client_order_id=new_client_order_id("sa"))
+        out["retry_order_id"] = retry.get("order_id")
+        out["retried_qty"] = retry.get("quantity")
+    except Exception as exc:
+        # Kalan miktar satılamadı; çağıran bunu görüp pozisyonu mutabık kılmalı.
+        out["retry_error"] = str(exc)
+        logger.error("Binance TR kısmi satış kalanı satılamadı (%s, kalan=%s): %s",
+                     symbol_underscore, remaining, exc)
+    return out
+
+
+def _resolve_live_price(symbol_underscore: str) -> float | None:
+    """Sembol için canlı TR fiyatı (yoksa None) — min_notional toz kapısı için.
+
+    Satış yolu fiyatı hiç geçmiyordu (#34/P1-8): bu yüzden toz koruması hep
+    atlanıyor ve dust bakiyeler kalıcı olarak takılı kalıyordu. Fiyat ÖNCE
+    bellekteki ticker'lardan okunur (ağ çağrısı yok, satış yolunu yeni bir ağ
+    bağımlılığına sokmamak için); orada yoksa public REST ile hidratlanır.
+    """
+    symbol = str(symbol_underscore or "").upper()
+    if not symbol:
+        return None
+    try:
+        from app.state import market  # döngüsel importu önlemek için tembel
+        ticker = market.get_ticker(symbol)
+        if ticker and ticker.get("last_price"):
+            price = float(ticker["last_price"])
+            if price > 0:
+                return price
+    except Exception:
+        pass
+    try:
+        from app.binance_tr_public import ticker_price  # tembel import
+        rows = ticker_price([symbol])
+        if isinstance(rows, list):
+            for row in rows:
+                if str(row.get("symbol") or "").upper() == symbol:
+                    price = float(row.get("price") or 0)
+                    if price > 0:
+                        return price
+    except Exception as exc:
+        logger.debug("Binance TR canlı fiyat hidrasyonu başarısız (%s): %s", symbol, exc)
+    return None
+
+
+def _order_fill(data: dict, requested_qty: float | None) -> tuple[float, float | None, float | None, float | None]:
+    """Emir cevabından (executed, remaining, avg_price, quote) türet.
+
+    `executedQty` 0/eksikse (bazı proxy'ler yalnız orderId döner) istenen
+    miktar dolu kabul edilir — aksi hâlde yanlışlıkla "kısmi dolum" sanılır.
+    """
+    if not isinstance(data, dict):
+        return (float(requested_qty or 0.0), None, None, None)
+    executed = _qty_to_float(data.get("executedQty"))
+    quote = _qty_to_float(data.get("cummulativeQuoteQty") or data.get("cumulativeQuoteQty"))
+    avg = None
+    if executed > 0 and quote > 0:
+        avg = quote / executed
+    remaining = None
+    if requested_qty is not None and executed > 0:
+        remaining = max(0.0, float(requested_qty) - executed)
+    if executed <= 0:
+        # Dolum bilgisi yok → tam dolum varsay (eski davranış).
+        return (float(requested_qty or 0.0), None, avg, quote or None)
+    return (executed, remaining, avg, quote or None)
+
+
+def _request_idempotency_key(params: dict | None) -> str | None:
+    """İmzalı POST için idempotency anahtarını çıkar (varsa).
+
+    Emir gönderen POST'lar `clientOrderId` taşır; borsa aynı anahtarı taşıyan
+    ikinci gönderimi duplicate olarak reddeder. Bu anahtar varsa bir 5xx
+    yeniden denemesi güvenlidir (borsa tarafında dedupe edilir).
+    """
+    if not isinstance(params, dict):
+        return None
+    key = params.get("clientOrderId") or params.get("newClientOrderId")
+    key = str(key or "").strip()
+    return key or None
 
 
 def _to_underscore_symbol(symbol: str) -> str:
@@ -519,6 +710,12 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
     filtreye takılıp 502 üretmesi ve varlıkta kalıcı toz bırakması yerine
     çağıran açık bir hata alır. `last_price` ile kaba tahmin yapılır
     (bakiye endpoint'i fiyat döndürmez); emin değilsek borsa karar verir.
+
+    #36/P1-8: (a) kısmi dolum doğrulanmadan "tam sattım" deniyordu — artık
+    `executedQty` kontrol edilir; eksik dolum `BinanceTrPartialFillError` ile
+    yükseltilir, çağıran `reconcile_sell_fill` ile kalanı mutabık kılar.
+    (b) min_notional kapısı ÖLÜYDÜ çünkü `last_price` hiç geçilmiyordu
+    (çağıran main.py satış yolu); artık verilmezse canlı ticker'dan türetilir.
     """
     # B-14: lot adımı kütüphane düzeyinde uygulanır. Adım YALNIZCA zaten
     # yüklü filtre önbelleğinden okunur — burada ağ çağrısı tetiklenmez
@@ -540,8 +737,13 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
         # borsa ikinci gönderimi duplicate olarak reddeder).
         "clientOrderId": client_order_id or new_client_order_id("sa"),
     }
-    # #34: minimum işlem tutarı istemci tarafında da uygulanır. Fiyat bilinmiyorsa
-    # tahmin yapılmaz — borsanın kendi filtresi son sözü söyler.
+    # #36/P1-8: fiyat geçilmediyse toz kapısı için canlı fiyatı TÜRET. Eskiden
+    # çağıran last_price'ı hiç vermediği için bu kapı hiç ateşlenmiyor ve dust
+    # bakiyeler kalıcı takılı kalıyordu.
+    if min_notional and min_notional > 0 and (not last_price or last_price <= 0):
+        last_price = _resolve_live_price(symbol_underscore)
+    # #34: minimum işlem tutarı istemci tarafında da uygulanır. Fiyat hâlâ
+    # bilinmiyorsa tahmin yapılmaz — borsanın kendi filtresi son sözü söyler.
     if min_notional and min_notional > 0 and last_price and last_price > 0:
         if (params["quantity"] and float(params["quantity"]) * float(last_price)) < min_notional:
             raise ValueError(
@@ -551,14 +753,38 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
     data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
                            idempotent=False)
     order_id = data.get("orderId") if isinstance(data, dict) else None
-    logger.info("Binance TR MARKET SELL gönderildi: %s qty=%s orderId=%s clientOrderId=%s",
-                symbol_underscore, quantity, order_id, params["clientOrderId"])
+    requested = float(params["quantity"])
+    executed_qty, remaining_qty, avg_price, quote_qty = _order_fill(data, requested)
+    logger.info("Binance TR MARKET SELL gönderildi: %s qty=%s executed=%s orderId=%s clientOrderId=%s",
+                symbol_underscore, params["quantity"], executed_qty, order_id,
+                params["clientOrderId"])
     invalidate_account_balance_cache(api_key)
     with _open_orders_lock:
         _open_orders_cache["expires"] = 0.0
-    return {"order_id": str(order_id) if order_id is not None else None,
-            "symbol": symbol_underscore, "quantity": params["quantity"],
-            "client_order_id": params["clientOrderId"]}
+    result = {"order_id": str(order_id) if order_id is not None else None,
+              "symbol": symbol_underscore, "quantity": params["quantity"],
+              "client_order_id": params["clientOrderId"],
+              "requested_qty": requested, "executed_qty": executed_qty}
+    if avg_price is not None:
+        result["avg_price"] = avg_price
+    if quote_qty is not None:
+        result["cummulative_quote_qty"] = quote_qty
+    # #36/P1-8: satış yolu kısmi dolumu sessizce tam sanıyordu → pozisyonun
+    # bir kısmı açık kalırken "satıldı" deniyordu. Burada açıkça yükseltilir;
+    # çağıran `BinanceTrPartialFillError.result`/`remaining_qty` ile mutabakat
+    # yapmalıdır (bkz. `reconcile_sell_fill`).
+    if remaining_qty is not None and remaining_qty > 0:
+        result["remaining_qty"] = remaining_qty
+        result["partial"] = True
+        raise BinanceTrPartialFillError(
+            f"MARKET SELL kısmi doldu: istenen {params['quantity']}, "
+            f"gerçekleşen {executed_qty}, kalan {remaining_qty} ({symbol_underscore}).",
+            requested_qty=requested, executed_qty=executed_qty,
+            remaining_qty=remaining_qty, result=result,
+        )
+    result["remaining_qty"] = 0.0
+    result["partial"] = False
+    return result
 
 
 def place_market_buy(api_key: str, api_secret: str, symbol_underscore: str, quote_qty: float,

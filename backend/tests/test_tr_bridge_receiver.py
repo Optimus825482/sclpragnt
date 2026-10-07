@@ -36,6 +36,7 @@ class TestBridgeReceiverCore(unittest.IsolatedAsyncioTestCase):
 
         tr_bridge_receiver._last_signal_times.clear()
         tr_bridge_receiver._history.clear()
+        tr_bridge_receiver.clear_replay_state()
         tr_bridge_receiver._stats = {
             "total_received": 0,
             "pings_received": 0,
@@ -44,6 +45,8 @@ class TestBridgeReceiverCore(unittest.IsolatedAsyncioTestCase):
             "trades_blocked": 0,
             "cooldown_skips": 0,
             "auth_failures": 0,
+            "replay_skipped": 0,
+            "clock_skew_rejected": 0,
             "last_received_at": None,
             "total_latency_ms": 0.0,
             "latency_count": 0,
@@ -163,11 +166,93 @@ class TestBridgeReceiverCore(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(res2["status"], "cooldown_skipped")
                 self.assertEqual(tr_bridge_receiver._stats["cooldown_skips"], 1)
 
-                # force=True ile gönderilen 3. sinyal cooldown'u bypass eder
+                # force=True ile gönderilen 3. sinyal cooldown'u TAMAMEN atlamaz;
+                # yalnızca minimum aralığa (10 sn) indirir. İlk sinyalden hemen
+                # sonra geldiği için hâlâ cooldown'dadır (#36/P2-11-C).
                 payload_force = dict(payload, force=True)
                 res3 = await tr_bridge_receiver.process_global_signal(payload_force)
                 self.assertTrue(res3["ok"])
-                self.assertEqual(res3["status"], "executed")
+                self.assertEqual(res3["status"], "cooldown_skipped")
+
+    async def test_event_id_replay_is_rejected(self):
+        """#36/P2-11-A: aynı event_id ikinci kez işlenmez (replay koruması)."""
+        event = {
+            "source": "binance_global",
+            "event_id": "evt-replay-1",
+            "timestamp": time.time(),
+            "global_symbol": "ADAUSDT",
+            "tr_symbol": "ADATRY",
+            "signal_type": "radar",
+            "action": "BUY_SIGNAL",
+            "score": 90.0,
+        }
+        with patch("app.state.analyzer.open_position", new_callable=AsyncMock) as mock_open:
+            mock_open.return_value = {"action": "BUY_SIGNAL", "trade_id": "t1"}
+            with patch("app.state.market.get_ticker") as mock_ticker:
+                mock_ticker.return_value = {"symbol": "ADATRY", "last_price": 20.0}
+                with patch("app.ws_runtime.ws_manager.broadcast", new_callable=AsyncMock):
+                    res1 = await tr_bridge_receiver.process_global_signal(event)
+                    res2 = await tr_bridge_receiver.process_global_signal(dict(event))
+
+        self.assertEqual(res1["status"], "executed")
+        self.assertEqual(res2["status"], "replay_skipped")
+        self.assertEqual(tr_bridge_receiver._stats["replay_skipped"], 1)
+        # Replay edilen sinyal ikinci bir pozisyon AÇMAZ.
+        mock_open.assert_awaited_once()
+
+    async def test_clock_skew_is_rejected(self):
+        """#36/P2-11-B: makul pencere dışındaki zaman damgaları reddedilir."""
+        payload = {
+            "source": "binance_global",
+            "event_id": "evt-skew-1",
+            "timestamp": time.time() - tr_bridge_receiver._MAX_TIMESTAMP_SKEW_SEC - 60,
+            "global_symbol": "XRPUSDT",
+            "tr_symbol": "XRPTRY",
+            "signal_type": "radar",
+            "action": "BUY_SIGNAL",
+            "score": 90.0,
+        }
+        res = await tr_bridge_receiver.process_global_signal(payload)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["status"], "clock_skew_rejected")
+        self.assertEqual(tr_bridge_receiver._stats["clock_skew_rejected"], 1)
+
+    async def test_missing_timestamp_is_accepted(self):
+        """timestamp yoksa saat kayması denetimi ANLAMSIZ olur → reddedilmez."""
+        payload = {
+            "source": "binance_global",
+            "event_id": "evt-nots-1",
+            "signal_type": "ping",
+            "action": "PING",
+        }
+        res = await tr_bridge_receiver.process_global_signal(payload)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["status"], "pong")
+
+    async def test_force_shortens_cooldown_to_min_interval(self):
+        """#36/P2-11-C: force cooldown'u atlamaz, minimum aralığa indirir."""
+        with patch("app.state.analyzer.open_position", new_callable=AsyncMock) as mock_open:
+            mock_open.return_value = {"action": "BUY_SIGNAL", "trade_id": "t2"}
+            with patch("app.state.market.get_ticker") as mock_ticker:
+                mock_ticker.return_value = {"symbol": "AVAXTRY", "last_price": 300.0}
+                with patch("app.ws_runtime.ws_manager.broadcast", new_callable=AsyncMock):
+                    base = {
+                        "source": "binance_global",
+                        "timestamp": time.time(),
+                        "global_symbol": "AVAXUSDT",
+                        "tr_symbol": "AVAXTRY",
+                        "signal_type": "radar",
+                        "action": "BUY_SIGNAL",
+                        "score": 90.0,
+                    }
+                    res1 = await tr_bridge_receiver.process_global_signal({**base, "event_id": "e1"})
+                    self.assertEqual(res1["status"], "executed")
+                    # Son kabulü force aralığının (10 sn) hemen DIŞINA taşı.
+                    tr_bridge_receiver._last_signal_times["AVAXTRY"] = (
+                        time.time() - tr_bridge_receiver._FORCE_MIN_INTERVAL_SEC - 1)
+                    res2 = await tr_bridge_receiver.process_global_signal(
+                        {**base, "event_id": "e2", "force": True})
+        self.assertEqual(res2["status"], "executed")
 
     async def test_paper_trade_execution(self):
         """BUY_SIGNAL geldiğinde open_position çağrılması ve DB kaydı testi."""
@@ -273,6 +358,7 @@ class TestBridgeRestEndpoints(unittest.IsolatedAsyncioTestCase):
         await database.set_llm_setting("bridge_secret", "super-guclu-kopru-anahtari")
         await database.set_llm_setting("bridge_receiver_enabled", "1")
         await database.set_llm_setting("bridge_auto_trade", "1")
+        tr_bridge_receiver.clear_replay_state()
 
     async def test_endpoint_missing_secret_returns_401(self):
         """Secret başlığı olmadan istek atıldığında 401 dönmesi."""

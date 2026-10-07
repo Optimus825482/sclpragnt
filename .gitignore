@@ -5,6 +5,9 @@ backend/__pycache__/
 backend/scalper_db_v4.sqlite*
 scalper_db_v4.sqlite*
 local_backups/
+# 2026-10-07 (P2-12): db-backup servisinin host-dışı kopya hedefi (bind-mount).
+# Dump'lar asla commit edilmemeli; ayrıca diskte büyür.
+offbox_backups/
 docs/*.dump
 scalperagent-backup-*.sqlite*
 frontend/node_modules/
@@ -49,8 +52,15 @@ graf_screenshot.png
 # Not: geçmişteki commit'te hâlâ durur; kalıcı temizlik `git filter-repo`
 # veya BFG gerektirir (aşağıdaki AUDIT_NOTE).
 *.log
+*.window.txt
 *-all-logs-*.txt
 *-all-logs-*
+# 2026-10-07 denetimi (P2-10): `backend/*.log` (93 dosya, ~25 MB) ve
+# `backend/*.window.txt` (10 dosya) izleniyordu — `*.log` kuralından ÖNCE
+# force-add edilmişlerdi. Hiçbir test/kod bunlara başvurmuyor (araştırma
+# artığı); `git rm --cached` ile indeksten çıkarıldılar (çalışma dosyaları
+# diskte kalır). Aynı sızıntı bir daha olmasın diye `*.window.txt` eklendi.
+# Geçmişteki kopyalar için kalıcı temizlik `git filter-repo` gerektirir.
 # Aynı kök dizin scratch kategorisi: düzenleme yardımcıları ve kaza ürünü dosyalar
 apply_edits.mjs
 apply_edits.cmd

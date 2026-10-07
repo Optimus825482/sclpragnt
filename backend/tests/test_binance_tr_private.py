@@ -177,8 +177,98 @@ def test_place_market_sell_sends_side_1_type_2():
     # atılır (timeout sonrası ikinci emir gönderilmez).
     assert params["clientOrderId"]
     assert sr.call_args[1].get("idempotent") is False
-    assert result == {"order_id": "42", "symbol": "BTC_USDT", "quantity": "0.16",
-                      "client_order_id": params["clientOrderId"]}
+    # #36/P1-8: dolum doğrulaması dönen sözlükte raporlanır (cevap executedQty
+    # taşımadığında istenen miktar tam dolum kabul edilir).
+    assert {k: result[k] for k in ("order_id", "symbol", "quantity", "client_order_id")} == {
+        "order_id": "42", "symbol": "BTC_USDT", "quantity": "0.16",
+        "client_order_id": params["clientOrderId"]}
+    assert result["executed_qty"] == 0.16
+    assert result["remaining_qty"] == 0.0
+    assert result["partial"] is False
+
+
+def test_place_market_sell_raises_on_partial_fill():
+    """#36/P1-8: kısmi dolum 'tam satıldı' sanılmamalı — açıkça yükseltilir."""
+    resp = {"orderId": "42", "executedQty": "0.10", "cummulativeQuoteQty": "160"}
+    with mock.patch.object(btp, "_signed_request", return_value=resp):
+        with pytest.raises(btp.BinanceTrPartialFillError) as ctx:
+            btp.place_market_sell("k", "s", "BTC_USDT", 0.16)
+    err = ctx.value
+    assert err.requested_qty == pytest.approx(0.16)
+    assert err.executed_qty == pytest.approx(0.10)
+    assert err.remaining_qty == pytest.approx(0.06)
+    # Kısmi sonuç, çağıranın mutabakat yapabilmesi için hatada taşınır.
+    assert err.result["order_id"] == "42"
+    assert err.result["avg_price"] == pytest.approx(1600.0)
+    assert err.result["remaining_qty"] == pytest.approx(0.06)
+
+
+def test_place_market_sell_no_partial_when_fully_filled():
+    """Tam dolumda kısmi hata YÜKSELTİLMEZ."""
+    resp = {"orderId": "42", "executedQty": "0.16", "cummulativeQuoteQty": "256"}
+    with mock.patch.object(btp, "_signed_request", return_value=resp):
+        result = btp.place_market_sell("k", "s", "BTC_USDT", 0.16)
+    assert result["executed_qty"] == pytest.approx(0.16)
+    assert result["remaining_qty"] == 0.0
+    assert result["partial"] is False
+    assert result["avg_price"] == pytest.approx(1600.0)
+
+
+def test_place_market_sell_derives_live_price_for_dust_guard(monkeypatch):
+    """#36/P1-8: last_price geçilmese bile toz kapısı için fiyat TÜRETİLMELİ."""
+    btp._symbols_cache["filters"] = {"BTC_TRY": {"min_notional": 50.0}}
+    monkeypatch.setattr(btp, "_resolve_live_price", lambda sym: 1000.0)
+    with mock.patch.object(btp, "_signed_request") as sr:
+        with pytest.raises(ValueError, match="minimum emrin altında"):
+            btp.place_market_sell("k", "s", "BTC_TRY", 0.00001)
+    assert not sr.called
+
+
+def test_reconcile_sell_fill_retries_the_remainder():
+    """Kısmi dolumun kalanı yeni bir MARKET SELL ile satılır."""
+    result = {"order_id": "42", "quantity": "0.16", "executed_qty": 0.10,
+              "remaining_qty": 0.06, "partial": True}
+    with mock.patch.object(btp, "place_market_sell",
+                           return_value={"order_id": "99", "quantity": "0.06"}) as pms:
+        out = btp.reconcile_sell_fill(result, "BTC_USDT", 0.16)
+    assert out["partial"] is True
+    assert out["dust_remaining"] is False
+    assert out["retry_order_id"] == "99"
+    assert out["retried_qty"] == "0.06"
+    # Kalan miktar kayan nokta artığından arındırılmış olarak gönderildi.
+    assert pms.call_args[0][3] == pytest.approx(0.06)
+
+
+def test_reconcile_sell_fill_flags_dust_remainder():
+    """Kalan miktar toz eşiğinin altındaysa tekrar satılmaz (dust_remaining)."""
+    btp._symbols_cache["filters"] = {"BTC_USDT": {"min_notional": 10.0}}
+    result = {"order_id": "42", "executed_qty": 0.10, "remaining_qty": 0.000001,
+              "partial": True}
+    with mock.patch.object(btp, "place_market_sell") as pms:
+        out = btp.reconcile_sell_fill(result, "BTC_USDT", 0.10, last_price=1000.0)
+    assert out["dust_remaining"] is True
+    assert not pms.called
+
+
+def test_signed_post_retries_5xx_when_idempotency_key_present():
+    """#36/P1-8: clientOrderId varsa 5xx yeniden denemesi borsada dedupe edilir."""
+    calls = {"n": 0}
+
+    def flaky(url, headers=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib.error.HTTPError(url, 500, "boom", {}, None)
+        return {"code": 0, "data": {"orderId": "5"}}
+
+    with mock.patch.object(btp, "_server_time_offset_ms", return_value=0.0), \
+         mock.patch.object(btp, "_http_post_json", side_effect=flaky), \
+         mock.patch.object(btp.time, "sleep"):
+        result = btp._signed_request(
+            "POST", "/open/v1/orders",
+            {"symbol": "BTC_TRY", "clientOrderId": "sa-fixed-1"},
+            "k", "s", idempotent=False)
+    assert result == {"orderId": "5"}
+    assert calls["n"] == 2
 
 
 def test_place_market_buy_is_idempotent_and_keeps_client_order_id():

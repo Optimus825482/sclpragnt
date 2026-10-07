@@ -244,9 +244,29 @@ class PublishContractTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
 
     async def test_malformed_bar_is_ignored(self):
-        for bad in (None, {}, {"time": 0}, {"time": None}, "not-a-dict"):
-            candles._on_bar("BTCTRY", "5m", bad)      # patlamamalı
-        self.assertTrue(True)
+        """Bozuk mum yayın ÜRETMEMELİ ve patlamamalı (`_on_bar` sessizce döner).
+
+        Not: gerçek bir yayın (`_publish`) event-loop GEREKTİRİR; bu yüzden
+        bozuk mum senaryosu async bağlamda koşar ki "yayın yok" iddiası,
+        `_on_bar`'ın erken `return`'lerinden değil gerçek bozuk-girdi
+        yolundan kaynaklansın.
+        """
+        candles.note_viewed("BTCTRY", "5m")   # kimse-izlemiyor kapısını devre dışı bırak
+        broadcast = AsyncMock(return_value=None)
+        with patch("app.ws_runtime.ws_manager", MagicMock(broadcast=broadcast)):
+            for bad in (None, {}, {"time": 0}, {"time": None}, "not-a-dict"):
+                candles._on_bar("BTCTRY", "5m", bad)      # patlamamalı
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+        self.assertEqual(0, broadcast.await_count,
+                         "bozuk mum yayın üretti (istemciye çöp gider)")
+        # Geçerli bir mum hâlâ yayınlanabilmeli (test kör değil).
+        with patch("app.ws_runtime.ws_manager", MagicMock(broadcast=broadcast)):
+            candles._on_bar("BTCTRY", "5m", _bar(closed=True))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        self.assertGreaterEqual(broadcast.await_count, 1,
+                                "kontrol mumu yayınlanmadı — test vacuous")
 
 
 if __name__ == "__main__":

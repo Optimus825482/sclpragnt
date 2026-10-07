@@ -20,6 +20,14 @@
 // Girdi eksik/geçersizse (current_price gelmedi, quantity 0, entry ≤ 0) sonuç
 // `null`'dur — 0 DEĞİL. 0 dönersek UI bunu "başabaş" sanıp yeşile boyar
 // (H-02). Tüketiciler `null`'u nötr (`text-bunker-muted`) göstermelidir.
+//
+// SHORT yönü (P2-9)
+// -----------------
+// Açık pozisyon K/Z'si yöne bağlıdır: LONG'da fiyat yükselirse kâr, SHORT'ta
+// fiyat DÜŞERSE kâr. Fonksiyonlar `side` parametresini alır; verilmezse "LONG"
+// varsayılır (mevcut çağrılar bu yüzden değişmeden doğru kalır). SHORT'ta
+// `(current − entry)` işareti ters çevrilir, komisyon terimi (gidiş-dönüş)
+// aynı kalır — komisyon her iki yönde de maliyettir.
 
 /** Backend `config.COMMISSION_PCT` varsayılanı (tek bacağın oranı). */
 export const COMMISSION_PCT_FALLBACK = 0.0015;
@@ -57,37 +65,46 @@ function positive(value: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** Brüt açık pozisyon K/Z (₺). Girdi eksikse `null`. */
+/**
+ * Pozisyon yönü işareti: SHORT ise −1, aksi halde (LONG/undefined) +1.
+ * Yalnız `"SHORT"` (büyük/küçük harf farkı gözetilmeden) bilinir; backend
+ * `side` alanını "LONG"/"SHORT" olarak yayınlar (`routers/runtime.py`).
+ */
+function sideSign(side: unknown): 1 | -1 {
+  return String(side ?? "").toUpperCase() === "SHORT" ? -1 : 1;
+}
+
+/** Brüt açık pozisyon K/Z (₺). Girdi eksikse `null`. `side` verilmezse LONG. */
 export function grossOpenPnlTry(
-  entry: unknown, current: unknown, quantity: unknown,
+  entry: unknown, current: unknown, quantity: unknown, side?: unknown,
 ): number | null {
   const e = positive(entry);
   const c = positive(current);
   const q = positive(quantity);
   if (e === null || c === null || q === null) return null;
-  return (c - e) * q;
+  return (c - e) * q * sideSign(side);
 }
 
 /** Net açık pozisyon K/Z (₺) — gidiş-dönüş komisyonu düşülmüş. Girdi eksikse `null`. */
 export function netOpenPnlTry(
-  entry: unknown, current: unknown, quantity: unknown,
+  entry: unknown, current: unknown, quantity: unknown, side?: unknown,
 ): number | null {
   const e = positive(entry);
   const c = positive(current);
   const q = positive(quantity);
   if (e === null || c === null || q === null) return null;
-  const gross = (c - e) * q;
+  const gross = (c - e) * q * sideSign(side);
   const roundTripFees = _commissionPct * q * (e + c);
   return gross - roundTripFees;
 }
 
 /** Net açık pozisyon getirisi (%). Maliyet tabanı giriş değeridir. Girdi eksikse `null`. */
 export function netOpenPnlPct(
-  entry: unknown, current: unknown, quantity: unknown,
+  entry: unknown, current: unknown, quantity: unknown, side?: unknown,
 ): number | null {
   const e = positive(entry);
   const q = positive(quantity);
-  const net = netOpenPnlTry(entry, current, quantity);
+  const net = netOpenPnlTry(entry, current, quantity, side);
   if (e === null || q === null || net === null) return null;
   return (net / (e * q)) * 100;
 }

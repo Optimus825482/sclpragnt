@@ -13,8 +13,9 @@ import {
 } from "lightweight-charts";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
-import { commissionPct } from "../lib/pnl";
+import { commissionPct, netOpenPnlTry, netOpenPnlPct } from "../lib/pnl";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
+import { useModalA11y } from "../lib/useModalA11y";
 import IndicatorPicker, {
   findIndicatorEntry,
   CUSTOM_INDICATOR_ENTRIES,
@@ -33,6 +34,8 @@ export type Holding = {
   avg_cost_try?: number | null;
   pnl_try?: number | null;
   pnl_pct?: number | null;
+  // Spot'ta her zaman LONG; `lib/pnl.ts`'in SHORT işaretiyle uyum için taşınır.
+  side?: string | null;
   volume_try?: number | null;
   has_active_order?: boolean;
   active_sl_price?: number | null;
@@ -285,6 +288,16 @@ export default function BinancePositionChartModal({
   const [closeUnit, setCloseUnit] = useState<"asset" | "try">("asset");
   const [closeBusy, setCloseBusy] = useState(false);
   const [closeMsg, setCloseMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // P2-9: modal erişilebilirliği — odak tuzağı + Escape + aria-label tek
+  // kaynaktan (`lib/useModalA11y`). Modal açıkken odak dışarı kaçarsa klavye
+  // kullanıcısı arka plandaki gerçek satış butonlarını farkında olmadan
+  // tetikleyebilir. İç modallardan (indikatör seçici/ayarları, pozisyon kapat
+  // onayı) biri AÇIKKEN bu hook DEVRE DIŞI bırakılır: aynı anda iki global
+  // `keydown` tuzağı yarışırsa Escape ikisini de kapatabilir ve odak kavgası
+  // olur (iç modal kendi a11y'sini kurar).
+  const innerModalOpen = closeModalOpen || showIndicatorPicker || !!pickerSelectedEntry || !!editingIndicator;
+  const a11y = useModalA11y(!innerModalOpen, onClose, `Pozisyon grafiği: ${holding.asset}/TRY`);
 
   // DOM & Grafik Referansları
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -1322,7 +1335,7 @@ export default function BinancePositionChartModal({
         body: JSON.stringify({ asset: holding.asset, quantity: closeQtyNum, confirmation: "REAL_SELL" }),
       });
       const d = await res.json().catch(() => ({}));
-      if (!res.ok || !d.ok) throw new Error(d.detail || `Satış gönderilemedi (${res.status})`);
+      if (!res.ok || d.ok === false) throw new Error(d.detail || `Satış gönderilemedi (${res.status})`);
       showToast(`${holding.asset} pozisyonu kapatıldı: ${fmtPrice(closeQtyNum, 6)} adet satıldı.`, "success");
       setCloseModalOpen(false);
       onOrderUpdated();
@@ -1334,10 +1347,14 @@ export default function BinancePositionChartModal({
   };
 
   // Metrik Hesaplamaları
-  const curPnlTry =
-    entryPrice && currentPrice ? (currentPrice - entryPrice) * holding.total : null;
-  const curPnlPct =
-    entryPrice && currentPrice ? ((currentPrice - entryPrice) / entryPrice) * 100 : null;
+  //
+  // P2-9: eskiden BRÜT hesaplanıyordu — `(current − entry) × total`. Aynı
+  // pozisyon Binance TR sekmesi ve Portföy'de `lib/pnl.ts` ile NET (gidiş-dönüş
+  // komisyon düşülmüş) görünürken bu modal brüt gösteriyordu ("bir yerde kâr,
+  // diğerinde zarar"). Artık KANONİK net formül kullanılır ve etiket "(net)"
+  // ile açıkça işaretlenir.
+  const curPnlTry = netOpenPnlTry(entryPrice, currentPrice, holding.total, holding.side);
+  const curPnlPct = netOpenPnlPct(entryPrice, currentPrice, holding.total, holding.side);
 
   // Risk / Reward Oranı
   const effectiveTpVal = pendingTp ?? tpPrice;
@@ -1357,9 +1374,17 @@ export default function BinancePositionChartModal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-200"
       onClick={closeContextMenu}
+      role="dialog"
+      aria-modal="true"
+      aria-label={a11y.label}
+      onKeyDown={a11y.onKeyDown}
     >
-      <div
-        className="relative w-full max-w-7xl h-[100dvh] sm:h-[92vh] flex flex-col rounded-none sm:rounded-2xl border-0 sm:border border-bunker-700/80 bg-[#080b10] shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden"
+      {/* `useModalA11y` ref'i `HTMLElement` tipli; `<div>`'in ref imzası dar
+          (`HTMLDivElement`). `<section>` (diğer modallerdaki desen) ile uyumlu. */}
+      <section
+        ref={a11y.ref}
+        tabIndex={-1}
+        className="relative w-full max-w-7xl h-[100dvh] sm:h-[92vh] flex flex-col rounded-none sm:rounded-2xl border-0 sm:border border-bunker-700/80 bg-[#080b10] shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         {/* ÜST BİLGİ VE KONTROL BARI */}
@@ -1392,13 +1417,14 @@ export default function BinancePositionChartModal({
               </span>
               {curPnlPct != null && (
                 <span
+                  title="Açık pozisyon K/Z — gidiş-dönüş komisyonu düşülmüş (net)"
                   className={`text-[11px] sm:text-xs font-bold tabular-nums ${
                     curPnlPct >= 0 ? "text-neon-green" : "text-neon-red"
                   }`}
                 >
                   {curPnlPct >= 0 ? "+" : ""}
                   {curPnlPct.toFixed(2)}% ({curPnlTry != null && (curPnlTry >= 0 ? "+" : "")}₺
-                  {fmtPrice(curPnlTry)})
+                  {fmtPrice(curPnlTry)} net)
                 </span>
               )}
             </div>
@@ -1930,7 +1956,7 @@ export default function BinancePositionChartModal({
             </button>
           </div>
         </div>
-      </div>
+      </section>
 
       {/* POZİYON KAPAT ONAY MODALI (GİRİŞ ✕) */}
       {closeModalOpen && (

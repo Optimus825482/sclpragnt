@@ -965,29 +965,16 @@ def _rr_ratio(target_pct: float) -> float | None:
     return float(target_pct) / sl_pct
 
 
-def _master_surge_block_reason(c: dict) -> str | None:
-    """Adayın Master Surge risk kapısı nedeniyle elenip elenmediğini döndürür.
+def _master_surge_hard_block_reason(c: dict) -> str | None:
+    """Master Surge'ün SERT (risk) blok nedeni — EXTREME_LONG / BTC panik / rejim.
 
-    2026-09-26 denetimi (bölüm 2.2): `evaluate_master_surge()` `block_reason`
-    üretiyor ve `passed=False` yapıyordu ama `_notify` /
-    `_unified_fast_notify_impl` bu alanlara HİÇ BAKMIYORDU → EXTREME_LONG
-    fonlamasında veya BTC panik döküşünde radar 100 puan üretse bile bildirim
-    gidiyor ve `auto_paper` pozisyon açabiliyordu.
-
-    Dönüş `None` → kapı yok (bildirim akışı devam eder). Dönüş metin → blok
-    nedeni; bildirim üretilmez, neden `_monitoring_state["surge_blocked_symbols"]`
-    içinde gözlenebilir olur ve `_build_notification` rozetine taşınır.
-
-    Kural: `block_reason` doluysa O, yoksa `passed is False` ise `gate`
-    nedeni (skor/4'lü teyit kapısı) blok sebebi sayılır.
+    Bunlar `master_surge.py:616-624` içinde yalnızca GERÇEK risk durumunda
+    `block_reason` olarak üretilir (aşırı şişkin long tasfiye riski, BTC panik
+    şelalesi, BTC 1H EMA200 altı rejim kalkanı). "Riski ölçtüm, risk var"
+    demektir; `passed`/`gate` skor kapısından AYRI ve ondan BAĞIMSIZDIR.
 
     Katman 1 (likidite) erken elemesi KAPSAM DIŞIDIR: fusion-only aday
     üretiminde zaten `failed_layer == 1` ile eleniyor.
-
-    `MONITORING_MASTER_SURGE_GATE` (varsayılan AÇIK) bu kapıyı kapatabilir;
-    acil geri dönüş için, risk kapıları kapatılınca EXTREME_LONG/BTC panik
-    koruması da devre dışı kalır — bu yüzden `block_reason` yolu kapı
-    bayrağından BAĞIMSIZ olarak her zaman uygulanır.
     """
     surge = c.get("master_surge")
     if not isinstance(surge, dict):
@@ -996,13 +983,56 @@ def _master_surge_block_reason(c: dict) -> str | None:
         # Katman erken elemesi: bu aday zaten liste üretiminde elendi.
         return None
     block = surge.get("block_reason")
-    if block:
-        return str(block)
-    if surge.get("passed") is False:
-        if not _master_surge_gate_enabled():
-            return None
+    return str(block) if block else None
+
+
+def _master_surge_confluence_gate_reason(c: dict) -> str | None:
+    """YETERSİZ 4'lü teyit / düşük kompozit skor nedeni (SERT RİSK DEĞİL).
+
+    P0-1 (2026-10-07 denetimi): `MASTER_SURGE_REQUIRE_4WAY` varsayılanı true +
+    `MONITORING_MASTER_SURGE_GATE` açık iken `passed=False` üreten BU neden,
+    daha önce `_master_surge_block_reason` tarafından blok sayılıyordu → 4
+    katmanın TAMAMI geçmeyen NEREDEYSE HER aday sessizce ölüyordu. Oysa
+    "teyit zayıf" bir SKORLAMA girdisidir, sert ölüm değil.
+
+    Bu yardımcı yalnızca GÖRÜNÜRLÜK için `gate` nedenini döndürür (panel/rapor
+    "neden 4'lü teyit yok" görebilsin). KARAR yolunda bildirimi ÖLDÜRMEK için
+    KULLANILMAZ (bkz. `_master_surge_block_reason`).
+    """
+    surge = c.get("master_surge")
+    if not isinstance(surge, dict):
+        return None
+    if surge.get("failed_layer"):
+        return None
+    if surge.get("block_reason"):
+        return None  # sert risk yolu ayrı ele alınır
+    if surge.get("passed") is False and _master_surge_gate_enabled():
         return str(surge.get("gate") or "MASTER_SURGE_GATE")
     return None
+
+
+def _master_surge_block_reason(c: dict) -> str | None:
+    """Karar yolunda uygulanan Master Surge kapısı — YALNIZ SERT RİSK blokları.
+
+    2026-09-26 denetimi (bölüm 2.2): EXTREME_LONG fonlaması / BTC panik
+    döküşünde radar 100 puan üretse bile bildirim gidiyor ve `auto_paper`
+    pozisyon açabiliyordu → sert risk kapıları karar yoluna BAĞLANDI.
+
+    P0-1 DÜZELTMESİ (2026-10-07): eskiden `passed is False` durumunda `gate`
+    ("NO_4WAY_CONFLUENCE"/"COMPOSITE_BELOW_MIN") de blok sayılıyordu. Bu,
+    yetersiz-teyit'i SERT RİSK ile karıştırıp adayların çoğunu öldürüyordu.
+    Artık yalnızca GERÇEK risk blokları (`block_reason`) döner; yetersiz-teyit/
+    düşük-skor SKORLAMA girdisidir ve tek başına bildirimi ENGELLEMEZ (nedeni
+    `_master_surge_confluence_gate_reason` ile gözlenebilir kalır).
+
+    Sert risk blokları `MONITORING_MASTER_SURGE_GATE` bayrağından BAĞIMSIZ
+    olarak HER ZAMAN uygulanır (fail-closed: "risk var" ile "teyit zayıf"
+    aynı şey değildir).
+
+    Dönüş metin → blok nedeni; bildirim üretilmez ve neden
+    `_monitoring_state["surge_blocked_symbols"]` içinde gözlenebilir olur.
+    """
+    return _master_surge_hard_block_reason(c)
 
 
 def _master_surge_gate_enabled() -> bool:
@@ -1037,6 +1067,70 @@ def _rr_gate_blocks(price: float, target_pct: float) -> bool:
     if rr is None:
         return False
     return rr < float(getattr(config, "MONITORING_RR_MIN", 0.18))
+
+
+def _rising_risk_block_reason(symbol: str) -> tuple[str | None, dict]:
+    """Yükseliş yolunun SERT RİSK kapısı (P1-2, 2026-10-07 denetimi).
+
+    NEDEN: `_run_rising_scan` / `_build_rising_notification` hiçbir risk
+    değerlendirmesi taşımıyordu → BTC panik döküşünde veya BTC 1H EMA200 altı
+    makro ayı rejiminde yükseliş bildirimi yine gidiyor ve `auto_paper` pozisyon
+    açabiliyordu (radar yolunda bu kapı `_master_surge_block_reason` ile ZATEN
+    vardı; yükseliş yolu ondan yararlanmıyordu).
+
+    Aynı sert-risk semantiği (`master_surge.py:616-624` ile birebir) burada
+    TEKRAR UYGULANIR — kural çoğaltılmaz, iki yol da "gerçek risk"te fail-closed
+    olur. Yükseliş adayı Master Surge katmanlarını (composite/confluence)
+    üretmediği için TAM `evaluate_master_surge` çağrılmaz; bunun yerine onun
+    tükettiği İKİ önbellek kaynağı (BTC pusulası + türev istihbaratı) doğrudan
+    okunur. Bu okumalar SENKRON ve AĞ İSTEĞİ ÜRETMEZ (TTL'li bellek).
+
+    Dönüş: (reason|None, evidence). `reason` doluysa bildirim/otonom giriş
+    ENGELLENİR. `evidence` her durumda zarfı/LLM'e taşınan risk bayraklarıdır
+    (fail-open: "riski ölçtüm, risk yok" ile "ölçemedim" panelde ayrışsın).
+    """
+    evidence: dict = {}
+    sym = str(symbol or "").upper()
+    # Fail-closed rejim kalkanı: `_master_surge_gate_enabled()` kapalıysa yalnız
+    # risk bloğu DEĞİL, rejim kalkanı da atlanır (radar yolu da `passed=False`
+    # gate'ini bu bayrakla susturur; sert `block_reason` yolundan ayrı tutulur).
+    if not _master_surge_gate_enabled():
+        return None, evidence
+    try:
+        from app.macro_sentiment_service import get_cached_btc_compass
+        macro = get_cached_btc_compass(max_age_sec=60.0)
+    except Exception:
+        macro = None
+    if isinstance(macro, dict):
+        # Fail-open: fetch_error ise (ölçemedim) rejim panik sanılmaz; yalnız
+        # POZİTİF kanıt (is_btc_panic True / EMA200 altı) bloklar. BTC'nin
+        # kendisi (BTCTRY/BTCUSDT) muaf — radar yoluyla aynı istisna.
+        panic = bool(macro.get("is_btc_panic"))
+        above_ema = macro.get("is_btc_above_ema200")
+        evidence["is_btc_panic"] = panic
+        evidence["is_btc_above_ema200"] = above_ema
+        if sym not in ("BTCTRY", "BTCUSDT"):
+            if panic:
+                return "BTC_PANIC_DOWNTREND", evidence
+            if bool(getattr(config, "BTC_REGIME_SHIELD_ENABLED", True)) and above_ema is False:
+                return "BTC_BEAR_REGIME_SHIELD", evidence
+    # EXTREME_LONG (aşırı şişkin long tasfiye riski): freze listesinin aksine bu
+    # hâl geçicidir → türev servisi adayın vadeli sembolünü haritalayabilir.
+    try:
+        from app.derivatives_service import get_cached_derivatives_intel
+        deriv = get_cached_derivatives_intel(sym, max_age_sec=900.0)
+    except Exception:
+        deriv = None
+    if isinstance(deriv, dict):
+        # `crowded_long_danger` kanonik bayraktır (`derivatives_service`);
+        # `funding_state == EXTREME_LONG` ile aynı koşulu taşır.
+        crowded = bool(deriv.get("crowded_long_danger")) or \
+            str(deriv.get("funding_state") or "").upper() == "EXTREME_LONG"
+        if crowded and sym not in ("BTCTRY", "BTCUSDT"):
+            evidence["funding_state"] = deriv.get("funding_state")
+            evidence["crowded_long_danger"] = True
+            return "CROWDED_LONG_LIQUIDATION_RISK", evidence
+    return None, evidence
 
 
 def _build_notification(sym, c, settings, first_price: float | None = None) -> dict:
@@ -1080,9 +1174,13 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     is_4way = bool(c.get("confluence_4way") or len(sources) >= 4)
     # MACD MTF konfluans snapshot'ı — senkron önbellek okuması (bloklamaz).
     mtf_compact = macd_mtf.cached_compact(sym)
-    # 2026-09-26 (bölüm 2.2): bloklanmış aday zaten bildirim üretmez; bu alan
-    # yalnızca geçmiş/rapor okunurken kapının neden çalıştığını gösterir.
+    # 2026-09-26 (bölüm 2.2) + P0-1 (2026-10-07): SERT risk bloğu bildirim
+    # üretmez (buraya nadiren düşer — güncelleme yolu); "yetersiz 4'lü teyit"
+    # ise SKORLAMA girdisidir, bildirimi öldürmez. İkisi AYRI alanlarda taşınır:
+    # `surge_block_reason` = sert risk (varsa), `confluence_gate` = skor/teyit
+    # nedeni (bilgilendirici; karar yolunu kapatmaz).
     _surge_block = _master_surge_block_reason(c)
+    _confluence_gate = _master_surge_confluence_gate_reason(c)
     prefix_str = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
     title_prefix = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
     if _surge_block:
@@ -1106,6 +1204,10 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         "confluence_4way": is_4way,
         "master_surge": c.get("master_surge"),
         "surge_block_reason": _surge_block,
+        # P0-1: "yetersiz 4'lü teyit / düşük kompozit" bilgilendirici alan
+        # (karar yolunu KAPATMAZ; auto_paper bu alanı blok olarak OKUMAZ —
+        # yalnız `block_reason`/`surge_block_reason` kapıdır).
+        "confluence_gate": _confluence_gate,
         "tp1_scalp_pct": c.get("tp1_scalp_pct"),
         "tp2_runner_pct": c.get("tp2_runner_pct"),
         "target_pct": target,
@@ -1290,10 +1392,11 @@ async def _notify(candidates_list, settings) -> list:
                 continue
         if min_target > 0 and target < min_target:
             continue
-        # MASTER SURGE RİSK KAPISI (2026-09-26 denetimi, bölüm 2.2): türev
-        # (EXTREME_LONG fonlaması) ve BTC panik döküşü kapıları karar yoluna
-        # BAĞLANDI. Bloklanan aday bildirim üretmez, otonom paper denemesine
-        # girmez; neden rozet olarak taşınır (panel/rapor görebilsin).
+        # MASTER SURGE SERT RİSK KAPISI (2026-09-26 denetimi bölüm 2.2 + P0-1
+        # 2026-10-07 düzeltmesi): yalnızca GERÇEK risk blokları (EXTREME_LONG
+        # fonlaması, BTC panik döküşü, BTC rejim kalkanı) karar yolunu kapatır.
+        # "Yetersiz 4'lü teyit / düşük kompozit" artık SKORLAMA girdisidir —
+        # bildirimi öldürmez (P0-1: aksi halde adayların çoğu sessizce elenirdi).
         _surge_block = _master_surge_block_reason(c)
         if _surge_block:
             _monitoring_state["surge_blocked"] = int(
@@ -1425,10 +1528,12 @@ async def _notify(candidates_list, settings) -> list:
                 "expected": expected_price,
                 "entry_price": entry_price,
                 # 2026-09-26 (#7 sınıfı): config'te `AUTO_PAPER_SL_PCT` YOK;
-                # yalnız `AUTO_PAPER_SL_PCT_DEFAULT` var. `getattr(config,
-                # "AUTO_PAPER_SL_PCT", 1.5)` her zaman 1.5 dönüyordu ve
-                # env'deki `AUTO_PAPER_SL_PCT` sessizce yok sayılıyordu.
-                "sl_pct": float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5)),
+                # yalnız `AUTO_PAPER_SL_PCT_DEFAULT` var (env `AUTO_PAPER_SL_PCT`,
+                # varsayılan %5.0). 2026-10-07: literal `1.5` fallback KALDIRILDI —
+                # öznitelik her zaman tanımlı; eksikse AttributeError doğru/gürültülü
+                # hatadır. Bayat 1.5 fallback sessizce ESKİ stop tabanını (ve
+                # panelde gösterilen `sl_pct`'i) yalan olarak geri getirirdi.
+                "sl_pct": float(config.AUTO_PAPER_SL_PCT_DEFAULT),
                 "horizon_minutes": horizon_minutes,
                 "set_at": now,
                 # MACD MTF ölçüm takipçileri: pencere içi zirve/dip + DB satır
@@ -1569,6 +1674,13 @@ async def _deliver_scan_notifications(notified: list) -> None:
     try:
         from app.routers.auto_paper import try_open_from_notification
         for notif in notified:
+            # P1-3 (2026-10-07): LLM kararı bu noktada HENÜZ yok (fire-and-forget
+            # `_maybe_llm_second_eye` aşağıda başlar). Karara bağlı giriş için
+            # otonom girişi `_llm_second_eye_task` ERLER; sağlayıcı yoksa görev
+            # fail-open ile girişi yine yapar (mevcut davranış korunur).
+            if _defer_open_for_llm_second_eye(notif):
+                notif["_llm_entry_deferred"] = True
+                continue
             try:
                 await try_open_from_notification(notif)
             except Exception as exc:
@@ -1594,18 +1706,29 @@ async def _llm_second_eye_task(notif: dict) -> None:
     tamamen atlanır (saatler sonra pushlamak değerini yok eder).
     """
     sym = str(notif.get("symbol") or "?")
+    # P1-3: giriş bu göreve ERTELENDİYSE (bkz. `_defer_open_for_llm_second_eye`)
+    # karar yazıldıktan/evaluate atlandıktan sonra MUTLAKA denenmeli; aksi halde
+    # sağlayıcı yok/atlandığında giriş HİÇ olmazdı (fail-open ihlali).
+    deferred = bool(notif.get("_llm_entry_deferred"))
     try:
         envelope = await llm_second_eye.evaluate(notif)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         logger.warning("LLM ikinci göz görev hatası %s: %s", sym, exc)
+        if deferred:
+            await _post_llm_second_eye_entry(notif, None)  # fail-open
         return
     if not isinstance(envelope, dict):
+        # Karar üretilemedi (sağlayıcı yok/kota/atlandı) → fail-open giriş.
+        if deferred:
+            await _post_llm_second_eye_entry(notif, None)
         return
     try:
         if await quiet_hours_active():
             logger.info("LLM ikinci göz: %s sessiz saatte — değerlendirme atlandı", sym)
+            if deferred:
+                await _post_llm_second_eye_entry(notif, None)  # fail-open
             return
     except Exception:
         pass
@@ -1622,15 +1745,25 @@ async def _llm_second_eye_task(notif: dict) -> None:
     # yazılabiliyordu → kolon canlıda %98 NULL kalıyordu ve `auto_paper`'ın LLM
     # kapısı fiilen hiç devreye girmiyordu. `notif["id"]` yeni bildirimlerde
     # `save_monitoring_notifications` tarafından doldurulur.
+    verdict = envelope.get("llm_verdict")
+    confidence = envelope.get("llm_confidence")
+    reasons = envelope.get("llm_reasons")
     try:
         _nid = notif.get("id")
         if _nid is not None:
             await database.update_monitoring_notification_llm_verdict(
-                _nid, envelope.get("llm_verdict"),
-                confidence=envelope.get("llm_confidence"),
-                reasons=envelope.get("llm_reasons"))
+                _nid, verdict, confidence=confidence, reasons=reasons)
     except Exception as exc:
         logger.debug("LLM kararı bildirim satırına yazılamadı %s: %s", sym, exc)
+    # P1-3: ertelenmiş otonom girişi karar yazıldıktan SONRA dene. Karar alanları
+    # (`llm_verdict`/`llm_confidence`/`llm_reasons`) bu adımda auto_paper'ın
+    # MEVCUT LLM kapısına taşınır → FAKE/TUZAK artık GİRİŞTE engellenir.
+    if deferred:
+        _dnotif = dict(notif)
+        _dnotif["llm_verdict"] = verdict
+        _dnotif["llm_confidence"] = confidence
+        _dnotif["llm_reasons"] = reasons
+        await _post_llm_second_eye_entry(_dnotif, envelope)
     try:
         await ws_manager.broadcast({"type": "monitoring_alert", "data": [envelope]})
         logger.info("LLM ikinci göz kararı yayınlandı: %s → %s",
@@ -1649,6 +1782,51 @@ def _maybe_llm_second_eye(notified) -> None:
         task = asyncio.create_task(_llm_second_eye_task(notif))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
+
+
+def _defer_open_for_llm_second_eye(notif: dict) -> bool:
+    """Otonom giriş, LLM kararı yazılana kadar ERTELENMELİ mi? (P1-3, 2026-10-07)
+
+    NEDEN: `_deliver_scan_notifications` girişi, LLM kararından ÖNCE deniyordu
+    (`_maybe_llm_second_eye` fire-and-forget SONRA koşar) → giriş anında
+    `llm_verdict` BOŞ olduğundan `auto_paper`'ın LLM kapısı DAİMA geçiyordu;
+    sonradan gelen FAKE/TUZAK kararı yalnızca bir RE-OPEN'i bastırabiliyordu.
+
+    Yalnız DB satırı olan (`id`) ve LLM'e UYGUN bildirimlerde True: girişi
+    `_llm_second_eye_task` (kararı yazdıktan sonra) yapar. `id` yoksa/uygun
+    değilse False → mevcut ANLIK giriş davranışı korunur (test/legacy zarflar
+    ve hızlı-yol ile girişler etkilenmez). Sağlayıcı yoksa `evaluate` None
+    döner; görev FAIL-OPEN ile girişi yine yapar.
+    """
+    if not isinstance(notif, dict) or not notif.get("id"):
+        return False
+    try:
+        return bool(llm_second_eye.eligible(notif))
+    except Exception:
+        return False
+
+
+async def _post_llm_second_eye_entry(notif: dict, envelope: dict | None) -> None:
+    """LLM kararı yazıldıktan SONRA ertelenmiş otonom girişi dene (P1-3).
+
+    `envelope` karar alanlarını (`llm_verdict`/`llm_confidence`/`llm_reasons`)
+    taşır; `auto_paper.try_open_from_notification` bu alanlarla MEVCUT LLM
+    kapısını uygular (FAKE/TUZAK ≥50 blok, DEVAM < min_confidence blok).
+    `envelope` None (sağlayıcı yok/atlandı) → karar alanları eklenmez ve giriş
+    FAIL-OPEN yapılır: mevcut davranışla AYNI (bugün de LLM kararı olmadan
+    giriş deneniyordu), yalnızca KANITLI kötü karar engeller.
+    """
+    merged = dict(notif)
+    merged.pop("_llm_entry_deferred", None)
+    if isinstance(envelope, dict):
+        for k in ("llm_verdict", "llm_confidence", "llm_reasons"):
+            if envelope.get(k) is not None:
+                merged[k] = envelope.get(k)
+    try:
+        from app.routers.auto_paper import try_open_from_notification
+        await try_open_from_notification(merged)
+    except Exception as exc:
+        logger.debug("LLM sonrası otonom giriş %s: %s", notif.get("symbol"), exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1758,9 +1936,10 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     min_target = float(settings.get("min_target_pct") or 0)
     if min_target > 0 and float(candidate.get("target_pct") or 0) < min_target:
         return None
-    # MASTER SURGE RİSK KAPISI (2026-09-26 denetimi, bölüm 2.2): hızlı yol da
-    # radar ile AYNI kapıdan geçer. EXTREME_LONG fonlaması veya BTC panik
-    # döküşünde hızlı yol push atmaz, otonom paper açmaz.
+    # MASTER SURGE SERT RİSK KAPISI (2026-09-26 denetimi bölüm 2.2 + P0-1):
+    # hızlı yol da radar ile AYNI sert-risk kapısından geçer — yalnızca GERÇEK
+    # risk bloğu (EXTREME_LONG fonlaması / BTC panik / BTC rejim kalkanı) push'u
+    # bastırır. Yetersiz 4'lü teyit artık skorlama girdisidir, öldürmez.
     _surge_block = _master_surge_block_reason(candidate)
     if _surge_block:
         logger.info("BİRLEŞİK SİNYAL bastırıldı: %s master_surge kapısı=%s", sym, _surge_block)
@@ -1804,7 +1983,9 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
         _monitoring_state["pending_targets"][sym] = {
             "expected": _expected,
             "entry_price": _entry_px,
-            "sl_pct": float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5)),
+            # Literal fallback KALDIRILDI (2026-10-07): bayat 1.5 yerine gerçek
+            # config değeri; eksik öznitelik sessizce yalan üretmesin.
+            "sl_pct": float(config.AUTO_PAPER_SL_PCT_DEFAULT),
             "horizon_minutes": int(candidate.get("horizon_minutes") or 5),
             "set_at": float(_existing_pending.get("set_at") or time.time()),
             # Ölçüm takipçileri KORUNUR: mevcut bildirim bağlantısı ve pencere
@@ -1963,6 +2144,12 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
         prox_txt = f" · zirveye yakınlık %{round(float(proximity) * 100)}"
     expected_price = price * (1 + target / 100) if price > 0 else 0.0
     now = time.time()
+    # P1-2 (2026-10-07 denetimi): yükseliş zarfı da SERT RİSK bayraklarını
+    # taşır (radar zarfındaki `surge_block_reason`/`master_surge` muadili).
+    # Bloklu sinyal zaten ateşlenmez; bu alanlar (a) otonom paper için
+    # savunma derinliği (auto_paper `block_reason`/`master_surge_passed`
+    # okur), (b) LLM ikinci göz kanıtı, (c) panel/rapor görünürlüğü içindir.
+    _risk_reason, _risk_evidence = _rising_risk_block_reason(symbol)
     message = (
         f"🎯 {symbol} | Skor: {score:.1f} | Potansiyel: +%{target:g} (5dk){prox_txt} | "
         f"Anlık: {price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
@@ -1991,6 +2178,14 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
         "notification_key": f"rising-{kind}-{symbol}-{int(now // 3600)}",
         "updated": False,
         "source": "rising",
+        # SERT RİSK bayrakları (P1-2): `block_reason`/`surge_block_reason` doluysa
+        # auto_paper risk engeliyle açmaz; `master_surge_passed=False` da aynı
+        # fail-closed kapıyı tetikler.
+        "block_reason": _risk_reason,
+        "surge_block_reason": _risk_reason,
+        "master_surge_passed": _risk_reason is None,
+        # LLM ikinci göz kanıtı: risk bayrakları (ölçüldü/ölçülemedi dahil).
+        "master_surge": (dict(_risk_evidence) if _risk_evidence else None),
         # MACD MTF konfluans snapshot'ı (bildirim ANI — ölçüm raporu için).
         "macd_mtf_verdict": (macd_mtf.cached_compact(symbol) or {}).get("verdict"),
         "macd_mtf_confluence": (macd_mtf.cached_compact(symbol) or {}).get("confluence"),
@@ -2265,8 +2460,18 @@ async def _run_rising_scan() -> dict:
         # EŞİK KONTROLÜ (2026-09-21): admin min_score altındaki zayıf sinyaller bildirilmez.
         effective_min_score = _effective_min_score(settings)
         score_qualifies = float(candidate.get("score") or 0) >= effective_min_score
+        # P1-2 (2026-10-07 denetimi): SERT RİSK kapısı — radar yolunda
+        # `_master_surge_block_reason` ile uygulanan aynı fail-closed kapı
+        # (BTC panik döküşü / BTC 1H EMA200 altı rejim / aşırı şişkin long
+        # tasfiye riski). Eksikliğinde BTC çakılırken yükseliş bildirimi gidip
+        # `auto_paper` pozisyon açabiliyordu. Sert riskte push GÖNDERİLMEZ ve
+        # bu turda aynı sembol yeniden denenmesin diye defter ilerletilir
+        # (kanıt satırı diğer bastırma yollarıyla aynı şekilde yine yazılır).
+        _risk_reason, _ = _rising_risk_block_reason(symbol)
+        risk_blocked = _risk_reason is not None
         fire = (notify_enabled and not is_first_observation
                 and score_qualifies
+                and not risk_blocked
                 and rising_signals.should_fire(candidate, now)
                 and not (unified_mode and unified_signals.recently_notified(symbol)))
 
@@ -2276,7 +2481,10 @@ async def _run_rising_scan() -> dict:
         # gönder. Bu "neden tekrar bildirim?" sorusunun asıl cevabıdır:
         # ya yeni bir sinyal (cooldown dolmuş) ya da değişim güncellemesi.
         update_change = None
-        if not fire and not is_first_observation and notify_enabled and score_qualifies:
+        # P1-2: risk bloklu sinyal UPDATE ile de ateşlenmez (sert risk her
+        # yolu kapatır — yoksa cooldown/horizon içi "güncelleme" kapıyı delerdi).
+        if (not fire and not risk_blocked and not is_first_observation
+                and notify_enabled and score_qualifies):
             update_change = rising_signals.changed_since_last_fire(
                 candidate, float(price or 0))
             if update_change and len(notified) < max_per_scan:
@@ -2408,7 +2616,9 @@ async def _check_pending_targets():
         entry_price = _num(info.get("entry_price"), 0.0) or 0.0
         sl_pct = _num(info.get("sl_pct"), None)
         if sl_pct is None:
-            sl_pct = float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5))
+            # Literal fallback KALDIRILDI (2026-10-07): bayat 1.5 yerine gerçek
+            # config değeri (varsayılan %5.0) — eksikse gürültülü AttributeError.
+            sl_pct = float(config.AUTO_PAPER_SL_PCT_DEFAULT)
         sl_price = entry_price * (1.0 - sl_pct / 100.0) if entry_price > 0 else 0
 
         hit = price is not None and price > 0 and expected > 0 and price >= expected
@@ -2941,10 +3151,27 @@ async def _maybe_run_fast_scan() -> bool:
     try:
         # PERFORMANS (2026-09-26): `_run_scan` artık state kilidi TUTMADAN koşar
         # (POST /scan ile aynı gerekçe — GET /state tarama süresince bloklanmasın).
+        result = None
         async with _scan_lock:
-            await _run_scan()
+            result = await _run_scan()
     finally:
         _fast_scan["running"] = False
+    # B5 + P1-1 (2026-10-07 denetimi): teslim (push/WS/otonom paper) `_run_scan`
+    # SONUCUNU kullanmalı. Eskiden dönüş değeri ATILIYORDU (`await _run_scan()`)
+    # → hızlı tarama hiçbir bildirim TESLİM ETMİYORDU (teslim yalnız 30 sn'lik
+    # döngüde ve manuel tetikte vardı). Buradaki blok, döngüyle AYNI sırayı
+    # izler: scan kilidi bırakılır, sonra teslim (yavaş push ağ I/O'su kilit
+    # altında koşmaz). `_unified_pushed_symbols` sıfırlanır ki bu turun radar +
+    # yükseliş çapraz bastırması doğru çalışsın. `_run_scan` sözleşmesi dict
+    # döner; bozuk/eksik sonuç teslimi ATLAR (hızlı tarama asla çökmez).
+    if isinstance(result, dict):
+        _unified_pushed_symbols.clear()
+        try:
+            await _deliver_scan_notifications(result.get("new_notifications") or [])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("hızlı tarama bildirim teslimi: %s", exc)
     return True
 
 

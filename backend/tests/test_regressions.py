@@ -134,10 +134,64 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('"risk_stop_pct": stop_pct', source)
 
     def test_alert_trigger_uses_a_boolean_false_for_postgres(self):
-        source = (ROOT / "app" / "database.py").read_text(encoding="utf-8")
-        # Postgres-only backend: alert rearm must use a real SQL boolean.
-        self.assertIn('armed_false = "FALSE"', source)
-        self.assertIn("ELSE {armed_false} END", source)
+        """DAVRANIŞ (kaynak-metni değil): rearm, `rearm_threshold` dolu bir
+        kural tetiklendiğinde GERÇEK SQL boolean `FALSE` yazar.
+
+        Postgres-only veri katmanında rearm bayrağı `?` ile parametreleştirilirse
+        (ya da SQLite `0`/`1` literal'i kalırsa) tip hatası verir. Bu test
+        `record_alert_trigger`'ı sahte bağlantıyla GERÇEKTEN çalıştırır ve
+        üretilen UPDATE SQL'ini inceler — metin grep'inin aksine ölü kodda/
+        yorumda duran bir dize testi yanlış yeşil yapamaz.
+        """
+        from app import database
+
+        class _Cursor:
+            def __init__(self, rowcount=1, row=None):
+                self.rowcount = rowcount
+                self._row = row
+
+            def fetchone(self):
+                return self._row
+
+        class _Conn:
+            def __init__(self):
+                self.statements = []
+                self.commits = 0
+
+            def execute(self, sql, params=()):
+                self.statements.append((sql, params))
+                head = sql.lstrip().upper()
+                if head.startswith("INSERT"):
+                    return _Cursor(rowcount=1)          # yeni tetik kaydı yazıldı
+                if head.startswith("SELECT"):
+                    return _Cursor(row={"id": 7, "event_key": params[0]})
+                return _Cursor()
+
+            def commit(self):
+                self.commits += 1
+
+            def rollback(self):
+                pass
+
+        conn = _Conn()
+
+        async def fake_run_db(operation):
+            return operation(conn)
+
+        with patch("app.database._run_db", new=fake_run_db):
+            asyncio.run(database.record_alert_trigger(7, "evt:1", 42.0, "mesaj"))
+
+        updates = [(s, p) for s, p in conn.statements
+                   if s.lstrip().upper().startswith("UPDATE")]
+        self.assertEqual(1, len(updates), "rearm UPDATE'i üretilmedi")
+        sql = updates[0][0]
+        self.assertIn("ELSE FALSE END", sql,
+                      "rearm bayrağı GERÇEK SQL boolean FALSE ile yazılmalı (Postgres)")
+        self.assertNotIn("ELSE ? END", sql,
+                         "boolean literal parametreleştirildi → Postgres tip hatası")
+        self.assertIn("WHEN rearm_threshold IS NULL", sql,
+                      "rearm yalnız rearm_threshold tanımlıyken sıfırlanmalı")
+        self.assertEqual(1, conn.commits, "tetik kaydı için tam bir COMMIT olmalı")
 
     def test_tts_normalizes_turkish_market_numbers(self):
         from app.main import _speech_text
@@ -152,17 +206,13 @@ class RegressionContracts(unittest.TestCase):
 
 
 
-    def test_backtest_fill_model_charges_round_trip_costs(self):
-        # Backtest kaldırıldı (2026-09-06); kontrat artık uygulanmıyor.
-        self.assertTrue(True)
-
-    def test_backtest_has_explicit_microstructure_and_spread_contract(self):
-        # Backtest kaldırıldı (2026-09-06); kontrat artık uygulanmıyor.
-        self.assertTrue(True)
-
-    def test_custom_exit_policy_is_not_forced_to_use_tp_sl(self):
-        # Backtest kaldırıldı (2026-09-06); kontrat artık uygulanmıyor.
-        self.assertTrue(True)
+    # 2026-10-07: burada üç adet `self.assertTrue(True)` no-op testi vardı
+    # (test_backtest_fill_model_charges_round_trip_costs,
+    #  test_backtest_has_explicit_microstructure_and_spread_contract,
+    #  test_custom_exit_policy_is_not_forced_to_use_tp_sl). Üçünün de konusu
+    # olan eski backtest modülü 2026-09-06'da tamamen kaldırıldı; geriye yalnız
+    # "Backtest kaldırıldı" yorumu + `assertTrue(True)` kalmıştı → hiçbir şey
+    # doğrulamıyorlardı. Davranışsal bir eşdeğerleri olmadığı için SİLİNDİLER.
 
     def test_llm_exit_creates_symbol_reentry_lock(self):
         source = (ROOT / "app" / "analyzer.py").read_text(encoding="utf-8")
@@ -321,17 +371,63 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn("retries: 12", postgres)
 
     def test_symbol_activity_is_enforced_at_the_writer_boundary(self):
-        source = (ROOT / "app" / "analyzer.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        opening = next(
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_open_position_unlocked"
-        )
-        opening_source = ast.get_source_segment(source, opening)
-        self.assertIsNotNone(opening_source)
-        self.assertIn("symbol in config.PASSIVE_SYMBOLS", opening_source)
-        self.assertIn('"action": "BUY_BLOCKED"', opening_source)
-        self.assertIn('"symbol_activity:passive"', opening_source)
+        """DAVRANIŞ (kaynak-metni değil): pasif sembol YAZICI SINIRINDA reddedilir.
+
+        Eski sürüm yalnız `_open_position_unlocked` KAYNAK METNİNDE
+        `config.PASSIVE_SYMBOLS` dizesini arıyordu; kapı silinip aynı metin bir
+        yorumda kalsa bile geçerdi. Bu sürüm fonksiyonu GERÇEKTEN çalıştırır:
+        pasif bir sembol `BUY_BLOCKED` dönmeli ve sinyal kalıcılaştırılmalı.
+        """
+        import app.analyzer as analyzer_mod
+        from app.analyzer import ScalpAnalyzer
+        from app.config import config
+
+        analyzer = ScalpAnalyzer(None)
+        saved: list[dict] = []
+
+        async def fake_save_signal(payload):
+            saved.append(payload)
+
+        activity = {"checks": {"m1_flat": False, "range_15m": True}}
+        with patch.object(config, "SYMBOL_ACTIVITY_FILTER_ENABLED", True), \
+                patch.object(config, "PASSIVE_SYMBOLS", {"PASSTRY"}), \
+                patch.object(config, "SYMBOL_ACTIVITY_STATUS", {"PASSTRY": activity}), \
+                patch.object(analyzer_mod.database, "save_signal", new=fake_save_signal):
+            blocked = asyncio.run(analyzer._open_position_unlocked(
+                "PASSTRY", 100.0, strat_name="MOMENTUM"))
+
+        self.assertIsInstance(blocked, dict, "pasif sembol yazıcıda engellenmedi")
+        self.assertEqual("BUY_BLOCKED", blocked["action"])
+        self.assertEqual("PASSTRY", blocked["symbol"])
+        self.assertTrue(blocked["reason"].startswith("symbol_activity:passive"), blocked["reason"])
+        self.assertIn("m1_flat", blocked["reason"], "başarısız aktivite kontrolü nedene eklenmedi")
+        self.assertEqual(1, len(saved), "engel sinyali kalıcılaştırılmadı")
+        self.assertEqual("BUY_BLOCKED", saved[0]["action"])
+
+    def test_live_signal_strategies_bypass_the_passive_gate(self):
+        """CHAT_PREDICTION / GLOBAL_LEAD_LAG pasif kapıdan MUAF olmalı.
+
+        Kanıt: bu stratejilerde kapı atlanır → fonksiyon yazıcı sınırının
+        ÖTESİNE geçer. `load_positions` bir sentinel ile patlatılarak "kapıya
+        takılmadı" davranışsal olarak ölçülür (DB'ye dokunulmaz).
+        """
+        import app.analyzer as analyzer_mod
+        from app.analyzer import ScalpAnalyzer
+        from app.config import config
+
+        analyzer = ScalpAnalyzer(None)
+
+        async def _reached_writer_boundary():
+            raise AssertionError("reached load_positions → pasif kapı atlandı (beklenen)")
+
+        for strat in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
+            with patch.object(config, "SYMBOL_ACTIVITY_FILTER_ENABLED", True), \
+                    patch.object(config, "PASSIVE_SYMBOLS", {"PASSTRY"}), \
+                    patch.object(analyzer_mod.database, "load_positions",
+                                 new=_reached_writer_boundary):
+                with self.assertRaises(AssertionError, msg=f"{strat} pasif kapıya takıldı"):
+                    asyncio.run(analyzer._open_position_unlocked(
+                        "PASSTRY", 100.0, strat_name=strat))
 
     def test_symbol_activity_does_not_overwrite_configured_scan_symbols(self):
         combined = _backend_sources()

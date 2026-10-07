@@ -80,6 +80,33 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual(0.0, notif["expected_price"])
 
 
+def _patch_rising_risk(stack, *, panic=False, above_ema=None, funding=None,
+                       crowded=False, gate_enabled=True):
+    """P1-2: yükseliş SERT RİSK kapısının iki önbellek kaynağını deterministik kıl.
+
+    `_rising_risk_block_reason` `macro_sentiment_service.get_cached_btc_compass`
+    ve `derivatives_service.get_cached_derivatives_intel` SENKRON okur (ağ yok);
+    testte gerçek önbellek durumuna bağlı kalmamak için ikisi de yamalanır.
+    """
+    stack.enter_context(patch.object(monitoring, "_master_surge_gate_enabled",
+                                     MagicMock(return_value=gate_enabled)))
+    macro = None
+    if panic or above_ema is not None:
+        macro = {"is_btc_panic": bool(panic)}
+        if above_ema is not None:
+            macro["is_btc_above_ema200"] = bool(above_ema)
+    stack.enter_context(patch(
+        "app.macro_sentiment_service.get_cached_btc_compass",
+        MagicMock(return_value=macro)))
+    deriv = None
+    if crowded or funding is not None:
+        deriv = {"crowded_long_danger": bool(crowded),
+                 "funding_state": funding or "EXTREME_LONG"}
+    stack.enter_context(patch(
+        "app.derivatives_service.get_cached_derivatives_intel",
+        MagicMock(return_value=deriv)))
+
+
 class RisingScanTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         rs.reset_state_for_tests()
@@ -311,6 +338,169 @@ class RisingScanTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(config, "RISING_SIGNALS_ENABLED", False):
             summary = await monitoring._run_rising_scan()
         self.assertEqual(0, summary["detected"])
+
+
+class RisingRiskGateTests(unittest.IsolatedAsyncioTestCase):
+    """P1-2 (2026-10-07): yükseliş yolu da radar ile AYNI SERT RİSK kapısına tabi.
+
+    BTC panik / BTC 1H EMA200 altı rejim / aşırı şişkin long tasfiye riski
+    altında yükseliş sinyali push ÜRETMEMELİ ve otonom giriş denememelidir
+    (eskiden bu yol kapıyı hiç uygulamıyordu → BTC çakılırken pozisyon açılıyordu).
+    """
+
+    def setUp(self):
+        rs.reset_state_for_tests()
+        self.addCleanup(rs.reset_state_for_tests)
+        self._orig_notify = getattr(config, "RISING_NOTIFY_ENABLED", True)
+        config.RISING_NOTIFY_ENABLED = True
+        self.addCleanup(setattr, config, "RISING_NOTIFY_ENABLED", self._orig_notify)
+
+    def _stack(self, deliver):
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.object(config, "RISING_COOLDOWN_SEC", 0))
+        stack.enter_context(patch.object(monitoring, "get_user_notification_settings",
+                                         AsyncMock(return_value=dict(SETTINGS))))
+        stack.enter_context(patch.object(monitoring, "_ticker_price",
+                                         MagicMock(return_value=10.0)))
+        stack.enter_context(patch.object(monitoring.database, "record_rising_alert",
+                                         AsyncMock(return_value=501)))
+        stack.enter_context(patch.object(monitoring, "_rising_deliver", deliver))
+        return stack
+
+    @staticmethod
+    def _grown():
+        grown = _candidate()
+        grown["signals"] = {**grown["signals"], "break15": True}
+        return grown
+
+    async def test_btc_panic_blocks_rising_push(self):
+        """BTC panik döküşünde yükseliş sinyali push ÜRETMEZ (kanıt yine yazılır)."""
+        deliver = AsyncMock(return_value=None)
+        grown = self._grown()
+        with self._stack(deliver) as stack:
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[_candidate()])))
+            _patch_rising_risk(stack)                 # arm turu: risksiz
+            await monitoring._run_rising_scan()       # sessiz arm
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[grown])))
+            _patch_rising_risk(stack, panic=True)
+            summary = await monitoring._run_rising_scan()
+        self.assertEqual(1, summary["detected"])
+        self.assertEqual(0, summary["notified"], "BTC panikte yükseliş push'u bloklanmalı (P1-2)")
+        deliver.assert_not_awaited()
+
+    async def test_btc_bear_regime_blocks_rising_push(self):
+        """BTC 1H EMA200 ALTINDA (rejim kalkanı) → yükseliş push'u bloklanır."""
+        deliver = AsyncMock(return_value=None)
+        grown = self._grown()
+        with self._stack(deliver) as stack:
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[_candidate()])))
+            _patch_rising_risk(stack)
+            await monitoring._run_rising_scan()
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[grown])))
+            _patch_rising_risk(stack, above_ema=False)
+            summary = await monitoring._run_rising_scan()
+        self.assertEqual(0, summary["notified"], "ayı rejiminde yükseliş push'u bloklanmalı (P1-2)")
+        deliver.assert_not_awaited()
+
+    async def test_extreme_long_funding_blocks_rising_push(self):
+        """Aşırı şişkin long fonlaması → tasfiye riski → yükseliş push'u bloklanır."""
+        deliver = AsyncMock(return_value=None)
+        grown = self._grown()
+        with self._stack(deliver) as stack:
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[_candidate()])))
+            _patch_rising_risk(stack)
+            await monitoring._run_rising_scan()
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[grown])))
+            _patch_rising_risk(stack, crowded=True)
+            summary = await monitoring._run_rising_scan()
+        self.assertEqual(0, summary["notified"], "EXTREME_LONG'da yükseliş push'u bloklanmalı (P1-2)")
+        deliver.assert_not_awaited()
+
+    async def test_risk_free_rising_still_notifies(self):
+        """Risk YOKken yükseliş bildirimi AYNEN gider (kapı fazla bloklamamalı)."""
+        deliver = AsyncMock(return_value=None)
+        grown = self._grown()
+        with self._stack(deliver) as stack:
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[_candidate()])))
+            _patch_rising_risk(stack)
+            await monitoring._run_rising_scan()
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[grown])))
+            _patch_rising_risk(stack)
+            summary = await monitoring._run_rising_scan()
+        self.assertEqual(1, summary["notified"], "risksiz sinyal bildirilmeli (kapı fazla bloklamamalı)")
+        deliver.assert_awaited()
+
+    def test_envelope_carries_risk_flags_when_risk_present(self):
+        """P1-2: risk varken zarf `block_reason`/`master_surge_passed=False` taşır
+        (otonom paper savunma derinliği + LLM kanıtı)."""
+        with contextlib.ExitStack() as stack:
+            _patch_rising_risk(stack, panic=True)
+            notif = monitoring._build_rising_notification(_candidate(), price=10.0)
+        self.assertEqual("BTC_PANIC_DOWNTREND", notif["block_reason"])
+        self.assertEqual("BTC_PANIC_DOWNTREND", notif["surge_block_reason"])
+        self.assertFalse(notif["master_surge_passed"])
+
+    def test_envelope_master_surge_passed_true_when_clear(self):
+        with contextlib.ExitStack() as stack:
+            _patch_rising_risk(stack)
+            notif = monitoring._build_rising_notification(_candidate(), price=10.0)
+        self.assertIsNone(notif["block_reason"])
+        self.assertTrue(notif["master_surge_passed"])
+
+
+class MasterSurgeBlockSplitTests(unittest.TestCase):
+    """P0-1 (2026-10-07): SERT RİSK bloğu ile YETERSİZ TEYİT ayrımı.
+
+    Eski davranış `passed is False` durumunda `gate` nedenini (NO_4WAY_CONFLUENCE)
+    de blok sayıyordu → 4 katmanın tamamı geçmeyen NEREDEYSE HER aday sessizce
+    ölüyordu. Artık yetersiz-teyit SKORLAMA girdisidir: bildirimi ÖLDÜRMEZ, yalnız
+    `confluence_gate` alanında görünür kalır; SERT RİSK (`block_reason`) yine bloklar.
+    """
+
+    def test_confluence_gate_does_not_block(self):
+        c = {"symbol": "X", "master_surge": {"passed": False, "block_reason": None,
+                                             "gate": "NO_4WAY_CONFLUENCE"}}
+        self.assertIsNone(monitoring._master_surge_block_reason(c),
+                          "yetersiz 4'lü teyit bildirimi öldürmemeli (P0-1)")
+        self.assertEqual("NO_4WAY_CONFLUENCE",
+                         monitoring._master_surge_confluence_gate_reason(c))
+
+    def test_composite_below_min_does_not_block(self):
+        c = {"symbol": "X", "master_surge": {"passed": False, "block_reason": None,
+                                             "gate": "COMPOSITE_BELOW_MIN"}}
+        self.assertIsNone(monitoring._master_surge_block_reason(c))
+        self.assertEqual("COMPOSITE_BELOW_MIN",
+                         monitoring._master_surge_confluence_gate_reason(c))
+
+    def test_hard_risk_still_blocks(self):
+        c = {"symbol": "X", "master_surge": {"passed": False,
+                                             "block_reason": "CROWDED_LONG_LIQUIDATION_RISK"}}
+        self.assertEqual("CROWDED_LONG_LIQUIDATION_RISK",
+                         monitoring._master_surge_block_reason(c),
+                         "sert risk HÂLÂ bloklamalı (fail-closed)")
+        # Sert riskte confluence gate AYRICA raporlanmaz (tek neden: risk).
+        self.assertIsNone(monitoring._master_surge_confluence_gate_reason(c))
+
+    def test_failed_layer_is_not_a_block(self):
+        """Katman 1 erken elemesi liste üretiminde elenir; karar yolunda blok DEĞİL."""
+        c = {"symbol": "X", "master_surge": {"failed_layer": 1, "passed": False,
+                                             "block_reason": "CROWDED_LONG_LIQUIDATION_RISK"}}
+        self.assertIsNone(monitoring._master_surge_block_reason(c))
+
+    def test_missing_surge_is_not_a_block(self):
+        self.assertIsNone(monitoring._master_surge_block_reason({"symbol": "X"}))
+
+    def test_passed_true_has_no_gate(self):
+        c = {"symbol": "X", "master_surge": {"passed": True, "block_reason": None}}
+        self.assertIsNone(monitoring._master_surge_confluence_gate_reason(c))
 
 
 class UnifiedCrossModeRisingTests(unittest.IsolatedAsyncioTestCase):

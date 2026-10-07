@@ -162,6 +162,52 @@ _stop_loss_cooldowns: dict[str, float] = {}
 #: Kârlı kapanış (take_profit/trailing_stop) sonrası kârı geri vermeme (post-win churn) koruma süreleri {symbol: expire_timestamp}
 _post_win_cooldowns: dict[str, float] = {}
 
+#: P2-4 (2026-10-07 denetimi): cooldown haritaları YALNIZ bellekte tutuluyordu →
+#: her restart'ta kayboluyor ve aynı sembole hemen yeniden girilip churn/kâr
+#: geri-verme serisi başlıyordu. `monitoring.py` kalıcılık deseniyle aynı
+#: anahtar kullanılır (JSON blob, `default=str`). Expire edilmiş girdiler
+#: yazılırken budanır (kalıcı büyüme olmaz).
+_AUTO_PAPER_STATE_KEY = "auto_paper_runtime_state"
+
+
+def _cooldowns_to_payload() -> dict:
+    now = time.time()
+    return {
+        "stop_loss_cooldowns": {k: v for k, v in _stop_loss_cooldowns.items() if v > now},
+        "post_win_cooldowns": {k: v for k, v in _post_win_cooldowns.items() if v > now},
+    }
+
+
+async def _persist_cooldowns() -> None:
+    """Cooldown haritalarını DB'ye yaz (restart amnezisini gider)."""
+    try:
+        await database.set_llm_setting(
+            _AUTO_PAPER_STATE_KEY, json.dumps(_cooldowns_to_payload(), default=str))
+    except Exception as exc:
+        # Sessiz DEBUG yerine WARNING: persist hatası restart'ta cooldown kaybı
+        # demektir (monitoring.py _persist_runtime_state ile aynı desen).
+        logger.warning("auto_paper cooldown durumu kalici hale getirilemedi: %s", exc)
+
+
+async def restore_runtime_state() -> None:
+    """Cooldown durumunu DB'den geri yükle (başlangıçta çağrılır)."""
+    try:
+        raw = await database.get_llm_setting(_AUTO_PAPER_STATE_KEY, "{}")
+        payload = json.loads(raw or "{}")
+        if not isinstance(payload, dict):
+            return
+        now = time.time()
+        sl = payload.get("stop_loss_cooldowns") or {}
+        pw = payload.get("post_win_cooldowns") or {}
+        if isinstance(sl, dict):
+            _stop_loss_cooldowns.update(
+                {str(k): float(v) for k, v in sl.items() if v and float(v) > now})
+        if isinstance(pw, dict):
+            _post_win_cooldowns.update(
+                {str(k): float(v) for k, v in pw.items() if v and float(v) > now})
+    except Exception as exc:
+        logger.warning("auto_paper cooldown durumu geri yuklenemedi: %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Core: bildirim → pozisyon açılışı
@@ -231,11 +277,19 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         # açık pozisyon yoksa otonom işleme alınır (2026-09-22 Erkan Kararı).
 
         # MOD FILTRESI (2026-10-07). Bos liste = filtre kapali (eski davranis).
-        # Kanit: 3214 bildirim, 30 gun, gercek mum verisi -> trend_devam
-        # +0.47%/islem (5/5 hafta pozitif, p~0.000) iken ayni donemde
-        # global_lead_lag -0.13%, notr -0.70%, llm_ikinci_goz -0.27%.
-        # Karisik havuz maliyet sonrasi negatif kaliyor; bu kapi yalnizca
-        # otonom KATMANI moda gore suzer (push bildirimi engellenmez).
+        # P0-2 DUZELTMESI (2026-10-07 denetimi): eski varsayilan yalnizca
+        # `["trend_devam"]` idi. AMA `trend_devam` YALNIZ velocity yolunda
+        # uretilir (velocity.py:575); radar/birlesik bildirimleri `mode="unified"`
+        # tasir (unified_signals.py:374,477). Tek-modluk liste bu yuzden radar
+        # giris yolunu TAMAMEN kapatuyordu — radar bildirimi hicbir zaman otonom
+        # acilamiyordu (sessiz ariza). Cozum: kanitla DESTEKLENEN modlari acikca
+        # listele. `trend_devam` en guclu kanitli moddur (dar havuzda
+        # +1.446%/islem, n=379) ve listede KALIR; `unified` de eklenir cunku
+        # dar havuzla ayni islem basi getiri verir (+1.375%, n=540) — yani
+        # unified'i dislamak edge KATMAZ, yalnizca hacmi (ve radar yolunu)
+        # oldurur. Dislanan modlar (`notr`, `llm_ikinci_goz`) ve negatif
+        # `global_lead_lag` listede YOKTUR. Bos liste = tum modlar (eski
+        # davranisa donus).
         allowed_modes = settings.get("allowed_modes") or []
         if allowed_modes:
             notif_mode = str(notification.get("mode") or "").strip()
@@ -245,23 +299,37 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                 return _blocked(symbol, "mode_not_allowed", mode=notif_mode,
                                 allowed=allowed_modes)
 
+        # Acik pozisyon var mi? (Asagida hem dedup kapisi hem de "acik pozisyon
+        # → TP guncelle" karari bu TEK okumayi paylasir.)
+        open_trade = await database.get_open_auto_paper_trade(symbol)
+
         # BILDIRIM DEDUP (2026-10-07). Ayni sembolde kisa sure once giris
         # yapildiysa tekrar girme. Ayarlar > 0 ise devreye girer: ayni sinyal
         # 5 dakikada birden fazla kanaldan geliyordu ve her biri ayri pozisyon
         # aciyordu; 30 gunluk veride bu tekrarlar ortalamayi bozuyordu.
-        dedup_min = float(settings.get("dedup_cooldown_minutes", 0.0) or 0.0)
-        if dedup_min > 0:
-            try:
-                _last_entry = await database.get_last_auto_paper_entry_time(symbol)
-            except Exception as exc:
-                logger.debug("auto_paper %s dedup kontrol hatasi: %s", symbol, exc)
-                _last_entry = None
-            if _last_entry and (time.time() - _last_entry) < (dedup_min * 60.0):
-                rem = round(dedup_min * 60.0 - (time.time() - _last_entry), 0)
-                logger.info("auto_paper %s: ayni sembolde %.0f dk once giris yapildi — "
-                            "tekrar acilmadi (kalan %.0f sn)", symbol, dedup_min, rem)
-                return _blocked(symbol, "symbol_dedup", remaining_sec=rem,
-                                dedup_cooldown_minutes=dedup_min)
+        #
+        # P2-3 DUZELTMESI (2026-10-07 denetimi): dedup YALNIZCA YENI sembol
+        # girisini engeller. Eskiden acik pozisyon varken de calisiyordu ve
+        # ayni sembolun TP'sinin 60 dk boyunca YUKARI guncellenmesini (mevcut
+        # pozisyonu IYILESTIRMEYI) engelliyordu. Riskli olan yeni giris; mevcut
+        # pozisyonun hedefini iyilestirmek degil. `open_trade` varsa dedup
+        # ATLANIR (asagida TP guncelleme yoluna gidilir). Cift giris korunur:
+        # acik pozisyon zaten `open_trade` dalinda yeni pozisyon ACMAZ, yalnizca
+        # TP gunceller.
+        if open_trade is None:
+            dedup_min = float(settings.get("dedup_cooldown_minutes", 0.0) or 0.0)
+            if dedup_min > 0:
+                try:
+                    _last_entry = await database.get_last_auto_paper_entry_time(symbol)
+                except Exception as exc:
+                    logger.debug("auto_paper %s dedup kontrol hatasi: %s", symbol, exc)
+                    _last_entry = None
+                if _last_entry and (time.time() - _last_entry) < (dedup_min * 60.0):
+                    rem = round(dedup_min * 60.0 - (time.time() - _last_entry), 0)
+                    logger.info("auto_paper %s: ayni sembolde %.0f dk once giris yapildi — "
+                                "tekrar acilmadi (kalan %.0f sn)", symbol, dedup_min, rem)
+                    return _blocked(symbol, "symbol_dedup", remaining_sec=rem,
+                                    dedup_cooldown_minutes=dedup_min)
 
         # R3-08 (P1): aday PANEL EŞİĞİNİ geçmiş olmalı (passing-only). Monitoring
         # yalnızca passing adayları bildirir; burada `passes` bayrağı açıkça False
@@ -527,9 +595,8 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                             "sağlanıyor (%s) — aynı bildirimle yeniden işlem açılıyor",
                             symbol, exit_reason)
 
-        # Mevcut açık auto_paper pozisyonunu kontrol et
-        open_trade = await database.get_open_auto_paper_trade(symbol)
-
+        # Mevcut açık auto_paper pozisyonu yukarıda (dedup kapısından önce) BİR
+        # kez okundu; burada yeniden sorgulanmaz.
         if open_trade:
             # Açık pozisyon var → TP güncelle (bildirim hedefini takip et)
             return await _update_existing_trade(open_trade, notification, current_price)
@@ -546,7 +613,13 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         max_open = int(settings.get("max_open_positions",
                      getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0)))
         if max_open > 0:
-            open_count = len(await database.list_auto_paper_trades(status="open"))
+            # P0-3 (2026-10-07): `apply_reports_baseline=False` — açık pozisyon
+            # TAVANI risk kontrolüdür; "Rapor Başlangıcı" (görsel/telemetri
+            # filtresi) bu sayıma SIZMAMALIDIR. Aksi halde rapor başlangıcından
+            # eski açık pozisyonlar sayılmaz ve tavan fiilen aşılır (denetim
+            # P0-3). Reset cutoff yine uygulanır (ilk argüman).
+            open_count = len(await database.list_auto_paper_trades(
+                status="open", apply_reports_baseline=False))
             if open_count >= max_open:
                 logger.warning("auto_paper %s: max açık pozisyon (%d/%d) — açılmadı "
                                "(R3-06)", symbol, open_count, max_open)
@@ -889,7 +962,15 @@ async def auto_paper_management_loop():
 
 async def _check_open_positions():
     """Tüm açık auto_paper pozisyonlarını tara ve yönet."""
-    trades = await database.list_auto_paper_trades(status="open")
+    # P0-3 (2026-10-07, KRİTİK): `apply_reports_baseline=False`. Pozisyon
+    # yönetimi (SL/TP/max_hold/trailing) bir RAPOR/TELEMETRİ filtresiyle
+    # yönetilemez. `list_auto_paper_trades` varsayılanı RAPOR BAŞLANGICI
+    # (`reports_baseline`) alt sınırını `entry_time` üzerinden uygular; bundan
+    # eski açık pozisyonlar hiç taranmaz → SL/TP/trailing UYGULANMAZ ve
+    # pozisyon sonsuza dek "açık" kalıp telemetriyi de kirletir. Reset cutoff
+    # (ilk argüman) YİNE uygulanır; kaldırılan yalnızca rapor filtresidir.
+    trades = await database.list_auto_paper_trades(
+        status="open", apply_reports_baseline=False)
     if not trades:
         return
 
@@ -958,7 +1039,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # Fiyat bayat veya ticker boş olsa bile 60 dk dolmuşsa pozisyon kâr/zarara bakılmaksızın kapatılır.
     entry_time = float(trade.get("entry_time") or trade.get("created_at") or 0)
     hold_minutes = (now - entry_time) / 60.0 if entry_time > 0 else 0.0
-    max_hold_minutes = float((settings or {}).get("max_hold_minutes", getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 60.0)))
+    max_hold_minutes = float((settings or {}).get("max_hold_minutes", getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 120.0)))
     if max_hold_minutes > 0 and hold_minutes >= max_hold_minutes:
         # D-02: bayat/eksik fiyatla KAPANMA YAPILMAZ. Pozisyon bir sonraki
         # tazelik turunda kapatılır (gerekirse peak_price fallback'i ile
@@ -1031,8 +1112,8 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
 
     # Breakeven kontrolü (isteğe bağlı — erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI, 2026-09-22 Erkan kararı).
-    breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", True)))
-    BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", 0.60))
+    breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False)))
+    BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", 0.3))
     if breakeven_enabled:
         breakeven_activated = bool(trade.get("breakeven_activated", False))
 
@@ -1062,7 +1143,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         elif is_master_surge:
             BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40))
         else:
-            BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", 0.60))
+            BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", 0.3))
         # In-memory breakeven stop: DB'ye yazılan değerle aynı turdaki koruma
         # kontrolü arasında gecikme olmasın.
         current_breakeven_stop = float(trade.get("breakeven_stop") or 0)
@@ -1231,12 +1312,18 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
                 logger.info("auto_paper %s: karlı kapanış (PnL=%.2f) sonrası %.0f dakika kâr koruma bekleme süresi (post_win_cooldown) başlatıldı",
                             symbol, pnl, win_cooldown_min)
 
-        if reason == "stop_loss":
+        # P2-4: `breakeven_stop` de bir STOP ailesidir — breakeven'a takılan
+        # (çoğunlukla başa-baş/komisyon-altı kapanan) sembole hemen yeniden
+        # girmek aynı churn'ü üretir; SL cooldown ailesine dahil edilir.
+        if reason in ("stop_loss", "breakeven_stop"):
             cooldown_min = float(settings.get("sl_cooldown_minutes", 5.0))
             if cooldown_min > 0:
                 _stop_loss_cooldowns[symbol] = now + (cooldown_min * 60.0)
-                logger.info("auto_paper %s: stop_loss sonrası %.0f dakika yeni giriş bekleme süresi (cooldown) başlatıldı",
-                            symbol, cooldown_min)
+                logger.info("auto_paper %s: %s sonrası %.0f dakika yeni giriş bekleme süresi (cooldown) başlatıldı",
+                            symbol, reason, cooldown_min)
+
+        # P2-4: cooldown haritaları restart'a dayanıklı olsun diye DB'ye yazılır.
+        await _persist_cooldowns()
 
     except Exception as exc:
         logger.exception("auto_paper %s kapatma: %s", symbol, exc)
@@ -1385,12 +1472,22 @@ async def get_default_settings() -> dict:
         "trailing_trigger_pct": config.AUTO_PAPER_TRAILING_TRIGGER_PCT,
         "trailing_gap_pct": config.AUTO_PAPER_TRAILING_GAP_PCT,
         "reopen_after_protect_close": config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE,
-        "tp_primary_exit_enabled": getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", True),
+        # P2-2 DUZELTMESI (2026-10-07 denetimi): TP birincil cikis VARSAYILAN
+        # ACIK. `config.AUTO_PAPER_TP_PRIMARY_ENABLED` (env) varsayilani "false"
+        # yapiyordu; bu `take_profit` cikisini VE `update_auto_paper_trade_tp`
+        # ratchet'ini (o da TP tabanli) fiilen OLU koda ceviriyordu. Oysa kanit
+        # tablosunda `take_profit` EN IYI cikistir (n=101, ort +2.745%/islem —
+        # docs/OTONOM_TRADE_TESHIS_2026-10-07.md §1). Varsayilan kanita hizalandi.
+        # Ayar DB'den ezilebilir (Ayarlar > tp_primary_exit_enabled); TP'yi
+        # kapatmak isteyen operator bu anahtari false yapar. Not: env yoluyla
+        # kapatma DB satiri yokken gecerlidir (bkz. ayni dosyadaki getattr env
+        # notu); DB satiri her zaman kazanir.
+        "tp_primary_exit_enabled": True,
         "dynamic_breakeven_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False),
         "dynamic_trailing_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False),
         "breakeven_buffer_pct": getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02),
         "max_open_positions": config.AUTO_PAPER_MAX_OPEN_POSITIONS,
-        "max_hold_minutes": getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 60.0),
+        "max_hold_minutes": getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 120.0),
         "block_weak_mtf": True,
         "min_mtf_confluence": 45.0,
         "sl_cooldown_minutes": 5.0,
@@ -1409,7 +1506,19 @@ async def get_default_settings() -> dict:
         # test +0.508, 5/5 hafta pozitif, p~0.000 (null testi 400 orneklem).
         # TUM havuz ayni kurallarla +0.550% — yani diger modlar getiriyi
         # yariya indiriyor. Bos liste verilerek eski davranisa donulur.
-        "allowed_modes": ["trend_devam"],
+        #
+        # P0-2 DUZELTMESI (2026-10-07 denetimi): onceki varsayilan
+        # `["trend_devam"]` idi ve radar giris yolunu SESSIZCE kapatuyordu —
+        # `trend_devam` yalniz velocity yolunda uretilir; radar/birlesik
+        # bildirimleri `mode="unified"`. `unified` de ayni cikis kurallariyla
+        # islem basi +0.02% (≈ notr noktasi) verir; onu listelemek edge
+        # KATMAZ ama hacmi (ve radar yolunu) oldurur. Bu yuzden `unified` de
+        # eklenir. Negatif/kanitsiz modlar (`notr`, `llm_ikinci_goz`,
+        # `global_lead_lag`) DISARIDA kalir.
+        # DIKKAT (migration): mevcut DB `auto_paper_settings` satiri bu
+        # varsayilani EZER (get_auto_paper_settings DB-over-defaults birlestirir).
+        # Kayitli bir liste tek seferlik duzeltilmezse eski davranis surer.
+        "allowed_modes": ["trend_devam", "unified"],
         # BILDIRIM DEDUP (2026-10-07). Ayni sembolde kisa sure once giris
         # yapildiysa tekrar girmez (0 = kapali). Ayni sinyal 5 dakikada birden
         # fazla kanaldan geliyor; her biri ayri pozisyon aciyordu.
@@ -1490,7 +1599,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
         # pozisyon. 1..30 aralığı; 0'a izin verilmez (yanlışlıkla sınırsız
         # bırakma koruması — sınırsız gerekirse env ile verilir).
         "max_open_positions": max(1, min(30, int(merged.get("max_open_positions", config.AUTO_PAPER_MAX_OPEN_POSITIONS)))),
-        "max_hold_minutes": max(5.0, min(1440.0, float(merged.get("max_hold_minutes", getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 60.0))))),
+        "max_hold_minutes": max(5.0, min(1440.0, float(merged.get("max_hold_minutes", getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 120.0))))),
         "post_win_cooldown_minutes": max(0.0, min(120.0, float(merged.get("post_win_cooldown_minutes", getattr(config, "AUTO_PAPER_POST_WIN_COOLDOWN_MINUTES", 15.0))))),
         "llm_gate_enabled": bool(merged.get("llm_gate_enabled", True)),
         "llm_min_confidence": max(50.0, min(100.0, float(merged.get("llm_min_confidence", 60.0)))),
@@ -1528,8 +1637,13 @@ async def list_trades_endpoint(
     """Otonom paper trade kayıtlarını listele. Açık pozisyonlara güncel fiyat eklenir."""
     limit = max(1, min(int(limit), 500))
     offset = max(0, int(offset))
+    # P0-3 (2026-10-07): AÇIK pozisyon sorgusu rapor görünüm sınırını YOK SAYAR
+    # (açık pozisyon her zaman görünür/yönetilebilir olmalı). KAPALI/tümü
+    # sorguları bir rapor görünümüdür → varsayılan sınır UYGULANIR.
+    _only_open = str(status or "").strip().lower() == "open"
     trades = await database.list_auto_paper_trades(
-        status=status or None, limit=limit, offset=offset, day=day, include_archived=include_archived
+        status=status or None, limit=limit, offset=offset, day=day,
+        include_archived=include_archived, apply_reports_baseline=not _only_open
     )
     # Açık pozisyonlar için güncel ticker fiyatını ekle (frontend PnL hesabı için)
     for t in trades:
@@ -1611,7 +1725,12 @@ async def close_auto_paper_endpoint(trade_id: int, request: Request):
 # Lifecycle
 # ---------------------------------------------------------------------------
 def reset_state():
-    """In-memory sayaçları sıfırla (admin reset sonrası restart beklemeden)."""
+    """In-memory sayaçları sıfırla (admin reset sonrası restart beklemeden).
+
+    P2-4: cooldown haritaları artık DB'ye kalıcılaştırıldığı için in-memory
+    temizlik yetmez; kalıcı kopya da arka planda temizlenir — aksi halde reset
+    sonrası restart cooldown'ları geri getirirdi.
+    """
     _AUTO_PAPER_STATE.update({
         "total_opened": 0,
         "total_closed": 0,
@@ -1623,6 +1742,15 @@ def reset_state():
     })
     _stop_loss_cooldowns.clear()
     _post_win_cooldowns.clear()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        # Yalnız çalışan bir event loop varsa kalıcı kopyayı temizle; senkron
+        # bağlamda (ör. birim testi) atlanır — bir sonraki kapanış zaten güncel
+        # (boş) haritayı yazar.
+        loop.create_task(_persist_cooldowns())
 
 
 def start_auto_paper_loop() -> bool:
@@ -1630,6 +1758,10 @@ def start_auto_paper_loop() -> bool:
     global _loop_task
     if _loop_task is not None and not _loop_task.done():
         return False
+    # P2-4: kalıcı cooldown durumunu döngü başlamadan önce geri yükle
+    # (süpervizör görevi gibi arka planda; döngü ilk turunu 30 sn geciktirir,
+    # bu arada restore tamamlanır).
+    _start_background(restore_runtime_state, "auto-paper-state-restore")
     # G-10: süpervizörlü başlatma (hata sonrası sınırlı backoff ile yeniden başlar).
     _loop_task = _start_background(auto_paper_management_loop, "auto-paper-management")
     return True

@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import secrets
 import socket
@@ -17,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 SESSION_COOKIE = "scalper_session"
+logger = logging.getLogger("scalper.security")
 _LOGIN_FAILURE_LIMIT = 512
 _login_failures = defaultdict(deque)
 _PBKDF2_ITERATIONS = 200_000
@@ -53,6 +55,139 @@ def load_user_session_versions(users):
 def auth_configured():
     return bool(os.getenv("SCALPER_ADMIN_PASSWORD", "").strip()
                 and os.getenv("SCALPER_SESSION_SECRET", "").strip())
+
+
+# ---------------------------------------------------------------------------
+# Güvenilir proxy / istemci IP (P1-5, 2026-10-07)
+#
+# Uygulama nginx (gateway) arkasında çalışır ve nginx `X-Real-IP` başlığını
+# `$remote_addr` ile DOLDURUR. Ancak backend'e doğrudan (proxy'yi atlayarak)
+# erişilebilirse istemci bu başlığı SAHTELEYEBİLİR: her denemede farklı bir
+# `X-Real-IP` göndererek login brute-force limitini (client_key başına 5)
+# sıfırlar. Bu yüzden başlık YALNIZCA bağlantının geldiği peer adresi
+# güvenilir bir proxy ise dikkate alınır; aksi halde gerçek soket adresi
+# (`request.client.host`) kullanılır.
+# ---------------------------------------------------------------------------
+_DEFAULT_TRUSTED_PROXIES = ",".join((
+    "127.0.0.0/8",      # loopback
+    "10.0.0.0/8",       # özel ağ (Docker/Coolify köprüsü)
+    "172.16.0.0/12",    # Docker varsayılan köprü aralığı
+    "192.168.0.0/16",   # LAN
+    "::1/128",          # IPv6 loopback
+))
+_trusted_proxy_cache: dict = {"raw": None, "nets": ()}
+
+
+def _trusted_proxy_networks():
+    """`SCALPER_TRUSTED_PROXIES` (virgülle ayrık IP/CIDR) → network listesi.
+
+    Tanımsızsa özel/loopback aralıkları varsayılır: Docker içindeki nginx
+    container'ı bu aralıktan bağlanır, böylece üretimde `X-Real-IP` çalışmaya
+    devam eder ama dışarıdan doğrudan gelen (spoof eden) istemci başlığı
+    güvenilmez. Ham değere göre önbelleklenir; aynı süreçte tekrar parse edilmez.
+    """
+    raw = os.getenv("SCALPER_TRUSTED_PROXIES", _DEFAULT_TRUSTED_PROXIES)
+    if _trusted_proxy_cache["raw"] == raw:
+        return _trusted_proxy_cache["nets"]
+    nets = []
+    for item in str(raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            continue
+    _trusted_proxy_cache["raw"] = raw
+    _trusted_proxy_cache["nets"] = tuple(nets)
+    return _trusted_proxy_cache["nets"]
+
+
+def _is_trusted_proxy(host) -> bool:
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(str(host))
+    except ValueError:
+        return False
+    return any(ip in net for net in _trusted_proxy_networks())
+
+
+def trusted_client_ip(request) -> str | None:
+    """Login rate-limit anahtarı için istemci IP'si.
+
+    `X-Real-IP` YALNIZ peer güvenilir proxy ise kullanılır; aksi halde gerçek
+    soket adresi döner. Böylece başlığı sahteleştirerek limit sıfırlama yolu
+    kapanır; meşru proxy arkasında ise gerçek istemci IP'si korunur (limit
+    proxy başına değil istemci başına uygulanır).
+    """
+    if request is None:
+        return None
+    peer = None
+    try:
+        peer = request.client.host if request.client is not None else None
+    except Exception:
+        peer = None
+    header_ip = ""
+    try:
+        if request.headers:
+            header_ip = (request.headers.get("X-Real-IP") or "").strip()
+    except Exception:
+        header_ip = ""
+    if header_ip and _is_trusted_proxy(peer):
+        return header_ip
+    return str(peer) if peer else (header_ip or None)
+
+
+def client_fingerprint(request) -> str:
+    """Oturumu cihaza bağlayan parmak izi (P1-5, 2026-10-07).
+
+    NEDEN YALNIZ User-Agent: token'ı IP'ye bağlamak cep/gezici ağda IP her
+    değiştiğinde oturumu düşürür ve meşru yeniden bağlanmaları bozar. User-Agent
+    ise aynı tarayıcıda kararlıdır; çalınan bir cookie FARKLI bir istemcide
+    kullanılırsa (tarayıcı/otomasyon UA'sı farklı) yakalanır. Başlık yoksa
+    (curl/test) boş döner → parmak izi bağlanmaz (fail-open), böylece meşru
+    betik/araç istemcileri kırılmaz.
+    """
+    if request is None:
+        return ""
+    try:
+        ua = (request.headers.get("user-agent") or "").strip() if request.headers else ""
+    except Exception:
+        ua = ""
+    return ua[:512]
+
+
+def _ws_allowed_origins() -> set[str]:
+    """`SCALPER_WS_ALLOWED_ORIGINS` (virgülle ayrık tam origin) listesi."""
+    raw = os.getenv("SCALPER_WS_ALLOWED_ORIGINS", "")
+    return {item.strip().rstrip("/") for item in str(raw or "").split(",") if item.strip()}
+
+
+def origin_allowed(origin, host) -> bool:
+    """WebSocket Origin allowlist (cross-site WebSocket hijacking koruması).
+
+    Tarayıcılar WS el sıkışmasında `Origin` başlığını ZORUNLU gönderir; saldırgan
+    sayfası da kurbanın cookie'siyle bağlantı açarken kendi origin'ini gönderir.
+    Bu yüzden:
+      - `Origin` YOKSA: tarayıcı dışı istemci (test/CLI) → kabul. CSWH vektörü
+        değildir; reddetmek meşru istemcileri kırardı.
+      - `Origin` varsa: same-origin (`Origin` netloc == `Host`) VEYA açık
+        `SCALPER_WS_ALLOWED_ORIGINS` listesinde ise kabul.
+    """
+    value = str(origin or "").strip()
+    if not value:
+        return True
+    if value.rstrip("/") in _ws_allowed_origins():
+        return True
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return False
+    host_value = str(host or "").strip().lower()
+    return bool(host_value) and parsed.netloc.lower() == host_value
 
 
 def _b64(data):
@@ -105,7 +240,7 @@ def create_session_token(username: str = "admin", role: str = "admin", ttl_secon
     return f"{payload}.{signature}"
 
 
-def _decode_session(token, client_fingerprint: str = "") -> dict | None:
+def _decode_session(token, client_fingerprint=None) -> dict | None:
     """Oturum token'ının TEK doğrulama yolu (imza + exp + sv + fingerprint).
 
     G-22 (2026-09-12): Eskiden ``verify_session_token`` ölü koddı — üretim yolu
@@ -113,6 +248,10 @@ def _decode_session(token, client_fingerprint: str = "") -> dict | None:
     hiçbir zaman uygulanmıyordu. Artık ikisi de bu çekirdeği kullanır, yani
     testlerin doğruladığı davranış üretimdeki davranışın ta kendisidir.
     Geçersiz token için ``None`` döner.
+
+    ``client_fingerprint``: ``None`` → doğrulayıcı parmak izi sağlamadı, kontrol
+    ATLANIR (geriye dönük uyum; yalnız token'da fp varsa zorlanır denemez).
+    Boş olmayan bir değer → token bağlıysa ZORUNLU eşleşme (P1-5).
     """
     try:
         payload, signature = str(token or "").split(".", 1)
@@ -141,25 +280,40 @@ def _decode_session(token, client_fingerprint: str = "") -> dict | None:
             return None
         if int(data.get("sv", -1)) != expected_version:
             return None
-        # Fingerprint varsa eşleşmayı kontrol et
+        # Fingerprint varsa eşleşmayı kontrol et.
+        #
+        # P1-5 (2026-10-07): Parmak izi ARTIK login'de User-Agent'tan üretilip
+        # tüm oturum uçlarında doğrulanır. NEDEN SIKI (reject): audit "flag"
+        # seçeneği yeterli değildi — çalınmış bir cookie farklı istemcide
+        # kullanıldığında istek yine de yetkilendiriliyordu. Meşru yeniden
+        # bağlanma User-Agent'ı değiştirmediği için kırılmaz; eşleşmeyen istemci
+        # yeni bir giriş yapar (fail-closed, oturum hırsızlığı ölür).
+        #
+        # ``client_fingerprint is None`` → doğrulayıcı parmak izi SAĞLAMADI
+        # (geriye dönük uyum): yalnız token'da fp varsa ve doğrulayıcı bir değer
+        # verdiyse zorlanır. İstemci bu parametreyi kontrol EDEMEZ (sunucu tarafı
+        # türetilir); güvenlik kapıları (middleware/require_admin/WS) daima gerçek
+        # UA parmak izini geçirir, böylece skip yolu istismar edilemez.
         stored_fp = str(data.get("fp", ""))
-        if stored_fp:
-            expected_fp = hashlib.sha256(str(client_fingerprint or "").encode()).hexdigest()[:16]
+        if stored_fp and client_fingerprint is not None:
+            expected_fp = hashlib.sha256(str(client_fingerprint).encode()).hexdigest()[:16]
             if not hmac.compare_digest(stored_fp, expected_fp):
+                logger.warning("oturum parmak izi uyuşmuyor (%s) — token reddedildi",
+                               username)
                 return None
         return data
     except (ValueError, TypeError, json.JSONDecodeError):
         return None
 
 
-def verify_session_token(token, client_fingerprint: str = "") -> bool:
+def verify_session_token(token, client_fingerprint=None) -> bool:
     """Token geçerli mi? (imza + süre + oturum sürümü + fingerprint)"""
     return _decode_session(token, client_fingerprint) is not None
 
 
-def session_user(token) -> dict | None:
+def session_user(token, client_fingerprint=None) -> dict | None:
     """Decode a valid session token into {username, role}; None when invalid."""
-    data = _decode_session(token)
+    data = _decode_session(token, client_fingerprint)
     if data is None:
         return None
     return {"username": str(data.get("sub") or "").strip().lower(),
@@ -192,8 +346,8 @@ def record_login_result(client_key, succeeded, now=None):
         failures.append(float(now or time.time()))
 
 
-def request_authenticated(headers, cookies=None, query_token=None):
-    return request_user(headers, cookies, query_token) is not None
+def request_authenticated(headers, cookies=None, query_token=None, client_fingerprint=None):
+    return request_user(headers, cookies, query_token, client_fingerprint) is not None
 
 
 #: G-15 (2026-09-12): Statik yönetici token'ı yalnızca bu bayrak açıkken çalışır.
@@ -213,7 +367,7 @@ def static_admin_token_enabled() -> bool:
     return os.getenv(STATIC_ADMIN_TOKEN_FLAG, "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def request_user(headers, cookies=None, query_token=None):
+def request_user(headers, cookies=None, query_token=None, client_fingerprint=None):
     """Return {username, role} for the request principal, or None."""
     authorization = str(headers.get("authorization", ""))
     bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
@@ -222,7 +376,7 @@ def request_user(headers, cookies=None, query_token=None):
         # G-15: yalnız açık env bayrağı ile; oturum sürümü/süre kontrolü yoktur.
         return {"username": "admin", "role": "admin"}
     token = (cookies or {}).get(SESSION_COOKIE) or query_token
-    return session_user(token)
+    return session_user(token, client_fingerprint)
 
 
 def require_admin(request) -> dict:
@@ -234,7 +388,10 @@ def require_admin(request) -> dict:
     """
     from fastapi import HTTPException
 
-    user = request_user(request.headers, request.cookies)
+    # P1-5: fingerprint doğrulaması burada da uygulanır (router kapıları
+    # middleware'i atlar ve doğrudan buraya gelir).
+    user = request_user(request.headers, request.cookies,
+                        client_fingerprint=client_fingerprint(request))
     if not user:
         raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
     if user.get("role") != "admin":

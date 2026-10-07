@@ -50,7 +50,8 @@ from app import chat_prediction_replay
 from app import llm_analysis
 from app.binance_tr_private import (get_account_balance, get_trade_history, get_symbol_filters,
                                     place_market_sell, place_market_buy, place_oco_sell,
-                                    place_stop_loss_sell, place_limit_sell, cancel_order, get_open_orders)
+                                    place_stop_loss_sell, place_limit_sell, cancel_order, get_open_orders,
+                                    BinanceTrPartialFillError, reconcile_sell_fill)
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
 from app import memory_service
@@ -252,14 +253,20 @@ async def require_admin_session(request: Request, call_next):
         return await call_next(request)
     if not security.auth_configured():
         return JSONResponse({"detail": "Yönetici kimlik doğrulaması yapılandırılmamış"}, status_code=503)
-    if not security.request_authenticated(request.headers, request.cookies):
+    # P1-5 (2026-10-07): oturum token'ı User-Agent parmak izine bağlıdır; burada
+    # doğrulanır. Uyuşmazsa (çalınmış cookie / farklı tarayıcı) 401 → yeni giriş
+    # gerekir. Aynı tarayıcıda sayfa yenileme / yeniden bağlanma UA değiştirmediği
+    # için normal kullanım bozulmaz.
+    if not security.request_authenticated(request.headers, request.cookies,
+                                          client_fingerprint=security.client_fingerprint(request)):
         return JSONResponse({"detail": "Kimlik doğrulama gerekli"}, status_code=401)
     return await call_next(request)
 
 
 def _session_user(request: Request):
     """Current principal from cookie/bearer, or None."""
-    return security.request_user(request.headers, request.cookies)
+    return security.request_user(request.headers, request.cookies,
+                                 client_fingerprint=security.client_fingerprint(request))
 
 
 def _session_identity(request) -> tuple[str | None, str | None]:
@@ -271,7 +278,8 @@ def _session_identity(request) -> tuple[str | None, str | None]:
     if request is None:
         return None, None
     try:
-        user = security.request_user(request.headers, request.cookies) or {}
+        user = security.request_user(request.headers, request.cookies,
+                                     client_fingerprint=security.client_fingerprint(request)) or {}
     except Exception:
         return None, None
     return user.get("username"), user.get("role")
@@ -382,8 +390,12 @@ async def dashboard_summary():
 async def auth_login(payload: dict, response: Response, request: Request):
     if not security.auth_configured():
         raise HTTPException(status_code=503, detail="SCALPER_ADMIN_PASSWORD ve SCALPER_SESSION_SECRET gerekli")
-    trusted_edge_ip = request.headers.get("X-Real-IP", "").strip()
-    client_key = trusted_edge_ip or (request.client.host if request.client else "unknown")
+    # P1-5 (2026-10-07): Eskiden `X-Real-IP` KOŞULSUZ okunuyordu; istemci
+    # başlığı sahteleştirip her denemede yeni anahtar üretiyor ve login
+    # brute-force limitini (5 deneme) sıfırlıyordu. Artık başlık YALNIZ peer
+    # güvenilir proxy ise kabul edilir (security.trusted_client_ip); aksi halde
+    # gerçek soket adresi kullanılır.
+    client_key = security.trusted_client_ip(request) or "unknown"
     if not security.login_allowed(client_key):
         await log_user_action(None, None, "auth", "LOGIN_BLOCKED",
                               target=str(payload.get("username") or "").strip().lower() or None,
@@ -444,7 +456,11 @@ async def auth_login(payload: dict, response: Response, request: Request):
             "(kullanıcı=%s)", effective_scheme, username_log)
     response.set_cookie(security.SESSION_COOKIE,
                         security.create_session_token(username=user.get("username") or username, role=role,
-                                                      session_version=session_version),
+                                                      session_version=session_version,
+                                                      # P1-5: oturumu tarayıcı (User-Agent) parmak
+                                                      # izine bağla; çalınan cookie farklı istemcide
+                                                      # reddedilir (UA yoksa boş → bağlanmaz, fail-open).
+                                                      client_fingerprint=security.client_fingerprint(request)),
                         httponly=True,
                         secure=cookie_secure, samesite="strict",
                         max_age=43200, path="/")
@@ -1282,9 +1298,19 @@ async def websocket_endpoint(websocket: WebSocket):
     # logları, tarayıcı geçmişi ve referrer üzerinden sızıyordu). Kimlik
     # doğrulaması yalnız cookie, Authorization başlığı veya
     # Sec-WebSocket-Protocol alt protokolünden gelir.
+    #
+    # P1-5 (2026-10-07): Cross-site WebSocket hijacking koruması. Tarayıcılar
+    # el sıkışmada `Origin` gönderir ve saldırgan sayfası kurbanın cookie'siyle
+    # bağlanırken KENDİ origin'ini gönderir. Same-origin değilse (ve açık
+    # allowlist'te yoksa) bağlantı 4403 ile kapatılır. `Origin` yoksa (betik/CLI
+    # istemci) kabul edilir — CSWH vektörü değildir.
+    if not security.origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
+        await websocket.close(code=4403)
+        return
     principal = (None if not security.auth_configured() else
                  security.request_user(websocket.headers, websocket.cookies,
-                                       _ws_subprotocol_token(websocket)))
+                                       _ws_subprotocol_token(websocket),
+                                       client_fingerprint=security.client_fingerprint(websocket)))
     if principal is None:
         await websocket.close(code=4401)
         return
@@ -1408,6 +1434,12 @@ async def strategy_breaker_resume(payload: dict = None, request: Request = None)
 
 @app.post("/api/alerts")
 async def create_alert(payload: dict, request: Request):
+    # P1-4 (2026-10-07): alarm kuralı OLUŞTURMAK durum değiştirir (canlı
+    # WebSocket/web-push tetiklemeleri, auto_paper_trade ile paper pozisyon
+    # açabilir). Auth ara katmanı YALNIZ kimlik doğrular, rol değil; bu yüzden
+    # yönetici kapısı BURADA (mutasyon uçları için mevcut desen).
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
     required = ["symbol", "operator", "threshold"]
     if any(key not in payload for key in required): raise HTTPException(400, "symbol, operator ve threshold gerekli")
     if str(payload.get("rule_type", "price")) not in {"price", "percent"}: raise HTTPException(400, "Desteklenmeyen alarm türü")
@@ -1432,6 +1464,10 @@ async def create_alert(payload: dict, request: Request):
 
 @app.patch("/api/alerts/{alert_id}")
 async def update_alert(alert_id: int, payload: dict, request: Request):
+    # P1-4: alarm güncelleme mutasyondur (eşik/operatör/otomatik işlem
+    # değiştirir) — yönetici kapısı (mevcut desen).
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
     actor, actor_role = _session_identity(request)
     await log_user_action(actor, actor_role, "alert", "ALERT_UPDATE",
                           target=str(alert_id), details={"changed_keys": sorted(payload.keys())}, request=request)
@@ -1439,6 +1475,9 @@ async def update_alert(alert_id: int, payload: dict, request: Request):
 
 @app.delete("/api/alerts/{alert_id}")
 async def delete_alert(alert_id: int, request: Request):
+    # P1-4: alarm silme mutasyondur — yönetici kapısı (mevcut desen).
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
     actor, actor_role = _session_identity(request)
     await log_user_action(actor, actor_role, "alert", "ALERT_DELETE", target=str(alert_id), request=request)
     return {"ok": await database.delete_alert_rule(alert_id), "paper_only": True}
@@ -1899,8 +1938,13 @@ async def symbol_activity_status():
                            "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY}}
 
 @app.post("/api/symbol-activity/refresh")
-async def refresh_symbol_activity_manual():
+async def refresh_symbol_activity_manual(request: Request):
     """User-triggered public-data activity refresh; paper positions only."""
+    # P1-4 (2026-10-07): manuel yenileme durum değiştirir (sembol evreni
+    # aktivasyon durumu) ve herkese WS yayını tetikler; normal kullanıcı
+    # oturumu bunu tetikleyememeli → yönetici kapısı (mevcut desen).
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
     try:
         result = await refresh_symbol_activity()
         await ws_manager.broadcast({"type": "symbol_activity", "data": result})
@@ -1909,7 +1953,11 @@ async def refresh_symbol_activity_manual():
         raise HTTPException(status_code=502, detail=f"Aktivasyon kontrolü başarısız: {exc}")
 
 @app.post("/api/radar/execute")
-async def execute_gainers_radar():
+async def execute_gainers_radar(request: Request):
+    # P1-4 (2026-10-07): GERÇEK paper pozisyon açabilir (execute=True radar
+    # girişi) — bu mutasyon yüzeyi yöneticiye kapatılır (mevcut desen).
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
     return await gainers_radar(execute=True)
 
 
@@ -2274,7 +2322,10 @@ async def get_positions():
     # Otonom paper pozisyonlarını da ekle
     auto_paper_error = None
     try:
-        auto_trades = await database.list_auto_paper_trades(status="open")
+        # P0-3 (2026-10-07): /api/positions AÇIK pozisyonları birleştirir —
+        # rapor görünüm sınırına takılan pozisyon panelde görünmezdi.
+        auto_trades = await database.list_auto_paper_trades(
+            status="open", apply_reports_baseline=False)
         for t in auto_trades:
             sym = str(t.get("symbol") or "").upper()
             entry = float(t.get("entry_price") or 0)
@@ -2573,8 +2624,16 @@ async def _binance_ticks_configured() -> bool:
     if _binance_tick_config_cache[0] > now_ts:
         return _binance_tick_config_cache[1]
     try:
-        enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
-        ok = bool(enc_key)
+        # DENETİM (2026-10-07): önceden yalnız GLOBAL (admin) anahtarı
+        # okunuyordu. `binance_price_tick_loop` bu bayrağa bağlı olduğu için,
+        # hiç global anahtar kaydetmemiş kurulumlarda canlı fiyat WS yayını
+        # tamamen susuyordu. Artık HERHANGİ bir kullanıcının anahtarı yeterli
+        # (`user_binance_keys`) — bayrak "canlı tick altyapısı kullanılabilir mi"
+        # sorusunun cevabıdır, "admin anahtarı var mı" değil.
+        ok = bool(await database.get_llm_setting(BINANCE_API_KEY_SETTING, ""))
+        if not ok:
+            row = await database.get_user_binance_key_presence()
+            ok = bool(row)
     except Exception:
         ok = False
     _binance_tick_config_cache = (now_ts + 60.0, ok)
@@ -2593,6 +2652,13 @@ async def binance_account_push_loop():
     kurulumda her bağlı istemci herkesin bakiyesini görüyordu. Ön uç
     (`binance-tr/page.tsx`) ayrıca istemci tarafı süzüyor (çift koruma).
     Bağlı istemci yokken döngü boşta tur atlar; ağ hatası döngüyü öldürmez.
+
+    DENETİM (2026-10-07): Gövde ÖNCE yazılmayan bir anahtarı okuyordu
+    (`binance_api_key_{username}`) ve var olmayan bir modülden import ediyordu
+    (`app.llm_utils.decrypt_value`); ikisi de kullanıcı başına `except` ile
+    yutulduğu için CANLI bakiye push'u hiçbir zaman çalışmıyordu. Şifreli
+    anahtarların GERÇEK kaynağı `user_binance_keys` tablosudur ve gerçek çözücü
+    `app.llm_analysis.decrypt_key`'dir — aşağıda artık o kullanılıyor.
     """
     await asyncio.sleep(25)  # startup bitmeden bekleme
     while True:
@@ -2600,24 +2666,40 @@ async def binance_account_push_loop():
             if not ws_manager.active_connections:
                 await asyncio.sleep(15)
                 continue
-            # Tüm aktif kullanıcıları al
+            # Tüm aktif kullanıcıları al. DENETİM (2026-10-07): yalnız admin
+            # satırları okunuyordu; normal kullanıcının anahtarı eski global
+            # anahtar düzeninde hiç bulunmadığı için diğer kullanıcıların
+            # push'u sessizce ölüydü. Artık TÜM aktif kullanıcılar taranır —
+            # push zaten `has_owner(user_id)` ile yalnız AÇIK sekmesi olanlara
+            # gider, dolayısıyla ek maliyet yok.
             users = [u for u in await database.list_users() if u.get("is_active")]
             for user in users:
                 try:
                     user_id = int(user["id"])
                     username = str(user.get("username") or "")
-                    # O kullanıcının AÇIK sekmesi yoksa hiçbir şey göndermeyeceğiz;
-                    # bakiye/pozisyon sorgusunu (şifre çözme + REST çağrısı) atla.
+                    # O kullanıcının AÇIK sekmesi yoksa hiçbir şey
+                    # göndermeyeceğiz; bakiye/pozisyon sorgusunu (şifre çözme +
+                    # REST çağrısı) atla.
                     if not ws_manager.has_owner(user_id):
                         continue
-                    enc = await database.get_llm_setting(f"binance_api_key_{username}", "")
-                    if not enc:
+                    # Kullanıcı bazlı anahtarlar (`user_binance_keys`) → admin
+                    # fallback (eski global llm_settings). Aynı öncelik sırası
+                    # `_decrypt_binance_creds` ile birebir hizalıdır; ikisi
+                    # ayrışırsa push bir kullanıcı için çalışıp diğeri için
+                    # sessizce susar.
+                    enc, enc_sec = "", ""
+                    keys = await database.get_user_binance_keys(user_id)
+                    if keys and keys.get("api_key_encrypted") and keys.get("api_secret_encrypted"):
+                        enc = keys["api_key_encrypted"]
+                        enc_sec = keys["api_secret_encrypted"]
+                    elif user.get("role") == "admin":
+                        enc = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
+                        enc_sec = await database.get_llm_setting(BINANCE_SECRET_SETTING, "")
+                    if not enc or not enc_sec:
                         continue
-                    # Şifrelenmiş anahtarları çöz
-                    from app.llm_utils import decrypt_value
-                    api_key = decrypt_value(enc)
-                    enc_sec = await database.get_llm_setting(f"binance_api_secret_{username}", "")
-                    api_secret = decrypt_value(enc_sec) if enc_sec else ""
+                    # Şifrelenmiş anahtarları çöz (gerçek yardımcı: llm_analysis).
+                    api_key = llm_analysis.decrypt_key(enc, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+                    api_secret = llm_analysis.decrypt_key(enc_sec, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
                     if not api_key:
                         continue
                     # Bakiye
@@ -3333,6 +3415,30 @@ async def binance_sell(payload: dict, request: Request):
 
     try:
         result = await asyncio.to_thread(place_market_sell, api_key, api_secret, symbol_u, qty)
+    except BinanceTrPartialFillError as exc:
+        # P1-8 (2026-10-07): kısmi dolum BİR HATA DEĞİLDİR — emir borsada kabul
+        # edilmiş ve `executed_qty` kadar dolmuştur. Eskiden bu istisna genel
+        # `except Exception` ile "Satış emri gönderilemedi" 502'sine dönüşüyor,
+        # `.result`/`remaining_qty` atılıyor ve satılan kısım kullanıcıya hiç
+        # bildirilmiyordu (maliyet cache'i de geçersiz kılınmıyordu). Artık kalan
+        # miktar tek bir MARKET SELL ile mutabık kılınır ve GERÇEK dolum raporlanır.
+        result = dict(exc.result or {})
+        try:
+            reco = await asyncio.to_thread(
+                reconcile_sell_fill, result, symbol_u, float(qty),
+                None, (filters or {}).get("step_size"),
+                exc.result.get("client_order_id") if isinstance(exc.result, dict) else None,
+                api_key, api_secret)
+            result["reconcile"] = reco
+            result["remaining_qty"] = reco.get("remaining_qty", exc.remaining_qty)
+            result["dust_remaining"] = bool(reco.get("dust_remaining"))
+        except Exception as reco_exc:  # pragma: no cover - mutabakat best-effort
+            logger.error("Kısmi satış mutabakatı başarısız (%s): %s", symbol_u, reco_exc)
+            result["remaining_qty"] = exc.remaining_qty
+        result["partial"] = True
+        logger.warning(
+            "Binance TR SATIŞ kısmi doldu: %s istenen=%s dolan=%s kalan=%s",
+            symbol_u, exc.requested_qty, exc.executed_qty, result.get("remaining_qty"))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Satış emri gönderilemedi: {exc}")
     # PERFORMANS (2026-09-27): TTL uzatılan FIFO maliyet cache'ini emir sonrası
@@ -3536,11 +3642,22 @@ async def binance_set_sl_tp(payload: dict, request: Request):
         raise HTTPException(status_code=422, detail=f"{asset} için uygun işlem çifti (TRY/USDT) bulunamadı")
 
     # Mevcut açık satış emirlerini iptal etme (cancel_existing=True)
+    #
+    # DENETİM (2026-10-07): Binance TR'de yeni koruyucu emir ESKİ emir İPTAL
+    # EDİLMEDEN yerleştirilemez (eski emir varlığı kilitler → "bakiye yetersiz").
+    # Bu yüzden sıra "iptal → yerleştir" olmak ZORUNDA ve arada KİLİTSİZ BİR
+    # PENCERE kalır: yerleştirme başarısız olursa pozisyon STOP'Suz kalır.
+    # Pencere kapatılamadığı için (borsa kısıtı) riski şu şekilde azaltıyoruz:
+    # iptalden ÖNCE emirlerin TAM gövdeleri saklanır ve yerleştirme başarısız
+    # olursa `except` bloğunda EN AZ zarar-kes (stop) emri geri konur. Aksi
+    # halde kullanıcı "SL kuruldu" sanırken korumasız kalırdı.
+    _cancelled_sells: list[dict] = []
     if payload.get("cancel_existing"):
         try:
             existing = await asyncio.to_thread(get_open_orders, api_key, api_secret, symbol_u)
             for ex in existing:
                 if str(ex.get("side")).upper() in ("SELL", "1") and ex.get("orderId"):
+                    _cancelled_sells.append(dict(ex))
                     await asyncio.to_thread(cancel_order, api_key, api_secret, ex["orderId"], symbol_u)
         except Exception as exc:
             logger.warning("Eski emirler temizlenirken uyarı: %s", exc)
@@ -3614,7 +3731,35 @@ async def binance_set_sl_tp(payload: dict, request: Request):
             payload.get("tp_price"), payload.get("sl_price"),
             exc, traceback.format_exc()
         )
-        raise HTTPException(status_code=502, detail=f"Emir gönderilemedi: {exc}")
+        # DENETİM (2026-10-07): Yeni emir yerleştirilemedi ama iptal ettiğimiz
+        # eski emir(ler) gitti → pozisyon korumasız kalırdı. Yerleştirmeden önce
+        # sakladığımız emirler arasında bir ZARAR KES (stop) varsa aynı
+        # parametrelerle geri kurmayı dene; kurulursa kullanıcıya hangi emrin
+        # geri konduğunu bildir, kurulamazsa açıkça "KORUMASIZ" uyarısı ver.
+        restored = []
+        for ex in _cancelled_sells:
+            try:
+                sp = float(ex.get("stopPrice") or 0)
+                if sp <= 0:
+                    continue  # stop emri değil (saf limit TP) — geri kurmaya değmez
+                re_qty = float(ex.get("origQty") or 0) or qty
+                if step and step > 0:
+                    re_qty = round(math.floor(re_qty / step) * step, 10)
+                if re_qty <= 0:
+                    continue
+                limit_px = float(ex.get("price") or 0) or None
+                await asyncio.to_thread(
+                    place_stop_loss_sell, api_key, api_secret, symbol_u, re_qty, sp, limit_px or None, step, tick)
+                restored.append({"orderId": ex.get("orderId"), "stopPrice": sp, "qty": re_qty})
+            except Exception as rexc:
+                logger.error("İptal edilen stop emri geri kurulamadı | asset=%s stop=%s | %s",
+                             asset, ex.get("stopPrice"), rexc)
+        detail = f"Emir gönderilemedi: {exc}"
+        if restored:
+            detail += f" | İptal edilen {len(restored)} stop emri geri kuruldu (pozisyon korumalı)"
+        elif _cancelled_sells:
+            detail += " | UYARI: iptal edilen eski emirler geri kurulamadı — pozisyon KORUMASIZ olabilir, kontrol edin"
+        raise HTTPException(status_code=502, detail=detail)
 
     _actor, _actor_role = _session_identity(request)
     await log_user_action(_actor, _actor_role, "trade", f"BINANCE_TR_SET_{mode}",
@@ -4394,31 +4539,56 @@ def _require_postgres_target() -> str:
     return database_url
 
 
+# DENETİM (2026-10-07): yedek alma ve geri yükleme arasında KARŞILIKLI DIŞLAMA
+# yoktu. `pg_restore --clean` şemayı düşürüp yeniden kurar; aynı anda çalışan
+# bir `pg_dump` şema yok edilirken okuyup BOZUK bir yedek üretebilirdi. İkisi de
+# aynı `asyncio.Lock`'u alır — bu süreç iki ayrı worker/konteyner değil, TEK
+# backend süreci olduğundan asyncio kilidi yeterlidir.
+_backup_restore_lock = asyncio.Lock()
+
+
 async def _create_postgres_backup():
     """Create a validated PostgreSQL custom-format backup (streamed helper).
 
     pg_dump çıktısını akıtırken ilk 5 baytın PGDMP imzasını doğrular;
     geçersiz üretimde HTTPException fırlatır. Dönüş: (async generator,
     headers sözlüğü).
+
+    DENETİM (2026-10-07): `_backup_restore_lock` pg_dump BAŞLAMADAN alınır ve
+    akış TAMAMEN tüketilene kadar tutulur (aşağıdaki generator `finally`'si
+    bırakır) — çünkü süreç, yanıt gövdesi okunurken hâlâ şemayı tarar. Kilit
+    yoksa geri yükleme `--clean` ile şemayı düşürürken okunan dump bozuk çıkar.
     """
     database_url = _require_postgres_target()
-    headers={"X-Backup-Format": "postgresql-custom", "X-Backup-Verified": "PGDMP"}
-    headers["Content-Disposition"] = f'attachment; filename="scalperagent-postgres-{time.strftime("%Y%m%d-%H%M%S")}.dump"'
+    # `locked()` kontrolü ile `acquire()` arasında `await` YOKTUR: tek olay
+    # döngüsünde bu ikili atomiktir, yarış penceresi kalmaz.
+    if _backup_restore_lock.locked():
+        raise HTTPException(status_code=409, detail="Şu anda bir yedek alma/geri yükleme işlemi sürüyor; bitince tekrar deneyin")
+    await _backup_restore_lock.acquire()
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "pg_dump", "--format=custom", "--no-owner", "--no-acl", database_url,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=503, detail="PostgreSQL yedek aracı pg_dump backend imajında kurulu değil") from exc
-    first = await proc.stdout.read(5)
-    if first != b"PGDMP":
-        proc.kill()
-        stderr = (await proc.stderr.read() or b"")[-2000:].decode("utf-8", "replace")
-        raise HTTPException(status_code=502, detail=stderr or "pg_dump geçerli PostgreSQL custom-format çıktısı üretmedi")
+        headers={"X-Backup-Format": "postgresql-custom", "X-Backup-Verified": "PGDMP"}
+        headers["Content-Disposition"] = f'attachment; filename="scalperagent-postgres-{time.strftime("%Y%m%d-%H%M%S")}.dump"'
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pg_dump", "--format=custom", "--no-owner", "--no-acl", database_url,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=503, detail="PostgreSQL yedek aracı pg_dump backend imajında kurulu değil") from exc
+        first = await proc.stdout.read(5)
+        if first != b"PGDMP":
+            proc.kill()
+            stderr = (await proc.stderr.read() or b"")[-2000:].decode("utf-8", "replace")
+            raise HTTPException(status_code=502, detail=stderr or "pg_dump geçerli PostgreSQL custom-format çıktısı üretmedi")
+    except BaseException:
+        # pg_dump başlatılamadı / doğrulama düştü → kilidi bırak, aksi halde
+        # kalıcı olarak kilitli kalır ve sonraki yedek/geri-yükleme 409 alır.
+        if _backup_restore_lock.locked():
+            _backup_restore_lock.release()
+        raise
 
     async def _stream():
-        yield first
         try:
+            yield first
             while True:
                 chunk = await proc.stdout.read(256 * 1024)
                 if not chunk:
@@ -4431,6 +4601,9 @@ async def _create_postgres_backup():
         finally:
             if proc.returncode is None:
                 proc.kill()
+            # Akış bitti/iptal edildi → kilidi MUTLAKA bırak.
+            if _backup_restore_lock.locked():
+                _backup_restore_lock.release()
 
     return _stream(), headers
 
@@ -4463,22 +4636,32 @@ async def restore_postgres_backup(payload: dict = None, request: Request = None)
     if not path.startswith(backup_dir) or not os.path.basename(path).startswith("scalper-postgres-") or not path.endswith(".dump"):
         raise HTTPException(status_code=400, detail="Yalnızca sunucu tarafından üretilen scalper-postgres-*.dump yedekleri geri yüklenebilir")
     if not os.path.isfile(path): raise HTTPException(status_code=404, detail="Belirtilen yedek dosyası bulunamadı")
+    # DENETİM (2026-10-07): aynı `_backup_restore_lock` — geri yükleme şemayı
+    # `--clean` ile düşürdüğü için, aynı anda süren bir `pg_dump` ile ASLA
+    # çakışmamalı. Doğrulama + geri yükleme boyunca kilit tutulur; `finally`
+    # her çıkışta (hata/iptal dahil) bırakır, aksi halde kilit kalıcı takılırdı.
+    if _backup_restore_lock.locked():
+        raise HTTPException(status_code=409, detail="Şu anda bir yedek alma/geri yükleme işlemi sürüyor; bitince tekrar deneyin")
+    await _backup_restore_lock.acquire()
     try:
-        with open(path, "rb") as backup_file:
-            if backup_file.read(5) != b"PGDMP":
-                raise HTTPException(status_code=400, detail="Dosya geçerli bir PostgreSQL custom-format yedeği değil")
-        validation = await asyncio.to_thread(subprocess.run, ["pg_restore", "--list", path], capture_output=True, text=True, timeout=120)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Yedek doğrulanamadı: {exc}") from exc
-    if validation.returncode != 0:
-        raise HTTPException(status_code=400, detail=validation.stderr[-2000:] or "Yedek dosyası pg_restore --list doğrulamasından geçemedi")
-    result = await asyncio.to_thread(subprocess.run, ["pg_restore", "--clean", "--if-exists", "--no-owner", "--dbname", os.environ["DATABASE_URL"], path], capture_output=True, text=True, timeout=1200)
-    if result.returncode != 0: raise HTTPException(status_code=502, detail=result.stderr[-3000:] or "pg_restore başarısız")
-    await log_user_action(admin.get("username"), admin.get("role"), "admin", "POSTGRES_RESTORE",
-                          target="postgres", details={"path": os.path.basename(path)}, request=request)
-    return {"ok": True, "message": "PostgreSQL backup geri yüklendi; backend yeniden başlatılması önerilir"}
+        try:
+            with open(path, "rb") as backup_file:
+                if backup_file.read(5) != b"PGDMP":
+                    raise HTTPException(status_code=400, detail="Dosya geçerli bir PostgreSQL custom-format yedeği değil")
+            validation = await asyncio.to_thread(subprocess.run, ["pg_restore", "--list", path], capture_output=True, text=True, timeout=120)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Yedek doğrulanamadı: {exc}") from exc
+        if validation.returncode != 0:
+            raise HTTPException(status_code=400, detail=validation.stderr[-2000:] or "Yedek dosyası pg_restore --list doğrulamasından geçemedi")
+        result = await asyncio.to_thread(subprocess.run, ["pg_restore", "--clean", "--if-exists", "--no-owner", "--dbname", os.environ["DATABASE_URL"], path], capture_output=True, text=True, timeout=1200)
+        if result.returncode != 0: raise HTTPException(status_code=502, detail=result.stderr[-3000:] or "pg_restore başarısız")
+        await log_user_action(admin.get("username"), admin.get("role"), "admin", "POSTGRES_RESTORE",
+                              target="postgres", details={"path": os.path.basename(path)}, request=request)
+        return {"ok": True, "message": "PostgreSQL backup geri yüklendi; backend yeniden başlatılması önerilir"}
+    finally:
+        _backup_restore_lock.release()
 
 @app.post("/api/memory/reset")
 async def reset_memory(request: Request = None):

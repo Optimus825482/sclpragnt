@@ -117,7 +117,7 @@ export default function ChartsPage() {
     const [picking, setPicking] = useState(false);
     const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
     const [volumeVisible, setVolumeVisible] = useState(false);
-    const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+    const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
     const [showPositions, setShowPositions] = useState(true);
     const [showStopTakeProfit, setShowStopTakeProfit] = useState(true);
     const [showPatterns, setShowPatterns] = useState(false);
@@ -531,9 +531,19 @@ export default function ChartsPage() {
     // WS'e bağlıyordu; WS tutarsa grafik donar ve kullanıcı bunu göremezdi.
     // Bu durum hem fallback'ın tetiklenmesini hem de aşağıdaki rozeti besler.
     // CANLI AKIS (2026-09-16): backend'den kline mesajı alındı mı? Rozet için.
-    // Son alınan mumun backend zaman damgası; belirli süre içinde yeni mum gelmezse
-    // "TAZELEMEDE" olarak işaretlenir (backend'in WS'si o sembolde mum üretmiyor).
-    const [lastBarFromServer, setLastBarFromServer] = useState(false);
+    // P2-9: rozet eskiden TEK YÖNLÜYDÜ — ilk kline gelince true'ya dönüyor ve WS
+    // ölse/varsayılan sembolde hiç mum gelmese bile bir daha false olmuyordu.
+    // Artık son canlı mumun duvar-saati zamanı tutulur; 5 sn'lik bir tik onu
+    // tazeler ve `canli` yalnızca son mum `CANLI_TAZELIK_MS` içindeyse true kalır.
+    const lastBarAtRef = useRef(0);
+    const [canli, setCanli] = useState(false);
+    const CANLI_TAZELIK_MS = 15_000;
+    useEffect(() => {
+        const t = setInterval(() => {
+            setCanli(Date.now() - lastBarAtRef.current <= CANLI_TAZELIK_MS);
+        }, 5_000);
+        return () => clearInterval(t);
+    }, []);
     // WebSocket anlık portföyü taşır; HTTP yalnızca bağlantı kopması için
     // düşük frekanslı geri dönüş yoludur. Manuel kapatma sonrası da buradan
     // tazelenir.
@@ -576,14 +586,15 @@ export default function ChartsPage() {
             // pozisyonlarla aynı kolonda brüt/net karışıklığı böylece biter.
             const entry = Number(ap.entry_price || 0);
             const current = Number(ap.current_price) > 0 ? Number(ap.current_price) : null;
-            const pnl = netOpenPnlTry(ap.entry_price, ap.current_price, ap.quantity);
-            const pnlPct = netOpenPnlPct(ap.entry_price, ap.current_price, ap.quantity);
+            const pnl = netOpenPnlTry(ap.entry_price, ap.current_price, ap.quantity, ap.side);
+            const pnlPct = netOpenPnlPct(ap.entry_price, ap.current_price, ap.quantity, ap.side);
             result.push({
                 symbol: ap.symbol,
                 entry,
                 current,
                 pnl_pct: pnlPct,
                 pnl_try: pnl,
+                side: ap.side,
                 quantity: ap.quantity,
                 entry_time: ap.entry_time,
                 strategy: "AUTO_PAPER",
@@ -685,8 +696,10 @@ export default function ChartsPage() {
                 open: +d.open, high: +d.high, low: +d.low, close: +d.close, volume: +d.volume,
             };
             if (!Number.isFinite(bar.close) || bar.close <= 0 || !candleRef.current) return;
-            // Backend'den canlı mum geldi → rozeti yeşile çevir.
-            setLastBarFromServer(true);
+            // Backend'den canlı mum geldi → rozeti yeşile çevir ve TAZELİK zamanını
+            // damgala (rozet bu damga eskimeyene kadar CANLI kalır; P2-9).
+            lastBarAtRef.current = Date.now();
+            setCanli(true);
             candleRef.current.applyOptions({ priceFormat: chartPriceFormat(bar.close) });
 
             // ZAMAN KAPISI (2026-09-16): karar `barsRef` üzerinden, setBars updater'ı YOK.
@@ -732,6 +745,7 @@ export default function ChartsPage() {
                 const ap = message.data.auto_paper_positions.map((t: any) => ({
                     id: Number(t.auto_paper_id || 0),
                     symbol: t.symbol,
+                    side: t.side,
                     entry_price: Number(t.entry || 0),
                     current_price: Number(t.current || 0),
                     quantity: Number(t.quantity || 0),
@@ -1124,8 +1138,11 @@ export default function ChartsPage() {
             try { series.removePriceLine(l); } catch { }
         }));
         positionLinesRef.current.clear();
-        // eski marker'ları temizle
-        positionMarkersRef.current?.setMarkers([]);
+        // P2-9: eski marker primitive'ini SERİDEN SÖK. `setMarkers([])` yalnız
+        // marker'ları boşaltır, primitive bağlı kalırdı → her re-render'da bir
+        // primitive sızıyordu (charts v5 plugin API). `detach()` bağlı primitive'i
+        // tamamen kaldırır (zaten bağlı değilse no-op).
+        positionMarkersRef.current?.detach();
         positionMarkersRef.current = null;
 
         const autoPos = autoPaperPositions.find((p) => p.symbol === symbol && p.status === "open");
@@ -1243,8 +1260,8 @@ export default function ChartsPage() {
         const series = candleRef.current;
         if (!series) return;
 
-        // eski marker'ları temizle
-        utBotMarkersRef.current?.setMarkers([]);
+        // eski marker'ları temizle (P2-9: primitive'i söküp sızıntıyı önle)
+        utBotMarkersRef.current?.detach();
         utBotMarkersRef.current = null;
 
         // SlingShot ve diğer strateji indikatörlerini topla
@@ -1297,7 +1314,8 @@ export default function ChartsPage() {
 
     // Güçlü mum formasyonlarını seçili timeframe üzerinde marker olarak göster.
     useEffect(() => {
-        patternMarkersRef.current?.setMarkers([]);
+        // P2-9: primitive'i sök (yalnız marker'ları boşaltmak sızıntı bırakırdı).
+        patternMarkersRef.current?.detach();
         patternMarkersRef.current = null;
         if (!showPatterns || !bars.length || !candleRef.current) return;
         try {
@@ -1400,15 +1418,19 @@ export default function ChartsPage() {
             display: { showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines } satisfies DisplaySettings
         };
         try {
-            await apiRequest(`${API}/${symbol}`, {
+            const res = await apiRequest(`${API}/${symbol}`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload)
             });
+            // P0-4 sınıfı: `apiRequest` non-ok'da throw etmez. `res.ok` bakılmazsa
+            // kayıt başarısızken (401/5xx) "✓ KAYDEDİLDİ" yanardı — kullanıcı
+            // ayarının kalıcı olduğunu sanırdı. Artık yalnız gerçek 2xx'te yeşil.
+            if (!res.ok) { setSaveState("failed"); return; }
             setSaveState("saved");
-            setTimeout(() => setSaveState("idle"), 2000);
+            setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 2000);
         } catch {
-            setSaveState("idle");
+            setSaveState("failed");
         }
     };
 
@@ -1669,13 +1691,15 @@ export default function ChartsPage() {
                     ))}
                 </div>
                 {/* CANLI AKIS DURUMU (2026-09-16): grafik mum verisini Binance'den
-                    değil backend'den alır. WS bağlıyken CANLI (yeşil) rozeti; değilse
-                    HTTP fallback (~10 sn) grafiği tazeler (TAZELEMEDE rozeti). */}
+                    değil backend'den alır. Son 15 sn içinde backend'den canlı mum
+                    geldiyse CANLI (yeşil) rozeti; aksi halde (WS ölü / varsayılan
+                    sembolde mum üretilmiyor) TAZELEMEDE. P2-9: rozet artık gerçek
+                    duruma geri döner (tek yönlü değil). */}
                 <span className={`rounded border px-2 py-1 font-mono text-[10px] font-bold ${
-                    lastBarFromServer ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
+                    canli ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
                     : "border-yellow-400/40 bg-yellow-400/10 text-yellow-300"
                 }`}>
-                    {lastBarFromServer ? `● CANLI · ${interval}` : "◌ TAZELEMEDE"}
+                    {canli ? `● CANLI · ${interval}` : "◌ TAZELEMEDE"}
                 </span>
                 <button
                     onClick={() => setPicking(true)}
@@ -1689,10 +1713,12 @@ export default function ChartsPage() {
                     disabled={saveState === "saving"}
                     className={`px-4 py-2 rounded-lg border font-mono text-sm transition-colors ${saveState === "saved"
                         ? "border-neon-green bg-neon-green/20 text-neon-green"
+                        : saveState === "failed"
+                        ? "border-red-400/50 bg-red-400/10 text-red-400 hover:bg-red-400/20"
                         : "border-neon-yellow/40 bg-neon-yellow/10 text-neon-yellow hover:bg-neon-yellow/20"
                         }`}
                 >
-                    {saveState === "saving" ? "KAYDEDİLİYOR..." : saveState === "saved" ? "✓ KAYDEDİLDİ" : "KAYDET"}
+                    {saveState === "saving" ? "KAYDEDİLİYOR..." : saveState === "saved" ? "✓ KAYDEDİLDİ" : saveState === "failed" ? "✕ KAYDEDİLEMEDİ" : "KAYDET"}
                 </button>
             </div>
             )}

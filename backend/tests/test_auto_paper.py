@@ -6,6 +6,7 @@ ve temizler.
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 import time
@@ -765,6 +766,26 @@ class AutoPaperModeFilterTests(unittest.TestCase):
         if res is not None:
             self.assertNotEqual(res.get("reason"), "mode_not_allowed")
 
+    def test_unified_radar_mode_allowed_by_default(self):
+        """P0-2: radar/birleşik bildirimi (`mode="unified"`) mod kapısına takılmamalı.
+
+        Eski varsayılan `["trend_devam"]` radar yolunu tamamen kapatıyordu;
+        `unified` artık izinli."""
+        n = _make_notification(score=90.0, notif_id=9006)
+        n["mode"] = "unified"
+        res = self._run(n, {"allowed_modes": ["trend_devam", "unified"]})
+        if res is not None:
+            self.assertNotEqual(res.get("reason"), "mode_not_allowed")
+
+    def test_negative_modes_still_excluded_by_default(self):
+        """P0-2: kanıtsız/negatif modlar varsayılan listede KALMAMALI."""
+        from app.routers.auto_paper import get_default_settings
+        import asyncio
+        defaults = asyncio.run(get_default_settings())
+        self.assertNotIn("global_lead_lag", defaults["allowed_modes"])
+        self.assertNotIn("notr", defaults["allowed_modes"])
+
+
     def test_symbol_dedup_blocks_recent_entry(self):
         """Aynı sembolde yakın zamanda giriş varsa engellenmeli (symbol_dedup)."""
         n = _make_notification(symbol="DEDUPX", score=90.0, notif_id=9004)
@@ -802,16 +823,155 @@ class AutoPaperModeFilterTests(unittest.TestCase):
     def test_settings_roundtrip_preserves_new_keys(self):
         """Yeni ayarlar şemada tanınmalı: allowed_modes listesi + dedup sayısı.
 
-        Varsayılanlar 2026-10-07 optimizasyonuyla AKTİF: yalnızca
-        `trend_devam` işlenir ve aynı sembole 60 dk içinde tekrar girilmez
-        (bkz. docs/OTONOM_TRADE_TESHIS_2026-10-07.md §3.1)."""
+        Varsayılanlar 2026-10-07 optimizasyonuyla AKTİF: yalnızca edge taşıyan
+        modlar işlenir ve aynı sembole 60 dk içinde tekrar girilmez
+        (bkz. docs/OTONOM_TRADE_TESHIS_2026-10-07.md §3.1).
+
+        P0-2 (2026-10-07 denetimi): varsayılan ARTIK `["trend_devam","unified"]`.
+        Eski `["trend_devam"]` radar yolunu (mode="unified") tamamen kapatıyordu;
+        `unified` dar havuzla aynı işlem başı getiriyi verdiği için eklenmiştir.
+        Bu testi güncelledik: eski tek-modluk değeri KODLUYordu ve düzeltmeyi
+        engellerdi."""
         from app.routers.auto_paper import get_default_settings
         import asyncio
         defaults = asyncio.run(get_default_settings())
         self.assertIn("allowed_modes", defaults)
         self.assertIn("dedup_cooldown_minutes", defaults)
-        self.assertEqual(defaults["allowed_modes"], ["trend_devam"])
+        self.assertEqual(defaults["allowed_modes"], ["trend_devam", "unified"])
         self.assertEqual(defaults["dedup_cooldown_minutes"], 60.0)
+
+
+class AutoPaperP0P2FixTests(unittest.IsolatedAsyncioTestCase):
+    """2026-10-07 denetim düzeltmeleri: P0-3, P2-2, P2-3, P2-4."""
+
+    def setUp(self):
+        auto_paper.reset_state()
+
+    def tearDown(self):
+        auto_paper.reset_state()
+
+    async def test_management_loop_reads_open_positions_without_reports_baseline(self):
+        """P0-3: pozisyon yönetimi `apply_reports_baseline=False` ile okumalı."""
+        seen = {}
+
+        async def fake_list(**kwargs):
+            seen.update(kwargs)
+            return []
+
+        with patch.object(auto_paper.database, "list_auto_paper_trades", fake_list):
+            await auto_paper._check_open_positions()
+        self.assertEqual(seen.get("status"), "open")
+        self.assertIs(seen.get("apply_reports_baseline"), False)
+
+    async def test_global_open_cap_reads_without_reports_baseline(self):
+        """P0-3: global açık-pozisyon tavanı sayımı rapor filtresinden muaf olmalı."""
+        now = time.time()
+        seen = {}
+
+        async def fake_list(**kwargs):
+            seen.update(kwargs)
+            return []
+
+        notif = _make_notification(score=90.0, price=100.0)
+        with patch.object(auto_paper.database, "list_auto_paper_trades", fake_list), \
+             patch.object(auto_paper.database, "get_open_auto_paper_trade", AsyncMock(return_value=None)), \
+             patch.object(auto_paper.database, "get_last_auto_paper_entry_time", AsyncMock(return_value=None)), \
+             patch.object(auto_paper, "get_auto_paper_settings", AsyncMock(return_value={
+                 "enabled": True, "min_score": 0.0, "max_open_positions": 5,
+                 "dedup_cooldown_minutes": 0.0, "allowed_modes": []})), \
+             patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 0.0}), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 100.0, "timestamp": now * 1000}), \
+             patch.object(auto_paper, "_open_new_trade", AsyncMock(return_value={"status": "opened"})):
+            await auto_paper.try_open_from_notification(notif)
+        self.assertIs(seen.get("apply_reports_baseline"), False,
+                      "açık-pozisyon tavanı sayımı rapor başlangıcından muaf olmalı")
+
+    async def test_dedup_skipped_when_position_open_tp_can_improve(self):
+        """P2-3: açık pozisyon varken dedup atlanır → TP yukarı güncellenebilir."""
+        sym = "TPRAISE"
+        now = time.time()
+        open_trade = _make_open_trade(symbol=sym, entry=100.0, target_pct=1.0)
+        # Dedup geçmişte giriş gösterse bile (recent) TP güncellemesi ENGELLENMEMELİ.
+        notif = _make_notification(symbol=sym, score=90.0, target_pct=5.0, price=100.0)
+        with patch.object(auto_paper.database, "get_open_auto_paper_trade", AsyncMock(return_value=open_trade)), \
+             patch.object(auto_paper.database, "get_last_auto_paper_entry_time", AsyncMock(return_value=now - 60.0)) as dedup_mock, \
+             patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 0.0}), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 100.0, "timestamp": now * 1000}), \
+             patch.object(auto_paper, "_update_existing_trade", AsyncMock(return_value={"status": "tp_updated"})) as upd_mock:
+            res = await auto_paper.try_open_from_notification(notif)
+        self.assertEqual(res.get("status"), "tp_updated")
+        upd_mock.assert_awaited_once()
+        dedup_mock.assert_not_awaited()
+
+    async def test_dedup_still_blocks_new_entry_when_no_open_position(self):
+        """P2-3 regresyonu: açık pozisyon yoksa dedup YENİ girişi yine engeller."""
+        sym = "NEWDEDUP"
+        now = time.time()
+        notif = _make_notification(symbol=sym, score=90.0, price=100.0)
+        with patch.object(auto_paper.database, "get_open_auto_paper_trade", AsyncMock(return_value=None)), \
+             patch.object(auto_paper.database, "get_last_auto_paper_entry_time", AsyncMock(return_value=now - 60.0)), \
+             patch.object(auto_paper, "get_auto_paper_settings", AsyncMock(return_value={
+                 "enabled": True, "min_score": 0.0, "dedup_cooldown_minutes": 60.0})), \
+             patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 0.0}), \
+             patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 100.0, "timestamp": now * 1000}):
+            res = await auto_paper.try_open_from_notification(notif)
+        self.assertEqual(res.get("reason"), "symbol_dedup")
+
+    async def test_breakeven_stop_triggers_sl_cooldown(self):
+        """P2-4: `breakeven_stop` çıkışı SL cooldown ailesine dahil olmalı."""
+        now = time.time()
+        trade = {"id": 77, "symbol": "BESTOP", "status": "open", "entry_price": 100.0,
+                 "quantity": 1.0, "entry_time": now - 60}
+        with patch.object(auto_paper.database, "get_auto_paper_trade", AsyncMock(return_value=trade)), \
+             patch.object(auto_paper.database, "close_auto_paper_trade", AsyncMock(return_value=True)), \
+             patch.object(auto_paper, "_broadcast_trade", AsyncMock()), \
+             patch.object(auto_paper, "_persist_cooldowns", AsyncMock()), \
+             patch.object(auto_paper, "get_auto_paper_settings", AsyncMock(return_value={
+                 "reopen_after_protect_close": False, "post_win_cooldown_minutes": 0.0,
+                 "sl_cooldown_minutes": 5.0})):
+            await auto_paper._close_trade(77, "BESTOP", 100.01, now, "breakeven_stop")
+        self.assertIn("BESTOP", auto_paper._stop_loss_cooldowns)
+
+    async def test_cooldowns_persist_and_restore(self):
+        """P2-4: cooldown haritaları DB'ye yazılıp geri yüklenebilmeli."""
+        now = time.time()
+        auto_paper._stop_loss_cooldowns["PSL"] = now + 300.0
+        auto_paper._post_win_cooldowns["PWIN"] = now + 600.0
+        captured = {}
+
+        async def fake_set(key, value):
+            captured[key] = value
+
+        with patch.object(auto_paper.database, "set_llm_setting", fake_set):
+            await auto_paper._persist_cooldowns()
+        payload = json.loads(captured[auto_paper._AUTO_PAPER_STATE_KEY])
+        self.assertIn("PSL", payload["stop_loss_cooldowns"])
+        self.assertIn("PWIN", payload["post_win_cooldowns"])
+
+        # Belleği temizle → restore ile geri gelmeli.
+        auto_paper._stop_loss_cooldowns.clear()
+        auto_paper._post_win_cooldowns.clear()
+        with patch.object(auto_paper.database, "get_llm_setting",
+                          AsyncMock(return_value=json.dumps(payload))):
+            await auto_paper.restore_runtime_state()
+        self.assertIn("PSL", auto_paper._stop_loss_cooldowns)
+        self.assertIn("PWIN", auto_paper._post_win_cooldowns)
+
+    async def test_restore_drops_expired_cooldowns(self):
+        """P2-4: süresi geçmiş cooldown'lar geri yüklemede atılmalı."""
+        past = time.time() - 100.0
+        payload = {"stop_loss_cooldowns": {"OLD": past}, "post_win_cooldowns": {}}
+        auto_paper._stop_loss_cooldowns.clear()
+        with patch.object(auto_paper.database, "get_llm_setting",
+                          AsyncMock(return_value=json.dumps(payload))):
+            await auto_paper.restore_runtime_state()
+        self.assertNotIn("OLD", auto_paper._stop_loss_cooldowns)
+
+    async def test_tp_primary_enabled_by_default(self):
+        """P2-2: TP birincil çıkış varsayılan AÇIK olmalı (take_profit en iyi çıkış)."""
+        from app.routers.auto_paper import get_default_settings
+        defaults = await get_default_settings()
+        self.assertTrue(defaults["tp_primary_exit_enabled"])
 
 
 if __name__ == "__main__":

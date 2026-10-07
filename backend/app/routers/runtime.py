@@ -67,7 +67,7 @@ _llm_replenish_lock = asyncio.Lock()
 _llm_last_idle_attempt_at = time.time()
 _radar_lock = asyncio.Lock()
 _top_gainers_lock = asyncio.Lock()
-_ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
+_ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0, "signature": None}
 
 # ws_broadcast_loop her saniye çalışır; realized_pnl ve TRY bakiyesi yalnız
 # trade kapanışında değişir. Her saniye DB'ye gitmek (tek bağlantı + global
@@ -101,7 +101,11 @@ async def _cached_open_auto_trades() -> list:
     if now - _auto_trades_cache["at"] < _AUTO_TRADES_RETRY_SEC:
         return _auto_trades_cache["data"]
     try:
-        _auto_trades_cache["data"] = await database.list_auto_paper_trades(status="open")
+        # P0-3 (2026-10-07): açık pozisyon listesi rapor görünüm sınırını
+        # YOK SAYAR — aksi halde rapor başlangıcından önce açılmış bir pozisyon
+        # panelde hiç görünmezdi (kullanıcı açık pozisyonu yönetemezdi).
+        _auto_trades_cache["data"] = await database.list_auto_paper_trades(
+            status="open", apply_reports_baseline=False)
         _auto_trades_cache["error"] = None
         # `at` YALNIZCA başarıda ilerletilir. Hata halinde ilerletmek
         # "okundu ve boş" ile "okunamadı" durumlarını ayırt edilemez hale
@@ -161,12 +165,56 @@ def invalidate_wallet_caches():
     _realized_pnl_cache.update(value=None, at=0.0)
     _try_balance_cache.update(value=None, at=0.0)
     _auto_trades_cache.update(data=[], at=0.0, error=None)
+    # P2-8: değişim imzası da sıfırlanır — para hareketinden sonra bir sonraki
+    # tur imzayı YENİDEN kurar (eski imzayla eşleşip güncelleme atlanmaz).
+    _ws_snapshot_cache["signature"] = None
+
+
+def _ws_broadcast_signature() -> tuple:
+    """ws_broadcast_loop için UCUZ değişim imzası (P2-8).
+
+    Amaç: veri DEĞİŞMEDİĞİNDE tüm ticker+pozisyon payload'ını yeniden kurmayı
+    (ve yeniden serialize/yayınlamayı) atlamak. İmza, payload'ı ÜRETEN ucuz
+    girdilerden türetilir; 309 sembol × 6 alanlık ticker dizisi yerine ham
+    `market.tickers` içeriği SON OLAY DAMGASIYLA temsil edilir — her fiyat
+    olayı `market_data._mark_ws_event` ile bu damgayı günceller (REST yolu da
+    `rest_last_event_at`'i günceller). Pozisyon listeleri yalnız payload'ı
+    gerçekten etkileyen ANAHTAR alanlarla temsil edilir; kalan alanlar
+    (isimler vb.) yalnızca giriş/çıkışta değişir ve o da pozisyon kümesini
+    değiştirir.
+    """
+    positions_sig = tuple(
+        (sym, p.get("entry_price"), p.get("quantity"),
+         p.get("stop_price"), p.get("take_profit"),
+         (p.get("entry_context") or {}).get("plan_revision"))
+        for sym, p in analyzer.positions.items())
+    auto_sig = tuple(
+        (t.get("id"), t.get("entry_price"), t.get("quantity"),
+         t.get("take_profit"), t.get("stop_loss"), bool(t.get("breakeven_activated")))
+        for t in (_auto_trades_cache.get("data") or []))
+    return (
+        market.ws_last_event_at, market.rest_last_event_at,
+        len(market.tickers), market.ticker_24h,
+        # İstemci SAYISI imzaya dahil: 1 → 2 geçişinde yeni bağlanan istemci
+        # önceki yayınları kaçırmış olabilir; veri değişmese bile bir tur
+        # yeniden yayınlanır. (0 → 1 geçişi zaten imza sıfırlamasıyla yakalanır.)
+        len(ws_manager.active_connections),
+        positions_sig, auto_sig,
+        _try_balance_cache.get("value"), _realized_pnl_cache.get("value"),
+        _auto_trades_cache.get("error"),
+    )
 
 
 async def ws_broadcast_loop():
     while True:
         try:
-            if market.tickers:
+            # P2-8 (2026-10-07 denetimi): iki ucuz kısa-devreyi de ekle.
+            #  1) İSTEMCİ YOKSA hiç çalışma: kimse dinlemiyorken tam payload
+            #     kurup serialize etmek ve 3 sn'de bir DB okumak boşunaydı.
+            #  2) VERİ DEĞİŞMEDİYSE (aynı imza) yeniden kurma/yayınlama.
+            # İmza çağrısı UcUZdur; payload'ı kurmadan önce karşılaştırılır.
+            if (market.tickers and ws_manager.active_connections
+                    and _ws_broadcast_signature() != _ws_snapshot_cache.get("signature")):
                 tickers = []
                 binance_ticks = {}
                 usdt_try_lp = 0.0
@@ -300,6 +348,15 @@ async def ws_broadcast_loop():
                 # NaN/±Infinity tek bir WS portfolio mesajını da tüketicilerde
                 # bozabilir; /api/positions ile aynı güvenlik uygulanır.
                 await ws_manager.broadcast({"type": "portfolio", "data": _json_safe_positions(_ws_snapshot_cache["portfolio"])})
+                # P2-8: imza, önbellek okumaları (bakiye/realized/auto_trades)
+                # GÜNCELLENDİKTEN SONRA saklanır — böylece bir sonraki turda
+                # imza eşleşir ve değişmeyen payload yeniden kurulmaz.
+                _ws_snapshot_cache["signature"] = _ws_broadcast_signature()
+            elif not ws_manager.active_connections:
+                # İstemci yokken imzayı GEÇERSİZ kıl: sonraki istemci
+                # bağlandığında ilk tur 0-durumundaki bayat imzayla
+                # eşleşip yayın atlamasın (ilk kare her zaman gönderilir).
+                _ws_snapshot_cache["signature"] = None
         except Exception as exc:
             logger.warning("ws_broadcast_loop hatasi (atlanıyor): %s", exc, exc_info=True)
         await asyncio.sleep(1.0)
@@ -480,7 +537,11 @@ async def refresh_top_gainer_symbols():
         # kapanmayan pozisyon sonraki turda yeniden denenir.
         try:
             from app.routers import auto_paper as _ap
-            open_auto_trades = await database.list_auto_paper_trades(status="open")
+            # P0-3 (2026-10-07): pozisyon KAPATMA yolu — açık pozisyon rapor
+            # görünüm sınırına takılmamalı, yoksa düşen sembolün pozisyonu hiç
+            # kapanmaz (SL/TP yok, pozisyon sonsuza dek açık kalır).
+            open_auto_trades = await database.list_auto_paper_trades(
+                status="open", apply_reports_baseline=False)
             for trade in open_auto_trades:
                 sym = str(trade.get("symbol") or "").upper()
                 if sym in dropped_symbols:
@@ -906,7 +967,10 @@ async def _close_positions_on_passivation(passive_symbols):
     # 2. Otonom paper trade açık pozisyonları kapat (2026-09-21 Erkan kararı)
     try:
         from app.routers import auto_paper as _ap
-        open_auto_trades = await database.list_auto_paper_trades(status="open")
+        # P0-3 (2026-10-07): pasif-sembol pozisyon kapatma yolu — rapor görünüm
+        # sınırı açık pozisyonu gizlememeli (yoksa kapanmadan açık kalır).
+        open_auto_trades = await database.list_auto_paper_trades(
+            status="open", apply_reports_baseline=False)
         for trade in open_auto_trades:
             sym = str(trade.get("symbol") or "").upper()
             if sym in passive_symbols:

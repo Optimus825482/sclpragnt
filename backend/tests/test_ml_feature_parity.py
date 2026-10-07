@@ -107,7 +107,10 @@ class FeatureParityTests(unittest.TestCase):
         self.assertIn("aroon_down25", FEATURE_NAMES)
         self.assertNotIn("aroon_up14", FEATURE_NAMES)
         self.assertNotIn("aroon_down14", FEATURE_NAMES)
-        self.assertEqual("v3", FEATURE_VERSION, "gösterge tanımı değişti → sürüm artmalı")
+        # v4 (P1-9): gösterge tanımı değil, ETİKET sözleşmesi değişti
+        # (MFE -> gerçekleştirilebilir çıkış) ve classifier'a class_weight
+        # eklendi; eski v3 artefaktı yeniden eğitilmeden servis edilmemeli.
+        self.assertEqual("v4", FEATURE_VERSION, "tanım/etiket değişti → sürüm artmalı")
 
 
 class AroonDefinitionTests(unittest.TestCase):

@@ -19,3 +19,10 @@ pytest-cov==6.2.1
 # konulsaydı CI ilk çalışmada kırılırdı.
 ruff==0.16.9
 
+# 2026-10-07 denetim: `tests/test_tr_bridge_receiver.py` `httpx`in
+# ASGITransport/AsyncClient'ını kullanıyor ama httpx listede YOKTU. Uvicorn'un
+# `[standard]` fazlalığı da httpx getirmediğinden (httpx opsiyonel bir ekstra),
+# CI'nın pytest işi TOPLAMA aşamasında ModuleNotFoundError ile düşüyordu —
+# yani 1713 testlik suite hiç çalışmıyordu. Sürüm venv'de ölçülenle sabitlendi.
+httpx==0.28.1
+

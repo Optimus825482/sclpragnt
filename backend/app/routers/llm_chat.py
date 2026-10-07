@@ -242,6 +242,24 @@ def _require_admin_principal(auth_user: dict | None):
     return auth_user
 
 
+def _llm_admin_denied(auth_user: dict | None) -> dict | None:
+    """DENETİM (P1-4, 2026-10-07): yönetici olmayan oturum için araç reddi.
+
+    ``place_paper_order``/``cancel_paper_order``/``modify_paper_order`` ve
+    auto_paper_trade'e yol açabilen ``create_market_alert`` durum DEĞİŞTİRİR.
+    Bu araçlar HTTP ucu değil, tool loop içinde çalışır; ``HTTPException``
+    fırlatmak ``chat`` döngüsünde ``{"error": ...}`` sözlüğüne çevrilir ve
+    modele geri beslenir (akış ölmez). Bu yüzden AYNI sonucu doğrudan üreten
+    nazik bir ret sözlüğü döndürüyoruz: model "yapılmadı" görür, işlem olmaz.
+    Admin ise ``None`` (izin ver) döner.
+    """
+    role = str((auth_user or {}).get("role") or "").strip().lower()
+    if role == "admin":
+        return None
+    return {"ok": False, "paper_only": True, "retryable": False,
+            "error": "Bu paper işlem aracı yalnız sistem yöneticisine açıktır; işlem yapılmadı."}
+
+
 _PERSONA_NAME_MAX = 40
 _PERSONA_ROLE_VALUES = {"admin", "user", "viewer", "operator", "analyst"}
 
@@ -2312,7 +2330,10 @@ async def validate_trade_plan(args: dict):
 async def get_auto_paper_status_tool(args: dict):
     """Otonom paper durumu: açık pozisyonlar + bugün kapananlar + istatistikler."""
     include = max(0, min(int(args.get("include_trades", 0)), 50))
-    open_trades = await database.list_auto_paper_trades(status="open")
+    # P0-3 (2026-10-07): LLM'e açık pozisyonlar TAM görünmeli — rapor görünüm
+    # sınırına takılan bir pozisyon LLM'e hiç bildirilmezdi (yönetilemezdi).
+    open_trades = await database.list_auto_paper_trades(
+        status="open", apply_reports_baseline=False)
     # Güncel fiyat ekle
     for t in open_trades:
         try:
@@ -2848,6 +2869,10 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
         if name == "get_subminute_microstructure": return await get_subminute_microstructure(args)
         if name == "get_historical_slippage": return await get_historical_slippage(args)
         if name == "create_market_alert":
+            # P1-4 (2026-10-07): alarm auto_paper_trade ile paper pozisyon
+            # açabilir → sembol sohbet yüzeyinde de yönetici kapısı (nazik ret).
+            denied = _llm_admin_denied(auth_user)
+            if denied: return denied
             alert_id = await database.create_alert_rule({**args, "symbol": str(args.get("symbol") or symbol).replace("_", "").upper(), "created_by": "symbol-llm"})
             return {"ok": True, "alert_id": alert_id, "paper_only": True, "message": "Alarm oluşturuldu; canlı backend alarm worker'ı tarafından izleniyor."}
         if name == "update_market_alert":
@@ -3472,8 +3497,14 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         if name == "get_auto_paper_status": return await get_auto_paper_status_tool(args)
         if name == "get_dashboard_summary": return await get_dashboard_summary_tool()
         if name == "get_monitoring_status": return await get_monitoring_status_tool()
-        if name == "cancel_paper_order": return await analyzer.cancel_paper_order(args.get("order_id"))
-        if name == "modify_paper_order": return await analyzer.modify_paper_order(args.get("order_id"), args.get("changes"))
+        if name == "cancel_paper_order":
+            denied = _llm_admin_denied(auth_user)
+            if denied: return denied
+            return await analyzer.cancel_paper_order(args.get("order_id"))
+        if name == "modify_paper_order":
+            denied = _llm_admin_denied(auth_user)
+            if denied: return denied
+            return await analyzer.modify_paper_order(args.get("order_id"), args.get("changes"))
         if name == "reconcile_portfolio": return await reconcile_portfolio_state()
         if name == "deactivate_coin": return await deactivate_coin(args)
         if name == "get_llm_open_position":
@@ -3503,6 +3534,11 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
             _start_background(partial(backfill_symbol_history, symbol), f"history-backfill-{symbol}", single_pass=True)
             return {"ok": True, "symbol": symbol, "active": True, "paper_only": True, "message": f"{symbol} analiz evrenine eklendi"}
         if name == "place_paper_order":
+            # P1-4: paper emir oluşturma yalnız yöneticidir (açık pozisyon
+            # yüzeyi). Tool loop içinde nazik ret döndürülür (HTTPException
+            # yerine), model "yapılmadı" görür ve döngü devam eder.
+            denied = _llm_admin_denied(auth_user)
+            if denied: return denied
             return await analyzer.place_paper_order(args)
         if name == "query_database": return await llm_query_database(args)
         if name == "read_only_sql": return await safe_read_only_sql(args)
@@ -3547,6 +3583,11 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         if name == "list_llm_symbol_guards":
             return {"ok": True, "paper_only": True, "guards": await database.get_llm_symbol_guards(bool(args.get("active_only")))}
         if name == "create_market_alert":
+            # P1-4 (2026-10-07): alarm `notify_channels` içinde auto_paper_trade
+            # taşıyabilir → tetiklenince paper pozisyon açabilir. Mutasyon
+            # yüzeyi yöneticiye kapatılır (nazik ret, tool loop bozulmaz).
+            denied = _llm_admin_denied(auth_user)
+            if denied: return denied
             if not args.get("reason"): return {"ok": False, "paper_only": True, "error": "reason gerekli"}
             symbol = str(args.get("symbol") or "").replace("_", "").upper()
             if symbol not in config.SYMBOLS: return {"ok": False, "paper_only": True, "error": "Sembol aktif paper evreninde değil"}

@@ -427,7 +427,13 @@ async def get_macd_mtf_report(days: int = 14, limit: int = 1000, include_archive
         ignore_reports_baseline=include_archived)
     order = {"GÜÇLÜ": 0, "ORTA": 1, "ZAYIF": 2, "YOK": 3}
     groups: dict[str, dict] = {}
-    fake_threshold_pct = -float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5))
+    # DENETİM (2026-10-07): buradaki `getattr` yedeği 1.5'ti ama gerçek stop
+    # tabanı `AUTO_PAPER_SL_PCT_DEFAULT` = 5.0 (config.py). Yedek literal
+    # yanlış olduğu için, nitelik bir gün tanımsız kalırsa "sahte sinyal"
+    # eşiği 5.0 yerine 1.5 uygulanır ve -%1.5 ile -%5 arasında düşen sinyaller
+    # haksız yere SAHTE sayılırdı. Doğrudan okuyoruz: nitelik her zaman tanımlı,
+    # eksikse sessiz yanlış sayı yerine gürültülü hata doğrudur.
+    fake_threshold_pct = -float(config.AUTO_PAPER_SL_PCT_DEFAULT)
     for r in rows:
         verdict = str(r.get("macd_mtf_verdict") or "YOK")
         g = groups.setdefault(verdict, {

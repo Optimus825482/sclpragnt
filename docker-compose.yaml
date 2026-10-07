@@ -62,26 +62,27 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      # 2026-09-26 (#74/a): PRODUCTION_MODE.
+      # 2026-10-07 (P1-11 #1): PRODUCTION_MODE artık VARSAYILAN OLARAK ÜRETİM.
       #
       # `config.py` PRODUCTION_MODE'u `SCALPER_ENV > ENVIRONMENT >
       # "development"` sırasıyla okur. Varsayılan "development" iken
       # `enforce_admin_password_policy(..., production=False)` zayıf admin
-      # parolasını yalnızca UYARI düzeyine indirir.
+      # parolasını yalnızca UYARI düzeyine indiriyordu — yani dağıtılan
+      # servis, zayıf/öngörülebilir bir admin parolasıyla canlıya çıkabiliyordu.
+      # Bu artık kabul edilemez; değer üretim varsayılanına çekildi.
       #
-      # ⚠️ GEÇİCİ GERİ ALMA (2026-09-26, operatör kararı — Seçenek B):
-      # "production" DEĞERİ DENENDİ ve DEPLOY'U DURDURDU. Mevcut
-      # SCALPER_ADMIN_PASSWORD politikayı geçmiyor (<10 karakter / yaygın
-      # sözlük), `config.py` import sırasında RuntimeError fırlatıyor,
-      # uvicorn hiç açılmıyor, healthcheck geçmiyor, konteyner "Waiting"
-      # durumunda kalıyor.
+      # ⚠️ OPERATÖR İÇİN ZORUNLU ÖN ADIM: `SCALPER_ADMIN_PASSWORD` politikayı
+      # geçmelidir (>=10 karakter, tamamen rakam değil, yaygın sözlük değeri
+      # değil). Aksi halde `config.py` import sırasında RuntimeError fırlatır,
+      # uvicorn hiç açılmaz, healthcheck geçmez ve konteyner "Waiting"
+      # durumunda kalır. Bu bir hata DEĞİL, bilinçli bir korumadır: zayıf
+      # parolayla canlıya çıkmayı engeller.
       #
-      # Bu değer "production" yapıldığında konteyner açılmayı REDDEDER —
-      # yani politika gerçekten uygulanır, ama mevcut parolayla prod'a
-      # çıkmak mümkün değildir. Parolayı güçlendirip (>=10 karakter, harf+
-      # rakam, yaygın sözlük değil) bu değeri "production" yapmak gerekir.
-      # Politika: `config.py:admin_password_policy_message`.
-      SCALPER_ENV: ${SCALPER_ENV:-development}
+      # Yerel geliştirmede politika gerekmiyorsa `.env` içine
+      # `SCALPER_ENV=development` yazın (docker compose .env'i otomatik okur);
+      # ama ÜRETİMDE bu değeri düşürmeyin. Politika ayrıntısı ve iki çözüm
+      # `config.py:admin_password_policy_message` RuntimeError metninde.
+      SCALPER_ENV: ${SCALPER_ENV:-production}
       SCALPER_DB_PATH: /data/scalper_db_v4.sqlite
       # Use the database service in this Compose stack. A stale Coolify
       # DATABASE_URL must not redirect the backend to an unreachable host.
@@ -105,32 +106,48 @@ services:
       TOP_GAINERS_REFRESH_SEC: ${TOP_GAINERS_REFRESH_SEC:-600}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:alerts@example.com}
-    # 2026-09-26 (#75): Aşağıdaki secret'lar plaintext `environment:` ile
-    # veriliyor: POSTGRES_PASSWORD, SCALPER_ADMIN_PASSWORD,
-    # SCALPER_SESSION_SECRET, LLM_ENCRYPTION_KEY. `docker inspect` /
-    # `docker compose config` bunları düz metin gösterir ve CI log'larına
-    # sızabilir.
+      # 2026-10-07 (P1-11 #3): Köprü alıcısı GÜVENLİ VARSAYILANLARLA geçilir.
+      # `config.py:785-786` varsayılanları hâlâ `true/true` (alıcı açık +
+      # otomatik işlem açık) ve bu dosya onları EZMEZSE dağıtılan stack açık
+      # gelirdi. Burada alıcı KAPALI, otomatik işlem KAPALI verilir; operatör
+      # `.env`den bilinçli olarak açar. Secret varsayılanı BOŞ → alıcı açık
+      # olsa bile `verify_bridge_secret` boş secretla her isteği 401 reddeder
+      # (fail-closed). DB'de kayıtlı ayar (`bridge_receiver_enabled`) env'i
+      # ezebilir; o yüzden admin panelinden de kapalı doğrulayın.
+      BINANCE_TR_BRIDGE_SECRET: ${BINANCE_TR_BRIDGE_SECRET:-}
+      BINANCE_TR_RECEIVER_ENABLED: ${BINANCE_TR_RECEIVER_ENABLED:-0}
+      BINANCE_TR_BRIDGE_AUTO_TRADE: ${BINANCE_TR_BRIDGE_AUTO_TRADE:-0}
+      BINANCE_TR_BRIDGE_MIN_SCORE: ${BINANCE_TR_BRIDGE_MIN_SCORE:-0.0}
+      BINANCE_TR_BRIDGE_COOLDOWN_SEC: ${BINANCE_TR_BRIDGE_COOLDOWN_SEC:-60.0}
+    # 2026-10-07 (P1-11 #2): GİZLİ DEĞERLER ARTIK .env'DEN GELİR — repoda düz
+    # metin YOKTUR. `environment:` altındaki `${...:?}` başvuruları host
+    # ortamından ya da compose'un otomatik okuduğu git-ignored kök `.env`
+    # dosyasından interpolasyon yapar (bkz. `.env.example`). Coolify'da bu
+    # değerler panelden "Environment Variables" olarak verilir.
     #
-    # ÖNERİLEN GEÇİŞ — Coolify'ta secret mount ile (bilinçli olarak UYGULANMADI;
-    # prod kırılmasın diye dokunulmadı):
+    # POSTGRES_PASSWORD, SCALPER_ADMIN_PASSWORD, SCALPER_SESSION_SECRET,
+    # LLM_ENCRYPTION_KEY, BINANCE_TR_BRIDGE_SECRET artık `.env` içinde
+    # yaşamalıdır; `.env` git-ignored'dır ve `docker inspect` yalnızca
+    # çalışma-anı çıktısını gösterir (kaynak repo temiz kalır).
     #
-    #   Coolify → Resource → "Secret Files" bölümünden
-    #     /run/secrets/llm_encryption_key  (64 hex, 32 bayt)
-    #     /run/secrets/scalper_admin_password
-    #     /run/secrets/scalper_session_secret
-    #   dosyaları mount edilir, ardından yukarıdaki satırlar şu hale gelir:
+    # DAHA GÜÇLÜ SEÇENEK — dosya tabanlı secret (`*_FILE`) köprüsü:
+    # Coolify "Secret Files" / Docker `secrets:` / `/run/secrets/*` dosyaları
+    # üretir; ilgili değişken YERİNE `X_FILE=/run/secrets/...` verilir. Bu yol,
+    # ajanın sahibi olmadığı `backend/app/config.py`da TEK bir düzenleme
+    # gerektirir (aşağıda madde madde).
     #
-    #     secrets:
-    #       - llm_encryption_key
-    #     ...
-    #     LLM_ENCRYPTION_KEY_FILE: /run/secrets/llm_encryption_key
-    #     SCALPER_ADMIN_PASSWORD_FILE: /run/secrets/scalper_admin_password
-    #     SCALPER_SESSION_SECRET_FILE: /run/secrets/scalper_session_secret
-    #
-    #   ...ve dosya-istemcisinin `os.getenv("X") or open(os.getenv("X_FILE"))`
-    #   deseniyle okuması gerekir. BU, `backend/app/config.py` ve
-    #   `docker-compose.yaml` dışında değişiklik gerektirir (config.py başka
-    #   ajanların sahipliğinde) — birlikte planlanmalıdır.
+    # NEDEN burada otomatik yapılmadı: `config.py` şu satırlarla DEĞERİ
+    # `os.getenv("X")` ile doğrudan okur:
+    #     config.py:784  BINANCE_TR_BRIDGE_SECRET = os.getenv("BINANCE_TR_BRIDGE_SECRET", "")
+    #     config.py:818  _session_secret = os.getenv("SCALPER_SESSION_SECRET", "").strip()
+    #     config.py:887  _admin_password = os.getenv("SCALPER_ADMIN_PASSWORD", "")
+    # Değeri compose'da boş geçip yalnızca `X_FILE` vermek `:?` (fail-fast)
+    # interpolasyonunu zayıflatır ve admin parola politikası boş parolada
+    # hiç çalışmaz. Bu yüzden dosya-istemcisi deseni `config.py`ye taşınana
+    # kadar env-yolu standart kalır. Gerekli app değişikliği (ayrı ajan):
+    # `X = os.getenv("X") or _read_secret_file(os.getenv("X_FILE"))`; ardından
+    # bu compose'da `secrets:` + `X_FILE:` satırları eklenerek kullanılabilir
+    # hale gelir.
     #
     # Aynı desen postgres için de geçerlidir (`POSTGRES_PASSWORD_FILE` resmi
     # postgres imajı tarafından desteklenir; backend tarafı yine config.py
@@ -255,12 +272,22 @@ services:
       - "traefik.http.services.gateway.loadbalancer.healthcheck.timeout=3s"
     logging: *default-logging
 
-  # Otomatik gece yedeği: her 24 saatte bir pg_dump. Saklama 1 GÜN (2026-09-16):
-  # 7 günlük pencere DB boyutunun 7 KATI yer tutuyordu (tek disk, %86 dolu) ve
-  # en güncel dump eski bir dump'tan daha değerlidir. Deploy öncesi elle yedek
-  # almak (aşağıdaki restore komutu) hâlâ önerilir.
+  # Otomatik gece yedeği: her 24 saatte bir pg_dump. Saklama artık ENV ile
+  # ayarlanır (BACKUP_RETENTION, sayı tabanlı) — 2026-09-16 ölçümü: 7 günlük
+  # yastan-tabanlı pencere tek diskte %86 doluyordu. En güncel dump eski bir
+  # dump'tan değerlidir. Deploy öncesi elle yedek almak (aşağıdaki
+  # geri-yükleme komutu) hâlâ önerilir.
   # ./local_backups host'a bağlanır (gitignored).
-  # Restore: `cat <dump> | docker exec -i <postgres> psql -U scalper scalper`
+  #
+  # 2026-10-07 (P2-12): Geri-yükleme komutu DÜZELTİLDİ. `-Fc` (custom format)
+  # dump'lar `psql` ile okunamaz; `pg_restore` gerekir:
+  #   docker exec -i <postgres> pg_restore -U scalper -d scalper --clean --if-exists < <dump>
+  # (`psql -U scalper scalper < dump` YALNIZCA düz SQL dump'lar içindir; bu
+  #  depo yalnızca `-Fc` üretir, o komut sessizce/anlamsız hata verir.)
+  #
+  # 2026-10-07 (P2-12): Yedek konteynerinin kendisi artık başarısızlığı
+  # YÜZEYE çıkarır (non-zero exit + stderr log) ve opsiyonel olarak host
+  # DIŞINA (ikinci disk / S3 / NAS) kopyalar. Bkz. BACKUP_REMOTE_* aşağıda.
   db-backup:
     image: pgvector/pgvector:pg17-bookworm
     restart: unless-stopped
@@ -284,8 +311,21 @@ services:
         condition: service_started
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      # Saklama: tutulacak dump SAYISI (yastan bagimsiz). 2 = tek diskte
+      # ~2×DB. Ikinci disk/NFS baglandiginda rahatca artirilabilir.
+      BACKUP_RETENTION: ${BACKUP_RETENTION:-2}
+      # Host disi kopya: ikinci disk/NFS'yi asagidaki /offbox volume'una
+      # baglayip (BACKUP_OFFBOX_DIR) bunu 1 yapin. Ayni-disk arizasinda
+      # dump da yok olmasin (P2-12).
+      BACKUP_OFFBOX_ENABLED: ${BACKUP_OFFBOX_ENABLED:-0}
+      # Kacis kapisi: S3/rclone/aws gibi araclar icin serbest komut
+      # ($$DUMP = dump yolu). Orn: rclone copy $$DUMP remote:scalper/
+      BACKUP_REMOTE_CMD: ${BACKUP_REMOTE_CMD:-}
     volumes:
       - ./local_backups:/backups
+      # Ikinci disk / NFS / NAS. Varsayilan ./offbox_backups (gitignored);
+      # prod'da BACKUP_OFFBOX_DIR=/mnt/yedek gibi bir yol verin.
+      - ${BACKUP_OFFBOX_DIR:-./offbox_backups}:/offbox
     entrypoint:
       - /bin/sh
       - -c
@@ -298,21 +338,68 @@ services:
         #   2) Temizlik yalnizca dump'tan SONRA, dongude bir kez kosuyordu; her
         #      DEPLOY yeni konteyner actigi icin gunde birden fazla dump birikti
         #      (14 Eylul'de 5 dump). Olcum: local_backups = 69 GB.
-        # Cozum: SAYI tabanli saklama — en yeni 2 dump kalir, yastan bagimsiz.
+        # Cozum: SAYI tabanli saklama — en yeni N dump kalir, yastan bagimsiz.
         # Ayrica dongunun BASINDA da temizlenir ki redeploy firtinasinda birikmesin.
-        # Boyut sinirli kalir: ~2 x dump (bloat sonrasi ~725 MB -> ~1.5 GB).
+        #
+        # 2026-10-07 (P2-12): basarisizlik artik YUTULMUYOR: marker dosyasi
+        # yazilir ve konteyner non-zero exit ile yeniden baslar (Docker/Coolify
+        # gorunur kilar). Ayrica host disi kopya (offbox/remote) desteklenir.
+        fail_marker=/backups/.last_backup_failed
+        prune() {
+          # En yeni ${BACKUP_RETENTION} dump kalir; fazlasi silinir.
+          ls -1t /backups/scalper_*.dump 2>/dev/null \
+            | tail -n +$$(( $${BACKUP_RETENTION:-2} + 1 )) | xargs -r rm -f
+        }
+        offload() {
+          dump="$$1"
+          [ -z "$$dump" ] && return 0
+          if [ "$${BACKUP_OFFBOX_ENABLED:-0}" = "1" ] && [ -d /offbox ]; then
+            cp "$$dump" /offbox/ || return 1
+            echo "[backup] off-box (/offbox) kopya tamam"
+          fi
+          if [ -n "$${BACKUP_REMOTE_CMD:-}" ]; then
+            DUMP="$$dump" sh -c "$${BACKUP_REMOTE_CMD}" || return 1
+            echo "[backup] remote-cmd kopya tamam"
+          fi
+          return 0
+        }
         while true; do
           ts=$$(date +%Y%m%d_%H%M%S)
-          ls -1t /backups/scalper_*.dump 2>/dev/null | tail -n +3 | xargs -r rm -f
+          prune
           echo "[backup] $$ts basliyor"
-          if pg_dump -h postgres -U ${POSTGRES_USER:-scalper} -d ${POSTGRES_DB:-scalper} -Fc -f "/backups/scalper_$$ts.dump"; then
+          # Once gecici dosyaya yaz: yarim dump "tam" sanilmasin.
+          tmp="/backups/.scalper_$$ts.dump.part"
+          if pg_dump -h postgres -U ${POSTGRES_USER:-scalper} -d ${POSTGRES_DB:-scalper} -Fc -f "$$tmp"; then
+            mv "$$tmp" "/backups/scalper_$$ts.dump"
             echo "[backup] $$ts tamam"
+            if offload "/backups/scalper_$$ts.dump"; then
+              rm -f "$$fail_marker"
+            else
+              echo "[backup] $$ts HOST-DISI KOPYA BASARISIZ" >&2
+              echo "$$ts offload-failed" > "$$fail_marker"
+            fi
           else
+            rm -f "$$tmp"
             echo "[backup] $$ts BASARISIZ" >&2
+            echo "$$ts dump-failed" > "$$fail_marker"
           fi
-          ls -1t /backups/scalper_*.dump 2>/dev/null | tail -n +3 | xargs -r rm -f
+          prune
+          # Basarisizlik varsa gorunur olsun: non-zero exit -> restart
+          # politikasi devreye girer (sessiz kalip gunlerce beklemez).
+          if [ -f "$$fail_marker" ]; then
+            sleep 300
+            exit 1
+          fi
           sleep 86400
         done
+    healthcheck:
+      # Marker dosyasi varsa unhealthy: son yedek/altyapi BASARISIZ demektir.
+      # Coolify ve `docker ps` bu durumu gosterir -> sessiz basarisizlik yok.
+      test: ["CMD-SHELL", "test ! -f /backups/.last_backup_failed"]
+      start_period: 600s
+      interval: 3600s
+      timeout: 5s
+      retries: 2
     exclude_from_hc: true
     labels:
       - "traefik.enable=false"

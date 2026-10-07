@@ -124,6 +124,13 @@ class DiscoveryPulseTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         ed.reset()
         self.addCleanup(ed.reset)
+        # İzolasyon: `monitoring_state()` pulse'u 5 sn TTL ile önbelleğe alır
+        # (`_state_pulse_cache`). Bu sınıftan ÖNCE koşan bir test (ör. rising
+        # state testleri) `monitoring_state()` çağırıp önbelleği BOŞ nabızla
+        # doldurursa, buradaki assert bayat boş listeyi görür (sıra-bağımlı
+        # kırılganlık). Önbelleği sıfırla ki test her sırada deterministik olsun.
+        from app.routers import monitoring
+        monitoring._state_pulse_cache.update({"at": 0.0, "value": []})
 
     @staticmethod
     def _discovery_row():
@@ -293,6 +300,45 @@ class FastScanGateTests(unittest.IsolatedAsyncioTestCase):
         scan.assert_awaited_once()
         self.assertIn("SOLTRY", self.mon._fast_scan["symbol_last"])
         self.assertNotIn("BTCTRY", self.mon._fast_scan["symbol_last"])
+
+    # --- P1-1 (2026-10-07): hızlı tarama TESLİMİ ---------------------------------
+    async def test_trigger_delivers_new_notifications(self):
+        """P1-1: hızlı tarama dönüşü teslim edilmeli (eskiden dönüş ATILIYORDU ve
+        bu yolda hiçbir bildirim gönderilmiyordu)."""
+        deliver = AsyncMock(return_value=None)
+        payload = [{"symbol": "BTCTRY", "score": 80.0}]
+        result = {"new_notifications": payload}
+        with patch.object(self.mon.config, "DISCOVERY_FAST_SCAN_ENABLED", True), \
+             patch("app.early_discovery.top_candidates", return_value=[self._row()]), \
+             patch.object(self.mon, "_run_scan", new=AsyncMock(return_value=result)), \
+             patch.object(self.mon, "_deliver_scan_notifications", new=deliver):
+            self.assertTrue(await self.mon._maybe_run_fast_scan())
+        deliver.assert_awaited_once()
+        self.assertEqual(payload, deliver.await_args.args[0])
+
+    async def test_trigger_skips_delivery_when_result_not_dict(self):
+        """P1-1: bozuk/eksik `_run_scan` sonucu teslimi ATLAR (hızlı tarama çökmez)."""
+        deliver = AsyncMock(return_value=None)
+        with patch.object(self.mon.config, "DISCOVERY_FAST_SCAN_ENABLED", True), \
+             patch("app.early_discovery.top_candidates", return_value=[self._row()]), \
+             patch.object(self.mon, "_run_scan", new=AsyncMock(return_value=None)), \
+             patch.object(self.mon, "_deliver_scan_notifications", new=deliver):
+            self.assertTrue(await self.mon._maybe_run_fast_scan())
+        deliver.assert_not_awaited()
+
+    async def test_trigger_clears_unified_pushed_symbols_before_delivery(self):
+        """P1-1: teslimden önce `_unified_pushed_symbols` sıfırlanır (tur izolasyonu) —
+        döngüyle AYNI sıra; bayat sembol yükseliş push'unu yanlış bastırmasın."""
+        self.mon._unified_pushed_symbols.add("STALETRY")
+        self.addCleanup(self.mon._unified_pushed_symbols.clear)
+        with patch.object(self.mon.config, "DISCOVERY_FAST_SCAN_ENABLED", True), \
+             patch("app.early_discovery.top_candidates", return_value=[self._row()]), \
+             patch.object(self.mon, "_run_scan",
+                          new=AsyncMock(return_value={"new_notifications": []})), \
+             patch.object(self.mon, "_deliver_scan_notifications",
+                          new=AsyncMock(return_value=None)):
+            await self.mon._maybe_run_fast_scan()
+        self.assertNotIn("STALETRY", self.mon._unified_pushed_symbols)
 
 
 if __name__ == "__main__":

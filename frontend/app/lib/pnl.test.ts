@@ -195,3 +195,58 @@ describe("pnl — modül durumu izolasyonu", () => {
     expect(commissionPct()).toBeCloseTo(0.0015, 12);
   });
 });
+
+describe("pnl — SHORT pozisyon K/Z işareti (P2-9)", () => {
+  // SHORT'ta fiyat DÜŞERSE kâr. `side` verilmezse LONG varsayılır; bu yüzden tüm
+  // mevcut (side'sız) çağrılar değişmeden doğru kalır — aşağıda bu da kilitlenir.
+  it("SHORT: fiyat düşünce brüt K/Z POZİTİF (LONG'un tersi işaret)", () => {
+    // (90 − 100) × 2 × (−1) = +20
+    expect(grossOpenPnlTry(100, 90, 2, "SHORT")).toBeCloseTo(20, 10);
+  });
+
+  it("SHORT: fiyat yükselince brüt K/Z NEGATİF", () => {
+    // (110 − 100) × 2 × (−1) = −20
+    expect(grossOpenPnlTry(100, 110, 2, "SHORT")).toBeCloseTo(-20, 10);
+  });
+
+  it("SHORT: net K/Z (komisyon düşülmüş) işaret ve tutar doğru", () => {
+    // kâr: gross=+20; fees=0.0015*2*(100+90)=0.57; net=+19.43
+    expect(netOpenPnlTry(100, 90, 2, "SHORT")).toBeCloseTo(19.43, 10);
+    // zarar: gross=−20; fees=0.0015*2*(100+110)=0.63; net=−20.63
+    expect(netOpenPnlTry(100, 110, 2, "SHORT")).toBeCloseTo(-20.63, 10);
+  });
+
+  it("SHORT: net getiri (%) tabanı giriş değeridir", () => {
+    // net=19.43; taban=100*2=200 → 9.715%
+    expect(netOpenPnlPct(100, 90, 2, "SHORT")).toBeCloseTo(9.715, 10);
+  });
+
+  it("side büyük/küçük harf duyarsız ve bilinmeyen değer LONG varsayılır", () => {
+    expect(netOpenPnlTry(100, 110, 2, "short")).toBeCloseTo(-20.63, 10);
+    // LONG açıkça verilirse ve hiç verilmezse (undefined/"") aynı sonuç.
+    const long = netOpenPnlTry(100, 110, 2) as number;
+    expect(netOpenPnlTry(100, 110, 2, "LONG")).toBeCloseTo(long, 10);
+    expect(netOpenPnlTry(100, 110, 2, undefined)).toBeCloseTo(long, 10);
+    expect(netOpenPnlTry(100, 110, 2, "")).toBeCloseTo(long, 10);
+    expect(long).toBeCloseTo(19.37, 10);
+  });
+
+  it("SHORT'ta da eksik girdide `null` döner", () => {
+    expect(netOpenPnlTry(null, 90, 2, "SHORT")).toBeNull();
+    expect(grossOpenPnlTry(100, 0, 2, "SHORT")).toBeNull();
+    expect(netOpenPnlPct(100, 90, 0, "SHORT")).toBeNull();
+  });
+
+  it("SHORT net daima brütten küçük veya eşit (komisyon yön bağımsız maliyet)", () => {
+    const cases: [number, number, number][] = [
+      [100, 90, 2],
+      [100, 110, 0.5],
+      [4250, 4100, 1],
+    ];
+    for (const [e, c, q] of cases) {
+      const gross = grossOpenPnlTry(e, c, q, "SHORT") as number;
+      const net = netOpenPnlTry(e, c, q, "SHORT") as number;
+      expect(net).toBeLessThanOrEqual(gross + EPS);
+    }
+  });
+});

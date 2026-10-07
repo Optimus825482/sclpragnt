@@ -11,6 +11,34 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 load_dotenv(override=False)
 
+
+def _env_secret(name: str, default: str = "") -> str:
+    """Secret oku: doğrudan env değeri, yoksa `<name>_FILE` dosyası (Docker secret).
+
+    Docker/Coolify secret'ları dosya olarak bağlanır (ör. `/run/secrets/x`); bu
+    yardımcı `SCALPER_ADMIN_PASSWORD_FILE`, `SCALPER_SESSION_SECRET_FILE`,
+    `BINANCE_TR_BRIDGE_SECRET_FILE` gibi değişkenlerle içeriği okumamızı sağlar.
+    Öncelik: **boş olmayan env değeri kazanır**, yoksa dosya okunur. Dosya
+    okunamazsa `default` döner — secret'ın yokluğu burada HATA değildir;
+    fail-closed kararlar (boş/zayıf parola, boş session secret) çağıran tarafta
+    verilir. Dosya içeriği strip edilir: `echo` ile yazılan secret'ın sonundaki
+    satırsonu kimlik doğrulamayı sessizce bozabilir.
+    """
+    direct = os.getenv(name, "")
+    if direct and direct.strip():
+        return direct
+    path = os.getenv(name + "_FILE", "").strip()
+    if path:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = fh.read().strip()
+            if data:
+                return data
+        except OSError as exc:
+            print(f"[config] UYARI: {name}_FILE okunamadı ({path}): {exc}")
+    return default
+
+
 # G-24 (denetim): Aşağıdaki ayarların TAMAMI `class Config` gövdesinde, yani
 # IMPORT anında okunur. Birkaç ayar (RETENTION_DAYS, microstructure retention,
 # DATABASE_URL, SCALPER_SESSION_SECRET) ise çalışma zamanında okunur → iki
@@ -286,7 +314,7 @@ class Config:
     # 2) Agresif akış onayı: giriş yönüne (long) aykırı net agresif satış akışı
     #    (CVD) varsa girişi reddet. Varsayılan OFF (aynı gerekçe).
     VELOCITY_FLOW_CONFIRMATION_FILTER = os.getenv("VELOCITY_FLOW_CONFIRMATION_FILTER", "false").lower() == "true"
-    VELOCITY_PROFIT_LOCK_PCT = 0.01  # +%0.5'te kilitlenen net kâr (girişin %0.01 üstü + komisyon)
+    VELOCITY_PROFIT_LOCK_PCT = 0.01  # Kâr kilidi SABİT TABANI. BİRİM: yüzde (0.01 == %0.01). Gerçek kilit zemini = max(bu taban, min_net_exit_pct) → tipik olarak round-trip maliyet (~%0.355) bu tabanı aşar ve zemin ONU kullanır; sabit taban yalnız emniyet ağıdır. (2026-09-26 denetimi: değer DOĞRU, eski "+%0.5" yorumu yanıltıcıydı.)
     # 7 günlük replay doğrulamasıyla bulunan M5 momentum+volatilite deseni
     # (24s/72s/7g altı pencerede %66-68 başarı). Aday pozisyon açmadan önce
     # bu eşikleri karşılamalıdır. VELOCITY_PATTERN_FILTER_ENABLED=true ise
@@ -325,7 +353,7 @@ class Config:
     # A4 (R/R kapisi): dusuk odul/risk adaylari bildirilmez.
     # Oran = TP mesafesi / SL mesafesi. SL dayanagi GERCEK cikis stop'udur:
     # `auto_paper._manage_single_trade` pozisyonu `stop_loss = fill_entry*(1-sl_pct)`
-    # ile acar ve `sl_pct` = `AUTO_PAPER_SL_PCT_DEFAULT` (asagida, %3.0) / settings
+    # ile acar ve `sl_pct` = `AUTO_PAPER_SL_PCT_DEFAULT` (asagida, %5.0) / settings
     # `stop_loss_pct`. Ikisi ayrisirsa RR olcumu yalan olur → parite testi:
     # `test_monitoring.CalibrationTests.test_rr_sl_basis_matches_real_exit_stop`.
     MONITORING_RR_ENABLED = os.getenv("MONITORING_RR_ENABLED", "true").lower() == "true"
@@ -338,11 +366,13 @@ class Config:
     # varsayilan RR_MIN=1.2 / SL=%3 → hedef>=%3.6, bildirimlerin yalniz ~%27'si
     # gecer ve secilen tek bant %1.3 isabetli olandi). Bu yuzden esik, odulu
     # riskine gore ANLAMSIZ olan adayi elemekle sinirli tutulur:
-    #   RR_MIN=0.6 + SL=%3.0 → hedef >= %1.8 gerekir.
-    # Tipik hedefler (%2.0 → RR 0.667, %3.0 → 1.0) GECER; yalnizca hedefi
+    # (2026-09-14, SL dayanagi %1.5 iken) RR_MIN=0.6 + SL=%1.5 → hedef >= %0.9.
+    # Tipik hedefler (%2.0 → RR 1.33, %3.0 → 2.0) GECER; yalnizca hedefi
     # gidis-donus maliyetine yaklasan band (MONITORING_TARGET_PCT_MIN=%1.5 →
-    # RR 0.5) elenir. Tek deger yeterli: 5dk (%2.0) ve 15dk (%3.0) profillerinin
+    # RR 1.0) elenir. Tek deger yeterli: 5dk (%2.0) ve 15dk (%3.0) profillerinin
     # ikisi de esigi asar, ufuk bazli ayrim gerekmez.
+    # (2026-10-07, SL dayanagi %5.0) ayni EFEKTIF esik 0.18 x 5.0 = %0.90
+    # hedefte tutulur → %2.0/%3.0 profilleri yine gecer, davranis degismez.
     #
     # 2026-10-07: SL dayanagi 1.5 → 5.0 (asagida). Eşik de eski EFEKTIF degerinde
     # (0.6 x 1.5 = %0.90 hedef) tutulur, yoksa 0.6 x 5.0 = %3.00 olur ve
@@ -486,10 +516,26 @@ class Config:
     # MASTER SURGE ENGINE (Ana Yükselme Potansiyeli Algoritması — 2026-09-21)
     # 4 Katmanlı Hibrit Mimari + Dinamik Uyarlanabilir Hedefler (TP1/TP2)
     # ---------------------------------------------------------------------
+    # ÖLÜ ANAHTAR UYARISI (2026-10-07 denetimi): bu bayrak hiçbir kod yolunda
+    # OKUNMUYOR. Motor her zaman çalışır; kapatmak için `MASTER_SURGE_ENABLED`
+    # yerine `MONITORING_MASTER_SURGE_GATE=false` kullanılmalıdır. SİLİNMEDİ:
+    # env ile verilen değerin sessizce yok sayılmaması için (kablo hatası mı,
+    # bilinçli mi ayrımı insan kararıdır) burada belgelenir. Bağlamak P0 bir
+    # davranış değişikliği olurdu → ayrı değişiklik olarak ele alınmalı.
     MASTER_SURGE_ENABLED = os.getenv("MASTER_SURGE_ENABLED", "true").lower() == "true"
     BTC_REGIME_SHIELD_ENABLED = os.getenv("BTC_REGIME_SHIELD_ENABLED", "true").lower() == "true"
     MASTER_SURGE_MIN_SCORE = float(os.getenv("MASTER_SURGE_MIN_SCORE", "70.0"))
-    MASTER_SURGE_REQUIRE_4WAY = os.getenv("MASTER_SURGE_REQUIRE_4WAY", "true").lower() == "true"
+    # 2026-10-07: true → false. KANIT (DENETIM_RAPORU_2026-10-07 §P0-1, çalıştırarak
+    # doğrulandı): kapı AÇIKken `passed=True` yalnız 4 katmanın TAMAMI geçtiğinde;
+    # `_notify` `passed is False` görünce adayı atlar ve `MONITORING_MASTER_SURGE_GATE`
+    # zaten varsayılan AÇIK → radar adaylarının büyük çoğunluğu sessizce bastırılıyordu
+    # ("insufficient confluence" bir SKORLAMA girdisi değil, sert ölüm oluyordu).
+    # `false` ile 4'lü teyit artık sert kapı değil: skor `MASTER_SURGE_MIN_SCORE`'u
+    # karşılıyorsa aday geçer (monitoring.py bu yönü puanlamaya çevirir). ALT
+    # KATMAN (likidite) elemesi ve gerçek risk kapıları (EXTREME_LONG/BTC-panik)
+    # bu bayraktan BAĞIMSIZ olarak yürür — gevşetilen yalnız 4'lü-teyit zorunluluğu.
+    # Geri dönüş: `MASTER_SURGE_REQUIRE_4WAY=true` env'i.
+    MASTER_SURGE_REQUIRE_4WAY = os.getenv("MASTER_SURGE_REQUIRE_4WAY", "false").lower() == "true"
     MASTER_SURGE_MAX_SPREAD_PCT = float(os.getenv("MASTER_SURGE_MAX_SPREAD_PCT", "0.45"))
     MASTER_SURGE_MIN_24H_VOLUME_TRY = float(os.getenv("MASTER_SURGE_MIN_24H_VOLUME_TRY", "150000.0"))
     MASTER_SURGE_MIN_DEPTH_TRY = float(os.getenv("MASTER_SURGE_MIN_DEPTH_TRY", "5000.0"))
@@ -504,6 +550,14 @@ class Config:
     # ---------------------------------------------------------------------
     # Raporlar (sinyal + otonom işlem) ve KPI'lar yalnızca bu andan SONRAKİ
     # veriyle hesaplanır; öncesi "arşiv" sayılır ve varsayılan olarak gizlenir.
+    #
+    # KAPSAM (2026-10-07, DENETIM_RAPORU §P0-3 düzeltmesiyle): bu sınır YALNIZCA
+    # raporlama/KPI okuma yollarını etkiler. POZİSYON YÖNETİMİ sınırı YOK SAYAR:
+    # açık pozisyon taraması (`list_auto_paper_trades(status="open")` →
+    # `_check_open_positions`) `ignore_reports_baseline=True` okumak ZORUNDADIR,
+    # aksi halde sınırdan eski açık pozisyonlar hiç yönetilmez (SL/TP/max_hold/
+    # trailing çalışmaz) ve global açık-pozisyon tavanından muaf kalırdı.
+    # Özet: RAPOR bu sınıra UYAR, YÖNETİM ondan BAĞIMSIZDIR.
     #
     # NEDEN SABİT VARSAYILAN: 2026-10-07'de otonom trade ayarları kanıta dayalı
     # değerlere çevrildi (bkz. docs/OTONOM_TRADE_TESHIS_2026-10-07.md §6). O
@@ -656,6 +710,17 @@ class Config:
     MAX_CLUSTER_EXPOSURE_PCT = max(20.0, float(os.getenv("MAX_CLUSTER_EXPOSURE_PCT", "60.0")))
 
     # Otonom Paper Trade (monitoring bildiriminden tetiklenen, 2026-09-04)
+    #
+    # ÖNCELİK TUZAĞI (2026-10-07 denetimi) — DİKKAT: aşağıdaki `AUTO_PAPER_*`
+    # sabitleri "env ile geri alınabilir" görünür ama DİKKAT: admin bir kez
+    # `PUT /api/auto-paper/settings` ile kaydettiğinde DB `auto_paper_settings`
+    # satırı oluşur ve çalışma anında env'i EZER. Yani geri alma sırası:
+    #     DB auto_paper_settings  >  env (AUTO_PAPER_*)  >  bu koddaki varsayılan
+    # Env rollback (ör. `AUTO_PAPER_SL_PCT=1.5`) admin kaydı varsa SESSİZCE
+    # etkisizdir; önce DB satırı temizlenmeli/sıfırlanmalıdır. Bu, config.py
+    # içinde çözülemez (önceliği DB okuma katmanı belirler) → yalnızca
+    # belgelenir; env'i varsayılana sıfırlamak da aynı tuzağa düşer.
+    #
     # A3 (2026-09-14) ANKRAJI: `auto_paper` bu eşiği `monitoring.normalize_score`
     # PANEL skoruyla karşılaştırır. Eski panel 50 = ham 1000 (lineer, cap 2000);
     # log haritada aynı ham nokta panel 68.2 → DEĞER KORUNARAK yeniden ankrajlandı.
@@ -667,6 +732,12 @@ class Config:
     # SL 1.5 -> -0.85%/islem, SL 4.0 -> +1.32%, SL 5.0 -> +1.38%, SL 6.0 -> +1.41%.
     # Canlida 4.0 -> 1.5 denemesi 7 KAT kotu sonuc vermisti (bkz. teshis §4).
     # Genis stop = felaket sigortasi; kazananlari kesme, kuyrugu -%28'den -%5'e indir.
+    # Tek env kaynağı: `AUTO_PAPER_SL_PCT` — bilinçli olarak `MONITORING_RR_SL_PCT`
+    # (yukarıda) ile AYNI anahtar. Eskiden burada `AUTO_PAPER_SL_PCT_DEFAULT`
+    # okunurken RR dayanağı `AUTO_PAPER_SL_PCT` okuyordu; teşhis §6'daki geri-alma
+    # komutu (`AUTO_PAPER_SL_PCT=1.5`) yalnız birini çekip RR ölçümünü / parite
+    # testini bozuyordu. Artık tek isim, drift imkânsız. (Sabit ADI geriye dönük
+    # uyum için `AUTO_PAPER_SL_PCT_DEFAULT` kalır — yalnız env anahtarı değişti.)
     AUTO_PAPER_SL_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_SL_PCT", "5.0"))
     AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "1.5"))  # Eski varsayılan 2.0 → 1.5 (2026-09-17, Erkan kararı: radar/velocity bildirimlerinin hedefi MFE tavanına otursun; replay geometrisi + canlı 50 işlem verisi).
     AUTO_PAPER_MIN_ORDER_TRY = float(os.getenv("AUTO_PAPER_MIN_ORDER_TRY", "50.0"))
@@ -780,10 +851,16 @@ class Config:
     DISCOVERY_FAST_SCAN_MIN_GAP_SEC = max(10, int(os.getenv("DISCOVERY_FAST_SCAN_MIN_GAP_SEC", "15")))
     DISCOVERY_FAST_SCAN_ENABLED = os.getenv("DISCOVERY_FAST_SCAN_ENABLED", "true").lower() == "true"
 
-    # Binance Global -> Binance TR Lead-Lag Signal Bridge Alıcısı
-    BINANCE_TR_BRIDGE_SECRET = os.getenv("BINANCE_TR_BRIDGE_SECRET", "")
-    BINANCE_TR_RECEIVER_ENABLED = os.getenv("BINANCE_TR_RECEIVER_ENABLED", "true").lower() == "true"
-    BINANCE_TR_BRIDGE_AUTO_TRADE = os.getenv("BINANCE_TR_BRIDGE_AUTO_TRADE", "true").lower() == "true"
+    # Binance Global -> Binance TR Lead-Lag Signal Bridge Alıcısı.
+    # GÜVENLİ VARSAYILAN (2026-10-07): alıcı HARİCİ bir sinyal kaynağının
+    # otomatik işlem tetiklemesine izin verir. Yalnızca placeholder bir secret
+    # varken enabled+AUTO_TRADE açık gelmek canlı-para ayağına kurşun sıkmaktır;
+    # bu yüzden VARSAYILAN KAPALI ("false"). Açmak için ortam değişkenleri
+    # AÇIKÇA verilmelidir. Boş/eksik secret zaten istek düzeyinde fail-closed
+    # (tr_bridge_receiver.verify_bridge_secret secret yoksa reddeder).
+    BINANCE_TR_BRIDGE_SECRET = _env_secret("BINANCE_TR_BRIDGE_SECRET", "")
+    BINANCE_TR_RECEIVER_ENABLED = os.getenv("BINANCE_TR_RECEIVER_ENABLED", "false").lower() == "true"
+    BINANCE_TR_BRIDGE_AUTO_TRADE = os.getenv("BINANCE_TR_BRIDGE_AUTO_TRADE", "false").lower() == "true"
     BINANCE_TR_BRIDGE_MIN_SCORE = float(os.getenv("BINANCE_TR_BRIDGE_MIN_SCORE", "0.0"))
     BINANCE_TR_BRIDGE_COOLDOWN_SEC = float(os.getenv("BINANCE_TR_BRIDGE_COOLDOWN_SEC", "60.0"))
 
@@ -810,12 +887,15 @@ config = Config()
 
 # Güvenlik: placeholder session secret ile başlatmayı reddet. Placeholder
 # değer herkese açıktır; onunla imzalanan oturum çerezleri sahte üretilebilir.
+# Secret'lar `_env_secret` ile okunur → Docker/Coolify dosya-secret desteği:
+# `SCALPER_SESSION_SECRET_FILE`, `SCALPER_ADMIN_PASSWORD_FILE`,
+# `BINANCE_TR_BRIDGE_SECRET_FILE` (boş olmayan env değeri yine kazanır).
 _PLACEHOLDER_SECRETS = {
     "replace-with-at-least-32-random-bytes",
     "changeme",
     "change-me",
 }
-_session_secret = os.getenv("SCALPER_SESSION_SECRET", "").strip()
+_session_secret = _env_secret("SCALPER_SESSION_SECRET", "").strip()
 if _session_secret and _session_secret in _PLACEHOLDER_SECRETS:
     raise RuntimeError(
         "SCALPER_SESSION_SECRET placeholder değeriyle başlatılamaz; "
@@ -855,6 +935,24 @@ def enforce_admin_password_policy(password: str, *, production: bool) -> None:
     Tek karar noktası: hem modül yüklemesi hem testler bu fonksiyonu kullanır,
     böylece "uyarıyı RuntimeError'a çevir" davranışı tek yerden doğrulanır.
     """
+    # 2026-10-07: BOŞ parola da fail-closed'dır (üretimde). Eskiden boş parola
+    # "politika ihlali değil" sayılıyordu → SCALPER_ADMIN_PASSWORD hiç
+    # tanımlanmamış bir prod deploy'u, admin kapısı hiç kurulmadan açılıyordu.
+    # `admin_password_policy_message("")` (zayıflık denetimi) geriye dönük
+    # Nonesini korur; asıl ZORLAMA burada, boşluk ayrı ele alınır.
+    if not str(password or "").strip():
+        if production:
+            raise RuntimeError(
+                "[config] SCALPER_ADMIN_PASSWORD tanımlı değil (boş) ve "
+                "SCALPER_ENV=production.\n"
+                "[config] NEDEN: boş parola, admin/yetki kapısının hiç "
+                "kurulmaması demektir; üretimde fail-closed zorunludur.\n"
+                "[config] ÇÖZÜM: Coolify panelden güçlü bir SCALPER_ADMIN_PASSWORD "
+                "tanımlayın (>=10 karakter, harf+rakam); değeri loglamayın."
+            )
+        print("[config] UYARI: SCALPER_ADMIN_PASSWORD boş; üretimde başlatma "
+              "engellenir (geliştirme modunda yalnızca uyarı).")
+        return
     message = admin_password_policy_message(password)
     if not message:
         return
@@ -884,5 +982,5 @@ def enforce_admin_password_policy(password: str, *, production: bool) -> None:
 PRODUCTION_MODE = os.getenv(
     "SCALPER_ENV", os.getenv("ENVIRONMENT", "development")
 ).strip().lower() in {"production", "prod"}
-_admin_password = os.getenv("SCALPER_ADMIN_PASSWORD", "")
+_admin_password = _env_secret("SCALPER_ADMIN_PASSWORD", "")
 enforce_admin_password_policy(_admin_password, production=PRODUCTION_MODE)

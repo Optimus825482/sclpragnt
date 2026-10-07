@@ -14,6 +14,26 @@ logger = logging.getLogger("scalper.llm_analysis")
 # a real ``None`` payload is distinguishable from "undecodable".
 _JSON_UNDECODABLE = object()
 
+
+def _poll_queue_until(q, deadline):
+    """Bounded queue poll: en fazla ``deadline``e kadar BLOKE olur, sonra (None, None).
+
+    P1-7 (2026-10-07) NEDEN: Bu yardımcı SADECE varsayılan executor'da çalışır ve
+    ``queue.get(timeout=...)`` kullandığı için sinyal gelmese bile ``deadline``de
+    KESİNLİKLE döner. Eskiden tüketici ``asyncio.wait_for(to_thread(lines.get), 1.0)``
+    kullanıyordu: timeout anında bekleyiş İPTAL ediliyor ama işçi thread
+    ``lines.get()`` üzerinde SONSUZA DEK bloklu kalıyordu. Yavaş sağlayıcıda
+    varsayılan havuzun (min(32, cpu+4)) tüm thread'leri böyle pinleniyor ve
+    DB çağrıları AYNI havuzu paylaştığı için (database.py) tüm DB kuyruğa giriyordu.
+    Burada ise her işçi en geç ``deadline``de döner; sızan thread YOKTUR.
+    """
+    wait = max(0.0, float(deadline) - time.monotonic())
+    q_timeout = min(0.25, wait) if wait else 0.0
+    try:
+        return q.get(timeout=q_timeout) if q_timeout else q.get_nowait()
+    except Exception:  # queue.Empty ve olası diğer durumlar
+        return None, None
+
 def get_persona(snapshot=None):
     user_name = ""
     user_role = "user"
@@ -976,10 +996,17 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
                 reader.cancel()
                 raise RuntimeError(
                     f"LLM akışı toplam süre sınırını aştı: {STREAM_TOTAL_TIMEOUT} sn")
-            # Blocking queue.get yerine asyncio.Queue kullan — event loop'u bloke etme
-            try:
-                kind, raw_line = await asyncio.wait_for(asyncio.to_thread(lines.get), timeout=1.0)
-            except asyncio.TimeoutError:
+            # P1-7 (2026-10-07): Eskiden `asyncio.wait_for(asyncio.to_thread(lines.get), 1.0)`
+            # idi. wait_for timeout anında TÜKETİCİ bekleyişini iptal eder ama
+            # `lines.get()` üzerinde bloklu işçi thread İPTAL EDİLEMEZ → her
+            # timeout'ta bir thread havuzda kalıcı olarak sızar. Varsayılan havuz
+            # DB çağrılarıyla paylaşıldığı için (database.py) tüm DB kuyruğa
+            # girerdi. Yeni yardımcı `queue.get(timeout=...)` ile KENDİ kendine
+            # en geç `now+0.25sn`de döner; blok süresi `stream_deadline`e de
+            # kelepçelenir → hiçbir işçi sonsuza dek beklemez, sızıntı OLMAZ.
+            kind, raw_line = await asyncio.to_thread(
+                _poll_queue_until, lines, min(stream_deadline, time.monotonic() + 0.25))
+            if kind is None:
                 continue
             if kind == "error":
                 _close_stream_response()

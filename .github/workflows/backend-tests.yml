@@ -115,5 +115,12 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npm run typecheck
+      # 2026-10-07 (P2-10): Frontend `vitest` hiç CI'da koşmuyordu;
+      # `frontend/package.json` "test": "vitest run" tanımlı olmasına rağmen
+      # kapsam yalnız yerelde doğrulanıyordu → para matematiği (pnl/signals)
+      # sessizce bozulabilirdi. Sert kapı olarak eklendi (fail = job fail).
+      # Güncel sayı: 3 dosya / 74 test (SHORT PnL işaret testleriyle arttı).
+      - name: Test (vitest)
+        run: npm test
       - name: Build
         run: npm run build

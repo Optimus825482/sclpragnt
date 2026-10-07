@@ -4,12 +4,17 @@ Tasarım (kullanıcı vizyonu): sembol bazlı, taze veriyle eğitilen, journal'd
 ölçülmüş tahmin sonuçlarıyla sürekli pekişen bir yükseliş hedefi modeli.
 - Tek taban model; sembol/gün-çeyreği/saat özellik olarak girer (veri açlığı
   yerine genelleme), HistGradientBoosting NaN özellikleri doğal kabul eder.
-- Etiket: sonraki H dakikadaki gerçek maksimum yükseliş (MFE) / düşüş (MAE).
+- Etiket (P1-9 dürüstlük ilkesi): regressor GERÇEKLEŞTİRİLEBİLİR ÇIKIŞ
+  getirisini tahmin eder — ufuk sonundaki GERÇEK kapanış (close[t+H]/close[t]-1).
+  Eski etiket "sonraki H dakikadaki en yüksek high" (MFE, sonraki max tepe) idi;
+  bu ulaşılamaz bir tepedir ve model çıktısı canlı TP hedefini beslediği için
+  hedef sistematik İYİMSER kalıyordu (kâr alma nadiren tetikleniyordu). MFE/MAE
+  etiketleri ANALİZ ve classifier'ın "hedefe dokunma" etiketi için korunur.
 - Journal (llm_forecasts, evaluated) satırları doğrulanmış canlı örnek olarak
   ML_JOURNAL_SAMPLE_WEIGHT ağırlığıyla eğitime girer -> model kendi
   hatalarından/başarılarından öğrenir.
-- Regressor %ML_TARGET_QUANTILE çeyreğini tahmin eder (dürüst scalper hedefi);
-  classifier "hedefe dokunma olasılığı" verir.
+- Regressor %ML_TARGET_QUANTILE çeyreğini (artık gerçekleşen-çıkış dağılımı
+  üzerinde) tahmin eder; classifier "hedefe dokunma olasılığı" verir.
 """
 from __future__ import annotations
 
@@ -26,9 +31,13 @@ from .config import config
 
 logger = logging.getLogger("scalper.ml")
 
-FEATURE_VERSION = "v3"  # v3: göstergeler kanonik kaynakla birleştirildi
-                        #     (Wilder RSI, Aroon-25, kanonik linreg_slope10_pct).
-                        #     v2 artefaktları artık yüklenmez; yeniden eğitim gerekir.
+FEATURE_VERSION = "v4"  # v4 (P1-9): regressor etiketi DEĞİŞTİ — "gelecek max
+                        #     high" (MFE) yerine GERÇEKLEŞTİRİLEBİLİR ÇIKIŞ
+                        #     (ufuk sonu kapanış getirisi); classifier'a
+                        #     class_weight="balanced" eklendi. v3 artefaktları
+                        #     artık yüklenmez; yeniden eğitim gerekir.
+                        #     (v3: göstergeler kanonik kaynakla birleştirildi —
+                        #      Wilder RSI, Aroon-25, kanonik linreg_slope10_pct.)
 HORIZONS = (5, 15)
 # ML-01 (2026-09-12): eğitim ve çıkarım AYNI bar dayanağını kullanmalıdır.
 # Model 5m kapanış barlarıyla eğitilir; çıkarım da 5m kapanış barlardan
@@ -246,6 +255,22 @@ def _future_extreme(a: np.ndarray, horizon: int, highest: bool) -> np.ndarray:
     return out
 
 
+def _future_close(a: np.ndarray, horizon: int) -> np.ndarray:
+    """Her bar i için t+horizon kapanışı; ufuk dizinin dışına taşarsa NaN.
+
+    GERÇEKLEŞTİRİLEBİLİR çıkışın fiyat dayanağıdır (bkz. build_symbol_dataset
+    etiket sözleşmesi): "sinyali al, ufuk sonunda kapanıştan çık" kuralının
+    ulaştığı fiyat. Ufkun kapanmadığı son barlarda etiket UYDURULMAZ — NaN
+    kalır (eğitim maskesi bunları eler), böylece ileriye dönük bilgi sızmaz.
+    """
+    n = len(a)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n <= horizon:
+        return out
+    out[:n - horizon] = a[horizon:]
+    return out
+
+
 def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarray,
                          close: np.ndarray, volume: np.ndarray, symbol_code: int,
                          bar_minutes: int = 1) -> dict[str, np.ndarray]:
@@ -255,6 +280,14 @@ def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarra
     cinsindendir; bar horizonu = horizon / bar_minutes (5m veride 5dk=1, 15dk=3).
     Tüm hesaplar vektörel; özellik yalnızca bar t kapanışına kadar bilgi
     kullanır, etiketler t+1..t+H geleceğinden gelir (sızıntı yok).
+
+    ETİKET SÖZLEŞMESİ (P1-9):
+      * ``mfe_{h}`` = gelecek maksimum high (MFE)  — ANALİZ ve classifier'ın
+        "hedefe dokunma" etiketi için korunur, GERÇEKÇİ bir TP hedefi DEĞİLDİR.
+      * ``mae_{h}`` = gelecek minimum low — analiz amaçlı korunur.
+      * ``realized_{h}`` = close[t+h]/close[t]-1 — GERÇEKLEŞTİRİLEBİLİR çıkış
+        (ufuk sonu kapanış). Regressor BUNUNLA eğitilir; servis edilen hedef
+        artık ulaşılamaz tepeyi değil, gerçekten alınabilen çıkışı öngörür.
     """
     c = np.asarray(close, dtype=np.float64)
     h = np.asarray(high, dtype=np.float64)
@@ -345,8 +378,13 @@ def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarra
         bars = max(1, round(horizon / bar_minutes))
         fut_high = _future_extreme(h, bars, highest=True)
         fut_low = _future_extreme(low_, bars, highest=False)
+        # MFE/MAE: analiz + classifier "hedefe dokunma" etiketi (P1-9: artık
+        # regressor hedefi DEĞİL).
         labels[f"mfe_{horizon}"] = (fut_high / c - 1).astype(np.float32)
         labels[f"mae_{horizon}"] = (fut_low / c - 1).astype(np.float32)
+        # Gerçekleştirilebilir çıkış: regressorun TEK etiketi (P1-9).
+        fut_close = _future_close(c, bars)
+        labels[f"realized_{horizon}"] = (fut_close / c - 1).astype(np.float32)
     labels["open_time"] = open_time.astype(np.int64)
     return {"features": features, **labels}
 
@@ -354,10 +392,15 @@ def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarra
 def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
     """Ölçülmüş canlı tahminler: özellikler snapshot'tan, etiket gerçek sonuçtan.
 
-    Yalnızca direction='up' satırlar; baz etiket MFE, ikinci etiket min_move_pct'e
-    dokunma (classifier). Ağırlık ML_JOURNAL_SAMPLE_WEIGHT (pekiştirme).
+    Yalnızca direction='up' satırlar. İki etiket:
+      * regressor hedefi (``y_min``) = GERÇEKLEŞTİRİLEBİLİR ÇIKIŞ getirisi
+        (``outcome_return_pct``; yoksa ``max_favorable_pct``). P1-9: eskiden
+        doğrudan MFE veriliyordu → model ulaşılamaz tepede eğitiliyordu.
+      * classifier hedefi (``y_hit``) = MFE, ``min_move_pct``/``ML_HIT_TARGET_PCT``
+        hedefine dokundu mu (bu tanım gereği MFE'ye dayanır ve MFE kalır).
+    Ağırlık ML_JOURNAL_SAMPLE_WEIGHT (pekiştirme).
 
-    Dönüş: (X, y_mfe, y_hit, horizon_ids, weights, timestamps_ms). Son öğe,
+    Dönüş: (X, y_realized, y_hit, horizon_ids, weights, timestamps_ms). Son öğe,
     her journal satırının karar zamanını (ms, epoch) taşır; ML-02 kronolojik
     holdout ayrımı bu zaman damgalarına dayanır. Eşleşme sağlama garantisi için
     `ts_list` asymptotic işaretçidir; boş dönüşte de aynı uzunlukta olur.
@@ -368,7 +411,7 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
     gürültü enjekte eder. Çekirdek özelliklerden en az biri dolu değilse satır
     atılır ve `atr_pct=None` → 0.0 yerine NaN yazılır.
     """
-    X, meta, y_min, y_hit, hid, weights, ts_list = [], [], [], [], [], [], []
+    X, meta, y_target, y_hit, hid, weights, ts_list = [], [], [], [], [], [], []
     for row in rows or []:
         if row.get("direction") != "up" or row.get("max_favorable_pct") is None:
             continue
@@ -384,6 +427,12 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
         if horizon not in HORIZONS:
             continue
         mfe = float(row["max_favorable_pct"])
+        # P1-9: regressor hedefi GERÇEKLEŞTİRİLEBİLİR çıkış. Journal satırı
+        # ölçülen gerçek ufuk-sonu getirisini taşır (outcome_return_pct); yoksa
+        # (kolon öncesi satırlar) MFE'ye düşülür — ama o zaman satır İYİMSER
+        # kalır, bu yüzden yalnız güvenli geri-uyumluluk için tercih edilir.
+        realized = row.get("outcome_return_pct")
+        y_target.append(float(realized) if realized is not None else mfe)
         ts = row.get("timestamp") or row.get("created_at") or row.get("decision_at")
         if isinstance(ts, (int, float)):
             if ts < 1e11:
@@ -418,16 +467,19 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
                   (_ratio_from_pct(snap.get("linreg_slope10_pct")) if snap.get("linreg_slope10_pct") is not None else None),
                   snap.get("aroon_up"), snap.get("aroon_down"),
                   float(hour), float(day_quarter), float(vp), float(symbol_codes[sym])])
-        y_min.append(mfe)
+        # classifier hedefi: MFE hedefe dokundu mu (tanım gereği MFE'ye dayanır).
         y_hit.append(1.0 if mfe >= config.ML_HIT_TARGET_PCT.get(horizon, 0.02) else 0.0)
         hid.append(HORIZONS.index(horizon))
+        # P1-9: "3× ağırlık" pekiştirmesi artık DÜZELTİLMİŞ hedefe uygulanır
+        # (y_target); ağırlık vektörü regressor VE classifier'a aynı geçtiği
+        # için iyimser MFE yanlılığı bu satırlarda artık büyütülmez.
         weights.append(config.ML_JOURNAL_SAMPLE_WEIGHT)
         ts_list.append(float(ts))
     if not X:
         empty = np.empty((0, len(FEATURE_NAMES)), dtype=np.float32)
         return (empty, np.empty(0, dtype=np.float32), np.empty(0), np.empty(0),
                 np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float64))
-    return (np.asarray(X, dtype=np.float32), np.asarray(y_min, dtype=np.float32),
+    return (np.asarray(X, dtype=np.float32), np.asarray(y_target, dtype=np.float32),
             np.asarray(y_hit), np.asarray(hid), np.asarray(weights, dtype=np.float32),
             np.asarray(ts_list, dtype=np.float64))
 
@@ -459,33 +511,39 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict],
     # sembol kimliği karşılaştırılamaz hale gelir. Önceki artifact'ın eşlemesi
     # devralınır (bilinen semboller kodunu korur, yeniler en üstten atanır).
     symbol_codes = _merge_symbol_codes(symbols, previous_codes)
-    (journal_X, journal_mfe, journal_hit, journal_h, journal_w,
+    (journal_X, journal_target, journal_hit, journal_h, journal_w,
      journal_ts) = prepare_journal_samples(journal_rows, symbol_codes)
 
-    xs, mfe_by_h, times_by_h = {h: [] for h in HORIZONS}, {h: [] for h in HORIZONS}, {h: [] for h in HORIZONS}
+    # P1-9: regressor artık GERÇEKLEŞTİRİLEBİLİR çıkışla (`realized_{h}`) eğitilir;
+    # MFE (`mfe_{h}`) yalnız classifier'ın "hedefe dokunma" etiketi ve iyimserlik
+    # farkını raporlayan metrik için taşınır.
+    xs, target_by_h, mfe_by_h, times_by_h = ({h: [] for h in HORIZONS} for _ in range(4))
     for sym, arrays in candles.items():
         if len(arrays["close"]) < 120:
             continue
         ds = build_symbol_dataset(arrays["open_time"], arrays["high"], arrays["low"],
                                   arrays["close"], arrays["volume"], symbol_codes[sym],
                                   bar_minutes=5)
+        # D-10 (2026-09-26): maske YALNIZCA ATR sütununa bakıyordu.
+        # İlk barlarda ret1/ret3/ret5 NaN olduğu için (prev_close yok)
+        # ATR'siz örnekler — yani fiyat geçmişi olmayan ısınma satırları —
+        # eğitime giriyordu. HistGradientBoosting NaN'ı öğrenilebilir bir
+        # değer olarak işlediği için model "ret yok" desenini fiilen
+        # öğreniyor, çıkarımda ise bu ret'ler tanımlıydı → dağılım kayması.
+        # Düzeltme: model girdisi olan TÜM sütunlar sonlu olmalı
+        # (`symbol_code` hariç — o zaten sabit). Ufuk kapanmamış son barlarda
+        # `realized_{h}` NaN'dır; aşağıdaki `valid` bunları da eler (sızıntı yok).
+        features = ds["features"]
+        finite_cols = [i for i in range(features.shape[1])
+                       if FEATURE_NAMES[i] != "symbol_code"]
         for horizon in HORIZONS:
+            target = ds[f"realized_{horizon}"]
             mfe = ds[f"mfe_{horizon}"]
-            # D-10 (2026-09-26): maske YALNIZCA ATR sütununa bakıyordu.
-            # İlk barlarda ret1/ret3/ret5 NaN olduğu için (prev_close yok)
-            # ATR'siz örnekler — yani fiyat geçmişi olmayan ısınma satırları —
-            # eğitime giriyordu. HistGradientBoosting NaN'ı öğrenilebilir bir
-            # değer olarak işlediği için model "ret yok" desenini fiilen
-            # öğreniyor, çıkarımda ise bu ret'ler tanımlıydı → dağılım kayması.
-            # Düzeltme: model girdisi olan TÜM sütunlar sonlu olmalı
-            # (`symbol_code` hariç — o zaten sabit).
-            features = ds["features"]
-            finite_cols = [i for i in range(features.shape[1])
-                           if FEATURE_NAMES[i] != "symbol_code"]
-            valid = np.isfinite(mfe) & np.isfinite(features[:, 3])
+            valid = np.isfinite(target) & np.isfinite(features[:, 3])
             if finite_cols:
                 valid &= np.isfinite(features[:, finite_cols]).all(axis=1)
             xs[horizon].append(features[valid])
+            target_by_h[horizon].append(target[valid])
             mfe_by_h[horizon].append(mfe[valid])
             times_by_h[horizon].append(ds["open_time"][valid])
 
@@ -497,13 +555,14 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict],
 
     for horizon in HORIZONS:
         X = np.vstack(xs[horizon]) if xs[horizon] else np.empty((0, len(FEATURE_NAMES)), dtype=np.float32)
-        y = np.concatenate(mfe_by_h[horizon]) if mfe_by_h[horizon] else np.empty(0, dtype=np.float32)
+        y = np.concatenate(target_by_h[horizon]) if target_by_h[horizon] else np.empty(0, dtype=np.float32)
+        mfe_all = np.concatenate(mfe_by_h[horizon]) if mfe_by_h[horizon] else np.empty(0, dtype=np.float32)
         times = np.concatenate(times_by_h[horizon]) if times_by_h[horizon] else np.empty(0, dtype=np.int64)
         if len(X) < 500:
             metrics["per_horizon"][str(horizon)] = {"status": "insufficient_data", "samples": int(len(X))}
             continue
         order = np.argsort(times, kind="stable")
-        X, y, times = X[order], y[order], times[order]
+        X, y, mfe_all, times = X[order], y[order], mfe_all[order], times[order]
         split = int(len(X) * 0.85)
         h_mask = journal_h == HORIZONS.index(horizon)
         # ML-02 (2026-09-12): kronolojik holdout bütünlüğü. Journal satırları
@@ -513,23 +572,32 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict],
         train_cutoff_ms = float(times[split - 1]) if split > 0 else float("-inf")
         in_split_ts = h_mask & (journal_ts <= train_cutoff_ms) if split > 0 else h_mask
         X_train = np.vstack([X[:split], journal_X[in_split_ts]])
-        y_train = np.concatenate([y[:split], journal_mfe[in_split_ts]])
+        # P1-9: regressor hedefi DÜZELTİLMİŞ (gerçekleştirilebilir) hedeftir;
+        # "3× ağırlık" pekiştirmesi bu düzeltilmiş hedefe uygulanır.
+        y_train = np.concatenate([y[:split], journal_target[in_split_ts]])
         weights = np.concatenate([np.ones(split, dtype=np.float32), journal_w[in_split_ts]])
+        # classifier hedefi MFE'ye dayanır: "hedefe DOKUNDU mu" (dokunma = MFE).
         hit_train = np.concatenate([
-            (y[:split] >= config.ML_HIT_TARGET_PCT.get(horizon, 0.02)).astype(np.float64),
+            (mfe_all[:split] >= config.ML_HIT_TARGET_PCT.get(horizon, 0.02)).astype(np.float64),
             journal_hit[in_split_ts]])
 
         reg = HistGradientBoostingRegressor(loss="quantile", quantile=config.ML_TARGET_QUANTILE,
                                             max_iter=300, learning_rate=0.06, max_leaf_nodes=31,
                                             early_stopping=True, random_state=7)
-        clf = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.06, max_leaf_nodes=31,
+        # P1-9: class_weight="balanced". Pozitif sınıf (hedefe dokunma) nadirdir;
+        # eski kodda ağırlık YOKTU → clf olasılıkları çoğunluk sınıfına çöküyor
+        # ve `ml_prob` (velocity.py:2312 kapısı) `ML_TARGET_MIN_PROB` eşiğini hiç
+        # geçemiyordu, yani özellik fiilen ölüydü. Dengeli ağırlık kalibrasyonu
+        # ölçülmüş frekansa hizalar (metriklerdeki model_hit_accuracy).
+        clf = HistGradientBoostingClassifier(class_weight="balanced", max_iter=300,
+                                             learning_rate=0.06, max_leaf_nodes=31,
                                              early_stopping=True, random_state=7)
         reg.fit(X_train, y_train, sample_weight=weights)
         clf.fit(X_train, hit_train, sample_weight=weights)
 
-        X_hold, y_hold = X[split:], y[split:]
+        X_hold, y_hold, mfe_hold = X[split:], y[split:], mfe_all[split:]
         pred = reg.predict(X_hold)
-        actual_hit = (y_hold >= config.ML_HIT_TARGET_PCT.get(horizon, 0.02)).astype(np.int64)
+        actual_hit = (mfe_hold >= config.ML_HIT_TARGET_PCT.get(horizon, 0.02)).astype(np.int64)
         hit_rate = float(np.mean(actual_hit))
         # Model-level holdout metrics (the classifier's own accuracy), so the
         # readout reflects model quality rather than just the dataset hit-rate.
@@ -540,9 +608,15 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict],
             model_hit_accuracy = None
         metrics["per_horizon"][str(horizon)] = {
             "samples": int(len(X)), "holdout": int(len(X_hold)),
-            "mae_mfe_pct": round(float(np.mean(np.abs(pred - y_hold))) * 100, 4),
-            "pred_p65_pct_mean": round(float((pred * 100).mean()), 3),
-            "actual_mfe_pct_mean": round(float((y_hold * 100).mean()), 3),
+            # mae_pct: regressorun holdout hatası — artık GERÇEKLEŞTİRİLEBİLİR
+            # çıkışa karşı (eskiden MFE'ye karşı "mae_mfe_pct").
+            "mae_pct": round(float(np.mean(np.abs(pred - y_hold))) * 100, 4),
+            "pred_pctl_pct_mean": round(float((pred * 100).mean()), 3),
+            "actual_realized_pct_mean": round(float((y_hold * 100).mean()), 3),
+            # Referans: ulaşılamaz tepe (MFE) ortalaması. İkisi arasındaki fark
+            # eski etiketin ne kadar iyimser olduğunu ölçer (P1-9 kanıtı).
+            "actual_mfe_pct_mean": round(float((mfe_hold * 100).mean()), 3),
+            "mfe_optimism_gap_pct": round(float(((mfe_hold - y_hold) * 100).mean()), 3),
             "dataset_hit_rate": round(hit_rate, 4),
             "model_hit_accuracy": (round(model_hit_accuracy, 4) if model_hit_accuracy is not None else None),
             "journal_samples": int(h_mask.sum()),
@@ -619,7 +693,15 @@ def load_model(max_age_seconds: int = 86400) -> dict[str, Any] | None:
 
 
 def predict_target(symbol: str, features: dict[str, Any], horizon: int = 5) -> dict[str, Any] | None:
-    """Tek nokta tahmin (Faz 2 gölge modda kullanılacak)."""
+    """Tek nokta tahmin (Faz 2 gölge modda kullanılacak).
+
+    Dönen ``target_pct`` (P1-9): regressor artık GERÇEKLEŞTİRİLEBİLİR çıkış
+    dağılımının ``ML_TARGET_QUANTILE`` çeyreğidir — "ufuk sonunda kapanıştan
+    çık" kuralının beklenen getirisi. Eskiden "gelecek maksimum high" (MFE,
+    ulaşılamaz tepe) servis ediliyordu; bu değer velocity'de TP hedefine
+    girdiği için hedef sistematik olarak fazla yüksekti. ``hit_probability``
+    "hedefe dokunma" olasılığıdır (classifier, artık class_weight="balanced").
+    """
     artifact = load_model()
     if not artifact or str(horizon) not in artifact["horizons"]:
         return None

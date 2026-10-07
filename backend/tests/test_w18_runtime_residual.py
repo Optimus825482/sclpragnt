@@ -960,5 +960,138 @@ class MarketKlinesIntervalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(400, ctx.exception.status_code)
 
 
+# ---------------------------------------------------------------------------
+# P2-8 — ws_broadcast_loop: istemci yokken ve veri değişmediğinde çalışmaz
+# ---------------------------------------------------------------------------
+class P2_8BroadcastSkipTests(unittest.IsolatedAsyncioTestCase):
+    """`ws_broadcast_loop` her saniye yeniden serileştirmemeli.
+
+    Denetim (2026-10-07): istemci olmasa ve veri değişmese de tam ticker+
+    pozisyon payload'ı her saniye kurulup yayınlanıyordu. Düzeltme iki ucuz
+    kısa devre ekledi. Test, `broadcast` çağrı sayısını sayarak kısa devrelerin
+    etkin olduğunu doğrular (geri alınırsa iki turda 4 yayın görülür).
+    """
+
+    async def _one_tick(self, runtime_routes):
+        loop = runtime_routes.ws_broadcast_loop()
+        task = asyncio.ensure_future(loop)
+        # İlk `await asyncio.sleep(1.0)`'a kadar gövde bir kez koşar.
+        try:
+            for _ in range(50):
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    def setUp(self):
+        from app.routers import runtime as runtime_routes
+        from app.state import market
+
+        self.runtime = runtime_routes
+        self.market = market
+        self._saved_tickers = market.tickers
+        self._saved_connections = runtime_routes.ws_manager.active_connections
+        # Temiz, ayrık bir senaryo: bir ticker, boş pozisyonlar.
+        market.tickers = {"BTCTRY": {"symbol": "BTCTRY", "last_price": 100.0,
+                                     "timestamp": int(time_now() * 1000)}}
+        market.ticker_24h = {"BTCTRY": 1_000.0}
+        runtime_routes._ws_snapshot_cache.update(
+            tickers=None, portfolio=None, generated_at=0.0, signature=None)
+
+    def tearDown(self):
+        self.market.tickers = self._saved_tickers
+        self.runtime.ws_manager.active_connections = self._saved_connections
+        self.runtime._ws_snapshot_cache.update(
+            tickers=None, portfolio=None, generated_at=0.0, signature=None)
+
+    async def test_no_clients_skips_all_broadcasts(self):
+        self.runtime.ws_manager.active_connections = []
+        seen = []
+        with patch.object(self.runtime.ws_manager, "broadcast",
+                          new=AsyncMock(side_effect=lambda *a, **k: seen.append(a))), \
+             patch.object(self.runtime, "_cached_try_balance", new=AsyncMock(return_value=1000.0)), \
+             patch.object(self.runtime, "_cached_realized_pnl", new=AsyncMock(return_value=0.0)), \
+             patch.object(self.runtime, "_cached_open_auto_trades", new=AsyncMock(return_value=[])):
+            await self._one_tick(self.runtime)
+        self.assertEqual([], seen, "istemci yokken hiç yayın yapılmamalı")
+
+    async def test_unchanged_data_is_not_rebroadcast(self):
+        # İstemci var; iki kez "aynı veri" ile tur attır. İmza aynı kalırsa
+        # ikinci turda payload yeniden kurulmaz/yayınlanmaz.
+        self.runtime.ws_manager.active_connections = [MagicMock()]
+        seen = []
+        with patch.object(self.runtime.ws_manager, "broadcast",
+                          new=AsyncMock(side_effect=lambda *a, **k: seen.append(a))), \
+             patch.object(self.runtime, "_cached_try_balance", new=AsyncMock(return_value=1000.0)), \
+             patch.object(self.runtime, "_cached_realized_pnl", new=AsyncMock(return_value=0.0)), \
+             patch.object(self.runtime, "_cached_open_auto_trades", new=AsyncMock(return_value=[])):
+            await self._one_tick(self.runtime)
+            first = len(seen)
+            self.assertGreater(first, 0, "ilk turda yayın olmalı")
+            self.assertIsNotNone(self.runtime._ws_snapshot_cache["signature"])
+            await self._one_tick(self.runtime)
+        self.assertEqual(first, len(seen),
+                         "veri değişmediyse ikinci tur yayın yapmamalı")
+
+    async def test_signature_reset_forces_one_rebroadcast(self):
+        """Bakiye değişimi (invalidate) imzayı sıfırlar → bir sonraki tur yayınlar."""
+        self.runtime.ws_manager.active_connections = [MagicMock()]
+        seen = []
+        with patch.object(self.runtime.ws_manager, "broadcast",
+                          new=AsyncMock(side_effect=lambda *a, **k: seen.append(a))), \
+             patch.object(self.runtime, "_cached_try_balance", new=AsyncMock(return_value=1000.0)), \
+             patch.object(self.runtime, "_cached_realized_pnl", new=AsyncMock(return_value=0.0)), \
+             patch.object(self.runtime, "_cached_open_auto_trades", new=AsyncMock(return_value=[])):
+            await self._one_tick(self.runtime)
+            first = len(seen)
+            self.runtime.invalidate_wallet_caches()
+            self.assertIsNone(self.runtime._ws_snapshot_cache["signature"])
+            await self._one_tick(self.runtime)
+        self.assertGreater(len(seen), first, "invalidate sonrası yeniden yayın olmalı")
+
+    async def test_no_clients_clears_signature_so_first_client_gets_frame(self):
+        self.runtime.ws_manager.active_connections = []
+        with patch.object(self.runtime.ws_manager, "broadcast", new=AsyncMock()), \
+             patch.object(self.runtime, "_cached_try_balance", new=AsyncMock(return_value=1000.0)), \
+             patch.object(self.runtime, "_cached_realized_pnl", new=AsyncMock(return_value=0.0)), \
+             patch.object(self.runtime, "_cached_open_auto_trades", new=AsyncMock(return_value=[])):
+            self.runtime._ws_snapshot_cache["signature"] = ("bayat",)
+            await self._one_tick(self.runtime)
+        self.assertIsNone(self.runtime._ws_snapshot_cache["signature"],
+                          "istemci yokken imza sıfırlanmalı (yeni istemci ilk kareyi alır)")
+
+
+# ---------------------------------------------------------------------------
+# velocity SL tabanı — literal getattr yedeği geri gelmemeli
+# ---------------------------------------------------------------------------
+class VelocitySlBasisTests(unittest.TestCase):
+    """`AUTO_PAPER_SL_PCT_DEFAULT` yedek literali (%1.5) KALDIRILDI.
+
+    Denetim (2026-10-07): velocity.py iki yerde `getattr(config,
+    "AUTO_PAPER_SL_PCT_DEFAULT", 1.5)` yazıyordu; gerçek değer config'te %5.0.
+    Alan bir gün eksik olsa bile velocity sessizce ESKİ %1.5 tabanına düşüp
+    journal ölçümünü/`velocity_calibrate`'i yanlış geometriye göre optimize
+    ederdi. Kaynak kilidi: literal yedek geri gelmemeli; alan doğrudan okunmalı.
+    """
+
+    def test_no_stale_sl_literal_fallback_in_velocity(self):
+        src = _router_sources()["velocity.py"]
+        self.assertNotIn('"AUTO_PAPER_SL_PCT_DEFAULT", 1.5', src)
+        self.assertIn("float(config.AUTO_PAPER_SL_PCT_DEFAULT)", src)
+
+    def test_config_sl_default_is_defined(self):
+        from app.config import config
+
+        # Alan her zaman tanımlı olmalı (literal yedeğin gereksizliğinin kanıtı).
+        # Env ile geçersiz kılınabilir; bu yüzden tam %5.0 değil, tanımlılık ve
+        # pozitiflik kontrol edilir.
+        self.assertTrue(hasattr(config, "AUTO_PAPER_SL_PCT_DEFAULT"))
+        self.assertGreater(float(config.AUTO_PAPER_SL_PCT_DEFAULT), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

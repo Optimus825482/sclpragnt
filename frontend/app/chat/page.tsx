@@ -258,6 +258,9 @@ function ChatPageInner() {
   const [activeTools, setActiveTools] = useState<string[]>(ALL_TOOLS);
   const [activeSkills, setActiveSkills] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  // Otomatik chat-settings kaydı başarısız olduğunda görünür uyarı için
+  // (bkz. aşağıdaki debounce'lu PUT effect'i).
+  const [chatSettingsSaveFailed, setChatSettingsSaveFailed] = useState(false);
   const [error, setError] = useState("");
   const [logs, setLogs] = useState<ToolLog[]>([]);
   const [evaluations, setEvaluations] = useState<AgentEvaluation[]>([]);
@@ -521,7 +524,14 @@ function ChatPageInner() {
           tts_rate: ttsRate,
           tts_pitch: ttsPitch,
         }),
-      }).catch(() => undefined);
+      })
+        // DENETİM (2026-10-07): önceki hâli hatayı tamamen yutuyordu
+        // (`.catch(() => undefined)`) ve `apiRequest` non-ok'da throw etmediği
+        // için 4xx/5xx de sessizce "başarılı" sayılıyordu — kullanıcı araç
+        // seçiminin kaydedildiğini sanıyordu. Otomatik kayıt olduğu için
+        // toast yok; en azından hata GÖRÜNÜR olsun (konsol + durum).
+        .then((r) => { if (!r.ok) { console.error("chat-settings otomatik kaydı başarısız:", r.status); setChatSettingsSaveFailed(true); window.setTimeout(() => setChatSettingsSaveFailed(false), 4000); } })
+        .catch((e) => { console.error("chat-settings otomatik kaydı başarısız:", e); setChatSettingsSaveFailed(true); window.setTimeout(() => setChatSettingsSaveFailed(false), 4000); });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [activeTools, activeSkills, ttsRate, ttsPitch]);
@@ -1178,6 +1188,7 @@ function ChatPageInner() {
               </div>
             </form>
             {error && <p className="mt-2 text-xs text-neon-red font-mono bg-red-950/20 border border-red-500/30 p-2 rounded">{error}</p>}
+            {chatSettingsSaveFailed && <p className="mt-2 text-xs text-neon-red font-mono bg-red-950/20 border border-red-500/30 p-2 rounded">Araç/yetki ayarları kaydedilemedi — seçimleriniz kalıcı olmayabilir.</p>}
           </div>
         </Card>
 

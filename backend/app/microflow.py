@@ -398,9 +398,19 @@ class MicroFlow:
             logger.warning("microflow: depth %s: %s", target, exc)
             return None
 
-    def get_snapshot(self, price: float | None = None) -> dict:
-        """Microstructure snapshot for the active symbol (pure, non-blocking)."""
-        symbol = self.symbol
+    def get_snapshot(self, price: float | None = None, symbol: str | None = None) -> dict:
+        """Microstructure snapshot (pure, non-blocking).
+
+        D-14/P1-10 (2026-10-07 denetimi): `symbol` PARAMETRESİ eklendi. Eski imza
+        yalnız price alıyordu ama `velocity.py` `get_snapshot(symbol=target, ...)`
+        çağırıyordu → `TypeError` fallback'e düşüyor, fallback GLOBAL aktif sembolü
+        okuyor ve dönen `symbol != target` olduğu için çağrı fiilen `None` dönüyordu.
+        Böylece aktif olmayan hiçbir aday mikro-yapısız sıralanıyordu. Artık
+        `symbol` verilirse O sembolün serisi/akışı/defteri okunur — ayrı semboller
+        için ayrı seri tutan `bars`/`trade_flow` bu snapshot'ta doğru anahtarla
+        kullanılır. Verilmezse aktif sembole düşülür (eski davranış korunur).
+        """
+        symbol = str(symbol or self.symbol or "").upper() or None
         if not symbol:
             return {"symbol": None, "data_ready": False, "error": "aktif sembol yok"}
         bars = self.bars

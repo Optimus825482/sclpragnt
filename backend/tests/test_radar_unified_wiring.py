@@ -174,6 +174,111 @@ class UnifiedCrossSuppressionTests(unittest.TestCase):
         self.assertIsNone(outcome, "recently_notified iken hızlı yol sessiz kalmalı")
 
 
+class LlmGatedEntryTests(unittest.TestCase):
+    """P1-3 (2026-10-07): LLM kararı GİRİŞTEN önce uygulanır (ertelenmiş otonom giriş).
+
+    ESKİ HATA: `_deliver_scan_notifications` otonom girişi LLM kararından ÖNCE
+    deniyordu; giriş anında `llm_verdict` boş olduğundan auto_paper'ın LLM kapısı
+    DAİMA geçiyor, sonradan gelen FAKE/TUZAK kararı yalnızca bir RE-OPEN'i
+    bastırabiliyordu. Artık LLM'e UYGUN + DB satırı olan (`id`) bildirimlerin girişi
+    karar yazıldıktan sonraya ERTELENİR; sağlayıcı yoksa fail-open ile yine denenir.
+    """
+
+    def _ctx(self):
+        settings = {"enabled": True, "radar_unified_notify": True,
+                    "radar_combined_enabled": False}
+        auto_paper_fn = AsyncMock(return_value=None)
+        patches = [
+            patch.object(monitoring, "get_user_notification_settings",
+                         new=AsyncMock(return_value=settings)),
+            patch.object(monitoring, "_send_push", new=AsyncMock(return_value=True)),
+            patch.object(monitoring, "ws_manager",
+                         new=MagicMock(broadcast=AsyncMock(return_value=None))),
+            patch.object(monitoring.database, "mark_monitoring_push_sent", new=AsyncMock()),
+            patch.object(auto_paper, "try_open_from_notification", new=auto_paper_fn),
+            # Gerçek LLM görevi (ağ) ÜRETME: bu testler ERTELEME + post-entry
+            # yolunu doğrular; görev zamanlaması ayrı sınıfın konusudur.
+            patch.object(monitoring, "_maybe_llm_second_eye", new=MagicMock()),
+            patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "dummy-key"}, clear=False),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return auto_paper_fn
+
+    def test_llm_eligible_open_is_deferred(self):
+        """LLM'e uygun + id'li bildirim: giriş İNCELEMEdEN önceki anlık yolda DEĞİL."""
+        opened = self._ctx()
+        notif = _radar_notif("BTCTRY")
+        notif["id"] = 123
+        _run(monitoring._deliver_scan_notifications([notif]))
+        opened.assert_not_awaited()               # giriş LLM kararına ertelendi (P1-3)
+        self.assertTrue(notif.get("_llm_entry_deferred"))
+
+    def test_idless_open_stays_synchronous(self):
+        """Legacy/test zarfları (`id` YOK) mevcut ANLIK giriş davranışını korur."""
+        opened = self._ctx()
+        notif = _radar_notif("ETHTRY")
+        self.assertIsNone(notif["id"])
+        _run(monitoring._deliver_scan_notifications([notif]))
+        opened.assert_awaited_once()
+
+    def test_post_llm_entry_carries_verdict_fields(self):
+        """Karar yazıldıktan sonraki giriş `llm_verdict`/`confidence`/`reasons`
+        alanlarını auto_paper'ın MEVCUT LLM kapısına taşır (FAKE artık girişte blok)."""
+        captured = {}
+
+        async def fake_open(merged):
+            captured.update(merged)
+
+        notif = {"symbol": "BTCTRY", "score": 74.0, "id": 9, "_llm_entry_deferred": True}
+        with patch.object(auto_paper, "try_open_from_notification", new=fake_open):
+            _run(monitoring._post_llm_second_eye_entry(
+                notif, {"llm_verdict": "FAKE", "llm_confidence": 80,
+                        "llm_reasons": ["tuzak"]}))
+        self.assertEqual("FAKE", captured["llm_verdict"])
+        self.assertEqual(80, captured["llm_confidence"])
+        self.assertEqual(["tuzak"], captured["llm_reasons"])
+        self.assertNotIn("_llm_entry_deferred", captured, "geçici bayrak temizlenmeli")
+        # Orijinal nesne mutasyona UĞRAMAZ (kopya üzerinde çalışılır).
+        self.assertIn("_llm_entry_deferred", notif)
+
+    def test_post_llm_entry_fail_open_without_envelope(self):
+        """Sağlayıcı yok/atlandı (envelope None) → giriş YİNE denenir (fail-open)."""
+        opened = AsyncMock(return_value=None)
+        notif = {"symbol": "BTCTRY", "score": 74.0, "id": 9, "_llm_entry_deferred": True}
+        with patch.object(auto_paper, "try_open_from_notification", new=opened):
+            _run(monitoring._post_llm_second_eye_entry(notif, None))
+        opened.assert_awaited_once()
+        merged = opened.await_args.args[0]
+        self.assertNotIn("llm_verdict", merged,
+                         "karar yoksa alan eklenmemeli (mevcut davranış korunur)")
+
+    def test_llm_fake_verdict_blocks_deferred_entry(self):
+        """P1-3 uçtan uca: LLM FAKE dönerse ertelenmiş giriş FAKE kararıyla
+        denenir → auto_paper'ın MEVCUT LLM kapısı bloğu uygular."""
+        captured = {}
+
+        async def fake_open(merged):
+            captured.update(merged)
+
+        envelope = {"llm_verdict": "FAKE", "llm_confidence": 80,
+                    "llm_reasons": ["tuzak"]}
+        notif = {"symbol": "BTCTRY", "score": 74.0, "id": 9, "_llm_entry_deferred": True}
+        with patch.object(monitoring.llm_second_eye, "evaluate",
+                          new=AsyncMock(return_value=envelope)), \
+             patch.object(monitoring, "quiet_hours_active", new=AsyncMock(return_value=False)), \
+             patch.object(monitoring.database, "update_monitoring_notification_llm_verdict",
+                          new=AsyncMock()), \
+             patch.object(monitoring, "_record_history", new=AsyncMock()), \
+             patch.object(monitoring, "ws_manager",
+                          new=MagicMock(broadcast=AsyncMock(return_value=None))), \
+             patch.object(auto_paper, "try_open_from_notification", new=fake_open):
+            _run(monitoring._llm_second_eye_task(dict(notif)))
+        self.assertEqual("FAKE", captured.get("llm_verdict"),
+                         "ertelenmiş giriş LLM kararını taşımalı (P1-3)")
+
+
 class VelocityRoutingTests(unittest.TestCase):
     def test_envelope_maps_raw_score_to_panel(self):
         candidate = {"symbol": "BTCTRY", "velocity_score": 1400.0, "target_pct": 2.0,

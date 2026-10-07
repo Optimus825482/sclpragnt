@@ -20,7 +20,6 @@ Kilitlenen davranışlar:
   4. Bağlam YALNIZ var olan alanları taşır (prompt şişmez).
   5. `stream_chat` `max_tokens` kabul eder (kısa yanıt = hızlı ilk jeton).
 """
-import ast
 import pathlib
 import sys
 import unittest
@@ -47,14 +46,6 @@ class _FakeMarket:
 
     def get_ticker(self, symbol):
         return self._ticker
-
-
-def _func_node(name):
-    tree = ast.parse(LLM_CHAT_PY.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return node
-    return None
 
 
 class QuickLaneSymbolTests(unittest.TestCase):
@@ -184,16 +175,6 @@ class StreamChatContractTests(unittest.TestCase):
         params = inspect.signature(llm_analysis.stream_chat).parameters
         self.assertIn("max_tokens", params)
 
-    def test_quick_lane_passes_tools(self):
-        """Hızlı şerit izinli araçlarla stream_chat çağırır (commit dd69d9f)."""
-        func = _func_node("_symbol_quick_stream")
-        self.assertIsNotNone(func, "llm_chat._symbol_quick_stream bulunamadı")
-        calls = [n for n in ast.walk(func)
-                 if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "stream_chat"]
-        self.assertEqual(1, len(calls), "hızlı şeritte tam olarak bir stream_chat çağrısı olmalı")
-        args = calls[0].args
-        self.assertGreaterEqual(len(args), 4)
-
     def test_no_dotenv_or_env_import_needed_for_quick_lane(self):
         """Hızlı şerit config dışında ayar okumaz (tek kaynak: config.py)."""
         source = LLM_CHAT_PY.read_text(encoding="utf-8")
@@ -203,10 +184,85 @@ class StreamChatContractTests(unittest.TestCase):
         self.assertNotIn("os.getenv", block)
 
 
+class QuickLaneStreamBehaviorTests(unittest.IsolatedAsyncioTestCase):
+    """`_symbol_quick_stream`'i GERÇEKTEN çalıştırır (AST kaynak-eşleşmesi yerine).
+
+    Eski `test_quick_lane_passes_tools` yalnız fonksiyonun kaynak metninde
+    `stream_chat` ÇAĞRISINI arıyordu; çağrı bozulsa (untutulmuş argüman, araçsız
+    çağrı, yanlış max_tokens) bile "1 çağrı var" geçerdi. Bu sürüm akış
+    üretecini tüketip davranışı ölçer: SSE zarfı, araç geçirme, `max_tokens`
+    kelepçesi.
+    """
+
+    async def _run(self, body, messages=None):
+        captured: dict = {}
+
+        async def fake_stream_chat(context, msgs, tools, tool_executor, active_skills,
+                                   *, max_tokens=None):
+            captured["tools"] = tools
+            captured["tool_executor"] = tool_executor
+            captured["max_tokens"] = max_tokens
+            captured["context"] = context
+            yield {"event": "delta", "data": {"text": "merhaba"}}
+
+        with patch.object(llm_chat.llm_analysis, "stream_chat", fake_stream_chat), \
+             patch.object(llm_chat, "_persist_chat_memory", new=AsyncMock()), \
+             patch.object(llm_chat, "finish_trace", new=AsyncMock()), \
+             patch.object(llm_chat, "_main_pg_pool", lambda: None):
+            resp = llm_chat._symbol_quick_stream(
+                {"symbol": "EGLDTRY"}, body, "trace-1", "sess-1", messages or [])
+            chunks = [chunk async for chunk in resp.body_iterator]
+        return resp, chunks, captured
+
+    async def test_quick_lane_passes_tools_and_streams_sse(self):
+        resp, chunks, captured = await self._run({"max_tokens": 10 ** 9})
+
+        # 1. Araçsız çağrı jeton jeton akışı sessizce öldürür → araç geçilmeli.
+        self.assertEqual("text/event-stream", resp.media_type)
+        self.assertTrue(captured["tools"], "hızlı şerit araç geçmedi (akış tamponlanır)")
+        self.assertTrue(callable(captured["tool_executor"]))
+        self.assertEqual("EGLDTRY", captured["context"]["symbol"])
+        # 2. stream_chat'in ürettiği olay gerçek SSE zarfına çevrilmeli.
+        self.assertEqual(1, len(chunks))
+        self.assertTrue(chunks[0].startswith("event: delta\ndata: "), repr(chunks[0]))
+        self.assertIn('"merhaba"', chunks[0])
+        self.assertTrue(chunks[0].endswith("\n\n"), "SSE olayı çift satır sonuyla bitmeli")
+
+    async def test_client_cannot_exceed_quick_lane_max_tokens(self):
+        """DENETİM 3.3 #27: istemci `max_tokens` sunucu tavanını EZEMEZ."""
+        _resp, _chunks, captured = await self._run({"max_tokens": 10 ** 9})
+        ceiling = int(getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
+        self.assertEqual(ceiling, captured["max_tokens"])
+
+    async def test_invalid_max_tokens_falls_back_to_default(self):
+        """`0`/negatif/garbage → sunucu varsayılanı (sağlayıcıya 0 sızmaz)."""
+        for bogus in (0, -5, "abc", None):
+            _resp, _chunks, captured = await self._run({"max_tokens": bogus})
+            self.assertGreater(captured["max_tokens"], 0, f"max_tokens={bogus!r}")
+
+    async def test_stream_error_is_surfaced_as_sse_error_event(self):
+        """stream_chat patlarsa istemciye `event: error` düşmeli (sessiz ölüm yok)."""
+        async def boom(*args, **kwargs):
+            raise RuntimeError("provider down")
+            yield  # pragma: no cover — üreteç işareti
+
+        with patch.object(llm_chat.llm_analysis, "stream_chat", boom), \
+             patch.object(llm_chat, "_persist_chat_memory", new=AsyncMock()), \
+             patch.object(llm_chat, "finish_trace", new=AsyncMock()), \
+             patch.object(llm_chat, "_main_pg_pool", lambda: None):
+            resp = llm_chat._symbol_quick_stream(
+                {"symbol": "EGLDTRY"}, {}, "trace-1", "sess-1", [])
+            chunks = [chunk async for chunk in resp.body_iterator]
+
+        self.assertTrue(any(chunk.startswith("event: error") for chunk in chunks), chunks)
+        self.assertIn("provider down", "".join(chunks))
+
+
 # --------------------------------------------------------------------------
-# Mutasyon notu: `_symbol_quick_stream` çağrısına tools/tool_executor eklenirse
-# test_quick_lane_passes_no_tools KIRILIR; tetikleyici sınırları gevşetilirse
-# (ör. `len(symbols) != 1` kaldırılırsa) çoklu-sembol testleri KIRILIR.
+# Mutasyon notu: `_symbol_quick_stream` içindeki `stream_chat` çağrısından
+# `quick_tools` çıkarılırsa test_quick_lane_passes_tools_and_streams_sse
+# KIRILIR; tetikleyici sınırları gevşetilirse (ör. `len(symbols) != 1`
+# kaldırılırsa) çoklu-sembol testleri KIRILIR.
 # --------------------------------------------------------------------------
 if __name__ == "__main__":
     unittest.main()

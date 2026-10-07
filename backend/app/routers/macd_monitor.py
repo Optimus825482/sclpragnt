@@ -368,7 +368,11 @@ async def _active_symbols(force: bool = False) -> list[str]:
     active = {str(s).upper() for s, info in statuses.items() if _status_value(info).upper() == "ACTIVE"}
     open_syms = {str(s).upper() for s in (analyzer.positions or {})}
     try:
-        auto_open = await database.list_auto_paper_trades(status="open")
+        # P0-3 (2026-10-07): MACD çıkış yönetimi AÇIK pozisyonu izlemeli —
+        # rapor görünüm sınırına takılırsa pozisyon takip listesinden düşer ve
+        # bu yoldan çıkış (SL/TP/trailing) yönetilmez.
+        auto_open = await database.list_auto_paper_trades(
+            status="open", apply_reports_baseline=False)
         open_syms |= {str(t.get("symbol") or "").upper() for t in (auto_open or [])}
     except Exception as exc:
         logger.debug("macd_monitor açık auto-paper pozisyonları okunamadı: %s", exc)

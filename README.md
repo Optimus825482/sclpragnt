@@ -26,7 +26,7 @@ main.py (app kurulumu + lifecycle + WS) ──► WebSocket /ws üzerinden front
 
 ### Modüler API yapısı
 
-Eski 7.000+ satırlık `app/main.py` monoliti FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **11** router dosyası var ve **11** adet `include_router` kaydı yapılır (2026-09-26 denetimiyle doğrulandı; aşağıdaki tablo eksiksizdir):
+Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **13** modül dosyası vardır; bunların **11**'i `APIRouter` tanımlar ve `main.py` içinde **11** adet `include_router` kaydı yapılır (2026-10-07 doğrulaması; aşağıdaki tablo eksiksizdir). `runtime.py` ve `llm_position_tools.py` `APIRouter` **kullanmaz**: ilki uzun-ömürlü döngüleri ve yardımcıları taşır (fonksiyonları `main.py` tarafından doğrudan import edilir), ikincisi yalnız LLM araç (tool) şema tanımlarını sağlar.
 
 | Modül | Sorumluluk |
 |---|---|
@@ -44,6 +44,8 @@ Eski 7.000+ satırlık `app/main.py` monoliti FastAPI `APIRouter` modüllerine b
 | `app/routers/maintenance.py` | Backfill, replay-parity, strateji replay işleri |
 | `app/routers/system.py` | Sağlık, memory, migration sistem rotaları |
 | `app/routers/reports.py` | Salt-okunur rapor endpoint'leri |
+| `app/routers/bridge.py` | Binance Global → TR öncü-artçı (lead-lag) sinyal köprüsü; `/api/bridge` uç noktaları |
+| `app/routers/snapback.py` | Snapback Dip Avcısı (`/api/signals/snapback`) ve makro rejim kalkanı (`/api/signals/macro-regime`) |
 
 Frontend'de `frontend/app/charts/` altında grafik mantığı `chartShared.ts` (format/yerleşim sabitleri) ve `signals.ts` (gösterge/strateji sinyal matematiği) olarak ayrılmıştır.
 
@@ -103,8 +105,8 @@ Kaynaklı araştırma ve uygulama eşlemesi: [`docs/SCALPER_RESEARCH_EVIDENCE.md
 - `WS /ws` - ticker / signal / portfolio mesajları (frontend bunu dinler)
 - `GET /api/market-klines/{symbol}` - frontend ve backend için ortak Binance TR public candle adapter’ı
 - `GET /api/trades`, `/api/signals`, `/api/decisions` - `limit`, `offset` ve ilgili sembol/strateji filtreleriyle server-side listeleme
-- `POST /api/strategy/replay` + `GET /api/strategy/replay/{job_id}` - salt-okunur kapalı-mum karar tekrarı (`/signal-replay` sayfasının arkası)
-- `.well-known` - alan doğrulama dosyaları için mount
+- `POST /api/combined-radar-replay/start` + `GET /api/combined-radar-replay/status` (+ `/report.csv`, `/sweep.csv`) - salt-okunur birleşik radar kapalı-mum tekrarı (Ayarlar sayfasındaki "Radar Replay" panelinin arkası)
+- `POST /api/replay-parity-backfill/start` + `GET /api/replay-parity-backfill/status` (+ `/trades.csv`) - canlı/paper parite backfill işi
 
 ## Uyarı
 

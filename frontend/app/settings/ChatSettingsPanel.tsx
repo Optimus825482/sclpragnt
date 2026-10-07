@@ -23,6 +23,9 @@ export default function ChatSettingsPanel() {
   // kullanıcı "KAYDEDİLDİ" görür ama ayar sayfa yenilenince 0'a döner —
   // sessiz veri kaybı. Uyarıyı gösteriyoruz (bkz. `lib/ttsSettings`).
   const [ttsPersistent, setTtsPersistent] = useState<boolean | null>(null);
+  // Kaydetme başarısız olduğunda "✓ KAYDEDİLDİ" yerine dürüst hata durumu
+  // gösterilir (bkz. `save()`); ayrı bir bayrak, `saved` ile yarışmaz.
+  const [saveFailed, setSaveFailed] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -40,10 +43,20 @@ export default function ChatSettingsPanel() {
     }).catch(() => setLoaded(true));
   }, []);
 
+  // DENETİM (2026-10-07): `apiRequest` non-ok yanıtta THROW ETMEZ (ham Response
+  // döner); önceki kod `await` sonrası koşulsuz `setSaved(true)` yapıyordu ve
+  // kayıt başarısız olsa bile "✓ KAYDEDİLDİ" gösteriyordu — kullanıcı ayarının
+  // kaydedildiğini sanıp sayfadan ayrılıyordu. Artık `res.ok` kontrol edilir.
   const save = async () => {
-    await apiRequest(`${API_BASE}/api/llm/chat-settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active_tools: activeTools, active_skills: activeSkills, tts_rate: ttsRate, tts_pitch: ttsPitch }) });
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2500);
+    try {
+      const r = await apiRequest(`${API_BASE}/api/llm/chat-settings`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active_tools: activeTools, active_skills: activeSkills, tts_rate: ttsRate, tts_pitch: ttsPitch }) });
+      if (!r.ok) { setSaveFailed(true); window.setTimeout(() => setSaveFailed(false), 3500); return; }
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 2500);
+    } catch {
+      setSaveFailed(true);
+      window.setTimeout(() => setSaveFailed(false), 3500);
+    }
   };
   const toggle = (value: string) => setActiveTools(cur => cur.includes(value) ? cur.filter(x => x !== value) : [...cur, value]);
   const toggleSkill = (id: string) => setActiveSkills(cur => cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]);
@@ -57,7 +70,7 @@ export default function ChatSettingsPanel() {
           <p className="eyebrow">CHAT TOOL VE SKILL YÖNETİMİ</p>
           <p className="text-xs text-bunker-muted mt-1">Chat sayfasındaki LLM araç ve yetenek seçimleri buradan yönetilir.</p>
         </div>
-        <button onClick={save} className="min-h-10 rounded-lg border border-neon-green/40 bg-neon-green/10 px-4 font-mono text-xs text-neon-green">{saved ? "✓ KAYDEDİLDİ" : "KAYDET"}</button>
+        <button onClick={save} className={`min-h-10 rounded-lg border px-4 font-mono text-xs ${saveFailed ? "border-red-500/50 bg-red-500/10 text-red-400" : "border-neon-green/40 bg-neon-green/10 text-neon-green"}`}>{saveFailed ? "✕ KAYDEDİLEMEDİ" : saved ? "✓ KAYDEDİLDİ" : "KAYDET"}</button>
       </div>
       <div>
         <p className="eyebrow mb-2">AKTİF ARAÇLAR · {activeTools.length}/{ALL_TOOLS.length}</p>

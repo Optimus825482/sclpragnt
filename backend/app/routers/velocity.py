@@ -970,33 +970,21 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
         """Adayın KENDİ sembolüne ait mikro-yapıyı getir (yabancı sembol yok).
 
         D-14 (2026-09-26 denetimi, KRİTİK): `microflow.get_snapshot` sembol
-        parametrik DEĞİLse GLOBAL aktif sembolü okur. Tarama sırasında taranan
-        TÜM adaylara aynı sembolün mikro-yapısı yükleniyordu ve sıralama anahtarı
-        `velocity_score × micro_mult` olduğu için YANLIŞ aday seçilebiliyordu
-        (bir sembolün whale cezası diğerlerine de uygulanıyordu).
+        parametrik DEĞİLKEN GLOBAL aktif sembolü okuyordu. Tarama sırasında
+        taranan TÜM adaylara aynı sembolün mikro-yapısı yükleniyordu ve sıralama
+        anahtarı `velocity_score × micro_mult` olduğu için YANLIŞ aday
+        seçilebiliyordu (bir sembolün whale cezası diğerlerine de uygulanıyordu).
 
-        Savunma (fail-safe, iki yönlü uyum):
-          1. Sembol-parametrik API varsa (`get_snapshot(symbol=...)`) o kullanılır.
-          2) Değilse mevcut imza denenir.
-          3. Dönen snapshot'ın `symbol` alanı aday sembolüyle UYUŞMUYORSA
-             veri YOK sayılır → `None` (fail-open 1.0 yerine "veri yok" işareti;
-             `micro_structure_multiplier(None)` nötr 1.0 döner, yani sıralama
-             etkilenmez ama yanlış veri de bulaşmaz).
+        P1-10 (2026-10-07 denetimi): `get_snapshot` artık `symbol=` KABUL EDER
+        (microflow.py). Eskiden burada iç içe `TypeError` fallback zinciri vardı;
+        parametrik çağrı patlayınca fallback GLOBAL sembolü okuyor ve dönen
+        `symbol != target` olduğu için çağrı fiilen `None` dönüyordu. Artık TEK
+        parametrik yol çağrılır; snapshot'ın `symbol` alanı yine doğrulanır
+        (savunma: yabancı veri asla sıralamaya sızmaz) ve uyuşmazlıkta `None`.
         """
         target = str(r.get("symbol") or "").upper()
-        micro = None
         try:
-            try:
-                # Parametrik API (microflow.py ayrı ajan tarafından
-                # `symbol=` destekleyecek şekilde düzeltiliyor).
-                micro = microflow.get_snapshot(symbol=target, price=r["price"])
-            except TypeError:
-                try:
-                    micro = microflow.get_snapshot(symbol=target)
-                except TypeError:
-                    # Eski, global-sembol imzası: yalnızca aktif sembol
-                    # adayınkiyle örtüşüyorsa anlamlıdır.
-                    micro = microflow.get_snapshot(price=r["price"])
+            micro = microflow.get_snapshot(symbol=target, price=r["price"])
         except Exception:
             return None
         if not isinstance(micro, dict):
@@ -1287,11 +1275,15 @@ async def velocity_learning_loop():
 
                 target_pct = float(candidate["target_pct"])
                 # D-15 (2026-09-26): config'te `AUTO_PAPER_SL_PCT` ADI YOK;
-                # yalnızca `AUTO_PAPER_SL_PCT_DEFAULT` var. getattr sessizce
-                # varsayılan 1.5'e düşüyordu, yani env ile ayarlanan SL
-                # (örn. %3.0) journal ölçümünde HİÇ kullanılmıyordu ve
-                # `velocity_calibrate` yanlış geometriye göre optimize ediyordu.
-                sl_pct = float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5))
+                # yalnızca `AUTO_PAPER_SL_PCT_DEFAULT` var. Bir zamanlar burada
+                # getattr'a literal bir yedek (%1.5) veriliyordu; alan bir gün
+                # eksik olsa env ile ayarlanan SL (gerçek varsayılan %5.0)
+                # yerine sessizce ESKİ %1.5 tabanına düşecekti → journal ölçümü
+                # ve `velocity_calibrate` yanlış geometriye göre optimize
+                # ederdi. Literal yedek KALDIRILDI: alan her zaman tanımlı
+                # (config.py); eksikse AÇIKÇA patlaması doğrudur, sapmayı
+                # gizlemek değil.
+                sl_pct = float(config.AUTO_PAPER_SL_PCT_DEFAULT)
                 cost_pct = round_trip_cost_pct()
 
                 # Gerçekçi işlem yaşam döngüsü: Mum bazlı sıralı TP ve SL kontrolü
@@ -1532,9 +1524,10 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
         raise HTTPException(status_code=409, detail=f"pencere mumları yetersiz: {len(window)}")
     entry = float(candidate["price"])
     target_pct = float(candidate["target_pct"])
-    # D-15 (2026-09-26): gerçek config alanı `AUTO_PAPER_SL_PCT_DEFAULT`
-    # (yukarıdaki ölçüm döngüsüyle aynı düzeltme).
-    sl_pct = float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5))
+    # D-15 (2026-09-26): gerçek config alanı `AUTO_PAPER_SL_PCT_DEFAULT`.
+    # Yanıltıcı literal yedek (%1.5) KALDIRILDI (yukarıdaki ölçüm döngüsüyle
+    # aynı kural): alan her zaman tanımlı, eksikse açıkça patlamalı.
+    sl_pct = float(config.AUTO_PAPER_SL_PCT_DEFAULT)
     cost_pct = round_trip_cost_pct()
 
     hit_target = False

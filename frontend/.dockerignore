@@ -1,0 +1,16 @@
+# Build context küçült: host'ta npm ci ile oluşan (Linux imajıyla UYUMSUZ)
+# node_modules build stage'ine kopyalanırsa, `COPY --from=deps` ile gelen
+# doğru modüller EZİLİR → farklı platform nesneleriyle build kırılır.
+# 2026-10-07 (P1-11 #4/#2): ayrıca .env sızmasın (secret build katmanına girmez).
+node_modules
+.next
+.venv
+venv
+*.log
+.env
+.env.*
+.git
+.gitignore
+Dockerfile
+.dockerignore
+docker-compose*.yml

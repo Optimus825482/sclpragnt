@@ -28,9 +28,27 @@ import asyncpg
 # Migration koşucularını sıraya sokan sabit advisory lock anahtarı.
 _MIGRATION_ADVISORY_KEY = 0x5343414C  # 'SCAL'
 _MAX_ATTEMPTS = 20
-_LOCK_TIMEOUT_MS = 30_000
+# 2026-10-07 (P1-11 #5): 30 sn -> 60 sn. Canlı backend'in kilitleri
+# (ACCESS EXCLUSIVE, saniyede bir koşan tarama/temizlik döngüleri) rastgele
+# aralıklarla açılır. Tek bir denemede bekleme penceresini genişletmek,
+# retry döngüsünün toplam süresini (~20 deneme × (60+10 sn) ≈ 23 dk) artırır
+# ve deploy overlap'inde restart-loop'a dönüşme riskini azaltır.
+#
+# NOT: Uygulama tarafı `database.init_db()` aynı DDL'i `lock_timeout=5s`
+# ile çalıştırır (bkz. database.py:213) — bu BİZİM dosyamız değil, ama
+# kilit çekişmesinde `LockNotAvailableError` fırlatıp açılışı düşürür.
+# Gerekli app değişikliği rapora yazıldı (transaction-scoped yüksek
+# lock_timeout + geçici-hatada retry).
+_LOCK_TIMEOUT_MS = 60_000
 _RETRY_SLEEP_SEC = 10.0
 _SHA_MARKER_KEY = "schema_sha256"
+# Geçici (retry edilebilir) PostgreSQL SQLSTATE'leri. İsim tabanlı küme
+# asyncpg'nin sınıf adına bağlıdır; SQLSTATE daha dayanıklıdır (alt sınıf
+# veya farklı bir hata yolu aynı kodu üretse de yakalanır).
+#   55P03 lock_not_available · 40P01 deadlock_detected ·
+#   57P03 cannot_connect_now · 53300 too_many_connections ·
+#   08006/08003 connection failure/does_not_exist
+_TRANSIENT_SQLSTATES = {"55P03", "40P01", "57P03", "53300", "08006", "08003"}
 
 # Migration dosyaları TEK KAYNAKTAN (bu dizin) glob ile sırayla okunur.
 # 2026-09-26 denetim düzeltmesi (#72): liste burada SABİT iki dosyayla
@@ -138,11 +156,14 @@ async def main():
                     await conn.close()
                 except Exception:
                     pass
-            transient = type(exc).__name__ in {
-                "LockNotAvailableError", "DeadlockDetectedError",
-                "ConnectionDoesNotExistError", "InterfaceError", "PostgresConnectionError",
-                "CannotConnectNowError", "TooManyConnectionsError",
-            }
+            transient = (
+                getattr(exc, "sqlstate", None) in _TRANSIENT_SQLSTATES
+                or type(exc).__name__ in {
+                    "LockNotAvailableError", "DeadlockDetectedError",
+                    "ConnectionDoesNotExistError", "InterfaceError", "PostgresConnectionError",
+                    "CannotConnectNowError", "TooManyConnectionsError",
+                }
+            )
             print(
                 f"PostgreSQL migration denemesi {attempt}/{_MAX_ATTEMPTS} başarısız "
                 f"({type(exc).__name__}: {exc})."
