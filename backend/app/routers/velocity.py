@@ -21,6 +21,10 @@ from app.market_intelligence import microstructure_snapshot
 from app.microflow import microflow
 from app import calibration as calibration_service
 from app.binance_tr_public import top_gainers, ticker_24h, active_movers_pool
+# Global erken-tespit entegrasyonu (2026-10-07): `detect_velocity_candidates`
+# çağrı başına borsa seçebilsin diye TR adaptörü modül olarak da tutulur.
+# Varsayılan yol bu nesnedir → mevcut çağrılar birebir aynı davranır.
+from app import binance_tr_public as _TR_PUBLIC
 from app.embedding_worker import worker as embedding_worker
 from app.memory_service import build_document
 from app import ml_forecast
@@ -377,7 +381,10 @@ def _warm_list_build(candidates: list[dict], watchlist: list[dict]) -> list[dict
 
 async def detect_velocity_candidates(args: dict | None = None, *, horizon_minutes: int = 5,
                                       extra_symbols: list | None = None,
-                                      kline_cache: dict | None = None):
+                                      kline_cache: dict | None = None,
+                                      market=None, adapter=None, quote_asset: str = "TRY",
+                                      universe_symbols: list | None = None,
+                                      journal_enabled: bool = True):
     """Belirli ufukta (5dk/15dk) en az hedef % (2/3) yükselme potansiyeli taşıyan en hızlı 3 aday.
 
     v2 — forensics kalibrasyonu: Bollinger genişliği + ATR + (RSI iki ucu) +
@@ -392,7 +399,42 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     alınır; ikinci profil aynı seri için ağa gitmez. Tek çağrılar parametreyi
     atlar (davranış değişmez). Ham satırlar saklanır — D-04 oluşan-bar düşürme
     her tüketicide kendi `now_ms`'iyle uygulanır.
+
+    Global erken-tespit entegrasyonu (2026-10-07) — BORSA PARAMETRELERİ:
+    Aşağıdaki parametreler çağrıyı bir borsaya bağlar. HEPSİ varsayılanlıdır ve
+    varsayılanlar mevcut TR davranışını BİREBİR korur (mevcut çağıranlar
+    değişmez):
+
+    * ``market`` / ``adapter`` / ``quote_asset`` / ``universe_symbols``:
+      veri motoru. Verilmezse modül düzeyi TR ``market``'i, ``binance_tr_public``
+      adaptörü ve ``config.SYMBOLS`` evreni kullanılır. Global taraması
+      ``app/routers/global_radar.py`` bunları Global karşılıklarıyla geçer.
+    * ``journal_enabled=False``: velocity journal (DB yazımı) ve canlı
+      kalibrasyon istatistiği atlanır. TR taraması bu kayıtları tutmaya devam
+      eder; Global taraması YAZMAZ — aksi hâlde TR kalibrasyon popülasyonu
+      Global (USDT) gözlemleriyle kirlenirdi.
+    * ``adapter.quote_asset``: bazı adaptörlerde (Global) havuz/evren kararı
+      quote'a bağlıdır ve varsayılan quote yanlış olabilir; bu yüzden
+      ``agent``/``quote_asset`` açıkça geçilir (sessiz daralma koruması).
     """
+    market = market if market is not None else globals()["market"]
+    universe = list(universe_symbols) if universe_symbols is not None else list(config.SYMBOLS)
+    quote_asset = str(quote_asset or "TRY").upper()
+    if adapter is not None:
+        fetch_klines = adapter.klines
+        top_gainers = adapter.top_gainers
+        ticker_24h = adapter.ticker_24h
+        active_movers_pool = getattr(adapter, "active_movers_pool", None)
+    else:
+        # Varsayılan yol: modül düzeyi TR fonksiyonları. `globals()` üzerinden
+        # çözülür (yerel bağa kopyalanmaz) ki çağıranların/taramaların
+        # `patch.object(velocity, "fetch_klines", ...)` dikişi çalışmaya devam
+        # etsin — mevcut davranış ve testler birebir korunur.
+        fetch_klines = globals()["fetch_klines"]
+        top_gainers = globals()["top_gainers"]
+        ticker_24h = globals()["ticker_24h"]
+        active_movers_pool = globals()["active_movers_pool"]
+
     profile = VELOCITY_PROFILES.get(horizon_minutes) or VELOCITY_PROFILES[5]
     base_target_pct = float(profile["target_pct"])
     now_ms = int(time.time() * 1000)
@@ -417,23 +459,29 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
         return await fetch_klines(symbol, tf, limit)
 
     try:
-        gainer_rows = await top_gainers(config.VELOCITY_POOL_SIZE, _ticker_rows=all_ticker_rows)
+        # quote_asset AÇIKÇA geçilir: adaptörün varsayılan quote'u bu çağrının
+        # borsasıyla uyuşmazsa havuz BOŞ döner ve `except` yalnız logladığı için
+        # tarama sessizce daralır.
+        gainer_rows = await top_gainers(config.VELOCITY_POOL_SIZE,
+                                        quote_asset=quote_asset,
+                                        _ticker_rows=all_ticker_rows)
     except Exception as exc:
         logger.warning("velocity scan: top_gainers hatası: %s", exc)
         gainer_rows = []
 
     active_rows = []
-    if getattr(config, "DYNAMIC_ACTIVE_POOL_ENABLED", True):
+    if getattr(config, "DYNAMIC_ACTIVE_POOL_ENABLED", True) and active_movers_pool is not None:
         try:
             active_rows = await active_movers_pool(
                 getattr(config, "DYNAMIC_ACTIVE_POOL_LIMIT", 15),
+                quote_asset=quote_asset,
                 _ticker_rows=all_ticker_rows
             )
         except Exception as exc:
             logger.warning("velocity scan: active_movers_pool hatası: %s", exc)
             active_rows = []
 
-    # Havuz: top_gainers + active_movers_pool (intraday akış) + config.SYMBOLS + extra_symbols.
+    # Havuz: top_gainers + active_movers_pool (intraday akış) + çağrı evreni + extra_symbols.
     # 24h değişimi düşük olsa bile aktif/hacimli ve yükselen semboller taranır (H-01/T-01).
     # 2026-09-26 (denetim #6): havuza girme KAYNAĞI ve 24h değişimi aday kaydına
     # yazılır — "yükselen" tanımı havuz başına farklı olduğundan (24h değişim /
@@ -476,7 +524,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             _add(_c.get("symbol"), "discovery")
     except Exception as exc:
         logger.warning("velocity discovery havuz birleşimi: %s", exc)
-    for sym in (str(s).upper() for s in config.SYMBOLS):
+    for sym in (str(s).upper() for s in universe):
         _add(sym, "symbol")
     if extra_symbols:
         for sym in extra_symbols[:10]:
@@ -802,7 +850,11 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 # almaz, baz hedef kullanılır). 1m serisiyle tahmin etmek — eski
                 # davranış — modelin eğitildiği dağılımın dışında bir noktaydı
                 # (ML-01 kökü) ve bundan kaçınırız.
-                if m5_ml_features is not None:
+                # Global erken-tespit (2026-10-07): ML modeli TR (TRY) sembolleri
+                # üzerinde eğitildi; Global (USDT) sembolüyle çıkarım yapmak
+                # modelin dağılımı dışında bir nokta olurdu → Global taramasında
+                # atlanır (baz hedef kullanılır, davranış güvenli tarafta kalır).
+                if m5_ml_features is not None and quote_asset == "TRY":
                     ml_pred = ml_forecast.predict_target(symbol, m5_ml_features,
                                                          horizon=horizon_minutes)
                 if ml_pred:
@@ -816,6 +868,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             #    kârı yutacağı için sinyal elenir (kullanıcı kuralı).
             # 2) ML OLASILIK KAPISI: model %config.ML_MIN_EXECUTION_PROB altında
             #    isabet öngörüyorsa tuzak sinyal bildirime gitmez.
+            # Sembol anahtarı çağrılan borsanın biçimindedir (TR: BTCTRY, Global:
+            # BTCUSDT) → orderflow HARİTASI da o borsanın `market`'inden okunur.
             flow_snap = (market.orderflow.get(symbol) or {})
             spread_pct = None
             try:
@@ -1034,41 +1088,53 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     # akış, aday izleme sırasında LLM/panelin gerçek zamanlı görüntü almasını
     # sağlar. En fazla 3 aday, sembol sayısı sınırlı olduğu için bağlantı
     # maliyeti düşüktür. Başarısızlık taramayı düşürmez.
-    try:
-        for cand in candidates[:limit]:
-            await microflow.start(cand["symbol"])
-    except Exception as exc:
-        logger.warning("velocity microflow aday başlatma: %s", exc)
-    try:
-        # Journal: geçenler (en az ilk 20) + izleme listesi kaydedilir; böylece
-        # monitoring_notifications'a giren hiçbir aday journal kayıtsız kalmaz.
-        journal_rows = [{
-            "candidate_id": r["candidate_id"],
-            "created_at": now_ms / 1000, "symbol": r["symbol"], "price": r["price"],
-            "target_pct": r.get("target_pct") or base_target_pct, "atr_pct": r.get("atr_pct") or 0.0, "volume_ratio": 0.0,
-            "ret3_pct": r.get("ret3_pct") or 0.0, "velocity_score": r.get("velocity_score") or 0.0,
-            "passes": r.get("passes", False), "rank": r.get("rank"),
-            "ml_target_pct": r.get("ml_target_pct"),
-            "ml_hit_probability": r.get("ml_hit_probability"),
-            "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
-            "leading_ok": r.get("leading_ok"),
-        } for r in (candidates[:max(limit, 20)] + watchlist[:5])]
-        # Mikro yapı (whale dağıtım sinyali, CVD) aday satırından journal'a
-        # taşınır; filtreler kapalıyken dahi ileride canlı istatistik üretmek
-        # için kaydedilir.
-        for row in journal_rows:
-            src = next((r for r in candidates + watchlist if r["symbol"] == row["symbol"]), None)
-            if src and src.get("microstructure"):
-                row["microstructure"] = src["microstructure"]
-        await database.save_velocity_candidates(journal_rows)
-    except Exception as exc:
-        logger.warning("velocity journal hatası: %s", exc)
+    # Global erken-tespit (2026-10-07): microflow/journel TR (TRY) hattının
+    # bileşenleridir. Global taraması TR gözlem tablolarına YAZMAZ (kalibrasyon
+    # popülasyonunu kirletmemek için) ve TR akış sembollerini Global sembollerle
+    # mikro-yapı akışına almaz.
+    if journal_enabled:
+        try:
+            for cand in candidates[:limit]:
+                await microflow.start(cand["symbol"])
+        except Exception as exc:
+            logger.warning("velocity microflow aday başlatma: %s", exc)
+    # Journal: geçenler (en az ilk 20) + izleme listesi kaydedilir; böylece
+    # monitoring_notifications'a giren hiçbir aday journal kayıtsız kalmaz.
+    # Global taramasında (`journal_enabled=False`) bu blok atlanır.
+    if journal_enabled:
+        try:
+            journal_rows = [{
+                "candidate_id": r["candidate_id"],
+                "created_at": now_ms / 1000, "symbol": r["symbol"], "price": r["price"],
+                "target_pct": r.get("target_pct") or base_target_pct, "atr_pct": r.get("atr_pct") or 0.0, "volume_ratio": 0.0,
+                "ret3_pct": r.get("ret3_pct") or 0.0, "velocity_score": r.get("velocity_score") or 0.0,
+                "passes": r.get("passes", False), "rank": r.get("rank"),
+                "ml_target_pct": r.get("ml_target_pct"),
+                "ml_hit_probability": r.get("ml_hit_probability"),
+                "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
+                "leading_ok": r.get("leading_ok"),
+            } for r in (candidates[:max(limit, 20)] + watchlist[:5])]
+            # Mikro yapı (whale dağıtım sinyali, CVD) aday satırından journal'a
+            # taşınır; filtreler kapalıyken dahi ileride canlı istatistik üretmek
+            # için kaydedilir.
+            for row in journal_rows:
+                src = next((r for r in candidates + watchlist if r["symbol"] == row["symbol"]), None)
+                if src and src.get("microstructure"):
+                    row["microstructure"] = src["microstructure"]
+            await database.save_velocity_candidates(journal_rows)
+        except Exception as exc:
+            logger.warning("velocity journal hatası: %s", exc)
+    # Canlı kalibrasyon istatistiği TR journal'ından gelir; Global taraması bu
+    # sayıyı yalnız raporlar (yazmaz), dolayısıyla okumak da zararsızdır.
     live_stats = await database.get_velocity_calibration_stats()
     live_hit_pct = (float(live_stats.get("passing_touched_count") or 0) /
                     float(live_stats.get("passing_count") or 0) * 100) if live_stats.get("passing_count") else None
     return {"generated_at": now_ms / 1000, "target": f"min %{base_target_pct:g} move in {horizon_minutes} minutes",
             "horizon_minutes": horizon_minutes, "target_pct": base_target_pct,
-            "pool_source": "binance_tr_top_gaining_tab", "symbols_scanned": len(pool),
+            # Etiket TR çağrılarında BİREBİR aynı kalır (frontend/rapor metni).
+            "pool_source": ("binance_tr_top_gaining_tab" if quote_asset == "TRY"
+                            else f"{quote_asset.lower()}_top_gaining_tab"),
+            "symbols_scanned": len(pool),
             "version": "v2-forensics-2026-08-29",
             "filter": {"min_atr_pct": VELOCITY_MIN_ATR_PCT,
                         "min_bb_width_pct": VELOCITY_MIN_BB_WIDTH_PCT,

@@ -79,6 +79,8 @@ from app.routers import llm_chat as llm_chat_routes
 from app.routers import chart_forecast as chart_forecast_routes
 from app.routers import maintenance as maintenance_routes, reports as reports_routes
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
+from app.routers import global_radar as global_radar_routes
+from app.routers.global_radar import global_radar_loop
 from app.routers.maintenance import (  # noqa: F401
     backfill_symbol_history, backfill_missing_active_history, history_candle_loop, microstructure_snapshot_loop)
 from app.routers.llm_chat import (  # noqa: F401
@@ -1162,6 +1164,25 @@ async def startup_services():
     _start_background(auto_paper_start_loop, "auto-paper-start")
     await asyncio.sleep(_yield)
     _start_background(macd_monitor_start_loop, "macd-monitor")
+
+    # --- Faz 4: Global erken-tespit katmanı (GÖRÜNMEZ, varsayılan KAPALI) ---
+    # Yalnız `GLOBAL_SCAN_ENABLED` açıkken başlar. Ayrı veri motoru
+    # (`state.global_market`) ve ayrı REST bütçesi kullanır; TR akışı bu yükten
+    # etkilenmez. Arayüzde hiçbir iz bırakmaz (bkz. app/routers/global_radar.py).
+    if getattr(config, "GLOBAL_SCAN_ENABLED", False):
+        await asyncio.sleep(_yield)
+        _start_background(global_radar_connect_loop, "global-market-connect")
+        await asyncio.sleep(_yield)
+        _start_background(global_radar_loop, "global-radar")
+
+
+async def global_radar_connect_loop():
+    """Global veri motorunu bağla (tek seferlik; hata yutar)."""
+    try:
+        from app.routers.global_radar import connect_global_market
+        await connect_global_market()
+    except Exception as exc:
+        print(f"[GlobalRadar] veri motoru bağlanamadı: {exc}", flush=True)
 
 async def monitoring_start_loop():
     """Monitoring tarama döngüsünü arka planda başlat (idempotent wrapper)."""
@@ -4970,4 +4991,10 @@ runtime_deps.bind(runtime_routes, "gainers_radar", gainers_radar)
 from app import tr_bridge_receiver
 tr_bridge_receiver.set_daily_loss_guard_fn(daily_loss_guard)
 tr_bridge_receiver.set_wallet_invalidator_fn(runtime_routes.invalidate_wallet_caches)
+
+# Global erken-tespit katmanı (2026-10-07): köprünün yerel karşılığı. Günlük
+# zarar kapısı AYNI fonksiyondur (Global tespiti de TR otonom işlemi açtığı
+# için aynı riske tabidir).
+from app import global_lead_lag
+global_lead_lag.set_daily_loss_guard_fn(daily_loss_guard)
 

@@ -48,6 +48,41 @@ def _env_secret(name: str, default: str = "") -> str:
 # refactor yerine burada belgelenmiştir.
 
 
+# ---------------------------------------------------------------------------
+# Sembol yardımcıları (2026-10-07 — Global erken-tespit entegrasyonu için port)
+# ---------------------------------------------------------------------------
+# `base_asset_of`/`quote_asset_of` global repo'dan port edildi: TR↔Global sembol
+# eşlemesi (BTCUSDT → BTC → BTCTRY) ve "bu sembolün quote'u bizimki mi" kontrolü
+# tek merkezden yapılır. v4 tek borsa (Binance TR) ÇALIŞTIRIR ama Global taraması
+# da aynı çatı altında olduğundan bilinen quote ekleri (TRY + USDT) birlikte
+# tanınır — `app/binance_tr_symbols.is_binance_tr_symbol` bunları kullanır.
+
+
+def _KNOWN_QUOTE_ASSETS() -> tuple:
+    """Bilinen quote ekleri. Uzun ek ÖNCE denenir: `USDTTRY` içinde `TRY` de
+    bulunduğu için sıra önemlidir (aksi hâlde `USD` + `TTRY` gibi kesme olurdu)."""
+    assets = {"TRY", "USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USD", "BTC", "ETH", "BNB", "EUR"}
+    return tuple(sorted(assets, key=len, reverse=True))
+
+
+def base_asset_of(symbol: str) -> str:
+    """`BTCTRY`/`BTCUSDT` → `BTC`. Sonda bilinen quote eki varsa keser."""
+    value = str(symbol or "").upper()
+    for quote in _KNOWN_QUOTE_ASSETS():
+        if value.endswith(quote) and len(value) > len(quote):
+            return value[: -len(quote)]
+    return value
+
+
+def quote_asset_of(symbol: str) -> str:
+    """`BTCTRY`/`BTCUSDT` → `TRY`/`USDT`. Bilinen ek yoksa boş dize."""
+    value = str(symbol or "").upper()
+    for quote in _KNOWN_QUOTE_ASSETS():
+        if value.endswith(quote) and len(value) > len(quote):
+            return quote
+    return ""
+
+
 class Config:
     STRATEGY_REVISION = os.getenv("STRATEGY_REVISION", "filters-2026-08-06-adx18-keltner-retest-chop45")
     # Startup and top-gainer hydration use only the timeframes that active
@@ -67,6 +102,47 @@ class Config:
     # sözleşmesi olduğu için BİLİNCİLDİR DEĞİŞTİRİLMEDİ — etiket eski, değer
     # doğru (global repo'daki yaklaşımın aynısı).
     CASH_ASSET = QUOTE_ASSET
+
+    # ---- Binance Global erken-tespit katmanı (2026-10-07) -------------------
+    # Global piyasa TR'den DAHA LİKİT olduğu için, TR'de de listeli sembollerin
+    # yükselişini birkaç saniye/dakika ERKEN gösterir. v4 aynı tarama
+    # algoritmasını Global spot verisi üzerinde ARKA PLANDA çalıştırır; Global'de
+    # bir hareket yakalanınca v4 yine BİNANCE TR sembolü için bildirim üretir ve
+    # TR fiyatıyla otonom paper işlem açar. Arayüzde Global bir borsa/venue olarak
+    # GÖRÜNMEZ (bkz. plan aşama 4) — yalnız görünmez bir erken-tespit girdisidir.
+    #
+    # VARSAYILAN KAPALI: davranış değişmez; bayrak açılana kadar hiçbir Global
+    # bağlantısı kurulmaz. Gerçek emir yolu AÇILMAZ (Global salt-okunur tarama).
+    GLOBAL_SCAN_ENABLED = os.getenv("GLOBAL_SCAN_ENABLED", "false").lower() == "true"
+    # Global tarama yalnız TR'de listeli baz varlıklarla sınırlanır (BTCUSDT→BTCTRY);
+    # TR'de işlem açılamayan bir coin için erken sinyal üretmenin faydası yoktur.
+    # Bu kapı `binance_tr_symbols.is_binance_tr_symbol` üzerinden uygulanır.
+    GLOBAL_SCAN_INTERVAL_SEC = max(15, int(os.getenv("GLOBAL_SCAN_INTERVAL_SEC", "30")))
+
+    # Global spot public uç noktaları (api.binance.com havuzu + WS). TR adaptörünün
+    # yedek havuzundaki `api.binance.com` ile KARIŞMAMASI için burada ayrı tutulur.
+    GLOBAL_REST_BASES = (
+        "https://api.binance.com",
+        "https://api1.binance.com",
+        "https://api2.binance.com",
+        "https://api3.binance.com",
+    )
+    GLOBAL_WS_BASES = ("wss://stream.binance.com:9443", "wss://stream.binance.com:443")
+
+    # Global (USDT) evreni — tarama genişliği. Env (`GLOBAL_SYMBOLS=BTCUSDT,...`)
+    # verilirse o kullanılır. Tohum: TR majörlerinin USDT karşılıkları (taban
+    # varlıklar birebir aynı) ki iki tarama aynı sembol kümesini görsün.
+    _env_global_symbols = [
+        s.strip().upper() for s in os.getenv("GLOBAL_SYMBOLS", "").split(",") if s.strip()
+    ]
+    GLOBAL_SYMBOLS = _env_global_symbols or [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT",
+        "XRPUSDT", "ADAUSDT", "AVAXUSDT",
+        "LINKUSDT", "NEARUSDT", "APTUSDT",
+        "ARBUSDT", "OPUSDT", "SUIUSDT",
+        "DOGEUSDT", "LTCUSDT", "BNBUSDT",
+        "INJUSDT", "WLDUSDT", "DOTUSDT",
+    ]
 
     SYMBOLS = [
     "BTCTRY", "ETHTRY", "SOLTRY",   # Ana Hacimliler (Balinalar)
@@ -608,6 +684,11 @@ class Config:
     # PYRAMIDING_LAYERS ile verilir.
     MIN_24H_QUOTE_VOLUME_TRY = 1_000_000.0
     HIGH_LIQUIDITY_BYPASS_VOLUME_TRY = 3_000_000.0
+    # Global (USDT) karşılıkları — Global erken-tespit taramasında likidite tabanı.
+    # Global daha likit olduğu için taban TR'den farklı ölçeklenir (ölçüldü:
+    # 120K USDT tabanı Global'de ~10 kazanan/~8 hareketli sembol üretiyor).
+    MIN_QUOTE_VOLUME_USDT = float(os.getenv("MIN_QUOTE_VOLUME_USDT", "120000"))
+    WHALE_NOTIONAL_USDT = float(os.getenv("WHALE_NOTIONAL", "25000"))
     MIN_VOLUME_RATIO = 0.3
     MIN_ORDERBOOK_DEPTH_MULTIPLIER = 5.0
     LIQUIDITY_FILTER_ENABLED = True
@@ -863,6 +944,16 @@ class Config:
     BINANCE_TR_BRIDGE_AUTO_TRADE = os.getenv("BINANCE_TR_BRIDGE_AUTO_TRADE", "false").lower() == "true"
     BINANCE_TR_BRIDGE_MIN_SCORE = float(os.getenv("BINANCE_TR_BRIDGE_MIN_SCORE", "0.0"))
     BINANCE_TR_BRIDGE_COOLDOWN_SEC = float(os.getenv("BINANCE_TR_BRIDGE_COOLDOWN_SEC", "60.0"))
+
+    # Global erken-tespit katmanının TR sembol tipi kapısı. True iken Global'de
+    # yakalanan bir hareket YALNIZCA Binance TR'de listeli baz varlığa sahipse
+    # (BTCUSDT→BTCTRY) TR bildirimi/otonom işlemine dönüşür. Kapatmak yalnız
+    # hata ayıklama içindir — kapatılırsa TR'de işlem açılamayan semboller için
+    # sinyal üretilir ve `map_to_tr_symbol` fiyat bulamaz.
+    BINANCE_TR_FILTER_ENABLED = os.getenv("BINANCE_TR_FILTER_ENABLED", "true").lower() == "true"
+    # Global kaynaklı işlemlerin öğrenme/kalite analizi için İÇ strateji işareti.
+    # Arayüzde GÖSTERİLMEZ (plan aşama 4): kullanıcı yalnız TR sinyali görür.
+    GLOBAL_SIGNAL_STRATEGY = os.getenv("GLOBAL_SIGNAL_STRATEGY", "GLOBAL_LEAD_LAG")
 
     @classmethod
     def round_trip_cost(cls) -> float:

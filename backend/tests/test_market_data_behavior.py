@@ -58,7 +58,10 @@ class MarketDataCacheTests(unittest.IsolatedAsyncioTestCase):
         duplicate = [closed[0], "1", "2", "0.5", "1.6", "11", closed[6]]
         open_bar = [now_ms - 30_000, "1", "2", "0.5", "1.8", "12", now_ms + 29_999]
         market = MarketData(["BTCTRY"])
-        with mock.patch("app.market_data.fetch_klines", return_value=[closed, duplicate, open_bar]):
+        # Global erken-tespit entegrasyonu (2026-10-07): kline çekimi artık
+        # `MarketData.adapter` üzerinden yapılır (varsayılan TR
+        # `binance_tr_public`). Davranış aynı; taklit hedefi adaptöre taşındı.
+        with mock.patch("app.binance_tr_public.klines", return_value=[closed, duplicate, open_bar]):
             with mock.patch.object(market, "refresh_24h_tickers", return_value=None):
                 await market.fetch_historical_data(["1m"])
 

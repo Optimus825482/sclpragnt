@@ -6,8 +6,6 @@ import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { formatSignedTL, toMs } from "../lib/format";
 import LlmManagement from "./LlmManagement";
 import SymbolLink from "../components/SymbolLink";
-import BridgeSettingsPanel from "./BridgeSettingsPanel";
-
 type Config = {
   symbols: string[];
   removed_invalid_symbols?: string[];
@@ -44,7 +42,7 @@ export default function SettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
 }
 function SettingsPageInner() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd" | "bridge">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -94,12 +92,12 @@ function SettingsPageInner() {
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab") as any;
-    if (tab && ["symbols", "radar", "app", "strategies", "auto-paper", "macd", "llm", "chat", "bridge"].includes(tab)) {
+    if (tab && ["symbols", "radar", "app", "strategies", "auto-paper", "macd", "llm", "chat"].includes(tab)) {
       setActiveTab(tab);
     }
   }, []);
 
-  const selectTab = (key: "symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd" | "bridge") => {
+  const selectTab = (key: "symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd") => {
     setActiveTab(key);
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
@@ -624,7 +622,6 @@ function SettingsPageInner() {
         <nav className="flex gap-2 overflow-x-auto border-b border-bunker-800 pb-2 no-scrollbar scrollbar-none touch-pan-x" aria-label="Ayar sekmeleri">
           {([
             ["symbols", "Semboller", "🪙"],
-            ["bridge", "Global Köprü", "🌉"],
             ["radar", "Radar", "📡"],
             ["app", "Uygulama Ayarları", "⚙️"],
             ["notifications", "Bildirim Ayarları", "🔔"],
@@ -643,9 +640,6 @@ function SettingsPageInner() {
 
       {cfg && (
         <>
-          <div className={`${activeTab !== "bridge" ? "hidden" : ""}`}>
-            <BridgeSettingsPanel />
-          </div>
           <div className={`${activeTab !== "radar" ? "hidden" : ""}`}>
             <div className="space-y-4">
               <RadarSettingsPanel />
@@ -731,7 +725,7 @@ function SettingsPageInner() {
               <p className="eyebrow text-neon-green">POZİSYON BOYUTU</p>
               <p className="text-xs text-bunker-muted mt-1">Yeni paper işlemde kullanılacak bakiye oranı.</p>
               <div className="grid sm:grid-cols-3 gap-3 mt-3">
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Global işlem yüzdesi</span><input type="number" min={0.1} max={100} step={0.5} value={num(draft.order_pct) * 100} onChange={e => setDraft(d => ({ ...d, order_pct: Number(e.target.value) / 100 }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
+                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">İşlem yüzdesi</span><input type="number" min={0.1} max={100} step={0.5} value={num(draft.order_pct) * 100} onChange={e => setDraft(d => ({ ...d, order_pct: Number(e.target.value) / 100 }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
                 <label className="rounded-lg border border-neon-yellow/40 bg-bunker-900 px-3 py-2 flex items-center justify-between gap-3"><span className="font-mono text-xs text-neon-yellow">M1 düz mum pasif filtresi</span><input type="checkbox" checked={Boolean(draft.symbol_activity_m1_flat_filter_enabled)} onChange={e => setDraft(d => ({ ...d, symbol_activity_m1_flat_filter_enabled: e.target.checked }))} /></label>
                 <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Düz mum max. H-L aralığı (%)</span><input type="number" min={0} max={5} step={0.001} value={num(draft.symbol_activity_m1_flat_max_range_pct)} onChange={e => setDraft(d => ({ ...d, symbol_activity_m1_flat_max_range_pct: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
                 <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">5 dk düz M1 pasifleştirme eşiği</span><input type="number" min={1} max={5} step={1} value={num(draft.symbol_activity_m1_flat_5m_max_count)} onChange={e => setDraft(d => ({ ...d, symbol_activity_m1_flat_5m_max_count: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>

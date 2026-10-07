@@ -4562,6 +4562,28 @@ async def get_pending_monitoring_notification(symbol: str) -> dict | None:
     return await _run_db(op)
 
 
+async def has_recent_monitoring_notification(symbol: str, within_sec: float) -> bool:
+    """Sembol için `within_sec` içinde BİLDİRİM üretildi mi?
+
+    Global erken-tespit çift-tetikleme kapısı (2026-10-07): Global taraması
+    TR'nin kendi taramasıyla AYNI sembolü işaret edebilir. İki bildirim
+    göndermek kullanıcıya "aynı sinyal iki kez" olarak görünür — origin ne
+    olursa olsun taze bir TR bildirimi varsa Global tespiti bildirim ÜRETMEZ
+    (işlem açma kapısı ayrıca `analyzer.positions` ile korunur).
+
+    Sorgu `(symbol, detected_at)` üzerinde LIMIT 1'dir; sıcak sembollerde bile
+    tek indeksli okuma yapar.
+    """
+    cutoff = time.time() - max(0.0, float(within_sec))
+    def op(conn):
+        row = conn.execute(
+            "SELECT 1 FROM monitoring_notifications WHERE symbol=%s AND detected_at >= %s LIMIT 1",
+            (str(symbol).upper(), cutoff),
+        ).fetchone()
+        return row is not None
+    return await _run_db(op)
+
+
 async def get_monitoring_notification_by_id(notification_id: int) -> dict | None:
     """Bildirim ID'sine göre monitoring bildirim kaydını getir."""
     def op(conn):

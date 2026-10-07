@@ -231,8 +231,10 @@ class B04TickerChunkingTests(unittest.IsolatedAsyncioTestCase):
         async def fake_book(_symbols):
             return []
 
-        with patch.object(md, "ticker_24h", fake_ticker_24h), \
-                patch.object(md, "book_tickers", fake_book):
+        # Global erken-tespit entegrasyonu (2026-10-07): `MarketData` borsadan
+        # bağımsızlaştı; bu semboller adaptörden çekilir (varsayılan `pub` = TR).
+        with patch.object(pub, "ticker_24h", fake_ticker_24h), \
+                patch.object(pub, "book_tickers", fake_book):
             await m.refresh_24h_tickers()
 
         self.assertEqual(500.0, m.ticker_24h["BTCTRY"])

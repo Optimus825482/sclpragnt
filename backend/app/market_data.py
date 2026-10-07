@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 import numpy as np
 import websockets
 
-from app.binance_tr_public import WS_BASE, WS_BASES, klines as fetch_klines, ticker_24h, book_tickers
+from app import binance_tr_public
 from app.config import config
 from app.market_intelligence import whale_activity_from_tape
 
@@ -69,7 +69,18 @@ class MarketData:
     KLINE_FRESHNESS_LAG_SEC = 15.0
     KLINE_REST_FRESHNESS_LAG_SEC = 120.0
 
-    def __init__(self, symbols):
+    def __init__(self, symbols, adapter=None, source_prefix="binance_tr_public", ws_bases=None):
+        # Global erken-tespit entegrasyonu (2026-10-07): veri katmanı borsadan
+        # bağımsız hale getirildi. `adapter` bir public adaptör modülüdür
+        # (`binance_tr_public` veya `binance_public`) ve `klines`, `ticker_24h`,
+        # `book_tickers` ile `WS_BASES` sağlar. Varsayılan TR'dir → mevcut
+        # `MarketData(config.SYMBOLS)` çağrıları BİREBİR aynı davranır.
+        # `source_prefix` health/gözlemlenebilirlik dizelerinin önekidir ve
+        # `kline_freshness` içindeki `startswith("<prefix>_ws")` tespiti bu öneke
+        # bağlıdır; yanlış önek taze mumları "eski" gösterir.
+        self.adapter = adapter if adapter is not None else binance_tr_public
+        self.source_prefix = str(source_prefix or "binance_tr_public")
+        self.ws_bases = tuple(ws_bases) if ws_bases else tuple(getattr(self.adapter, "WS_BASES", ()))
         self.symbols = [s.lower() for s in symbols]
         self.timeframes = list(config.PRIORITY_TIMEFRAMES)
         self.klines = defaultdict(lambda: defaultdict(_empty_history))
@@ -150,7 +161,7 @@ class MarketData:
         self._bg_tasks = set()
         # B-05: atlanan bozuk/işlenemeyen WS çerçevesi sayacı (gözlemlenebilirlik).
         self.ws_malformed_frames = 0
-        self.WS_URL = f"{WS_BASE}/stream?streams={{}}"
+        self.WS_URL = f"{self.ws_bases[0]}/stream?streams={{}}"
 
     # CANLI AKIS (2026-09-16, grafik-canlı-düzeltmesi): mum dinleyicileri.
     # Grafik sayfası doğrudan Binance'ye (browser'dan ERİŞİLEMEYEN adres) bağlanmak
@@ -173,7 +184,7 @@ class MarketData:
         return sorted(set(["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]))
 
     @staticmethod
-    def _closed_history(rows, tf: str, now_ms: int):
+    def _closed_history(rows, tf: str, now_ms: int, source_prefix: str = "binance_tr_public"):
         """Normalize REST rows, discard the open bar and deduplicate by open time.
 
         ``now_ms`` is shifted back by a small margin so a host clock that
@@ -208,7 +219,7 @@ class MarketData:
             history["last_closed_at_ms"] = closed_at_ms
         if history["timestamps"]:
             history["updated_at"] = time.time()
-            history["source"] = "binance_tr_public_rest"
+            history["source"] = f"{source_prefix}_rest"
         return history
 
     async def repair_history_gaps(self, symbols=None, timeframes=None):
@@ -249,12 +260,12 @@ class MarketData:
                     if not timestamps:
                         return
                     gap_start_ms = int(timestamps[-1]) + 1
-                    rows = await fetch_klines(symbol.lower(), timeframe, limit=400, start_time_ms=gap_start_ms)
+                    rows = await self.adapter.klines(symbol.lower(), timeframe, limit=400, start_time_ms=gap_start_ms)
                     # B-12: `now_ms` döngü başında yakalanmıştı; fetch 4 deneme ×
                     # 15 sn sürebildiği için bu sırada kapanan mumlar bayat
                     # `now_ms` yüzünden `_closed_history` tarafından atılıyordu
                     # ve onarım boşluklu kalıyordu. Await SONRASI tazele.
-                    fresh_rows = self._closed_history(rows, timeframe, int(time.time() * 1000))
+                    fresh_rows = self._closed_history(rows, timeframe, int(time.time() * 1000), self.source_prefix)
                     if not fresh_rows["timestamps"]:
                         return
                     # Fetch await'i sırasında WS yeni kapanmış mumlar eklemiş
@@ -288,7 +299,7 @@ class MarketData:
                     result["last_closed_at_ms"] = max(
                         int(history.get("last_closed_at_ms") or 0), fresh_rows["last_closed_at_ms"])
                     result["updated_at"] = time.time()
-                    result["source"] = "binance_tr_public_rest_gap_fill"
+                    result["source"] = f"{self.source_prefix}_rest_gap_fill"
                     self.klines[timeframe][symbol] = result
                     repaired += 1
                 except Exception as exc:
@@ -315,8 +326,8 @@ class MarketData:
                 symbol = raw_symbol.upper()
                 print(f"[MarketData] geçmiş çekiliyor | symbol={symbol} timeframe={tf}", flush=True)
                 try:
-                    rows = await fetch_klines(raw_symbol, tf, limit=300)
-                    history = self._closed_history(rows, tf, int(time.time() * 1000))
+                    rows = await self.adapter.klines(raw_symbol, tf, limit=300)
+                    history = self._closed_history(rows, tf, int(time.time() * 1000), self.source_prefix)
                     # A complete replacement is visible atomically to readers;
                     # they never observe half-cleared parallel arrays.
                     self.klines[tf][symbol] = history
@@ -330,7 +341,7 @@ class MarketData:
                             "symbol": symbol,
                             "last_price": last_price,
                             "timestamp": int(time.time() * 1000),
-                            "source": "binance_tr_public_rest_kline",
+                            "source": f"{self.source_prefix}_rest_kline",
                         })
                     print(
                         f"[MarketData] geçmiş hazır | symbol={symbol} timeframe={tf} "
@@ -391,8 +402,8 @@ class MarketData:
         async def hydrate(timeframe, symbol):
             async with semaphore:
                 try:
-                    rows = await fetch_klines(symbol.lower(), timeframe, limit=limit)
-                    history = self._closed_history(rows, timeframe, int(time.time() * 1000))
+                    rows = await self.adapter.klines(symbol.lower(), timeframe, limit=limit)
+                    history = self._closed_history(rows, timeframe, int(time.time() * 1000), self.source_prefix)
                     if len(history["closes"]) < required:
                         return False, f"{symbol}/{timeframe}: insufficient_closed_candles={len(history['closes'])}"
                     self.klines[timeframe][symbol] = history
@@ -404,7 +415,7 @@ class MarketData:
                             "symbol": symbol,
                             "last_price": history["closes"][-1],
                             "timestamp": int(time.time() * 1000),
-                            "source": "binance_tr_public_rest_kline",
+                            "source": f"{self.source_prefix}_rest_kline",
                         })
                     return True, None
                 except Exception as exc:
@@ -435,8 +446,8 @@ class MarketData:
         sym = str(symbol or "").upper()
         tf = str(timeframe or "")
         try:
-            rows = await fetch_klines(symbol.lower(), tf, limit=max(2, int(limit)))
-            fresh = self._closed_history(rows, tf, int(time.time() * 1000))
+            rows = await self.adapter.klines(symbol.lower(), tf, limit=max(2, int(limit)))
+            fresh = self._closed_history(rows, tf, int(time.time() * 1000), self.source_prefix)
             history = self.klines.get(tf, {}).get(sym) or _empty_history()
             timestamps = history.get("timestamps") or []
             if not fresh["timestamps"] and not timestamps:
@@ -465,7 +476,7 @@ class MarketData:
                 int(history.get("last_closed_at_ms") or 0),
                 int(fresh.get("last_closed_at_ms") or 0))
             result["updated_at"] = time.time()
-            result["source"] = "binance_tr_public_rest_refresh"
+            result["source"] = f"{self.source_prefix}_rest_refresh"
             self.klines[tf][sym] = result
             return bool(result["closes"])
         except Exception as exc:
@@ -474,7 +485,7 @@ class MarketData:
 
     async def refresh_24h_tickers(self):
         try:
-            rows = await ticker_24h([s.upper() for s in self.symbols])
+            rows = await self.adapter.ticker_24h([s.upper() for s in self.symbols])
             if not isinstance(rows, list):
                 raise RuntimeError("24h ticker yanıtı liste değil")
             now = time.time()
@@ -498,7 +509,7 @@ class MarketData:
                         "symbol": symbol,
                         "last_price": last_price,
                         "timestamp": now_ms,
-                        "source": "binance_tr_public_rest",
+                        "source": f"{self.source_prefix}_rest",
                     }
             if not quote_volumes:
                 raise RuntimeError("24h ticker yanıtında geçerli sembol yok")
@@ -520,7 +531,7 @@ class MarketData:
         # istekle best-bid/ask yedeği sağlar; böylece likidite kapısı WS
         # kesintisinde bile güncel spread/derinlik görebilir.
         try:
-            rows_book = await book_tickers([str(symbol).upper() for symbol in self.symbols])
+            rows_book = await self.adapter.book_tickers([str(symbol).upper() for symbol in self.symbols])
             book_now = time.time()
             for row in rows_book or []:
                 if not isinstance(row, dict):
@@ -544,7 +555,7 @@ class MarketData:
                     "bid_qty": bid_qty, "ask_qty": ask_qty,
                     "spread_pct": ((ask - bid) / bid * 100) if bid else None,
                     "updated_at": book_now,
-                    "source": "binance_tr_public_rest_bookTicker",
+                    "source": f"{self.source_prefix}_rest_bookTicker",
                 })
         except Exception as exc:
             print(f"[MarketData] bookTicker yenileme hatası: {exc}", flush=True)
@@ -574,7 +585,7 @@ class MarketData:
         # Stream sayısı dokümantasyondaki 1024 bağlantı limitinin çok altında
         # tutulur; host rotasyonu generation bazında yapılır.
         group_size = max(1, self.WS_MAX_STREAMS_PER_CONNECTION // streams_per_symbol)
-        bases = list(WS_BASES or (WS_BASE,))
+        bases = list(self.ws_bases or (self.adapter.WS_BASE,))
         base = bases[self.ws_host_index % len(bases)]
         plans = []
         for index in range(0, len(symbols), group_size):
@@ -672,7 +683,7 @@ class MarketData:
     async def _run_ws_group(self, plan):
         group_id = plan["group_id"]
         generation = plan["generation"]
-        bases = list(WS_BASES or (WS_BASE,))
+        bases = list(self.ws_bases or (self.adapter.WS_BASE,))
         attempts = 0
         while self.running and generation == self.connection_generation:
             # B-03: URL HER denemede yeniden kurulur. Eskiden donmuş `plan["url"]`
@@ -853,7 +864,7 @@ class MarketData:
                     "symbol": symbol,
                     "last_price": price,
                     "timestamp": int(data.get("E", time.time() * 1000) or time.time() * 1000),
-                    "source": "binance_tr_public_ws:ticker",
+                    "source": f"{self.source_prefix}_ws:ticker",
                 }
                 self._mark_ws_event()
             return
@@ -879,7 +890,7 @@ class MarketData:
                     "symbol": symbol,
                     "last_price": price,
                     "timestamp": int(data.get("E", time.time() * 1000) or time.time() * 1000),
-                    "source": f"binance_tr_public_ws:{sig[1]}",
+                    "source": f"{self.source_prefix}_ws:{sig[1]}",
                 }
                 self._mark_ws_event()
             return
@@ -926,7 +937,7 @@ class MarketData:
             "symbol": symbol,
             "last_price": close,
             "timestamp": event_ms,
-            "source": "binance_tr_public_ws",
+            "source": f"{self.source_prefix}_ws",
         }
         self._mark_ws_event()
 
@@ -985,7 +996,7 @@ class MarketData:
                 history.setdefault(key, []).append(value)
         history["last_closed_at_ms"] = max(int(history.get("last_closed_at_ms", 0) or 0), closed_at_ms)
         history["updated_at"] = time.time()
-        history["source"] = "binance_tr_public_ws"
+        history["source"] = f"{self.source_prefix}_ws"
         if len(timestamps) > self.MAX_HISTORY_CANDLES:
             excess = len(timestamps) - self.MAX_HISTORY_CANDLES
             del timestamps[:excess]
@@ -1027,7 +1038,7 @@ class MarketData:
             # Bilinmeyen aralık sessizce "fresh" sayılmaz (B-15 ile tutarlı).
             return {"fresh": False, "age_sec": age, "max_age_sec": None,
                     "source": source, "error": str(exc)}
-        ws_fed = source.startswith("binance_tr_public_ws")
+        ws_fed = source.startswith(f"{self.source_prefix}_ws")
         lag = self.KLINE_FRESHNESS_LAG_SEC if ws_fed else self.KLINE_REST_FRESHNESS_LAG_SEC
         maximum = interval_sec + lag
         return {"fresh": bool(history.get("closes")) and age <= maximum,
@@ -1119,7 +1130,7 @@ class MarketData:
             "ask_qty": ask_qty,
             "spread_pct": ((ask - bid) / bid * 100) if bid else None,
             "updated_at": received_at,
-            "source": data.get("source") or "binance_tr_public_ws",
+            "source": data.get("source") or f"{self.source_prefix}_ws",
         })
 
     def get_orderflow(self, symbol):
@@ -1311,7 +1322,7 @@ class MarketData:
             },
             "flags": flags,
             "data_ready": not flags,
-            "source": flow.get("source") or "binance_tr_public_ws",
+            "source": flow.get("source") or f"{self.source_prefix}_ws",
             "updated_at": now,
         }
 

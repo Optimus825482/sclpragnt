@@ -5,7 +5,6 @@ import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
 import MacdMtfTab from "./MacdMtfTab";
-import GlobalBridgeTab from "./GlobalBridgeTab";
 import LlmVsRulesTab from "./LlmVsRulesTab";
 import {
   formatSignedTL,
@@ -76,16 +75,16 @@ const SOURCE_BADGE_META: Record<string, { label: string; cls: string }> = {
   jump: { label: "SIÇRAMA", cls: "border-sky-400/50 bg-sky-400/15 text-sky-300" },
   early: { label: "ERKEN", cls: "border-violet-400/50 bg-violet-400/15 text-violet-300" },
   rising: { label: "YÜKSELİŞ", cls: "border-amber-400/50 bg-amber-400/15 text-amber-300" },
-  global: { label: "🌐 GLOBAL", cls: "border-neon-cyan/60 bg-neon-cyan/20 text-neon-cyan" },
-  lead_lag: { label: "🌐 GLOBAL", cls: "border-neon-cyan/60 bg-neon-cyan/20 text-neon-cyan" },
 };
+// NOT (2026-10-07): Global taraması v4'ün içine alındı; "global"/"lead_lag"
+// kaynak rozetleri KALDIRILDI (kullanıcı direktifi: arayüzde Global'e dair
+// hiçbir iz olmayacak). Global erken tespitleri sıradan TR radar kaynağı
+// ("velocity") olarak raporlanır.
 const SOURCE_BADGE_COMPACT: Record<string, string> = {
   velocity: "RADAR",
   jump: "SIÇR.",
   early: "ERKEN",
   rising: "YÜKS.",
-  global: "GLOBAL",
-  lead_lag: "GLOBAL",
 };
 
 function ChannelBadge({ sentViaPush }: { sentViaPush?: boolean | null }) {
@@ -1764,7 +1763,6 @@ export default function ReportsPage() {
 
   const MAIN_TABS = [
     { id: "overview", label: "📊 Performans Özeti", icon: "📊" },
-    { id: "bridge", label: "🌉 Global Lead-Lag", icon: "🌉" },
     { id: "radar", label: "🎯 Sinyal & Hedef Başarısı", icon: "🎯" },
     { id: "positions", label: "💼 Otonom Pozisyonlar", icon: "💼" },
     { id: "llm_compare", label: "🤖 Kural vs LLM", icon: "🤖" },
@@ -1888,7 +1886,6 @@ export default function ReportsPage() {
 
       {/* Sekme İçerikleri */}
       {tab === "overview" && <OverviewTab day={selectedDay} includeArchived={includeArchived} />}
-      {tab === "bridge" && <GlobalBridgeTab day={selectedDay} />}
       {tab === "radar" && <UserRadarTab day={selectedDay} setDay={setSelectedDay} includeArchived={includeArchived} />}
       {tab === "positions" && <UserPositionsTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "llm_compare" && <LlmVsRulesTab day={selectedDay} includeArchived={includeArchived} />}

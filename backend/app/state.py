@@ -54,6 +54,37 @@ logger = logging.getLogger("scalper.state")
 market = MarketData(config.SYMBOLS)
 analyzer = ScalpAnalyzer(market)
 
+# Global erken-tespit katmanı (2026-10-07): Global (USDT) piyasası TR'den daha
+# likit olduğu için TR'de de listeli sembollerin yükselişini BİRKAÇ SANİYE/
+# DAKİKA ERKEN gösterir. `global_market` bu amaçla ayrı bir veri motorudur;
+# YALNIZCA `GLOBAL_SCAN_ENABLED` açıkken kurulur (varsayılan kapalı → üretim
+# davranışı birebir aynı, hiçbir Global bağlantısı yok).
+#
+# Kritik ayrımlar:
+# * Bu bir İKİNCİ VENUE DEĞİLDİR. Bildirim ve otonom işlem her zaman TR
+#   sembolü/TRY üzerinden yürür (`app/global_lead_lag.py`); `global_market`
+#   yalnızca erken-tespit GİRDİSİDİR ve arayüzde hiçbir yerde görünmez.
+# * Ayrı `MarketData` örneği = ayrı WS abonelikleri ve ayrı REST bütçesi
+#   (adaptörün kendi semaphore/pool'u). TR akışı bu yükten etkilenmez.
+# * `market`/`config.SYMBOLS` evreni bu bloktan ETKİLENMEZ: `global_market`
+#   kendi sembol listesini taşır (USDT çiftleri), `apply_symbol_universe`
+#   yalnız TR evrenini yazar.
+global_market: MarketData | None = None
+if config.GLOBAL_SCAN_ENABLED:
+    from app import binance_public as _global_adapter
+
+    global_market = MarketData(
+        config.GLOBAL_SYMBOLS,
+        adapter=_global_adapter,
+        source_prefix="binance_public",
+        ws_bases=config.GLOBAL_WS_BASES,
+    )
+    logger.info("Global erken-tespit taraması AÇIK: %d sembol (USDT) — "
+                "yalnız bildirim/işlem üretimi TR sembolüne eşlenir",
+                len(global_market.symbols))
+else:
+    logger.debug("Global erken-tespit taraması kapalı (GLOBAL_SCAN_ENABLED=false)")
+
 
 def _normalize(symbols) -> list[str]:
     return list(dict.fromkeys(

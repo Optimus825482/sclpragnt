@@ -59,7 +59,7 @@ export type RadarAlertItem = {
   // `kind` SUNUCUDAN gelen ham alan adıdır ("erken" | "yukselis");
   // `alertKind` bu modülün normalize ettiği tür.
   kind?: string;
-  alertKind?: "erken" | "yukselis" | "global";
+  alertKind?: "erken" | "yukselis";
   proximity?: number | null;
   early_score?: number | null;
   green?: number | null;
@@ -67,14 +67,16 @@ export type RadarAlertItem = {
   signals?: Record<string, unknown> | null;
 };
 
-// Dialog türü: radar (monitoring_alert) · alarm (alert) · yükseliş (rising_alert) · global (lead_lag).
-type AlertKind = "radar" | "alarm" | "rising" | "global";
+// Dialog türü: radar (monitoring_alert) · alarm (alert) · yükseliş (rising_alert).
+// NOT (2026-10-07): Global taraması v4'ün içine alındığında "global" türü
+// KALDIRILDI — Global erken tespitleri sıradan bir TR radar bildirimi olarak
+// görünür (kullanıcı direktifi: arayüzde Global'e dair hiçbir şey olmayacak).
+type AlertKind = "radar" | "alarm" | "rising";
 
 const KIND_META: Record<AlertKind, { eyebrow: string; icon: string; accent: string }> = {
   radar: { eyebrow: "RADAR BİLDİRİMİ", icon: "🚨", accent: "border-neon-green/40 bg-neon-green/5" },
   alarm: { eyebrow: "ALARM BİLDİRİMİ", icon: "🔔", accent: "border-amber-300/40 bg-amber-300/5" },
   rising: { eyebrow: "YÜKSELİŞ EĞİLİMİ BİLDİRİMİ", icon: "📈", accent: "border-sky-400/40 bg-sky-400/5" },
-  global: { eyebrow: "🌐 GLOBAL LEAD-LAG BİLDİRİMİ", icon: "🌐", accent: "border-neon-cyan/50 bg-neon-cyan/10" },
 };
 
 // H-16: biçim TEK kaynaktan (`lib/format`); buradaki 5. hassasiyet kopyası
@@ -107,21 +109,16 @@ export default function RadarAlertModal() {
     if (!item && queue.length > 0) {
       const [head, ...rest] = queue;
       setQueue(rest);
-      const isHeadGlobal =
-        head.alertKind === "global" ||
-        (head.title && head.title.includes("GLOBAL")) ||
-        (head as any).mode === "global_lead_lag" ||
-        (Array.isArray((head as any).sources) && (head as any).sources.includes("global"));
       showNext(
         head,
-        isHeadGlobal ? "global" : head.alertKind === "yukselis" || head.alertKind === "erken" ? "rising" : "radar"
+        head.alertKind === "yukselis" || head.alertKind === "erken" ? "rising" : "radar"
       );
     }
   }, [item, queue, showNext]);
 
   const onLiveMessage = useCallback((message: { type: string; data?: unknown }) => {
     if (message.type !== "monitoring_alert" && message.type !== "alert"
-        && message.type !== "rising_alert" && message.type !== "global_bridge_signal") return;
+        && message.type !== "rising_alert") return;
     const alertKind: AlertKind =
       message.type === "rising_alert" ? "rising"
         : message.type === "monitoring_alert" ? "radar" : "alarm";
@@ -137,19 +134,14 @@ export default function RadarAlertModal() {
     // tablosu bu satırları yine kullanır (sayfa kendi `loadState` çağrısıyla).
     const freshRows = rows.filter((r) => !r.updated);
     const entries: RadarAlertItem[] = freshRows.map((raw) => {
-      const isGlobal =
-        raw.alertKind === "global" ||
-        (raw.title && raw.title.includes("GLOBAL")) ||
-        (raw as any).mode === "global_lead_lag" ||
-        (Array.isArray((raw as any).sources) && (raw as any).sources.includes("global"));
       return {
         ...raw,
         id: raw.id ?? (raw as any).event_key ?? `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         symbol: raw.symbol,
         message: raw.message || raw.reason
-          || (isGlobal ? "Binance Global öncü sinyali" : alertKind === "rising" ? "Yükseliş sinyali" : alertKind === "radar" ? "Yeni radar fırsatı" : "Yeni alarm"),
+          || (alertKind === "rising" ? "Yükseliş sinyali" : alertKind === "radar" ? "Yeni radar fırsatı" : "Yeni alarm"),
         title: raw.title,
-        alertKind: isGlobal ? "global" : (raw.alertKind ?? (raw.kind === "erken" || raw.kind === "yukselis" ? raw.kind : undefined)),
+        alertKind: raw.alertKind ?? (raw.kind === "erken" || raw.kind === "yukselis" ? raw.kind : undefined),
         triggered_at: raw.triggered_at ?? raw.detected_at ?? Date.now() / 1000,
       };
     });
@@ -160,8 +152,7 @@ export default function RadarAlertModal() {
     }
     const [head, ...rest] = entries;
     if (rest.length) setQueue((current) => [...current, ...rest].slice(-5));
-    const isFirstGlobal = head.alertKind === "global";
-    showNext(head, isFirstGlobal ? "global" : alertKind);
+    showNext(head, alertKind);
   }, [showNext]);
 
   useLiveMessages(onLiveMessage);
@@ -189,13 +180,7 @@ export default function RadarAlertModal() {
             <button type="button" onClick={close} aria-label="Bildirimi kapat" className="text-bunker-muted hover:text-white">✕</button>
           </div>
           <div className="space-y-3 p-5">
-            {kind === "global" && (
-              <span className="inline-flex items-center gap-1.5 rounded border border-neon-cyan/50 bg-neon-cyan/15 px-2.5 py-0.5 font-mono text-xs font-bold text-neon-cyan animate-pulse">
-                <span>🌐</span>
-                <span>BİNANCE GLOBAL SİNYALİ</span>
-              </span>
-            )}
-            {risingKind && risingKind !== "global" && (
+            {risingKind && (
               <span className={`inline-block rounded border px-2 py-0.5 font-mono text-[10px] font-bold ${risingKind === "erken" ? "border-sky-400/40 bg-sky-400/10 text-sky-300" : "border-neon-green/40 bg-neon-green/10 text-neon-green"}`}>
                 {risingKind === "erken" ? "🌱 ERKEN SİNYAL — YAKLAŞIYOR" : "📈 YÜKSELİŞ EĞİLİMİ"}
               </span>

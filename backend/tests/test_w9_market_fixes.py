@@ -108,7 +108,7 @@ class RepairGapFreshClockTests(unittest.IsolatedAsyncioTestCase):
             returned_at["t"] = time.time()
             return [[stale_closed, "1", "1", "1", "1", "1", stale_closed + 300_000 - 1]]
 
-        def recording_closed_history(rows, tf, now_ms):
+        def recording_closed_history(rows, tf, now_ms, source_prefix="binance_tr_public"):
             recorded["now_ms"] = now_ms
             hist = _empty_hist()
             hist["timestamps"] = [stale_closed]
@@ -116,7 +116,7 @@ class RepairGapFreshClockTests(unittest.IsolatedAsyncioTestCase):
             hist["closes"] = [1.0]
             return hist
 
-        with mock.patch("app.market_data.fetch_klines", side_effect=fake_fetch), \
+        with mock.patch("app.binance_tr_public.klines", side_effect=fake_fetch), \
              mock.patch.object(market, "_closed_history", side_effect=recording_closed_history):
             await market.repair_history_gaps(symbols=["BTCTRY"], timeframes=["5m"])
 
