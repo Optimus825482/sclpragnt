@@ -1,47 +1,43 @@
 # backend/scripts/ — Envanter
 
-> **2026-09-26 denetimi ile eklendi.** Denetim raporu (§6 "Ölü kod / ölü ayar"):
-> "`backend/scripts/` — 118 dosya, 5'i testler/üretim tarafından kullanılıyor
-> … ~113 ölü."
->
-> Bu README, hangi script'in **kalıcı bağımlılık** olduğunu, kalanların ne
-> olduğunu ve neden silinmediğini belgeler.
->
-> **Ölü script'ler SİLİNMEDİ.** Denetim bunları silmeyi önerdi (Faz 5, madde
-> 29: "3 üretim bağımlısını `backend/tools/`'a taşı, ~113 ölü dosyayı sil"),
-> ancak bu bir **ürün kararıdır** ve kullanıcının onayı gerekir. Silme
-> kararını bırakılmıştır.
+> **2026-10-07: Araştırma betikleri SİLİNDİ.** 2026-09-26 denetiminde işaretlenen
+> ~88 kullanılmayan araştırma betiği ile `pump24/` ve `m5_all_flow/` alt
+> dizinleri, ürün sahibinin onayıyla (2026-10-07) kaldırıldı. Geriye **yalnızca
+> kalıcı bağımlılık olan 5 betik** kaldı. Silinen betikler git geçmişinden de
+> temizlendi (`git filter-repo`); başka bir kopyada hâlâ varsa
+> `git log --all -- backend/scripts/<ad>.py` ile bulunabilir.
 
-## Dizin içeriği (2026-09-26)
+## Dizin içeriği (2026-10-07)
 
 | Kategori | Adet | Git durumu |
 | --- | --- | --- |
-| Python script | 93 | `backend/scripts/*.py` |
-| JSON araştırma çıktısı | 108 | `.gitignore`'da (satır 24) |
-| Log dosyası | 27 | `.gitignore`'da (satır 26) |
-| Alt dizin (`pump24/`, `m5_all_flow/`, `__pycache__/`) | 3 | — |
-| **Toplam girdi** | **231** | |
+| **Çalışan Python betiği** | **5** | `backend/scripts/*.py` |
+| README | 1 | `backend/scripts/README.md` |
+| Replay çıktısı (JSON) | ~108 | `.gitignore`'da (üretilen veri) |
+| Alt dizin (`pump24/`, `m5_all_flow/`) | **0** | silindi |
 
-> **Not:** Denetim "118 dosya" derken `ls | wc -l` ile JSON çıktılarını da
-> saymıştı. Gerçek **Python script sayısı 93**'tür. Kalan ~113 "ölü" ifadesi
-> bu nedenle 93 - 5 = 88 olarak okunmalıdır.
+> Silinen betikler: `analyze_*`, `audit_*`, `replay_*`, `research_*`,
+> `run_exit_profile_backtests.py`, `run_historical_backtests.py`,
+> `strategy_research_agent.py`, `vectorbt_research.py` vb. Bunların çıktısı olan
+> JSON dosyaları `.gitignore`'dadır ve listede kalır; istenirse ayrıca
+> temizlenebilir.
 
-## 1. KALICI BAĞIMLILIK (5 script) — silinmemeli
+## 1. KALICI BAĞIMLILIK (5 betik) — silinmemeli
 
-Bu beş script **çalışma zamanında veya testte fiilen çağrılır**. Kaldırılırsa
+Bu beş betik **çalışma zamanında veya testte fiilen çağrılır**. Kaldırılırsa
 üretim ya da test kırılır.
 
-| Script | Çağıran | Kanıt (satır) |
+| Betik | Çağıran | Kanıt |
 | --- | --- | --- |
-| `run_postgres_migration.py` | `backend/entrypoint.sh` | satır 15 — **her konteyner açılışında** şemayı uygular |
-| `run_portfolio_backtest.py` | Testler | `tests/test_regressions.py:66,82,96` — `pine_profile`, `rows_to_series`, `load_market` içe aktarılıyor |
-| `combined_radar_replay_24h.py` | `app/routers/maintenance.py` | satır 640-641 — `importlib.util.spec_from_file_location` ile **çalışma zamanında** yükleniyor |
-| `research_m1_spikes_all_symbols.py` | `app/pattern_research.py` | satır 124 — `subprocess` ile çağrılıyor |
-| `migrate_sqlite_to_postgres.py` | Testler | `tests/test_secondary_behavior.py:17-18` — varlığı ve içeriği doğrulanıyor |
+| `run_postgres_migration.py` | `backend/entrypoint.sh` (satır 15) | **her konteyner açılışında** şemayı uygular |
+| `run_portfolio_backtest.py` | `tests/test_regressions.py` | satır 66/82/96 — `pine_profile`, `rows_to_series`, `load_market` içe aktarılır |
+| `combined_radar_replay_24h.py` | `app/routers/maintenance.py` (satır 673) | `importlib.util.spec_from_file_location` ile **çalışma zamanında** yüklenir |
+| `research_m1_spikes_all_symbols.py` | `app/pattern_research.py` (satır 124) | `subprocess` ile çağrılır |
+| `migrate_sqlite_to_postgres.py` | `tests/test_secondary_behavior.py` (satır 17-18) | varlığı ve içeriği doğrulanır |
 
 ### `run_postgres_migration.py` hakkında önemli not (2026-09-26 düzeltmesi)
 
-Bu script iki ayrı kaynaktan şema okuyordu ve `app/database.py`'in `init_db()`
+Bu betik iki ayrı kaynaktan şema okuyordu ve `app/database.py`'in `init_db()`
 fonksiyonu ile **farklı bir dosya listesi** kullanıyordu (denetim #72).
 Entrypoint her açılışta 001+002'nin sha'sını yazıyor, `init_db()` ise beş
 dosyanın tamamını yeniden DDL olarak koşuyordu → her restart tam DDL + ACCESS
@@ -49,63 +45,22 @@ EXCLUSIVE kilit yarışı, ve `004_bloat_prevention.sql` / `005_user_binance_key
 **yalnızca ikinci yolda** oluşuyordu.
 
 **Düzeltildi:** Artık her iki yol da `migrations/` dizinini **glob ile aynı
-sıraya** tarar ve birebir aynı sha'yı üretir. Doğrulandı:
+sıraya** tarar ve birebir aynı sha'yı üretir. Yeni migration eklendiğinde
+**hiçbir Python dosyası güncellenmez** — glob kendiliğinden yakalar.
 
-```
-script sha: fc9d0ac4adf1117b6f9092269cb6b8a005d52d9339f197917760c03a3d3aac9c
-db.py  sha: fc9d0ac4adf1117b6f9092269cb6b8a005d52d9339f197917760c03a3d3aac9c
-SQL IDENTICAL: True
-```
+## 2. Silinen araştırma artığı (arşiv notu)
 
-Yeni migration eklendiğinde **hiçbir Python dosyası güncellenmez** — glob
-kendiliğinden yakalar.
+2026-09-26 denetimi (`docs/SISTEM_DENETIMI_2026-09-26.md` §6) bu dizinde 93
+Python betiğinden yalnızca 5'inin kullanıldığını tespit etmiş, silmeyi
+"ürün kararı" olarak ertelemişti. **2026-10-07'de silme kararı uygulandı.**
 
-## 2. ARAŞTIRMA ARTAĞI (~88 script) — silinmedi, bakım dışı
-
-Bu script'ler **hiçbir yerden çağrılmıyor**. Üç kategoride:
-
-### 2a. Çıktısı `docs/` altındaki CSV'lere giden replay/tarama script'leri
-
-`combined_radar_replay_24h.py` dışındaki tüm `birlesik-radar-*.csv` ve
-`analysis_snapshots (2).sql` / `velocity_candidates (2).sql` / `monitoring_notifications.sql`
-dosyalarını üreten script'ler. Envanter için bkz. [`../../docs/ARTEFAKTLAR.md`](../../docs/ARTEFAKTLAR.md).
-
-### 2b. Tek seferlik strateji araştırması
-
-`replay_*.py`, `pump24_*.py`, `research_m1_*.py` vb. Çoğu `config.py`'de artık
-**var olmayan** sabitlere (`config.BB_MFI_*`, `config.SMA_CASCADE_*`,
-`config.ACTIVE_STRATEGY`, `config.BACKTEST_ASSUMED_SPREAD_PCT`) erişir ve
-çalıştırıldığında `AttributeError` verir. Bunlar **tarihsel kayıt olarak
-anlamlıdır** — hangi stratejinin neden test edildiğini gösterir.
-
-### 2c. Operasyonel yardımcılar (manuel çalıştırılır)
-
-`purge_*.py`, `cleanup_*.py`, `show_*.py`, `analyze_*.py` gibi tek seferlik
-operasyon script'leri. Bunlar otomatik çağrılmaz ama bir operasyonda **manuel**
-gerekebilir (veri temizliği, smoke kontrolü). Silinmeden önce operasyon
-ekibiyle teyit edilmelidir.
-
-## 3. Silme kararı — neden uygulanmadı
-
-Denetimin Faz 5 / madde 29'u "3 üretim bağımlısını `backend/tools/`'a taşı,
-~113 ölü dosyayı sil" diyor. **Bu uygulanmadı**, çünkü:
-
-1. **Karar kullanıcının.** Araştırma geçmişi silinmez; bazı script'ler
-   gelecekte yeniden yazılan stratejiler için referans.
-2. **Risk.** Bazıları "çağrılmıyor" görünse de `pattern_research.py:124` gibi
-   **dinamik** subprocess yolları grep'te görünmez.
-3. **Ayrıştırma kararı ayrı bir iş.** `backend/tools/` altına taşımak, 3
-   script'in import yollarını ve `entrypoint.sh`'i değiştirir — ayrı bir
-   değişiklik paketi, ayrı test turu gerektirir.
-
-### Önerilen sonraki adım (onay gerektirir)
-
-1. Önce 2a ve 2b kategorilerini ayır (2 operasyonel olan 2c'de kalır).
-2. 2a/2b'yi `git rm` ile sil veya `archive/` altına taşı.
-3. `run_postgres_migration.py` + `combined_radar_replay_24h.py` +
-   `research_m1_spikes_all_symbols.py`'i `backend/tools/`'a taşı ve
-   çağıran 3 yolu güncelle.
-4. Her adımdan sonra `pytest` + `entrypoint.sh` smoke testi.
+Silinenler üç kategorideydi:
+- **2a.** `docs/` altındaki CSV/SQL çıktılarını üreten replay/tarama betikleri
+  (`combined_radar_replay_24h.py` hariç — o kalıcı).
+- **2b.** Tek seferlik strateji araştırması (`replay_*`, `pump24_*`,
+  `research_*`) — çoğu artık `config.py`'de bulunmayan sabitlere erişiyordu.
+- **2c.** Manuel operasyon yardımcıları (`purge_*`, `cleanup_*`, `show_*`,
+  `analyze_*`).
 
 ## İlgili belgeler
 

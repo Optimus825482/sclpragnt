@@ -5,8 +5,8 @@ backend/__pycache__/
 backend/scalper_db_v4.sqlite*
 scalper_db_v4.sqlite*
 local_backups/
-# 2026-10-07 (P2-12): db-backup servisinin host-dışı kopya hedefi (bind-mount).
-# Dump'lar asla commit edilmemeli; ayrıca diskte büyür.
+# Elle alınan yedek dump'ları için (otomatik db-backup servisi 2026-10-07'de
+# kaldırıldı). Dump'lar asla commit edilmemeli; ayrıca diskte büyür.
 offbox_backups/
 docs/*.dump
 scalperagent-backup-*.sqlite*
