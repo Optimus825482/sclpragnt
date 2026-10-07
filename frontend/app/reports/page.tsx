@@ -834,24 +834,32 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
       const tradePnl = n.trade?.pnl != null ? Number(n.trade.pnl).toFixed(2) : "";
       const tradePnlPct = n.trade?.pnl_pct != null ? Number(n.trade.pnl_pct).toFixed(2) : "";
       const mfePct = n.mfe_pct != null ? Number(n.mfe_pct) : null;
-      // DÜRÜSTLÜK DÜZELTMESİ (2026-10-07): MFE yalnızca TEPE noktasıdır — bir
-      // kilitleme/realizasyon DEĞİLDİR. Eski etiketler ("TP1 KİLİTLENDİ",
-      // "TP2 KOŞUSU") gerçekleşmemiş bir kârı raporluyordu: 2026-10-07
-      // incelemesinde "TP1 KİLİTLENDİ" satırları ortalama -%4,32 zararla
-      // kapanmıştı. Ayrıca bu kontroller `KISMİ`'den ÖNCE geldiği için hedefe
-      // hiç dokunmamış satırlar da bu etiketi alıyordu. Etiketler artık
-      // yalnızca ÖLÇÜLEN olguyu söyler (tepe noktası), realizasyon iddiası yok.
-      // Gerçekleşen sonuç için "Otonom İşlem PnL %" kolonuna bakılmalıdır.
+      // GERÇEKLEŞEN SONUÇ (2026-10-08): `Sonuç` artık mum tekrarı (candle replay)
+      // değerini değil, GERÇEKTEN kapanan otonom işlemi (`auto_paper_trades`) anlatır.
+      // 2026-10-07 incelemesi: eski etiketler %76 "başarı" derken net PnL -440,94 TL
+      // idi. Sebep: `Sonuç` hedefe DOKUNULDUĞUNU söylüyordu (MFE ≥ hedef), oysa
+      // gerçekleşen kâr yakalanmıyordu. Artık tek ölçüt: kapanan işlemin PnL'i.
+      const tradePnlPctNum = n.trade?.pnl_pct != null ? Number(n.trade.pnl_pct) : null;
+      const exitReason = (n.trade?.exit_reason || "").toUpperCase();
       let sonuc = "";
-      if (n.status === "TAMAMEN BAŞARILI") sonuc = "HEDEFE DEĞDİ";
-      else if (mfePct != null && mfePct >= 3.0) sonuc = "TEPE ≥%3,0 (hedefe değmedi)";
-      else if (mfePct != null && mfePct >= 1.2) sonuc = "TEPE ≥%1,2 (hedefe değmedi)";
-      else if (n.status === "BAŞARILI") sonuc = "BAŞARILI";
-      else if (n.status === "KISMİ") sonuc = `KISMİ (+${mfePct?.toFixed(1)}%)`;
-      else if (n.outcome_details?.status_reason === "STOPPED_OUT") sonuc = "STOP (-%1.5)";
-      else if (n.status === "BAŞARISIZ") sonuc = "BAŞARISIZ";
-      else if (n.status === "ÖLÇÜLEMEDİ") sonuc = "ÖLÇÜLEMEDİ (1m mum yok)";
-      else sonuc = "TAKİPTE";
+      if (tradePnlPctNum == null) {
+        // İşlem açılmadıysa ölçülen olgu yalnız TEPE olarak anlatılır — kâr iddiası yok.
+        if (n.status === "ÖLÇÜLEMEDİ") sonuc = "İŞLEM YOK (pencere kapandı)";
+        else if (n.status === "BEKLİYOR") sonuc = "İŞLEM YOK (teknik belki)";
+        else if (mfePct != null && mfePct >= 3.0) sonuc = "İŞLEM YOK (tepe +%3,0)";
+        else if (mfePct != null && mfePct >= 1.2) sonuc = "İŞLEM YOK (tepe +%1,2)";
+        else sonuc = "İŞLEM YOK";
+      } else if (tradePnlPctNum > 0.05) {
+        // Kâr: gerçekleşen oran yeterli mi diye bakmadan KÂR denir, çünkü bu artık
+        // mum tahmini değil — kapanmış bir pozisyonun gerçek PnL'idir.
+        sonuc = `KÂR (+${tradePnlPctNum.toFixed(2)}%)`;
+      } else if (exitReason === "STOP_LOSS" || exitReason === "STOP") {
+        sonuc = `STOP (${tradePnlPctNum.toFixed(2)}%)`;
+      } else if (tradePnlPctNum <= -0.05) {
+        sonuc = `ZARAR (${tradePnlPctNum.toFixed(2)}%)`;
+      } else {
+        sonuc = "BAŞA BAŞ (−/+0,05%)";
+      }
       return [timeStr, n.symbol || "", channel, sources, price, score, target, mfe, tradePnl, tradePnlPct, sonuc].map(csvEscape).join(",");
     });
     const bom = "\uFEFF";
@@ -1196,27 +1204,23 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
                           )}
                         </td>
                         <td>
-                          {n.status === "TAMAMEN BAŞARILI" ? (
-                            <Badge tone="ok">
-                              TAMAMEN {n.outcome_details?.touched_at_minute != null ? `(${n.outcome_details.touched_at_minute}. dk)` : ""}
-                            </Badge>
-                          ) : (mfePct != null && mfePct >= 3.0) ? (
-                            <Badge tone="ok">TEPE ≥3,0</Badge>
-                          ) : (mfePct != null && mfePct >= 1.2) ? (
-                            <Badge tone="warn">TEPE ≥1,2</Badge>
-                          ) : n.status === "BAŞARILI" ? (
-                            <Badge tone="ok">BAŞARILI</Badge>
-                          ) : n.status === "KISMİ" ? (
-                            <Badge tone="warn">KISMİ (+{mfePct?.toFixed(1)}%)</Badge>
-                          ) : n.outcome_details?.status_reason === "STOPPED_OUT" ? (
-                            <Badge tone="bad">STOP (-%1.5)</Badge>
-                          ) : n.status === "BAŞARISIZ" ? (
-                            <Badge tone="bad">BAŞARISIZ</Badge>
-                          ) : n.status === "ÖLÇÜLEMEDİ" ? (
-                            <Badge tone="bad">ZAMAN AŞIMI</Badge>
-                          ) : (
-                            <Badge tone="ok" className="animate-pulse">⏳ TAKİPTE (60 dk)</Badge>
-                          )}
+                          {(() => {
+                            // 2026-10-08: rozet de gerçekleşen PnL'i gösterir.
+                            // Eski sıralama MFE'yi ölçtüğü için stop-out'ları
+                            // "TEPE ≥1,2" diye gizliyordu (stop kontrolü MFE
+                            // kontrollerinden SONRA geliyordu).
+                            const tp = n.trade?.pnl_pct != null ? Number(n.trade.pnl_pct) : null;
+                            const er = (n.trade?.exit_reason || "").toUpperCase();
+                            if (tp == null) {
+                              if (n.status === "ÖLÇÜLEMEDİ") return <Badge tone="bad">ZAMAN AŞIMI</Badge>;
+                              if (n.status === "BEKLİYOR") return <Badge tone="warn" className="animate-pulse">⏳ BEKLİYOR</Badge>;
+                              return <Badge tone="neutral">İŞLEM YOK</Badge>;
+                            }
+                            if (tp > 0.05) return <Badge tone="ok">KÂR (+{tp.toFixed(2)}%)</Badge>;
+                            if (er === "STOP_LOSS" || er === "STOP") return <Badge tone="bad">STOP ({tp.toFixed(2)}%)</Badge>;
+                            if (tp <= -0.05) return <Badge tone="bad">ZARAR ({tp.toFixed(2)}%)</Badge>;
+                            return <Badge tone="warn">BAŞA BAŞ</Badge>;
+                          })()}
                         </td>
                       </tr>
                     );
