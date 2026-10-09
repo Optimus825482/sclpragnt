@@ -881,6 +881,29 @@ class Config:
     # kazanan erken kesiliyordu. Kapatilinca cikisi trailing + genis SL belirler
     # ve test seti negatiften pozitife donuyor. (max_target_pct ile ayni sebep.)
     AUTO_PAPER_TP_PRIMARY_ENABLED = os.getenv("AUTO_PAPER_TP_PRIMARY_ENABLED", "false").lower() == "true"
+    # TP-CANCEL-ON-TRAIL (2026-10-09, opsiyonel — varsayilan KAPALI, canlida
+    # KAPALI BIRAKILDI: bkz. asagidaki canli-parametre bulgusu).
+    # Trailing devreye girdigi AN sabit TP emri IPTAL edilir (take_profit=0 +
+    # `tp_cancelled` bayragi); cikis tamamen trailing'e kalir. Forex
+    # (scalperagent_global) kanitinda bu mekanizma 4/4 pencerede kazandi.
+    # BU PROJEDE kanon parametrelerle A/B (work/ab_tp_cancel.py, 30 gun gercek
+    # mum, 1231 islem, SL 5.0/trig 1.0/gap 0.3/120dk):
+    #   A ratchet +0.299%  B cancel +0.436%  -> B-A +0.138%, p=2e-14, 5/6 pencere.
+    # ANCAK canli DB `auto_paper_settings` satiri bu kanon grid'de DEGIL
+    # (SL 1.5 / trig 1.8 / gap 0.6 / 60 dk). Canli degerlerle ayni A/B
+    # (work/ab_tp_cancel_live.py, 1232 islem) SIRALAMAYI TERSINE CEVIRIYOR:
+    #   A ratchet -0.073%/islem (0/6 pencere)   B cancel -0.034% (0/6, B-A yalniz
+    #   +0.040%)   C tp_primary kapali +0.479% (6/6 pencere, 75/75 kombinasyon,
+    #   train+test pozitif, maxDD 183->37).
+    # Sebep: canlida TRIG (1.8) > TP (medyan 3.38) — sabit TP trailing devreye
+    # GIRMEDEN doluyor, "iptal ani" olusmuyor. Bu yuzden canlida B degil C
+    # (AUTO_PAPER_TP_PRIMARY_ENABLED=false) uygulandi; B kapali.
+    # 2026-09-18'de ayni mekanizma basarisiz olmustu; o gunku basarisizlik TP
+    # silininin BE/trailing tarafindan GERI DIRILTILMESINDEN geliyordu. Bu
+    # uygulama tek-yol TP yazimi ile dirilmeyi engeller (bkz. auto_paper
+    # `cancel_auto_paper_trade_tp` + `update_auto_paper_trade_tp` icindeki
+    # `tp_cancelled` bekcisi).
+    AUTO_PAPER_TP_CANCEL_ON_TRAIL = os.getenv("AUTO_PAPER_TP_CANCEL_ON_TRAIL", "false").lower() == "true"
     AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", "false").lower() == "true"
     AUTO_PAPER_DYNAMIC_TRAILING_ENABLED = os.getenv("AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", "false").lower() == "true"
     AUTO_PAPER_BREAKEVEN_BUFFER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_BUFFER_PCT", "0.02"))

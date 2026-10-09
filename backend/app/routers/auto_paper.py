@@ -899,6 +899,15 @@ async def _update_existing_trade(open_trade: dict, notification: dict, current_p
         new_tp = entry_price * (1 + target_pct / 100 + cost_markup)
         old_tp = float(open_trade.get("take_profit") or 0)
 
+        # TP-CANCEL-ON-TRAIL (2026-10-09, DIRILMEME GARANTISI): TP bir kez iptal
+        # edildiyse (tp_cancelled) bildirim hedefi TP'yi YENIDEN YAZMAZ; aksi
+        # halde sabit TP geri dirilir ve 2026-09-18 hatasi tekrarlanir. DB
+        # `update_auto_paper_trade_tp` de ayni bayrakla korur (savunma derinligi).
+        if bool(open_trade.get("tp_cancelled", False)):
+            logger.info("auto_paper %s: TP iptal edilmiş (tp_cancel_on_trail) — bildirim hedefi TP'yi yeniden yazmıyor",
+                        open_trade["symbol"])
+            return {"status": "no_change", "trade_id": open_trade["id"], "symbol": open_trade["symbol"]}
+
         # TP sadece yükseliyorsa güncelle (hedefe ulaşıp düzeltmeden sonra
         # yeni çıkış sinyali TP'yi yukarı taşır; aşağı çekmek kârı sınırlandırır).
         if new_tp > old_tp:
@@ -995,6 +1004,10 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     entry_price = float(trade["entry_price"])
     stop_loss = float(trade["stop_loss"]) if trade.get("stop_loss") else None
     take_profit = float(trade["take_profit"]) if trade.get("take_profit") else None
+    # TP-CANCEL-ON-TRAIL (2026-10-09): iptal bayragi KALICI. TP bir kez iptal
+    # edildiyse (tp_cancel_on_trail) bu tur ve sonraki turlarda TP-primary
+    # dalinin yeniden ateslemesini/ratchet'in TP'yi diriltmesini onler.
+    tp_cancelled = bool(trade.get("tp_cancelled", False))
     quantity = float(trade["quantity"])
     commission_pct = config.COMMISSION_PCT
     # D-01 (2026-09-26 denetimi): kâr kilidi stop'u HER ZAMAN orijinal
@@ -1083,9 +1096,10 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     if not price_is_fresh:
         return
 
-    # B1: TP is PRIMARY exit — evaluated before any trailing/breakeven logic.
-    tp_primary_exit_enabled = bool((settings or {}).get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", True)))
-    if tp_primary_exit_enabled and take_profit is not None and current_price >= take_profit:
+    # TP-primary cikis (2026-10-09: VARSAYILAN KAPALI — bkz. get_default_settings
+    # yorumu ve work/ab_tp_cancel.py). Acikken trailing/breakeven'DEN ONCE degerlendirilir.
+    tp_primary_exit_enabled = bool((settings or {}).get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", False)))
+    if tp_primary_exit_enabled and not tp_cancelled and take_profit is not None and current_price >= take_profit:
         # D-08 (2026-09-12): TP dolumu TETİK fiyatından (gap-through: min(price, tp)).
         await _close_trade(trade_id, symbol, min(current_price, take_profit), now, "take_profit")
         return
@@ -1212,22 +1226,52 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
                 current_trailing_stop = applied_trailing
                 logger.info("auto_paper %s: trailing stop=%.6f (gross=%+.2f%%)", symbol, applied_trailing, gross_pnl_pct)
 
+            # TP-CANCEL-ON-TRAIL (2026-10-09, opsiyonel; varsayilan KAPALI):
+            # trailing devreye girdigi AN sabit TP emri IPTAL edilir. Boylece
+            # fiyat eski TP hedefine takilmadan trailing ile tasinir.
+            #
+            # KANIT (work/ab_tp_cancel.py, 30 gun gercek Binance TR mumu, 1231
+            # islem, maliyet %0.325): B (cancel) A'ya (ratchet) karsi +0.138%
+            # islem basi, wilcoxon p=2e-14, 5/6 bagimsiz pencerede, 18/18
+            # parametre kombinasyonunda kazandi; train VE test pozitif.
+            # CANLI MUHIM NOT: TRIG (1.0) < TP (>=1.5) oldugu icin trailing TP'ye
+            # UGRAMADAN once devreye girer; pratikte bu davranis
+            # `AUTO_PAPER_TP_PRIMARY_ENABLED=false` ile ORTUSUR. Ikisi birlikte
+            # acikken cancel yine de tutarli (TP'yi erken iptal eder).
+            #
+            # DIRILMEME GARANTISI (2026-09-18 basarisizliginin kok nedeni): iptal
+            # DB'de `tp_cancelled=TRUE` olarak KALICIDIR. Bu turdan sonra sirasi:
+            #  - TP-primary dali `not tp_cancelled` ile ateslemez (yukarida),
+            #  - `update_auto_paper_trade_tp` (bildirim hedefi + ratchet) bayrak
+            #    set oldugu icin TP YAZMAZ (tek-yol bekci) → geri diriltilemez.
+            tp_cancel_on_trail = bool((settings or {}).get("tp_cancel_on_trail", getattr(config, "AUTO_PAPER_TP_CANCEL_ON_TRAIL", False)))
+            if tp_cancel_on_trail and not tp_cancelled:
+                # Bayragi DB'de set et (kalici). In-memory `tp_cancelled` de set
+                # edilir ki ayni turda asagidaki ratchet dali tekrar silmesin.
+                try:
+                    await database.cancel_auto_paper_trade_tp(trade_id)
+                except Exception as cancel_exc:
+                    logger.warning("auto_paper %s: TP iptal hatası: %s", symbol, cancel_exc)
+                tp_cancelled = True
+                take_profit = None
+                logger.info("auto_paper %s: trailing devreye girdi — sabit TP İPTAL edildi (tp_cancel_on_trail)", symbol)
+
             # TP KORUMALI TRAILING (2026-09-28, kârlılık düzeltmesi):
             # Trailing devreye girdiğinde TP artık SİLİNMEZ. Fiyat TP'ye
             # ulaşırsa → TP ile kapanır (garanti kâr). Fiyat TP'ye ulaşmadan
             # geri dönerse → trailing stop ile kapanır (korumalı kâr).
             #
             # Eski davranış (2026-09-18): trailing aktivasyonunda TP=NULL yapılıyordu
-            # ve çıkış tamamen trailing'e devrediliyordu. MFE verisi gösterdi ki
-            # işlemlerin %93'ü kâra geçiyor ama TP silindiği için yalnızca %33'ü
-            # kârla kapanıyordu — tepe ile çıkış arasında %1.73 sistematik kayıp.
+            # ve çıkış tamamen trailing'e devrediliyordu. (Bu projede KANITLA
+            # secilen `tp_cancel_on_trail` AÇIKken o davranışa BILINCLI olarak
+            # donulur; dirilme engeli sayesinde 2026-09-18 hatasi tekrarlanmaz.)
             #
             # Yeni davranış: TP korunur; trailing stop TP'nin ÜZERİNE çıkarsa
             # TP yukarı ratchet'lenir (trailing stop seviyesine). Böylece:
             #  - Fiyat tahmin edilen artışın üzerinde yükselirse pozisyon taşınır ✓
-            #  - Fiyat hedefe ulaştığında kâr GERÇEKTEN alınır ✓
+            #  - Fiyat hedefine ulaştığında kâr GERÇEKTEN alınır ✓
             #  - Küçük geri çekilmelerde trailing kilitler ✓
-            if take_profit is not None and applied_trailing > take_profit:
+            if not tp_cancelled and take_profit is not None and applied_trailing > take_profit:
                 # Trailing stop TP'nin üzerine çıktı → TP'yi yukarı ratchet'le
                 # (trailing en az TP kadar koruyor, TP yükselince hedefe ulaşım garanti)
                 try:
@@ -1472,17 +1516,27 @@ async def get_default_settings() -> dict:
         "trailing_trigger_pct": config.AUTO_PAPER_TRAILING_TRIGGER_PCT,
         "trailing_gap_pct": config.AUTO_PAPER_TRAILING_GAP_PCT,
         "reopen_after_protect_close": config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE,
-        # P2-2 DUZELTMESI (2026-10-07 denetimi): TP birincil cikis VARSAYILAN
-        # ACIK. `config.AUTO_PAPER_TP_PRIMARY_ENABLED` (env) varsayilani "false"
-        # yapiyordu; bu `take_profit` cikisini VE `update_auto_paper_trade_tp`
-        # ratchet'ini (o da TP tabanli) fiilen OLU koda ceviriyordu. Oysa kanit
-        # tablosunda `take_profit` EN IYI cikistir (n=101, ort +2.745%/islem —
-        # docs/OTONOM_TRADE_TESHIS_2026-10-07.md §1). Varsayilan kanita hizalandi.
-        # Ayar DB'den ezilebilir (Ayarlar > tp_primary_exit_enabled); TP'yi
-        # kapatmak isteyen operator bu anahtari false yapar. Not: env yoluyla
-        # kapatma DB satiri yokken gecerlidir (bkz. ayni dosyadaki getattr env
-        # notu); DB satiri her zaman kazanir.
-        "tp_primary_exit_enabled": True,
+        # TP-CANCEL-ON-TRAIL (2026-10-09): trailing devreye girdiginde sabit TP
+        # IPTAL edilir. A/B kaniti B lehine (work/ab_tp_cancel.py) ama muhafazakar
+        # varsayilan KAPALI (opt-in). Env: AUTO_PAPER_TP_CANCEL_ON_TRAIL.
+        "tp_cancel_on_trail": getattr(config, "AUTO_PAPER_TP_CANCEL_ON_TRAIL", False),
+        # P2-2 DUZELTMESI (2026-10-07) GERI ALINDI (2026-10-09). Eskiden burada
+        # TP birincil cikis varsayilan ACIK yapilmisti (TP = en iyi cikis, §1).
+        # Ama ayni repo'nun kendi kaniti (config.py:883 + commit 928feaf) ve
+        # TP-CANCEL-ON-TRAIL A/B (work/ab_tp_cancel.py; 30 gun, 1231 islem,
+        # mum-ici VE muhafazakar close-only) TP-primary'i KAPATMANIN en karli
+        # oldugunu gosteriyor:
+        #   mum-ici: TP-off +1.087% / ratchet +0.299% / cancel +0.436% (TP-off 6/6 pencere)
+        #   close  : TP-off +0.690% / cancel +0.186% / ratchet -0.110% (TP-off 6/6 pencere)
+        # Yalniz TP-off train VE test'te POZITIF kalir (close-only test +0.367%).
+        # Sabit TP = bildirim hedefi (canlida ort +%4,30) sert bir tavan gibi
+        # calisiyordu; tepe medyani +%1,62 oldugu icin cogu islem hedefe hic
+        # degmiyor, degince de kazanan erken kesiliyordu. Bu yuzden varsayilan
+        # KAPALI (kanitla hizali). NOT: `tp_cancel_on_trail` ACIKken trailing TP'yi
+        # iptal ettiginden, TP emri zaten yoksa bu ayar ETKISIZdir — TP'yi kapatmak
+        # icin yalniz `tp_primary_exit_enabled=false` yeterli ve erken-iptal
+        # marjini kaybetmediginden daha karli. DB satiri env'i ezer.
+        "tp_primary_exit_enabled": False,
         "dynamic_breakeven_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False),
         "dynamic_trailing_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False),
         "breakeven_buffer_pct": getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02),
@@ -1557,7 +1611,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
                 "default_target_pct", "max_target_pct", "min_order_try", "breakeven_enabled",
                 "breakeven_trigger_pct", "trailing_enabled", "trailing_trigger_pct",
                 "trailing_gap_pct", "reopen_after_protect_close",
-                "tp_primary_exit_enabled", "dynamic_breakeven_enabled",
+                "tp_primary_exit_enabled", "tp_cancel_on_trail", "dynamic_breakeven_enabled",
                 "dynamic_trailing_enabled", "breakeven_buffer_pct",
                 "max_open_positions", "max_hold_minutes",
                 "block_weak_mtf", "min_mtf_confluence",
@@ -1591,7 +1645,8 @@ async def update_settings_endpoint(payload: dict, request: Request):
         # üst sınır 2026-09-27'de 0.6 → 2.0'ye çıkarıldı (Erkan kararı).
         "trailing_gap_pct": max(0.1, min(2.0, float(merged.get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT)))),
         "reopen_after_protect_close": bool(merged.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)),
-        "tp_primary_exit_enabled": bool(merged.get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", True))),
+        "tp_primary_exit_enabled": bool(merged.get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", False))),
+        "tp_cancel_on_trail": bool(merged.get("tp_cancel_on_trail", getattr(config, "AUTO_PAPER_TP_CANCEL_ON_TRAIL", False))),
         "dynamic_breakeven_enabled": bool(merged.get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False))),
         "dynamic_trailing_enabled": bool(merged.get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False))),
         "breakeven_buffer_pct": max(0.01, min(0.5, float(merged.get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02))))),

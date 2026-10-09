@@ -405,6 +405,12 @@ async def init_db():
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS tp1_scalp_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS tp2_runner_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS confluence_4way BOOLEAN")
+        # TP-CANCEL-ON-TRAIL (2026-10-09): trailing devreye girdiginde sabit TP
+        # IPTAL edildiginde `tp_cancelled` bayragi set edilir. Bu bayrak, sonraki
+        # turlarda `update_auto_paper_trade_tp`'nin (bildirim hedefi / BE / ratchet
+        # yollari) TP'yi GERI DIRILTMESINI engeller — 2026-09-18 basarisizliginin
+        # kok nedeni buydu. Bkz. auto_paper._manage_single_trade.
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS tp_cancelled BOOLEAN DEFAULT FALSE")
         # D-06 (2026-09-14): MFE ulasilamaz bir TEPE. `exit_pct` ufuk sonundaki
         # kapanis (gerceklestirilebilir), `net_pct` gidis/donus maliyeti dusulmus hali.
         conn.execute("ALTER TABLE velocity_candidates ADD COLUMN IF NOT EXISTS exit_pct DOUBLE PRECISION")
@@ -6131,20 +6137,47 @@ async def get_auto_paper_symbol_breakdown(
 
 
 async def update_auto_paper_trade_tp(trade_id: int, new_tp: float, score: float | None = None, target_pct: float | None = None) -> bool:
-    """Açık pozisyonun TP'sini güncelle (bildirim hedef takibi)."""
+    """Açık pozisyonun TP'sini güncelle (bildirim hedef takibi).
+
+    TP-CANCEL-ON-TRAIL (2026-10-09): `tp_cancelled=TRUE` olan bir pozisyonda TP
+    bir kez iptal edilmiştir; bu durumda TP YENİDEN YAZILMAZ (diriltilmez). Bu,
+    iptalin TEK YOL garantisidir — bildirim TP-guncelleme yolu da (ayni
+    fonksiyonu kullanir) iptali geri alamaz. Dinamik trailing/ratchet zaten
+    ayni fonksiyonu cagirir; boylece BE/trailing emirleri TP'yi diriltemez.
+    """
     def op(conn):
         if score is not None and target_pct is not None:
-            conn.execute(
-                "UPDATE auto_paper_trades SET take_profit=?, notification_score=?, notification_target_pct=?, updated_at=? WHERE id=? AND status='open'",
+            cur = conn.execute(
+                "UPDATE auto_paper_trades SET take_profit=?, notification_score=?, notification_target_pct=?, updated_at=? "
+                "WHERE id=? AND status='open' AND COALESCE(tp_cancelled, FALSE)=FALSE",
                 (new_tp, score, target_pct, time.time(), trade_id)
             )
         else:
-            conn.execute(
-                "UPDATE auto_paper_trades SET take_profit=?, updated_at=? WHERE id=? AND status='open'",
+            cur = conn.execute(
+                "UPDATE auto_paper_trades SET take_profit=?, updated_at=? "
+                "WHERE id=? AND status='open' AND COALESCE(tp_cancelled, FALSE)=FALSE",
                 (new_tp, time.time(), trade_id)
             )
         conn.commit()
-        return True
+        return cur.rowcount > 0
+    return await _run_db(op)
+
+
+async def cancel_auto_paper_trade_tp(trade_id: int) -> bool:
+    """TP'yi IPTAL et (trailing devreye girdiginde): take_profit=0 + tp_cancelled=TRUE.
+
+    `tp_cancelled` bayragi (1) ayni turda TP-primary dalinin ateslemesini onler
+    (take_profit=0) ve (2) sonraki turlarda `update_auto_paper_trade_tp`'nin TP'yi
+    geri diriltmesini engeller. Idempotent: zaten iptal edilmisse no-op.
+    """
+    def op(conn):
+        cur = conn.execute(
+            "UPDATE auto_paper_trades SET take_profit=0, tp_cancelled=TRUE, updated_at=? "
+            "WHERE id=? AND status='open' AND COALESCE(tp_cancelled, FALSE)=FALSE",
+            (time.time(), trade_id)
+        )
+        conn.commit()
+        return cur.rowcount > 0
     return await _run_db(op)
 
 

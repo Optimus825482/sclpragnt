@@ -1895,8 +1895,24 @@ function AutoPaperSettingsPanel() {
           </div>
         </div>
         <div className="md:col-span-2 border-t border-bunker-800 pt-3">
+          <label className="text-xs font-mono text-neon-green block mb-2">SABİT TAKE-PROFIT (TP-PRIMARY) ÇIKIŞI</label>
+          <p className="text-xs text-bunker-muted mb-3">Bildirim hedefi sabit bir TP emri olarak konur ve fiyat değdiğinde pozisyonu kapatır. KAPALI (önerilen): TP emri konmaz, çıkışı trailing stop + stop-loss yönetir. Açıkken sabit TP, kazananın sağ kuyruğunu keser (hedef medyanı %4,30 ama tepe medyanı %1,62 — çoğu işlem zaten hedefe değmiyor).</p>
+          <div className="max-w-2xl">
+            <select disabled={pending} value={draft.tp_primary_exit_enabled ? "1" : "0"} onChange={(e) => set("tp_primary_exit_enabled", e.target.value === "1")} className="input">
+              <option value="0">Kapalı — sabit TP konmaz, çıkışı trailing + SL yönetir (2026-10-09 kanıtı: en karlı)</option>
+              <option value="1">Açık — bildirim hedefinde sabit TP emri konur</option>
+            </select>
+            <p className="text-xs text-bunker-muted mt-1">
+              30 günlük A/B (1231 işlem, 6/6 pencere): TP-primary kapalı +1,087%/işlem (mum-içi) ve
+              +0,690%/işlem (muhafazakâr close-only) — ratchet +0,299% / −0,110%. Train ve test
+              setinin ikisinde de pozitif kalan tek varyant. Kanıt: <span className="font-mono">docs/TP_IPTAL_KRIPTO_AB_2026-10-09.md</span>.
+              {" "}Kapalıyken "Trailing'de TP İptali" ayarı etkisizdir (iptal edilecek TP yoktur).
+            </p>
+          </div>
+        </div>
+        <div className="md:col-span-2 border-t border-bunker-800 pt-3">
           <label className="text-xs font-mono text-neon-green block mb-2">TRAILING STOP MODÜLÜ</label>
-          <p className="text-xs text-bunker-muted mb-3">Pozisyon %trigger kadar kâra geçince fiyatı %gap geriden takip eder; fiyat bu seviyeye düşerse pozisyon otomatik kapanır. Trailing devreye girdikten sonra take-profit uygulanmaz — çıkışı trailing stop yönetir. Varsayılan AÇIK.</p>
+          <p className="text-xs text-bunker-muted mb-3">Pozisyon %trigger kadar kâra geçince fiyatı %gap geriden takip eder; fiyat bu seviyeye düşerse pozisyon otomatik kapanır. Varsayılan AÇIK. Trailing devreye girdiğinde sabit take-profit'in ne olacağı aşağıdaki anahtarla belirlenir.</p>
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
               <label className="text-xs font-mono text-bunker-muted block mb-1">Modül</label>
@@ -1913,6 +1929,16 @@ function AutoPaperSettingsPanel() {
               <label className="text-xs font-mono text-bunker-muted block mb-1">Takip Mesafesi (%)</label>
               <input type="number" min="0.1" max="2.0" step="0.05" disabled={pending} value={draft.trailing_gap_pct ?? 0.6} onChange={(e) => set("trailing_gap_pct", Number(e.target.value))} className="input" />
             </div>
+          </div>
+          <div className="mt-4 max-w-2xl">
+            <label className="text-xs font-mono text-bunker-muted block mb-1">Trailing'de TP İptali (TP-cancel-on-trail)</label>
+            <select disabled={pending || !draft.trailing_enabled} value={draft.tp_cancel_on_trail ? "1" : "0"} onChange={(e) => set("tp_cancel_on_trail", e.target.value === "1")} className="input">
+              <option value="0">Kapalı — TP korunur, trailing üstüne çıkarsa yukarı kaydırılır (mevcut)</option>
+              <option value="1">Açık — trailing devreye girince sabit TP iptal edilir</option>
+            </select>
+            <p className="text-xs text-bunker-muted mt-1">
+              Açıkken: trailing devreye girdiği an sabit TP emri iptal edilir (bir daha geri diriltilmez) ve çıkışı trailing yönetir. 30 günlük A/B'de (1231 işlem) işlem başı +0,138% kazanç, 5/6 pencerede ve test setinde de pozitif (wilcoxon p=2e-14). Varsayılan KAPALI — açmadan önce kendi ayarlarınızla A/B'yi teyit edin.
+            </p>
           </div>
         </div>
         <div className="md:col-span-2 border-t border-bunker-800 pt-3">

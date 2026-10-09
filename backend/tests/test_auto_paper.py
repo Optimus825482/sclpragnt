@@ -569,6 +569,86 @@ class AutoPaperTrailingTPExtensionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(args[2], 103.0)
 
 
+class AutoPaperTpCancelOnTrailTests(unittest.IsolatedAsyncioTestCase):
+    """TP-cancel-on-trail (2026-10-09): trailing devreye girince sabit TP iptal."""
+
+    def _trade(self, **over):
+        now = time.time()
+        t = {
+            "id": 201, "symbol": "TESTCOIN", "entry_price": 100.0,
+            "stop_loss": 98.5, "take_profit": 103.0, "quantity": 10.0,
+            "trailing_activated": False, "trailing_stop": None,
+            "entry_time": now - 60, "peak_price": 100.0,
+        }
+        t.update(over)
+        return t
+
+    async def test_cancel_sets_flag_and_clears_tp(self):
+        """TP-cancel açıkken trailing aktivasyonu TP'yi DB'de iptal eder ve diriltmez."""
+        now = time.time()
+        cancel_mock = AsyncMock(return_value=True)
+        tp_write_mock = AsyncMock(return_value=True)
+        settings = {
+            "trailing_enabled": True, "trailing_trigger_pct": 1.0, "trailing_gap_pct": 0.3,
+            "breakeven_enabled": False, "tp_primary_exit_enabled": True, "tp_cancel_on_trail": True,
+        }
+        # Fiyat +%2 (102.0): trailing (trigger %1) devreye girer ama TP (103) ASILMAZ.
+        # Trailing aktivasyonunda TP iptal edilmeli; TP-primary ateslememeli.
+        with patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 102.0, "timestamp": now * 1000}), \
+             patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 0.0}), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trailing", AsyncMock()), \
+             patch.object(auto_paper.database, "cancel_auto_paper_trade_tp", cancel_mock), \
+             patch.object(auto_paper.database, "update_auto_paper_trade_tp", tp_write_mock), \
+             patch.object(auto_paper, "_close_trade", AsyncMock()) as close_mock:
+            await auto_paper._manage_single_trade(self._trade(), now, settings=settings)
+
+        cancel_mock.assert_awaited_once_with(201)       # TP iptal edildi
+        tp_write_mock.assert_not_awaited()              # TP yeniden yazilmadi (ratchet yok)
+        close_mock.assert_not_awaited()                 # TP ile kapanmadi
+
+    async def test_cancel_prevents_tp_primary_close(self):
+        """tp_cancelled bayraklı pozisyon fiyat TP'nin üstüne çıksa da TP ile kapanmaz."""
+        now = time.time()
+        settings = {"trailing_enabled": False, "tp_primary_exit_enabled": True, "tp_cancel_on_trail": True}
+        trade = self._trade(tp_cancelled=True, trailing_activated=True, trailing_stop=101.0, peak_price=105.0)
+        with patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 104.0, "timestamp": now * 1000}), \
+             patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 0.0}), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
+             patch.object(auto_paper, "_close_trade", AsyncMock()) as close_mock:
+            await auto_paper._manage_single_trade(trade, now, settings=settings)
+        # TP primary dalı ateslemedi (tp_cancelled) ve trailing stop altinda degil -> kapanis yok
+        close_mock.assert_not_awaited()
+
+    async def test_cancel_disabled_preserves_baseline_ratchet(self):
+        """Varsayılan (cancel KAPALI): trailing TP'yi silmez; ratchet davranışı korunur."""
+        now = time.time()
+        tp_write_mock = AsyncMock(return_value=True)
+        cancel_mock = AsyncMock(return_value=True)
+        settings = {
+            "trailing_enabled": True, "trailing_trigger_pct": 1.0, "trailing_gap_pct": 0.3,
+            "breakeven_enabled": False, "tp_primary_exit_enabled": True, "tp_cancel_on_trail": False,
+        }
+        # +%2 kâr (102), tepe 102, gap 0.3 -> trailing stop 101.7 (TP 103'un altinda; ratchet YOK)
+        with patch("app.routers.auto_paper.market.get_ticker", return_value={"last_price": 102.0, "timestamp": now * 1000}), \
+             patch("app.routers.auto_paper.market.ticker_freshness", return_value={"fresh": True, "age_sec": 0.0}), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trailing", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trade_tp", tp_write_mock), \
+             patch.object(auto_paper.database, "cancel_auto_paper_trade_tp", cancel_mock), \
+             patch.object(auto_paper, "_close_trade", AsyncMock()):
+            await auto_paper._manage_single_trade(self._trade(), now, settings=settings)
+
+        cancel_mock.assert_not_awaited()               # cancel kapali -> iptal YOK
+        tp_write_mock.assert_not_awaited()             # stop TP'nin altinda -> ratchet YOK
+
+    async def test_default_setting_present_and_false(self):
+        """Ayar varsayılanı opt-in (KAPALI) ve settings payload'ında mevcut olmalı."""
+        s = await auto_paper.get_default_settings()
+        self.assertIn("tp_cancel_on_trail", s)
+        self.assertFalse(s["tp_cancel_on_trail"])
+
+
 class AutoPaperQualityFiltersTests(unittest.IsolatedAsyncioTestCase):
     """Otonom işlem kalite ve kârlılık kapıları: Zayıf MTF ve Stop Loss bekleme süresi."""
 
@@ -967,11 +1047,18 @@ class AutoPaperP0P2FixTests(unittest.IsolatedAsyncioTestCase):
             await auto_paper.restore_runtime_state()
         self.assertNotIn("OLD", auto_paper._stop_loss_cooldowns)
 
-    async def test_tp_primary_enabled_by_default(self):
-        """P2-2: TP birincil çıkış varsayılan AÇIK olmalı (take_profit en iyi çıkış)."""
+    async def test_tp_primary_disabled_by_default(self):
+        """2026-10-09: TP birincil çıkış varsayılan KAPALI olmalı.
+
+        A/B (work/ab_tp_cancel.py): sabit TP'yi kaldırmak hem mum-ici hem
+        muhafazakar close-only modelde en karlı ve tek train+test pozitif
+        varyant (TP-off 6/6 pencere). config.py:883 + commit 928feaf de aynı
+        varsayılanı (false) belgeliyor; P2-2'nin True'su bununla çelişiyordu.
+        """
         from app.routers.auto_paper import get_default_settings
         defaults = await get_default_settings()
-        self.assertTrue(defaults["tp_primary_exit_enabled"])
+        self.assertFalse(defaults["tp_primary_exit_enabled"])
+        self.assertFalse(defaults["tp_cancel_on_trail"])
 
 
 if __name__ == "__main__":
