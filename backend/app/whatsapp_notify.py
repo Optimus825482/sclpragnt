@@ -104,6 +104,13 @@ def format_scan_report(candidates: list[dict], *, title: str = "🌅 Günlük Y�
             parts.append(f"potansiyel +%{round(float(pot))}")
         lines.append("  • " + "  |  ".join(parts))
     lines.append("")
+    # Strateji kırılımı: "momentum nerede?" sorusunu yanıtlar. Momentum
+    # filtresi katıdır (slope>=0.3); bazı günler momentum adayı çıkmaz — bu
+    # satır bunu açıkça gösterir.
+    nm = sum(1 for c in rows if str(c.get("strategy") or "") == "daily_momentum")
+    ns = sum(1 for c in rows if str(c.get("strategy") or "") == "short_squeeze")
+    nb = sum(1 for c in rows if str(c.get("strategy") or "") == "both")
+    lines.append(f"Toplam {len(rows)} aday: 📈 {nm} momentum · ⚡ {ns} squeeze · ⚡📈 {nb} ikisi de")
     lines.append("📈 momentum   ⚡ short-squeeze   ⚡📈 ikisi de")
     return "\n".join(lines)
 
