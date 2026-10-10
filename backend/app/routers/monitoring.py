@@ -3136,6 +3136,41 @@ async def daily_rising_reports_list(request: Request = None, limit: int = 50,
     return {"paper_only": True, "generated_at": time.time(), "reports": rows}
 
 
+@router.get("/api/daily-rising/last-report")
+async def daily_rising_last_report(request: Request = None, kind: str = "slot"):
+    """SON gönderilen raporun listesi + ANLIK fiyatla karşılaştırma tablosu.
+
+    Kullanıcı isteği (2026-10-10): "Son gönderilen listeyi de gösterelim sayfada
+    ve anlık fiyatla karşılaştırmalı tablo şeklinde." Gönderim anındaki öneri
+    fiyatı ile şimdiki fiyat karşılaştırılır; değişim %, gerçekleşen max ve tavan
+    hedefine ulaşma gösterilir. Salt-okunur; pozisyon açmaz, admin kapısı YOK.
+    """
+    rep = await database.last_daily_rising_report(str(kind) or "slot")
+    if not rep:
+        return {"ok": False, "reason": "no_report",
+                "detail": "Gönderilmiş liste raporu yok."}
+    cands = rep.get("candidates") or []
+    try:
+        cands = json.loads(cands) if isinstance(cands, str) else list(cands)
+    except (TypeError, ValueError):
+        cands = []
+    if not cands:
+        return {"ok": False, "reason": "empty", "detail": "Rapor adayı boş."}
+    syms = [str(c.get("symbol") or "").upper() for c in cands]
+    _px = await _batch_prices(syms)
+    rows = await database.evaluate_daily_rising_report(
+        cands, float(rep.get("sent_at") or 0), live_prices=_px)
+    chgs = [float(r["change_pct"]) for r in rows if r.get("change_pct") is not None]
+    return {
+        "ok": True,
+        "kind": str(rep.get("kind") or kind),
+        "sent_at": rep.get("sent_at"),
+        "count": len(rows),
+        "avg_change_pct": round(sum(chgs) / len(chgs), 2) if chgs else None,
+        "rows": rows,
+    }
+
+
 @router.post("/api/daily-rising/send-slot-report")
 async def daily_rising_send_slot_report(request: Request = None):
     """Slot liste raporunu ELLE gönder (admin paneli/test)."""

@@ -145,3 +145,18 @@ def test_evaluate_last_summary_shape():
     for key in ("hit_rate", "avg_mfe_pct", "max_mfe_pct", "ceiling_hits", "rows"):
         assert key in src, f"özet alanı eksik: {key}"
 
+
+def test_last_report_endpoint_is_public_and_live():
+    """'Son gönderilen liste' canlı karşılaştırma tablosu (kullanıcı isteği):
+    uç kayıtlı olmalı, admin KAPISI OLMAMALI (listeyi herkes görebilir) ve
+    anlık fiyatla karşılaştırma alanlarını döndürmeli (avg_change_pct/rows)."""
+    import inspect
+    from app.routers import monitoring
+    paths = {r.path for r in monitoring.router.routes}
+    assert "/api/daily-rising/last-report" in paths
+    src = inspect.getsource(monitoring.daily_rising_last_report)
+    assert "require_admin" not in src
+    for key in ("avg_change_pct", "rows", "sent_at"):
+        assert key in src, f"alan eksik: {key}"
+
+

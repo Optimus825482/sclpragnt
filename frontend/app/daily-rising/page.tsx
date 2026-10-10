@@ -107,6 +107,14 @@ function fmtPct(v: number | null | undefined): string {
   return `${n > 0 ? "+" : ""}${formatNumber2(n)}%`;
 }
 
+/** Son gönderilen listenin ort. değişim satırı (öneri → anlık). */
+function averageChangeLine(rep: any): string {
+  const avg = rep?.avg_change_pct;
+  if (avg === null || avg === undefined || !Number.isFinite(Number(avg))) return "";
+  const n = Number(avg);
+  return ` · ort. değişim ${n > 0 ? "+" : ""}${formatNumber2(n)}%`;
+}
+
 export default function DailyRisingPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
@@ -125,7 +133,18 @@ export default function DailyRisingPage() {
   const [waBusy, setWaBusy] = useState<string | null>(null);
   const [evalResult, setEvalResult] = useState<any>(null);
   const [evalLoading, setEvalLoading] = useState(false);
+  const [lastReport, setLastReport] = useState<any>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadLastReport = useCallback(async () => {
+    try {
+      const res = await apiRequest(`${API_BASE}/api/daily-rising/last-report?kind=slot`, { cache: "no-store" });
+      if (res.ok) {
+        const d = await res.json();
+        setLastReport(d?.ok ? d : null);
+      }
+    } catch { /* sessiz */ }
+  }, []);
 
   const loadWaStatus = useCallback(async () => {
     if (!isAdmin) return;
@@ -192,7 +211,7 @@ export default function DailyRisingPage() {
     } catch { /* sessiz */ }
   }, []);
 
-  const refresh = useCallback(async () => { await Promise.all([loadState(), loadWatch(), loadWaStatus()]); }, [loadState, loadWatch, loadWaStatus]);
+  const refresh = useCallback(async () => { await Promise.all([loadState(), loadWatch(), loadWaStatus(), loadLastReport()]); }, [loadState, loadWatch, loadWaStatus, loadLastReport]);
 
   useEffect(() => {
     let alive = true;
@@ -429,6 +448,60 @@ export default function DailyRisingPage() {
               </table>
             </div>
           )}
+        </Card>
+      ) : null}
+
+      {/* 1.5) SON GÖNDERİLEN LİSTE — anlık fiyatla karşılaştırmalı tablo */}
+      {lastReport?.rows?.length ? (
+        <Card className="my-4">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h2 className="font-semibold">📤 Son Gönderilen Liste <span className="text-xs font-normal text-bunker-muted">(WhatsApp grubuna giden en son liste)</span></h2>
+              <p className="text-xs text-bunker-muted mt-1">
+                Gönderim: <b className="text-white">{lastReport.sent_at ? fmtDateTime(toMs(lastReport.sent_at)) : "—"}</b>
+                {" · "}Öneri fiyatı → anlık fiyat karşılaştırması{averageChangeLine(lastReport)}
+              </p>
+            </div>
+            <Button variant="secondary" onClick={loadLastReport}>Tazele</Button>
+          </div>
+          <div className="overflow-x-auto mt-2">
+            <table className="w-full font-mono text-xs">
+              <thead>
+                <tr className="text-left text-bunker-muted border-b border-bunker-700">
+                  <th className="p-2">Sembol</th>
+                  <th className="p-2">Kaynak</th>
+                  <th className="p-2 text-right">Öneri Fiyatı</th>
+                  <th className="p-2 text-right">Anlık Fiyat</th>
+                  <th className="p-2 text-right">Değişim</th>
+                  <th className="p-2 text-right">Gerçekleşen Max</th>
+                  <th className="p-2 text-right">Tavan (TP)</th>
+                  <th className="p-2 text-center">Tavan?</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lastReport.rows.map((r: any) => (
+                  <tr key={r.symbol} className="border-b border-bunker-800 hover:bg-bunker-800/40">
+                    <td className="p-2"><a className="text-neon-green hover:underline" href={`/charts?symbol=${r.symbol}`}>{r.symbol}</a></td>
+                    <td className="p-2 text-bunker-muted" title="Hangi stratejiden geldiği">
+                      {r.strategy === "short_squeeze" ? "⚡" : r.strategy === "both" ? "⚡📈" : "📈"}
+                    </td>
+                    <td className="p-2 text-right">{r.entry_price != null ? formatPrice(r.entry_price) : "—"}</td>
+                    <td className="p-2 text-right">{r.current_price != null ? formatPrice(r.current_price) : "—"}</td>
+                    <td className={`p-2 text-right font-semibold ${pctTone(r.change_pct)}`}>{fmtPct(r.change_pct)}</td>
+                    <td className={`p-2 text-right font-semibold ${pctTone(r.mfe_pct)}`}>{r.mfe_pct != null ? fmtPct(r.mfe_pct) : "—"}</td>
+                    <td className="p-2 text-right text-neon-yellow whitespace-nowrap">
+                      {r.ceiling_pct != null ? `+%${Math.round(r.ceiling_pct)}` : "—"}
+                    </td>
+                    <td className="p-2 text-center">
+                      {r.hit_ceiling === true ? <Badge tone="positive">✓ Ulaştı</Badge>
+                        : r.hit_ceiling === false ? <Badge tone="neutral">Hayır</Badge>
+                        : <span className="text-bunker-muted">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </Card>
       ) : null}
 
