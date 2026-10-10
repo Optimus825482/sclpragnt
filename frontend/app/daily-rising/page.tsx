@@ -444,11 +444,14 @@ export default function DailyRisingPage() {
       </div>
 
       <Card>
-        <h2 className="font-semibold mb-2">Sistem Adayları (otomatik 11:30)</h2>
+        <h2 className="font-semibold mb-2">Sistem Adayları (otomatik 11:30 · en iyi 5)</h2>
+        <p className="text-xs text-bunker-muted mb-2">
+          Bugün 11:30 taramasında seçilen adaylar — WhatsApp grubuna gönderilen liste ile <b>aynı 5 sembol</b>.
+        </p>
         {loading ? (
           <div className="p-6 text-sm text-bunker-muted">Yükleniyor…</div>
         ) : rows.length === 0 ? (
-          <div className="p-6 text-sm text-bunker-muted">Henüz sistem adayı yok.</div>
+          <div className="p-6 text-sm text-bunker-muted">Bugün için sistem adayı yok.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full font-mono text-xs">

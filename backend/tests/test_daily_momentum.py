@@ -136,6 +136,22 @@ def test_today_rising_rows_filters_previous_day(monkeypatch):
     assert scan[0]["target_probability"] is not None   # ihtimal yeniden üretildi
 
 
+def test_state_endpoint_limited_to_top5_snapshot():
+    """Sayfa (`/state`) WhatsApp raporuyla AYNI ilk 5'i döndürmeli: bugün + select_top.
+
+    Kaynak kod sözleşmesi: `/state` artık 7 günlük listeyi ham döndürmez; bugün
+    penceresi + `whatsapp_notify.select_top(5)` kullanır (tek ölçüt paylaşımı).
+    """
+    import inspect
+    from app.routers import monitoring
+    src = inspect.getsource(monitoring.daily_rising_state)
+    assert "_today_rising_rows" in src
+    assert "select_top" in src
+    assert "list_daily_rising" not in src   # ham 7 günlük liste kaldırıldı
+    from app import whatsapp_notify as wn
+    assert hasattr(wn, "select_top")
+
+
 def test_short_squeeze_scan_exists_and_classifies():
     """Toplu squeeze taraması + sınıflandırma mevcut olmalı."""
     from app import derivatives_service as ds

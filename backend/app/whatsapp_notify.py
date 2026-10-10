@@ -93,6 +93,17 @@ def _combined_score(c: dict) -> float:
     return p * max(pot, 0.0) / 100.0
 
 
+def select_top(candidates: list[dict], n: int = 5) -> list[dict]:
+    """Adayları raporla AYNI ölçüte göre sıralayıp ilk `n`'i döndür.
+
+    Ölçüt: önce momentum+squeeze onaylı ('both'), sonra ihtimal×potansiyel puanı.
+    WhatsApp raporu, takip tablosu ve uygulama sayfası bu TEK fonksiyonu kullanır
+    → üçü de birebir aynı sembolleri aynı sırada gösterir.
+    """
+    return sorted(candidates, key=lambda c: (_is_both(c), _combined_score(c)),
+                  reverse=True)[:max(1, int(n))]
+
+
 def format_scan_report(candidates: list[dict], *, title: str = "🌅 Günlük Yükseliş Adayları") -> str:
     """Aday listesini emoji başlıklı + sayısal hizalı biçime çevir (en iyi 5).
 
@@ -110,9 +121,8 @@ def format_scan_report(candidates: list[dict], *, title: str = "🌅 Günlük Y�
     if not candidates:
         return f"{title}\n\nBugün koşulları geçen aday bulunamadı."
 
-    def _key(c: dict):
-        return (_is_both(c), _combined_score(c))
-    rows = sorted(candidates, key=_key, reverse=True)
+    rows = select_top(candidates, 5)   # uygulama sayfasıyla AYNI ilk 5
+    total = len(candidates)
 
     def _sym(s: str) -> str:
         s = str(s or "?").upper()
@@ -122,7 +132,7 @@ def format_scan_report(candidates: list[dict], *, title: str = "🌅 Günlük Y�
     header = f"{'COIN':<8}{'FİYAT':>9}{'İHTİMAL':>9}{'HEDEF':>7}{'POTANSİYEL':>12}  KAYNAK"
     sep = "─" * len(header)
     body = [legend, header, sep]
-    shown = rows[:5]  # kullanıcı kararı: en yüksek puanlı 5 sembol (10 fazla)
+    shown = rows  # zaten en iyi 5
     for c in shown:
         tgt = c.get("ceiling_pct")
         pot = c.get("potential_pct")
@@ -138,10 +148,10 @@ def format_scan_report(candidates: list[dict], *, title: str = "🌅 Günlük Y�
             f"{(f'+%{round(float(pot))}' if pot is not None else '—'):>12}"
             f"  {tag}"
         )
-    nm = sum(1 for c in rows if str(c.get("strategy") or "") == "daily_momentum")
-    ns = sum(1 for c in rows if str(c.get("strategy") or "") == "short_squeeze")
-    nb = sum(1 for c in rows if str(c.get("strategy") or "") == "both")
-    footer = f"Toplam {len(rows)} aday: 📈 {nm} momentum · ⚡ {ns} squeeze · ⚡📈 {nb} ikisi de"
+    nm = sum(1 for c in candidates if str(c.get("strategy") or "") == "daily_momentum")
+    ns = sum(1 for c in candidates if str(c.get("strategy") or "") == "short_squeeze")
+    nb = sum(1 for c in candidates if str(c.get("strategy") or "") == "both")
+    footer = f"Toplam {total} aday: 📈 {nm} momentum · ⚡ {ns} squeeze · ⚡📈 {nb} ikisi de"
     # Bu 5'in ortalamaları (yalnız veri olan kalemler üzerinden)
     probs = [float(c["target_probability"]) for c in shown
              if c.get("target_probability") is not None]
@@ -200,11 +210,12 @@ def format_tracking_table(rows: list[dict], *, title: str = "📊 Aday Takip") -
     if not rows:
         return f"{title}\n\nTakip edilecek aday yok."
 
-    def _key(r: dict):
-        chg = r.get("change_pct")
-        return (_is_both(r), _combined_score(r),
-                float(chg) if chg is not None else -999.0)
-    rows = sorted(rows, key=_key, reverse=True)
+    # ÖNCE raporla aynı ölçütle ilk 5'i SEÇ (birebir aynı semboller), SONRA
+    # ekranda değişime göre sırala (en çok yükselen üstte) — seçim bozulmaz.
+    shown = select_top(rows, 5)
+    shown = sorted(shown, key=lambda r: (float(r["change_pct"])
+                                         if r.get("change_pct") is not None else -999.0),
+                   reverse=True)
 
     def _sym(s: str) -> str:
         s = str(s or "?").upper()
@@ -216,7 +227,6 @@ def format_tracking_table(rows: list[dict], *, title: str = "📊 Aday Takip") -
     sep = "─" * len(header)
     body = [legend, header, sep]
     unchanged = 0
-    shown = rows[:5]  # rapor ile aynı: en yüksek puanlı 5 sembol
     for r in shown:
         sym = _sym(r.get("symbol"))
         entry = _fmt_price(r.get("entry_price"), 10)

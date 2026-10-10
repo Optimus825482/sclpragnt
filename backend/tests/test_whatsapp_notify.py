@@ -155,6 +155,21 @@ def test_tracking_table_same_selection_as_report():
     assert order_rep == order_trk == ["BBB", "CCC", "AAA"]
 
 
+def test_select_top_shared_criterion():
+    """`select_top` tek ölçüt: 'both' önce, sonra ihtimal×potansiyel; ilk n."""
+    rows = [
+        {"symbol": "A", "potential_pct": 200, "target_probability": 10},   # 20
+        {"symbol": "B", "potential_pct": 90, "target_probability": 80},    # 72
+        {"symbol": "C", "potential_pct": 50, "target_probability": 60},    # 30
+        {"symbol": "D", "potential_pct": 100, "target_probability": 50,
+         "strategy": "both"},                                              # both önde
+        {"symbol": "E", "potential_pct": 10, "target_probability": 50},    # 5
+    ]
+    top = wn.select_top(rows, 3)
+    assert [c["symbol"] for c in top] == ["D", "B", "C"]
+    assert wn.select_top(rows, 5)[0]["symbol"] == "D"
+
+
 def test_scan_report_limits_to_top5_and_avg_line():
     """Kullanıcı kararı: ilk 5 sembol + altında ortalama yükselme beklentisi."""
     rows = [{"symbol": f"C{i}TRY", "price": 1.0 + i, "ceiling_pct": 3.0 + i,

@@ -2868,12 +2868,19 @@ async def daily_rising_hourly_loop():
 
 @router.get("/api/daily-rising/state")
 async def daily_rising_state(request: Request = None):
-    """Günlük momentum adayları + öneri/anlık fiyat karşılaştırması (salt okunur)."""
-    settings = await get_user_notification_settings()
-    rows = await database.list_daily_rising(limit=100, days=7.0)
+    """Günlük yükseliş adayları — WhatsApp raporuyla AYNI ilk 5 (salt okunur).
+
+    Kullanıcı kararı (2026-10-10): sayfadaki "Sistem Adayları" listesi, WhatsApp
+    grubuna gönderilen lista ile birebir aynı olmalı. Bu yüzden yalnız BUGÜN
+    (DAILY_MOMENTUM_TZ takvim günü) kaydedilen adaylar alınır ve raporla aynı
+    `select_top` ölçütüyle (momentum+squeeze onaylı önce, sonra ihtimal×potansiyel)
+    ilk 5'e indirilir. 7 günlük özet istatistikler ayrı kartlarda kalır.
+    """
+    from app.whatsapp_notify import select_top as _select_top
     stats = await database.get_daily_rising_stats(days=7.0)
+    rows = await _today_rising_rows(limit=100)
     _px = await _batch_prices([str(r.get("symbol") or "").upper() for r in rows])
-    out = []
+    built = []
     for r in rows:
         sym = str(r.get("symbol") or "").upper()
         entry = r.get("price")
@@ -2884,7 +2891,7 @@ async def daily_rising_state(request: Request = None):
                 chg = round((float(cur) / float(entry) - 1) * 100, 2)
         except (TypeError, ValueError):
             chg = None
-        out.append({
+        built.append({
             "symbol": sym,
             "created_at": r.get("created_at"),
             "entry_price": entry,
@@ -2900,7 +2907,12 @@ async def daily_rising_state(request: Request = None):
             "mfe_pct": r.get("mfe_pct"), "mae_pct": r.get("mae_pct"),
             "status": r.get("status"),
             "notified": r.get("notified"),
+            "strategy": r.get("strategy"),
+            "potential_pct": r.get("potential_pct"),
+            "target_probability": touch_probability(r.get("ceiling_pct"), r.get("atr_pct")),
         })
+    # WhatsApp raporuyla aynı ilk 5 (aynı sıralama ölçütü → aynı semboller).
+    out = _select_top(built, 5)
     return {"paper_only": True, "generated_at": time.time(),
             "stats": stats, "candidates": out}
 
