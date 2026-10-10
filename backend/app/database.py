@@ -1775,8 +1775,12 @@ def _ensure_daily_rising_schema(conn) -> None:
           evaluated_at DOUBLE PRECISION,
           notified BOOLEAN NOT NULL DEFAULT FALSE,
           auto_paper_trade_id INTEGER,
+          strategy TEXT,
           details JSONB
         )""")
+    # Mevcut kurulumlar için strateji kolonu (kaynak izleme: daily_momentum /
+    # short_squeeze / both). İleride hangi stratejinin isabetli olduğu ölçülebilsin.
+    conn.execute("ALTER TABLE daily_rising_candidates ADD COLUMN IF NOT EXISTS strategy TEXT")
     _DAILY_RISING_SCHEMA_READY = True
 
 
@@ -1788,8 +1792,8 @@ async def save_daily_rising(item: dict) -> int | None:
             "INSERT INTO daily_rising_candidates"
             "(created_at, symbol, price, target_pct, ceiling_pct, ceiling_price,"
             " velocity_score, ret_8h, adx, atr_pct, slope, spread_pct, horizon_minutes,"
-            " status, notified, details) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?) RETURNING id",
+            " status, notified, strategy, details) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?) RETURNING id",
             (
                 float(item.get("created_at") or time.time()),
                 str(item.get("symbol") or "?").upper(),
@@ -1805,6 +1809,7 @@ async def save_daily_rising(item: dict) -> int | None:
                 item.get("spread_pct"),
                 (int(item["horizon_minutes"]) if item.get("horizon_minutes") is not None else None),
                 bool(item.get("notified", False)),
+                str(item.get("strategy") or "daily_momentum"),
                 json.dumps(item.get("details"), default=str) if item.get("details") is not None else None,
             ),
         ).fetchone()
@@ -1855,35 +1860,48 @@ async def list_daily_rising(limit: int = 100, days: float = 7.0) -> list[dict]:
 
 
 async def get_daily_rising_stats(days: float = 7.0) -> dict:
-    """Özet: adet, isabet, ortalama MFE, bekleyen/dokunmuş/expired."""
+    """Özet: adet, isabet, ortalama MFE + STRATEJİ BAZINDA kırılım.
+
+    `by_strategy`: {daily_momentum:{n,filled,hit,hit_rate}, short_squeeze:{...}}
+    → ileride hangi stratejinin daha isabetli olduğu ölçülebilsin (kullanıcı
+    kararı: hangisi kötüyse onu bırakacağız).
+    """
     def op(conn):
         _ensure_daily_rising_schema(conn)
         since = time.time() - max(0.1, float(days)) * 86400.0
         rows = conn.execute(
-            "SELECT status, target_pct, mfe_pct FROM daily_rising_candidates "
+            "SELECT status, target_pct, mfe_pct, strategy FROM daily_rising_candidates "
             "WHERE created_at >= ?", (since,)).fetchall()
-        total = len(rows)
-        filled = [dict(r) for r in rows if dict(r).get("mfe_pct") is not None]
-        touched = sum(1 for d in filled
-                      if d.get("target_pct") and d["mfe_pct"] is not None
-                      and float(d["mfe_pct"]) >= float(d["target_pct"]))
-        mfes = [float(d["mfe_pct"]) for d in filled if d.get("mfe_pct") is not None]
-        return {
-            "total": total,
-            "filled": len(filled),
-            "pending": sum(1 for r in rows if dict(r).get("status") == "pending"),
-            "hit_count": touched,
-            "hit_rate": round(100.0 * touched / len(filled), 1) if filled else None,
-            "avg_mfe_pct": round(sum(mfes) / len(mfes), 2) if mfes else None,
-            "max_mfe_pct": round(max(mfes), 2) if mfes else None,
-        }
+
+        def _agg(sel):
+            filled = [d for d in sel if d.get("mfe_pct") is not None]
+            hit = sum(1 for d in filled
+                      if d.get("target_pct") and float(d["mfe_pct"]) >= float(d["target_pct"]))
+            mfes = [float(d["mfe_pct"]) for d in filled]
+            return {
+                "total": len(sel), "filled": len(filled), "hit": hit,
+                "hit_rate": round(100.0 * hit / len(filled), 1) if filled else None,
+                "avg_mfe_pct": round(sum(mfes) / len(mfes), 2) if mfes else None,
+            }
+
+        allrows = [dict(r) for r in rows]
+        by_strategy = {}
+        for key in ("daily_momentum", "short_squeeze", "both"):
+            by_strategy[key] = _agg([d for d in allrows
+                                     if (d.get("strategy") or "daily_momentum") == key])
+        return {**_agg(allrows),
+                "pending": sum(1 for r in allrows if r.get("status") == "pending"),
+                "hit_count": by_strategy["both"]["hit"] + by_strategy["daily_momentum"]["hit"]
+                + by_strategy["short_squeeze"]["hit"],
+                "by_strategy": by_strategy}
 
     try:
         return await _run_db(op)
     except Exception:
         logger.debug("daily_rising istatistik okunamadı", exc_info=True)
         return {"total": 0, "filled": 0, "pending": 0, "hit_count": 0,
-                "hit_rate": None, "avg_mfe_pct": None, "max_mfe_pct": None}
+                "hit_rate": None, "avg_mfe_pct": None, "max_mfe_pct": None,
+                "by_strategy": {}}
 
 
 async def mark_daily_rising_notified(alert_id: int) -> None:
@@ -2014,6 +2032,7 @@ def _ensure_user_daily_watchlist_schema(conn) -> None:
           source TEXT DEFAULT 'manual_scan',
           active BOOLEAN NOT NULL DEFAULT TRUE,
           note TEXT,
+          strategy TEXT,
           outcome_status TEXT NOT NULL DEFAULT 'pending',
           mfe_pct DOUBLE PRECISION,
           mae_pct DOUBLE PRECISION,
@@ -2030,6 +2049,7 @@ def _ensure_user_daily_watchlist_schema(conn) -> None:
         "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS peak_at DOUBLE PRECISION",
         "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS evaluated_at DOUBLE PRECISION",
         "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS hit_ceiling BOOLEAN",
+        "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS strategy TEXT",
     ):
         conn.execute(ddl)
     _USER_DAILY_WATCHLIST_SCHEMA_READY = True
@@ -2046,14 +2066,14 @@ async def add_to_user_daily_watchlist(username: str, item: dict) -> int | None:
         row = conn.execute(
             "INSERT INTO user_daily_watchlist"
             "(username, symbol, added_at, entry_price, ceiling_pct, ceiling_price,"
-            " ret_8h, adx, slope, atr_pct, velocity_score, source, active, note) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,TRUE,?) "
+            " ret_8h, adx, slope, atr_pct, velocity_score, source, strategy, active, note) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,TRUE,?) "
             "ON CONFLICT(username, symbol) DO UPDATE SET "
             "added_at=excluded.added_at, entry_price=excluded.entry_price, "
             "ceiling_pct=excluded.ceiling_pct, ceiling_price=excluded.ceiling_price, "
             "ret_8h=excluded.ret_8h, adx=excluded.adx, slope=excluded.slope, "
             "atr_pct=excluded.atr_pct, velocity_score=excluded.velocity_score, "
-            "source=excluded.source, active=TRUE, note=excluded.note "
+            "source=excluded.source, strategy=excluded.strategy, active=TRUE, note=excluded.note "
             "RETURNING id",
             (
                 user, str(item.get("symbol") or "?").upper(),
@@ -2061,6 +2081,7 @@ async def add_to_user_daily_watchlist(username: str, item: dict) -> int | None:
                 item.get("entry_price"), item.get("ceiling_pct"), item.get("ceiling_price"),
                 item.get("ret_8h"), item.get("adx"), item.get("slope"), item.get("atr_pct"),
                 item.get("velocity_score"), str(item.get("source") or "manual_scan"),
+                item.get("strategy"),
                 item.get("note"),
             ),
         ).fetchone()

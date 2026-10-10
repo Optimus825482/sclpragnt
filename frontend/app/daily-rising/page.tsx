@@ -33,6 +33,7 @@ type Cand = {
   atr_pct_15m: number | null;
   target_price: number | null;
   target_probability: number | null;
+  strategy?: string | null;
 };
 
 type Watch = {
@@ -204,6 +205,8 @@ export default function DailyRisingPage() {
           <p className="text-sm text-bunker-muted mt-1">
             Elle tara, beğendiğin adayları <b>kendi takip listene</b> ekle. Sistem ayrıca her gün
             11:30'da otomatik tarar ve adayları bildirir.
+            <br />
+            <span className="text-xs">Tarama iki stratejiyi birden çalıştırır: 📈 momentum &nbsp;·&nbsp; ⚡ short-squeeze.</span>
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
@@ -230,6 +233,7 @@ export default function DailyRisingPage() {
                 <thead>
                   <tr className="text-left text-bunker-muted border-b border-bunker-700">
                     <th className="p-2">Sembol</th>
+                    <th className="p-2">Kaynak</th>
                     <th className="p-2 text-right">Fiyat</th>
                     <th className="p-2 text-right">Hedef</th>
                     <th className="p-2 text-right">8s Getiri</th>
@@ -244,6 +248,9 @@ export default function DailyRisingPage() {
                     <tr key={c.symbol} className="border-b border-bunker-800 hover:bg-bunker-800/40">
                       <td className="p-2">
                         <a className="text-neon-green hover:underline" href={`/charts?symbol=${c.symbol}`}>{c.symbol}</a>
+                      </td>
+                      <td className="p-2 text-bunker-muted" title="Hangi stratejiden geldiği">
+                        {c.strategy === "short_squeeze" ? "⚡" : c.strategy === "both" ? "⚡📈" : "📈"}
                       </td>
                       <td className="p-2 text-right">{c.price != null ? formatPrice(c.price) : "—"}</td>
                       <td className="p-2 text-right text-neon-yellow whitespace-nowrap">

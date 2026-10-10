@@ -17,6 +17,7 @@ from app.state import market, analyzer
 from app import unified_signals
 from app import llm_second_eye
 from app import macd_mtf
+from app import master_surge
 from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
 from app.alerting import deliver_web_push
@@ -2581,11 +2582,20 @@ async def _daily_momentum_scan_once() -> int:
     if not config.DAILY_MOMENTUM_ENABLED:
         return 0
     try:
-        scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
-        scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
+        from app.binance_tr_public import trading_symbols as _trading_syms
+        tr_syms = [s for s in await _trading_syms("TRY")]
+    except Exception:
+        tr_syms = []
+    try:
+        scan5, scan15 = await asyncio.gather(
+            detect_velocity_candidates({}, horizon_minutes=5),
+            detect_velocity_candidates({}, horizon_minutes=15),
+        )
     except Exception as exc:
         logger.warning("günlük momentum taraması başarısız: %s", exc)
         return 0
+    # Short-squeeze adayları (vadeli funding negatif) — aynı akışa girer.
+    squeeze = await _short_squeeze_candidates(tr_syms)
 
     pool = list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or []) + \
         list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or [])
@@ -2600,6 +2610,17 @@ async def _daily_momentum_scan_once() -> int:
         cur = by_sym.get(sym)
         if cur is None or float(c.get("velocity_score") or 0) > float(cur.get("velocity_score") or 0):
             by_sym[sym] = c
+    # Squeeze adaylarını birleştir (momentumda olan varsa strategy='both').
+    for c in squeeze:
+        sym = str(c.get("symbol") or "").upper()
+        if not sym or sym in analyzer.positions:
+            continue
+        cur = by_sym.get(sym)
+        if cur is None:
+            by_sym[sym] = c
+        else:
+            cur["strategy"] = "both"
+            cur["short_squeeze_potential"] = True
 
     if not by_sym:
         return 0
@@ -2617,12 +2638,16 @@ async def _daily_momentum_scan_once() -> int:
             if price <= 0:
                 continue
             notif = _build_notification(sym, c, settings)
-            notif["sources"] = list(set((notif.get("sources") or []) + ["daily_momentum"]))
+            _strat = str(c.get("strategy") or "daily_momentum")
+            notif["strategy"] = _strat
+            notif["sources"] = list(set((notif.get("sources") or []) + [s for s in (_strat.split("+") or ["daily_momentum"])]))
             notif["daily_momentum_ok"] = True
             notif["ret_8h_pct"] = c.get("ret_8h_pct")
             notif["adx_14"] = c.get("adx_14")
             notif["ceiling_pct"] = c.get("ceiling_pct")
             notif["ceiling_price"] = c.get("ceiling_price")
+            if c.get("funding_rate_pct") is not None:
+                notif["funding_rate_pct"] = c.get("funding_rate_pct")
             row_id = await database.save_daily_rising({
                 "created_at": now, "symbol": sym, "price": price,
                 "target_pct": c.get("target_pct"),
@@ -2636,7 +2661,9 @@ async def _daily_momentum_scan_once() -> int:
                 "spread_pct": (market.orderflow.get(sym) or {}).get("spread_pct"),
                 "horizon_minutes": c.get("horizon_minutes"),
                 "notified": True,
-                "details": {"daily_momentum_reason": c.get("daily_momentum_reason")},
+                "strategy": _strat,
+                "details": {"daily_momentum_reason": c.get("daily_momentum_reason"),
+                            "funding_state": c.get("funding_state")},
             })
             # Mevcut bildirim teslim yolu: push + DB + otonom paper (auto-paper).
             try:
@@ -2646,7 +2673,7 @@ async def _daily_momentum_scan_once() -> int:
             if row_id:
                 await database.mark_daily_rising_notified(row_id)
             processed += 1
-            logger.info("günlük momentum adayı: %s @ %.6f (tavan +%%%s)", sym, price, c.get("ceiling_pct"))
+            logger.info("yükseliş adayı (%s): %s @ %.6f (tavan +%%%s)", _strat, sym, price, c.get("ceiling_pct"))
         except Exception as exc:
             logger.debug("günlük momentum aday işleme (%s): %s", sym, exc)
     return processed
@@ -2872,6 +2899,7 @@ def _daily_momentum_candidates(scan5: dict, scan15: dict) -> list[dict]:
             "slope_15m": c.get("slope_15m"), "atr_pct_15m": c.get("atr_pct_15m"),
             "daily_momentum_reason": c.get("daily_momentum_reason"),
             "horizon_minutes": c.get("horizon_minutes"),
+            "strategy": "daily_momentum",
             # Hedef = tavan (beklenen maks. yükseliş) + ulaşım ihtimali (%).
             "target_price": (
                 round(px_f * (1 + float(ceil_pct) / 100.0), 8) if (px_f and ceil_pct) else None),
@@ -2880,27 +2908,129 @@ def _daily_momentum_candidates(scan5: dict, scan15: dict) -> list[dict]:
     return rows
 
 
+async def _short_squeeze_candidates(tr_symbols: list[str]) -> list[dict]:
+    """Vadeli short-squeeze adayları (funding negatif → kalabalık short).
+
+    `derivatives_service.scan_short_squeeze` TEK çağrıda tüm funding'i çeker.
+    Aday alanları günlük momentum satırlarıyla AYNIdır (tavan/ihtimal dahil) ki
+    tek "Yükseliş Adayları" listesinde birleşebilsin. Sadece `strategy` farklı.
+    """
+    from app.derivatives_service import scan_short_squeeze
+    try:
+        sq = await scan_short_squeeze(tr_symbols, top_n=20)
+    except Exception as exc:
+        logger.debug("short-squeeze taraması: %s", exc)
+        return []
+    rows = []
+    for s in sq:
+        sym = str(s.get("symbol") or "").upper()
+        px = _ticker_price(sym)
+        if not px:
+            # WS ticker bu sembolü tutmuyor olabilir (geniş evren) → vadeli mark
+            # fiyatına düş, o da yoksa REST spot fiyatı.
+            try:
+                from app.binance_tr_public import ticker_price as _tp
+                r = await _tp([sym])
+                px = float(r[0]["price"]) if r else None
+            except Exception:
+                px = None
+        if not px:
+            px = s.get("mark_price")
+        try:
+            px_f = float(px) if px else None
+        except (TypeError, ValueError):
+            px_f = None
+        if not px_f:
+            continue
+        atr_pct = await _live_atr_pct(sym)
+        if not atr_pct:
+            continue
+        try:
+            _t = master_surge.calculate_adaptive_targets(70.0, atr_pct=atr_pct, base_target_pct=3.0)
+            ceil_pct = round(max(float(_t.get("tp2_runner_pct") or 0), atr_pct * 3.0), 2)
+        except Exception:
+            ceil_pct = round(atr_pct * 3.0, 2)
+        rows.append({
+            "symbol": sym, "price": px_f,
+            "target_pct": ceil_pct,
+            "ceiling_pct": ceil_pct,
+            "ceiling_price": round(px_f * (1 + ceil_pct / 100.0), 8),
+            "velocity_score": s.get("score"),
+            "panel_score": normalize_score(s.get("score", 0)),
+            "atr_pct_15m": round(atr_pct, 3),
+            "funding_rate_pct": s.get("funding_rate_pct"),
+            "funding_state": s.get("funding_state"),
+            "derivatives_bias": s.get("derivatives_bias"),
+            "short_squeeze_potential": bool(s.get("short_squeeze_potential")),
+            "strategy": "short_squeeze",
+            "target_price": round(px_f * (1 + ceil_pct / 100.0), 8),
+            "target_probability": touch_probability(ceil_pct, atr_pct),
+        })
+    return rows
+
+
+def _merge_candidates(*groups: list[dict]) -> list[dict]:
+    """Adayları sembol bazında birleştir (ikisinde de varsa strategy='both')."""
+    by_sym: dict[str, dict] = {}
+    for group in groups:
+        for c in group:
+            sym = str(c.get("symbol") or "").upper()
+            if not sym:
+                continue
+            cur = by_sym.get(sym)
+            if cur is None:
+                by_sym[sym] = dict(c)
+            else:
+                cur_strat = str(cur.get("strategy") or "")
+                new_strat = str(c.get("strategy") or "")
+                if cur_strat != new_strat and cur_strat and new_strat:
+                    cur["strategy"] = "both"
+                # skoru yüksek olanı temel al ama her iki bayrağı birleştir
+                if float(c.get("velocity_score") or 0) > float(cur.get("velocity_score") or 0):
+                    merged = dict(c)
+                    if cur["strategy"] == "both" or cur_strat != new_strat:
+                        merged["strategy"] = "both"
+                    by_sym[sym] = merged
+    return sorted(by_sym.values(), key=lambda x: float(x.get("velocity_score") or 0), reverse=True)
+
+
 @router.post("/api/daily-rising/manual-scan")
 async def daily_rising_manual_scan(request: Request = None):
-    """Elle tarama: günlük momentum adaylarını bul ve döndür (kayıt/oto-işlem YOK).
+    """Elle tarama: günlük momentum + short-squeeze adaylarını TEK listede döndür.
 
-    Bu uç SALT KEŞİF amaçlıdır: hiçbir pozisyon açmaz, DB'ye takip listesi
-    yazmaz. Kullanıcı onay verirse `POST /api/daily-rising/watchlist` ile
-    kendi listesine ekler.
+    İki strateji PARALEL koşar; sonuç sembol bazında birleştirilir (her satırda
+    `strategy`: daily_momentum | short_squeeze | both). Bu uç SALT KEŞİF
+    amaçlıdır: pozisyon açmaz, DB'ye yazmaz. Kullanıcı onay verirse watchlist'e
+    ekler.
     """
     from app.api_common import rate_limit
+    from app.binance_tr_public import trading_symbols as _trading_syms
     if not rate_limit("daily_rising_manual", rate_per_sec=1 / 15.0, burst=2):
         raise HTTPException(status_code=429, detail="Çok sık tarama — lütfen bekleyin")
     try:
-        scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
-        scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
+        tr_syms = [s for s in await _trading_syms("TRY")]
+    except Exception:
+        tr_syms = []
+    try:
+        scan5, scan15, squeeze = await asyncio.gather(
+            detect_velocity_candidates({}, horizon_minutes=5),
+            detect_velocity_candidates({}, horizon_minutes=15),
+            _short_squeeze_candidates(tr_syms),
+            return_exceptions=True,
+        )
     except Exception as exc:
         logger.warning("manuel günlük tarama hatası: %s", exc)
         return {"ok": False, "error": str(exc), "candidates": []}
-    cands = _daily_momentum_candidates(scan5, scan15)
+    scan5 = scan5 if isinstance(scan5, dict) else {}
+    scan15 = scan15 if isinstance(scan15, dict) else {}
+    squeeze = squeeze if isinstance(squeeze, list) else []
+    mom = _daily_momentum_candidates(scan5, scan15)
+    cands = _merge_candidates(mom, squeeze)
     return {"ok": True, "paper_only": True, "generated_at": time.time(),
             "enabled": bool(config.DAILY_MOMENTUM_ENABLED),
-            "count": len(cands), "candidates": cands}
+            "count": len(cands),
+            "counts": {"daily_momentum": len(mom), "short_squeeze": len(squeeze)},
+            "candidates": cands}
 
 
 @router.get("/api/daily-rising/watchlist")
@@ -3031,6 +3161,7 @@ async def daily_rising_watchlist_add(payload: dict, request: Request = None):
             "slope": it.get("slope_15m") or it.get("slope"),
             "atr_pct": atr_pct_it,
             "velocity_score": it.get("velocity_score"),
+            "strategy": it.get("strategy"),
             "source": "manual_scan", "note": it.get("note"),
         })
         if rid:

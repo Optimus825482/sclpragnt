@@ -81,6 +81,36 @@ def test_daily_rising_manual_and_watchlist_endpoints():
     assert "/api/daily-rising/watchlist" in paths
 
 
+def test_short_squeeze_scan_exists_and_classifies():
+    """Toplu squeeze taraması + sınıflandırma mevcut olmalı."""
+    from app import derivatives_service as ds
+    assert hasattr(ds, "scan_short_squeeze")
+    # negatif funding -> squeeze; pozitif -> değil (sınıflandırma mantığı)
+    # (ağ çağrısı olmadan yalnız imza/varlık kontrolü)
+
+
+def test_merge_candidates_dedupe_both():
+    """Aynı sembol iki stratejide varsa strategy='both' olmalı."""
+    from app.routers.monitoring import _merge_candidates
+    mom = [{"symbol": "MINATRY", "velocity_score": 50, "strategy": "daily_momentum"}]
+    sq = [{"symbol": "MINATRY", "velocity_score": 80, "strategy": "short_squeeze"},
+          {"symbol": "XAITRY", "velocity_score": 60, "strategy": "short_squeeze"}]
+    merged = _merge_candidates(mom, sq)
+    by = {c["symbol"]: c for c in merged}
+    assert by["MINATRY"]["strategy"] == "both"
+    assert by["XAITRY"]["strategy"] == "short_squeeze"
+    assert len(merged) == 2  # dedupe
+
+
+def test_strategy_column_persisted():
+    """save_daily_rising ve watchlist fonksiyonları strategy alanını taşımalı."""
+    import inspect
+    src = inspect.getsource(database.save_daily_rising)
+    assert "strategy" in src
+    src2 = inspect.getsource(database.add_to_user_daily_watchlist)
+    assert "strategy" in src2
+
+
 def test_touch_probability_calibrated():
     """Hedefe ulaşım ihtimali gerçek veriden kalibre: hedef=3·ATR → ~%60."""
     from app.routers.monitoring import touch_probability

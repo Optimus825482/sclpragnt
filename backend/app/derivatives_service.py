@@ -179,6 +179,89 @@ async def get_derivatives_intel(symbol: str) -> dict:
     return result
 
 
+# ----------------------------------------------------------------------
+# TOPLU SHORT-SQUEEZE TARAMASI (2026-10-10)
+# Tek çağrıda TÜM vadeli sembollerin funding'ini çeker (premiumIndex, sembolsüz)
+# ve TR sembol evreniyle eşleştirir. Funding + long/short dengesizliği ile
+# short-squeeze adaylarını bulur. Sıfırdan veri kaynağı değil — mevcut
+# `get_derivatives_intel` sınıflandırma eşikleriyle AYNI mantık.
+# ----------------------------------------------------------------------
+_SQUEEZE_SCAN_CACHE: dict = {"rows": None, "expires": 0.0}
+SQUEEZE_SCAN_TTL_SEC = 120.0
+
+
+async def scan_short_squeeze(tr_symbols: list[str], *,
+                             min_funding_neg_pct: float = -0.03,
+                             top_n: int = 25) -> list[dict]:
+    """TR sembol evreninde short-squeeze adaylarını bul (toplu funding).
+
+    DÖNÜŞ: [{"symbol": "MINATRY", "funding_rate_pct": -0.17, "funding_state": ...,
+             "short_squeeze_potential": True, "derivatives_bias": ..., "score": ...}]
+
+    `min_funding_neg_pct`: squeeze için funding üst sınırı (yüzde). Varsayılan
+    -0.03 (= config eşiği). Daha negatif = daha kalabalık short = daha güçlü squeeze.
+    """
+    now = time.time()
+    if _SQUEEZE_SCAN_CACHE["rows"] is not None and now < _SQUEEZE_SCAN_CACHE["expires"]:
+        data = _SQUEEZE_SCAN_CACHE["rows"]
+    else:
+        data = await asyncio.to_thread(
+            _fetch_fapi_json, f"{FAPI_BASE}/fapi/v1/premiumIndex")
+        _SQUEEZE_SCAN_CACHE["rows"] = data if isinstance(data, list) else []
+        _SQUEEZE_SCAN_CACHE["expires"] = now + SQUEEZE_SCAN_TTL_SEC
+    if not isinstance(data, list):
+        return []
+
+    # futures sembol → funding
+    by_fut = {}
+    for row in data:
+        try:
+            fs = str(row.get("symbol") or "").upper()
+            if not fs.endswith("USDT"):
+                continue
+            by_fut[fs[:-4]] = {
+                "funding_rate": float(row.get("lastFundingRate") or 0.0),
+                "mark_price": float(row.get("markPrice") or 0.0),
+            }
+        except (TypeError, ValueError):
+            continue
+
+    out = []
+    for sym in tr_symbols:
+        base = str(sym or "").upper()
+        if base.endswith("TRY"):
+            base = base[:-3]
+        fut = by_fut.get(base)
+        if not fut:
+            continue
+        fr = fut["funding_rate"]
+        fr_pct = fr * 100.0
+        if fr_pct <= -0.10:
+            state, bias, score = "EXTREME_SHORT", "SHORT_SQUEEZE_POTENTIAL", 100.0
+        elif fr_pct <= min_funding_neg_pct:
+            state, bias, score = "CROWDED_SHORT", "SHORT_SQUEEZE_POTENTIAL", 70.0
+        elif fr_pct <= -0.01:
+            state, bias = "MILD_SHORT", "NEUTRAL"
+            score = 40.0
+        else:
+            continue
+        # daha negatif funding -> daha güçlü squeeze (skor ölçeği)
+        score += min(50.0, abs(fr_pct) * 200.0)
+        out.append({
+            "symbol": str(sym).upper(),
+            "futures_symbol": base + "USDT",
+            "funding_rate": fr,
+            "funding_rate_pct": round(fr_pct, 4),
+            "funding_state": state,
+            "short_squeeze_potential": state in ("CROWDED_SHORT", "EXTREME_SHORT"),
+            "derivatives_bias": bias,
+            "mark_price": fut["mark_price"],
+            "score": round(score, 1),
+        })
+    out.sort(key=lambda x: x["score"], reverse=True)
+    return out[:max(1, int(top_n))]
+
+
 def get_cached_derivatives_intel(symbol: str, max_age_sec: float | None = None) -> dict | None:
     """Bellekteki son vadeli piyasa istihbaratını senkron olarak döner.
 
