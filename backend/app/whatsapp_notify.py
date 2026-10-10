@@ -257,3 +257,56 @@ def format_tracking_table(rows: list[dict], *, title: str = "📊 Aday Takip") -
 
     return f"{title}\n\n```\n" + "\n".join(body) + "\n```\n" + summary
 
+
+def format_delta_report(rows: list[dict], *, title: str, baseline_label: str) -> str:
+    """Slot raporundan bu yana DURUM FARKI tablosu (:15/:45 mesajları).
+
+    Her satır: öneri fiyatı → anlık fiyat ve o süre zarfındaki % değişim; en
+    altta "OTLAMA" = listedeki adayların ÖNERİ fiyatından bu yana ortalama %
+    değişimi (kullanıcı kararı 2026-10-10: fark mesajının dibi otlama).
+    """
+    if not rows:
+        return f"{title}\n\nTakip edilecek aday yok."
+
+    shown = sorted(rows, key=lambda r: (float(r["change_pct"])
+                                        if r.get("change_pct") is not None else -999.0),
+                   reverse=True)
+
+    def _sym(s: str) -> str:
+        s = str(s or "?").upper()
+        return (s[:-3] if s.endswith("TRY") else s)[:8]
+
+    legend = "🪙 coin   💵 öneri   📈 anlık   ⚡ fark"
+    header = f"{'COIN':<8}{'ÖNERİ':>10}{'ANLIK':>10}{'FARK':>9}  KAYNAK"
+    sep = "─" * len(header)
+    body = [legend, header, sep]
+    missing = 0
+    for r in shown:
+        sym = _sym(r.get("symbol"))
+        entry = _fmt_price(r.get("entry_price"), 10)
+        cur = _fmt_price(r.get("current_price"), 10)
+        if r.get("change_pct") is None:
+            chg = "—".rjust(9)
+            missing += 1
+        else:
+            chg = f"{float(r['change_pct']):+.2f}%".rjust(9)
+        strat = str(r.get("strategy") or "")
+        tag = "⚡📈" if strat == "both" else ("⚡" if strat == "short_squeeze"
+                                              else ("📈" if strat else ""))
+        mark = "✓" if r.get("hit_ceiling") else ""
+        suffix = f"  {tag}{(' ' + mark) if mark else ''}"
+        body.append(f"{sym:<8}{entry:>10}{cur:>10}{chg:>9}{suffix}")
+
+    chgs = [float(r["change_pct"]) for r in shown if r.get("change_pct") is not None]
+    up = sum(1 for x in chgs if x > 0.2)
+    dn = sum(1 for x in chgs if x < -0.2)
+    flat = len(chgs) - up - dn
+    summary = f"▲ {up} yükselen · ▼ {dn} düşen · • {flat} yatay"
+    if missing:
+        summary += f"  |  {missing} fiyat alınamadı"
+    # OTLAMA: öneri fiyatından bu yana ortalama değişim (kullanıcı isteği).
+    if chgs:
+        summary += f"\n🐢 OTLAMA ({baseline_label}'den bu yana ort.): {sum(chgs) / len(chgs):+.2f}%"
+
+    return f"{title}\n\n```\n" + "\n".join(body) + "\n```\n" + summary
+

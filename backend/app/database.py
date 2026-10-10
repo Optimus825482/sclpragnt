@@ -1921,6 +1921,102 @@ async def mark_daily_rising_notified(alert_id: int) -> None:
         logger.debug("daily_rising notified işaretlenemedi", exc_info=True)
 
 
+# ----------------------------------------------------------------------
+# SLOT RAPOR KAYDI (daily_rising_reports) — 2026-10-10 kullanıcı kararı.
+# Her saat başı/:30'daki liste raporu ve :15/:45'teki fark raporu kalıcı
+# saklanır; Raporlar sayfasının "Günlük Yükseliş" sekmesi buradan okur.
+# ----------------------------------------------------------------------
+_DAILY_REPORTS_SCHEMA_READY = False
+
+
+def _ensure_daily_rising_reports_schema(conn) -> None:
+    global _DAILY_REPORTS_SCHEMA_READY
+    if _DAILY_REPORTS_SCHEMA_READY:
+        return
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_rising_reports (
+          id BIGSERIAL PRIMARY KEY,
+          kind TEXT NOT NULL,             -- 'slot' (liste) | 'delta' (fark)
+          sent_at DOUBLE PRECISION NOT NULL,
+          sent BOOLEAN NOT NULL DEFAULT FALSE,
+          message TEXT,                   -- WhatsApp'a giden metin
+          candidates JSONB,               -- [{symbol, price, ...}]
+          prev_report_id BIGINT,          -- delta raporu hangi listeyi izliyor
+          sent_to TEXT
+        )""")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_daily_rising_reports_sent_at "
+        "ON daily_rising_reports(sent_at DESC)")
+    _DAILY_REPORTS_SCHEMA_READY = True
+
+
+async def save_daily_rising_report(item: dict) -> int | None:
+    """Gönderilen slot/delta raporunu kaydet; satır id'si döner."""
+    def op(conn):
+        _ensure_daily_rising_reports_schema(conn)
+        row = conn.execute(
+            "INSERT INTO daily_rising_reports"
+            "(kind, sent_at, sent, message, candidates, prev_report_id, sent_to) "
+            "VALUES(?,?,?,?,?,?,?) RETURNING id",
+            (
+                str(item.get("kind") or "slot"),
+                float(item.get("sent_at") or time.time()),
+                bool(item.get("sent", False)),
+                item.get("message"),
+                json.dumps(item.get("candidates"), default=str)
+                if item.get("candidates") is not None else None,
+                item.get("prev_report_id"),
+                item.get("sent_to"),
+            ),
+        ).fetchone()
+        conn.commit()
+        return int(row[0]) if row else None
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("daily_rising_report kaydı başarısız", exc_info=True)
+        return None
+
+
+async def list_daily_rising_reports(limit: int = 50, days: float = 7.0,
+                                    kind: str | None = None) -> list[dict]:
+    """Son N günün rapor kayıtları (en yeni önce)."""
+    def op(conn):
+        _ensure_daily_rising_reports_schema(conn)
+        since = time.time() - max(0.1, float(days)) * 86400.0
+        where = "sent_at >= ?" + (" AND kind=?" if kind else "")
+        params: list = [since] + ([str(kind)] if kind else []) + [max(1, min(500, int(limit)))]
+        rows = conn.execute(
+            f"SELECT id, kind, sent_at, sent, message, candidates, prev_report_id, sent_to"
+            f" FROM daily_rising_reports WHERE {where}"
+            f" ORDER BY sent_at DESC LIMIT ?", params).fetchall()
+        return [dict(r) for r in rows]
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("daily_rising_report listesi okunamadı", exc_info=True)
+        return []
+
+
+async def last_daily_rising_report(kind: str = "slot") -> dict | None:
+    """Son 'slot' (liste) raporu — fark raporu bunu izler."""
+    def op(conn):
+        _ensure_daily_rising_reports_schema(conn)
+        row = conn.execute(
+            "SELECT id, kind, sent_at, sent, message, candidates, prev_report_id, sent_to"
+            " FROM daily_rising_reports WHERE kind=? ORDER BY sent_at DESC LIMIT 1",
+            (str(kind),)).fetchone()
+        return dict(row) if row else None
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("son daily_rising_report okunamadı", exc_info=True)
+        return None
+
+
 async def fill_daily_rising_outcomes(limit: int = 200, live_prices: dict | None = None) -> int:
     """Bekleyen günlük adayların MFE/MAE sonucunu doldur (CANLI).
 

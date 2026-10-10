@@ -2723,12 +2723,15 @@ async def _daily_momentum_scan_once() -> int:
         except Exception as exc:
             logger.debug("günlük momentum aday işleme (%s): %s", sym, exc)
     # WhatsApp grup raporu (yalnız 11:30 otomatik taraması; yapılandırılmadıkça atlar).
-    try:
-        from app.whatsapp_notify import format_scan_report, send_whatsapp, whatsapp_enabled
-        if whatsapp_enabled():
-            await send_whatsapp(format_scan_report(_report_rows))
-    except Exception as exc:
-        logger.debug("WhatsApp rapor gönderimi: %s", exc)
+    # SLOT DÖNGÜSÜ aktifken 11:30 tek rapor KAPALIDIR — liste artık her saat
+    # başı/:30'da slot döngüsü tarafından gönderilir (çift gönderim olmasın).
+    if not config.DAILY_RISING_SLOT_ENABLED:
+        try:
+            from app.whatsapp_notify import format_scan_report, send_whatsapp, whatsapp_enabled
+            if whatsapp_enabled():
+                await send_whatsapp(format_scan_report(_report_rows))
+        except Exception as exc:
+            logger.debug("WhatsApp rapor gönderimi: %s", exc)
     return processed
 
 
@@ -2824,7 +2827,9 @@ async def daily_rising_hourly_loop():
     await asyncio.sleep(90)
     while True:
         try:
-            if config.WHATSAPP_HOURLY_ENABLED:
+            # SLOT DÖNGÜSÜ aktifken bu 30 dk takip tablosu kapalıdır — fark
+            # raporlarını (:15/:45) slot döngüsü gönderir (çakışma olmasın).
+            if config.WHATSAPP_HOURLY_ENABLED and not config.DAILY_RISING_SLOT_ENABLED:
                 from app.whatsapp_notify import (
                     format_tracking_table, send_whatsapp, whatsapp_enabled)
                 if whatsapp_enabled():
@@ -2870,6 +2875,283 @@ async def daily_rising_hourly_loop():
         except Exception as exc:
             logger.warning("saatlik aday takip turu: %s", exc)
         await asyncio.sleep(poll_sec)
+
+
+# ======================================================================
+# SLOT RAPOR DÖNGÜSÜ (2026-10-10 kullanıcı kararı)
+# :00 / :30 → taze tarama → LİSTE raporu (1-5 aday)
+# :15 / :45 → son listenin FARK raporu + en altta OTLAMA (ort. % değişim)
+# Kalite eşiği: en iyi adayın puanı (ihtimal × potansiyel / 100) eşiğin
+# altındaysa hiçbir şey gönderilmez ("göndermiş olmak için göndermeyelim").
+# Tavanına ulaşan adaylar listeden çıkar. Her gönderim DB'ye kaydedilir.
+# ======================================================================
+_slot_loop_task = None
+
+
+def _combined_score(c: dict) -> float:
+    """whatsapp_notify._combined_score ile aynı puan (ihtimal × potansiyel / 100)."""
+    pot = float(c.get("potential_pct") or 0)
+    prob = c.get("target_probability")
+    p = float(prob) if prob is not None else 50.0
+    return p * max(pot, 0.0) / 100.0
+
+
+async def _slot_scan_rows() -> list[dict]:
+    """Taze tarama: momentum + squeeze adaylarını birleştir, DB'ye kaydet,
+    birleşik puana göre sıralı liste döndür (`select_top` ölçütüyle aynı)."""
+    from app.binance_tr_public import trading_symbols as _trading_syms
+    try:
+        tr_syms = [s for s in await _trading_syms("TRY")]
+    except Exception:
+        tr_syms = []
+    scan5, scan15, squeeze = await asyncio.gather(
+        detect_velocity_candidates({}, horizon_minutes=5),
+        detect_velocity_candidates({}, horizon_minutes=15),
+        _short_squeeze_candidates(tr_syms),
+        return_exceptions=True,
+    )
+    scan5 = scan5 if isinstance(scan5, dict) else {}
+    scan15 = scan15 if isinstance(scan15, dict) else {}
+    squeeze = squeeze if isinstance(squeeze, list) else []
+    mom = await _daily_momentum_candidates(scan5, scan15)
+    cooldown = float(config.DAILY_MOMENTUM_REPEAT_COOLDOWN_MIN) * 60.0
+    # Bugünkü kayıtların MFE'si: tavanına ulaşan adaylar listeden çıkar.
+    _today_mfe: dict[str, float] = {}
+    try:
+        for r in await _today_rising_rows(limit=200):
+            sym = str(r.get("symbol") or "").upper()
+            if r.get("mfe_pct") is not None:
+                prev_mfe = _today_mfe.get(sym)
+                if prev_mfe is None or float(r["mfe_pct"]) > prev_mfe:
+                    _today_mfe[sym] = float(r["mfe_pct"])
+    except Exception:
+        pass
+    now = time.time()
+    out: list[dict] = []
+    for c in _merge_candidates(mom, squeeze):
+        sym = str(c.get("symbol") or "").upper()
+        if not sym or sym in analyzer.positions:
+            continue
+        try:
+            price = float(_ticker_price(sym) or c.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 0:
+            continue
+        # O günkü hedefine (tavan) ulaşmış aday işaretle — kullanıcı kararı:
+        # "o günkü hedefine ulaşmamış" adaylar listeye girer; ulaşanlar çıkar.
+        hit = False
+        ceil_pct = c.get("ceiling_pct")
+        try:
+            mfe = _today_mfe.get(sym)
+            if mfe is not None and ceil_pct is not None and float(mfe) >= float(ceil_pct):
+                hit = True
+        except (TypeError, ValueError):
+            hit = False
+        # DB kaydı (cooldown'suz dedupe): aynı sembol kısa aralıklarla tekrar
+        # önerilmesin — son kayıt 30 dk'dan yeniyse kayıt atlanır ama aday listede
+        # kalabilir (liste anlık pazar yansıması; kayıt ise öneri geçmişi).
+        try:
+            last = await database.last_daily_rising_at(sym)
+            if last is None or (now - last) >= cooldown:
+                await database.save_daily_rising({
+                    "created_at": now, "symbol": sym, "price": price,
+                    "target_pct": c.get("target_pct"),
+                    "ceiling_pct": c.get("ceiling_pct"),
+                    "ceiling_price": c.get("ceiling_price"),
+                    "velocity_score": c.get("velocity_score"),
+                    "ret_8h": c.get("ret_8h_pct"), "adx": c.get("adx_14"),
+                    "atr_pct": c.get("atr_pct_15m"), "slope": c.get("slope_15m"),
+                    "spread_pct": (market.orderflow.get(sym) or {}).get("spread_pct"),
+                    "horizon_minutes": c.get("horizon_minutes"),
+                    "notified": False,
+                    "strategy": c.get("strategy"),
+                    "potential_pct": c.get("potential_pct"),
+                    "details": {"daily_momentum_reason": c.get("daily_momentum_reason"),
+                                "source": "slot_scan"},
+                })
+        except Exception as exc:
+            logger.debug("slot aday kaydı (%s): %s", sym, exc)
+        out.append({
+            "symbol": sym, "price": price,
+            "ceiling_pct": c.get("ceiling_pct"),
+            "potential_pct": c.get("potential_pct"),
+            "strategy": c.get("strategy"),
+            "velocity_score": c.get("velocity_score"),
+            "_hit": hit,
+            "target_probability": c.get("target_probability")
+            or touch_probability(c.get("ceiling_pct"), c.get("atr_pct_15m")),
+        })
+    out.sort(key=lambda c: (_is_both(c), _combined_score(c)), reverse=True)
+    return out
+
+
+def _is_both(c: dict) -> int:
+    return 1 if str(c.get("strategy") or "") == "both" else 0
+
+
+async def daily_rising_slot_loop():
+    """Her saat başı ve :30'da liste, :15 ve :45'te fark raporu gönderir.
+
+    Liste: kalite eşiği (en iyi adayın birleşik puanı) altındaysa GÖNDERİLMEZ.
+    Fark: son slot listesindeki adayların anlık durumu + en altta otlama.
+    Her gönderim `daily_rising_reports` tablosuna yazılır. Bu döngü aktifken
+    eski 11:30 tek tarama WhatsApp raporu ve 30 dk takip tablosu kapalıdır.
+    """
+    poll_sec = 30.0
+    logger.info("slot rapor döngüsü başladı (enabled=%s, min_score=%.1f)",
+                config.DAILY_RISING_SLOT_ENABLED, config.DAILY_RISING_SLOT_MIN_SCORE)
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
+    except Exception:
+        _tz = None
+    await asyncio.sleep(90)
+    while True:
+        try:
+            if config.DAILY_RISING_SLOT_ENABLED:
+                from app.whatsapp_notify import (
+                    format_scan_report, format_delta_report, send_whatsapp,
+                    whatsapp_enabled)
+                if whatsapp_enabled():
+                    lt = datetime.now(_tz) if _tz else datetime.now()
+                    minute = lt.minute
+                    # Slot çapası: :00 ve :30 → slot (liste), :15 ve :45 → delta.
+                    # Tarama ~30 sn'yi aşabilir; slot başında 2 dk gönderim
+                    # penceresi bırakılır (aynı slot tek sefer: slot_key).
+                    in_window = minute % 15 < 2 and \
+                        (config.WHATSAPP_HOURLY_START_HOUR <= lt.hour <= config.WHATSAPP_HOURLY_END_HOUR)
+                    if in_window:
+                        if minute < 15:
+                            kind = "slot"
+                        elif minute < 30:
+                            kind = "delta"
+                        elif minute < 45:
+                            kind = "slot"
+                        else:
+                            kind = "delta"
+                        slot_key = f"{lt.strftime('%Y-%m-%d %H')}:{minute - minute % 15:02d}:{kind}"
+                        if _monitoring_state.get("slot_report_last") != slot_key:
+                            _monitoring_state["slot_report_last"] = slot_key
+                            if kind == "slot":
+                                await _send_slot_report()
+                            else:
+                                await _send_delta_report()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("slot rapor döngüsü turu: %s", exc)
+        await asyncio.sleep(poll_sec)
+
+
+async def _send_slot_report() -> bool:
+    """Taze tarama → kalite eşiği → liste raporu → DB kaydı. True: gönderildi."""
+    from app.whatsapp_notify import format_scan_report, send_whatsapp, whatsapp_enabled
+    if not whatsapp_enabled():
+        return False
+    try:
+        cands = await _slot_scan_rows()
+    except Exception as exc:
+        logger.warning("slot taraması başarısız: %s", exc)
+        return False
+    # Tavanına ulaşanları çıkar (o günkü hedefine ulaştıysa tekrar önerilmez).
+    if config.DAILY_RISING_SLOT_EXCLUDE_HIT:
+        cands = [c for c in cands if not bool(c.get("_hit"))]
+    if not cands:
+        return False
+    # Kalite eşiği: EN İYİ aday bile zayıfsa gönderme (1..5 kuralı eşiğin üstünde
+    # kalınca uygulanır; format_scan_report zaten ilk 5'i seçer).
+    best = _combined_score(cands[0])
+    if best < float(config.DAILY_RISING_SLOT_MIN_SCORE):
+        logger.info("slot raporu atlandı: en iyi puan %.2f < eşik %.2f",
+                    best, config.DAILY_RISING_SLOT_MIN_SCORE)
+        return False
+    text = format_scan_report(cands)
+    sent = await send_whatsapp(text)
+    await database.save_daily_rising_report({
+        "kind": "slot", "sent_at": time.time(), "sent": bool(sent),
+        "message": text, "candidates": cands,
+    })
+    return sent
+
+
+async def _send_delta_report() -> bool:
+    """Son slot listesinin fark raporu + otlama satırı → DB kaydı."""
+    from app.whatsapp_notify import format_delta_report, send_whatsapp, whatsapp_enabled
+    if not whatsapp_enabled():
+        return False
+    prev = await database.last_daily_rising_report("slot")
+    if not prev:
+        return False
+    prev_rows = prev.get("candidates") or []
+    try:
+        prev_rows = json.loads(prev_rows) if isinstance(prev_rows, str) else list(prev_rows)
+    except (TypeError, ValueError):
+        prev_rows = []
+    if not prev_rows:
+        return False
+    syms = [str(r.get("symbol") or "").upper() for r in prev_rows]
+    _px = await _batch_prices(syms)
+    rows = []
+    for r in prev_rows:
+        sym = str(r.get("symbol") or "").upper()
+        entry = r.get("price")
+        cur = _px.get(sym)
+        try:
+            e = float(entry) if entry else None
+            c_ = float(cur) if cur else None
+        except (TypeError, ValueError):
+            e = c_ = None
+        rows.append({
+            "symbol": sym, "entry_price": e, "current_price": c_,
+            "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
+            "strategy": r.get("strategy"),
+            "hit_ceiling": bool(e and c_ and r.get("ceiling_pct")
+                                and c_ >= e * (1 + float(r["ceiling_pct"]) / 100.0)),
+        })
+    try:
+        from zoneinfo import ZoneInfo
+        _tz_delta = ZoneInfo(config.DAILY_MOMENTUM_TZ)
+    except Exception:
+        _tz_delta = None
+    lt_label = datetime.now(_tz_delta) if _tz_delta else datetime.now()
+    baseline = time.strftime("%H:%M", time.localtime(float(prev.get("sent_at") or 0)))
+    text = format_delta_report(rows, title=f"📊 Aday Fark Raporu · {lt_label.strftime('%H:%M')}",
+                               baseline_label=baseline)
+    sent = await send_whatsapp(text)
+    await database.save_daily_rising_report({
+        "kind": "delta", "sent_at": time.time(), "sent": bool(sent),
+        "message": text, "candidates": rows,
+        "prev_report_id": prev.get("id"),
+    })
+    return sent
+
+
+@router.get("/api/daily-rising/reports")
+async def daily_rising_reports_list(request: Request = None, limit: int = 50,
+                                    days: float = 7.0, kind: str = ""):
+    """Slot/delta rapor geçmişi — Raporlar sayfasının 'Günlük Yükseliş' sekmesi."""
+    rows = await database.list_daily_rising_reports(
+        limit=limit, days=days, kind=str(kind) if kind else None)
+    return {"paper_only": True, "generated_at": time.time(), "reports": rows}
+
+
+@router.post("/api/daily-rising/send-slot-report")
+async def daily_rising_send_slot_report(request: Request = None):
+    """Slot liste raporunu ELLE gönder (admin paneli/test)."""
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    sent = await _send_slot_report()
+    return {"ok": sent}
+
+
+@router.post("/api/daily-rising/send-delta-report")
+async def daily_rising_send_delta_report(request: Request = None):
+    """Fark + otlama raporunu ELLE gönder (admin paneli/test)."""
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    sent = await _send_delta_report()
+    return {"ok": sent}
 
 
 @router.get("/api/daily-rising/state")

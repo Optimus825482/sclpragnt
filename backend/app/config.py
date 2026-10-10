@@ -440,6 +440,25 @@ class Config:
     WHATSAPP_HOURLY_END_HOUR = max(0, min(23, int(os.getenv("WHATSAPP_HOURLY_END_HOUR", "23"))))
     # Gönderim aralığı (dakika): 30 = yarım saatte bir (2026-10-10 kullanıcı kararı).
     WHATSAPP_HOURLY_INTERVAL_MIN = max(5, int(os.getenv("WHATSAPP_HOURLY_INTERVAL_MIN", "30")))
+    # ------------------------------------------------------------------
+    # SLOT RAPOR DÖNGÜSÜ (2026-10-10 kullanıcı kararı) — 11:30 tek tarama yerine
+    # HER SAAT BAŞI VE :30'da taze tarama yapılır; her tarama bir "slot raporu"
+    # (liste) + 15 dk sonra bir "fark raporu" üretir:
+    #   :00 / :30 → LİSTE (en iyi 1-5 coin, anlık fiyat + ihtimal + potansiyel)
+    #   :15 / :45 → FARK (önceki listenin adaylarının o ana kadar durumu + en
+    #               altta otlama = öneri fiyatından bu yana ort. % değişim)
+    # Çakışmayı önlemek için eski 11:30 tek tarama ve 30 dk takip döngüsü bu
+    # döngü aktifken çalışmaz (aşağıdaki bayraklarla kapatılır).
+    # ------------------------------------------------------------------
+    DAILY_RISING_SLOT_ENABLED = os.getenv("DAILY_RISING_SLOT_ENABLED", "true").lower() == "true"
+    # Kalite eşiği: listenin 1. sırası bile bunun ALTINDAYSA hiçbir şey GÖNDERİLMEZ
+    # ("göndermiş olmak için göndermeyelim"). Puan = ihtimal × potansiyel / 100.
+    DAILY_RISING_SLOT_MIN_SCORE = float(os.getenv("DAILY_RISING_SLOT_MIN_SCORE", "10.0"))
+    # En az / en çok gönderilen aday sayısı (kullanıcı kararı: 1..5).
+    DAILY_RISING_SLOT_MAX_COUNT = max(1, int(os.getenv("DAILY_RISING_SLOT_MAX_COUNT", "5")))
+    # Tavanına (ceiling) ulaşan adaylar listeden ÇIKARILIR (o günkü hedefine
+    # ulaştıysa tekrar önerilmez); listede kimse kalmazsa slot raporu gönderilmez.
+    DAILY_RISING_SLOT_EXCLUDE_HIT = os.getenv("DAILY_RISING_SLOT_EXCLUDE_HIT", "true").lower() == "true"
     DAILY_MOMENTUM_RET_8H_MIN = float(os.getenv("DAILY_MOMENTUM_RET_8H_MIN", "2.0"))
     DAILY_MOMENTUM_ATR_MIN = float(os.getenv("DAILY_MOMENTUM_ATR_MIN", "0.5"))
     DAILY_MOMENTUM_ADX_MIN = float(os.getenv("DAILY_MOMENTUM_ADX_MIN", "25.0"))
