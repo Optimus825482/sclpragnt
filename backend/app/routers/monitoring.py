@@ -3154,6 +3154,52 @@ async def daily_rising_send_delta_report(request: Request = None):
     return {"ok": sent}
 
 
+@router.get("/api/daily-rising/evaluate-last")
+async def daily_rising_evaluate_last(request: Request = None, kind: str = "slot"):
+    """SON GÖNDERİLEN raporun adaylarını, gönderim anından bu yana değerlendir.
+
+    Kullanıcı isteği (2026-10-10): admin panelde "Son Gönderilen Değerlendirme"
+    butonu. Raporun gönderildiği andaki fiyat → şimdi arası MFE/MAE + tavan
+    hedefine ulaşma ölçülür; özet (kaç aday tavana ulaştı, ortalama gerçekleşen
+    max) döner. Admin-only.
+    """
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    rep = await database.last_daily_rising_report(str(kind) or "slot")
+    if not rep:
+        return {"ok": False, "reason": "no_report",
+                "detail": "Bu türde gönderilmiş rapor yok."}
+    cands = rep.get("candidates") or []
+    try:
+        cands = json.loads(cands) if isinstance(cands, str) else list(cands)
+    except (TypeError, ValueError):
+        cands = []
+    if not cands:
+        return {"ok": False, "reason": "empty", "detail": "Rapor adayı boş."}
+    syms = [str(c.get("symbol") or "").upper() for c in cands]
+    _px = await _batch_prices(syms)
+    rows = await database.evaluate_daily_rising_report(
+        cands, float(rep.get("sent_at") or 0), live_prices=_px)
+    mfes = [float(r["mfe_pct"]) for r in rows if r.get("mfe_pct") is not None]
+    hits = [r for r in rows if r.get("hit_ceiling") is True]
+    misses = [r for r in rows if r.get("hit_ceiling") is False]
+    measured = len(mfes)
+    return {
+        "ok": True,
+        "kind": str(rep.get("kind") or kind),
+        "sent_at": rep.get("sent_at"),
+        "count": len(rows),
+        "measured": measured,
+        "ceiling_hits": len(hits),
+        "hit_rate": round(100.0 * len(hits) / measured, 1) if measured else None,
+        "avg_mfe_pct": round(sum(mfes) / len(mfes), 2) if mfes else None,
+        "max_mfe_pct": round(max(mfes), 2) if mfes else None,
+        "positive": sum(1 for m in mfes if m > 0),
+        "rows": rows,
+        "missed_ceiling": len(misses),
+    }
+
+
 @router.get("/api/daily-rising/state")
 async def daily_rising_state(request: Request = None):
     """Günlük yükseliş adayları — WhatsApp raporuyla AYNI ilk 5 (salt okunur).

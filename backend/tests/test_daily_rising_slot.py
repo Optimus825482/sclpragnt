@@ -109,3 +109,39 @@ def test_slot_scan_marks_hit_candidates():
     assert "_hit" in src
     send_src = inspect.getsource(monitoring._send_slot_report)
     assert "DAILY_RISING_SLOT_EXCLUDE_HIT" in send_src
+
+
+def test_evaluate_last_report_endpoint_is_admin_only():
+    """Manuel liste gönderme ve son gönderilen değerlendirme uçları admin kapılı
+    olmalı (kullanıcı isteği 2026-10-10: yalnız admin girişinde)."""
+    import inspect
+    from app.routers import monitoring
+    for fn in (monitoring.daily_rising_send_slot_report,
+               monitoring.daily_rising_evaluate_last):
+        src = inspect.getsource(fn)
+        assert "require_admin" in src, f"{fn.__name__} admin kapısı eksik"
+
+
+def test_evaluate_report_db_helper_and_scoring():
+    """evaluate_daily_rising_report mevcut olmalı; hiç aday yoksa boş liste döner
+    (uydurma yok) ve `list_daily_rising_reports`/`last_daily_rising_report` uyumlu."""
+    from app import database
+    assert hasattr(database, "evaluate_daily_rising_report")
+    import inspect
+    sig = inspect.signature(database.evaluate_daily_rising_report)
+    assert "live_prices" in sig.parameters
+    # endpoint yolu kayıtlı olmalı
+    from app.routers.monitoring import router
+    paths = {r.path for r in router.routes}
+    assert "/api/daily-rising/evaluate-last" in paths
+
+
+def test_evaluate_last_summary_shape():
+    """Özet alanları: hit_rate / avg_mfe_pct / ceiling_hits / rows — arayüzün
+    okuduğu sözleşme."""
+    import inspect
+    from app.routers import monitoring
+    src = inspect.getsource(monitoring.daily_rising_evaluate_last)
+    for key in ("hit_rate", "avg_mfe_pct", "max_mfe_pct", "ceiling_hits", "rows"):
+        assert key in src, f"özet alanı eksik: {key}"
+

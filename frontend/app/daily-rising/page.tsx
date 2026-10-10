@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { formatPrice, formatNumber2, toMs, fmtDateTime } from "../lib/format";
 import { Card, Badge, Button, StatCard } from "../components/ui";
+import { useAuth } from "../lib/auth";
 
 type Cand = {
   symbol: string;
@@ -107,6 +108,8 @@ function fmtPct(v: number | null | undefined): string {
 }
 
 export default function DailyRisingPage() {
+  const { role } = useAuth();
+  const isAdmin = role === "admin";
   const [cands, setCands] = useState<Cand[]>([]);
   const [watch, setWatch] = useState<Watch[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
@@ -120,33 +123,50 @@ export default function DailyRisingPage() {
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [waStatus, setWaStatus] = useState<any>(null);
   const [waBusy, setWaBusy] = useState<string | null>(null);
+  const [evalResult, setEvalResult] = useState<any>(null);
+  const [evalLoading, setEvalLoading] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadWaStatus = useCallback(async () => {
+    if (!isAdmin) return;
     try {
       const res = await apiRequest(`${API_BASE}/api/daily-rising/whatsapp-status`, { cache: "no-store" });
       if (res.ok) setWaStatus(await res.json());
     } catch { /* sessiz */ }
-  }, []);
+  }, [isAdmin]);
 
-  const sendToWhatsApp = useCallback(async (endpoint: "send-report" | "send-tracking") => {
-    setWaBusy(endpoint); setMsg(null);
+  // Manuel LİSTE raporu: taze tarama + kalite eşiği + WhatsApp gönderimi (slot ucu).
+  const sendSlotReport = useCallback(async () => {
+    setWaBusy("slot-report"); setMsg(null);
     try {
-      const res = await apiRequest(`${API_BASE}/api/daily-rising/${endpoint}`, { method: "POST" });
+      const res = await apiRequest(`${API_BASE}/api/daily-rising/send-slot-report`, { method: "POST" });
       const d = await res.json();
       if (!res.ok) throw new Error(d?.detail || `HTTP ${res.status}`);
-      if (d?.ok) {
-        setMsg(endpoint === "send-report"
-          ? `✅ Bugünkü 11:30 raporu (anlık görüntü) gönderildi — ${d.count} aday.`
-          : `✅ Saatlik takip tablosu gönderildi (${d.count} satır).`);
-      } else if (endpoint === "send-report" && d?.reason === "no_scan_today") {
-        setMsg("⚠️ Bugün 11:30 taraması henüz kaydedilmedi — önce taramanın çalışması gerek.");
-      } else {
-        setMsg(`⚠️ Gönderilemedi: ${d?.detail || d?.reason || "bilinmeyen"}`);
-      }
+      setMsg(d?.ok
+        ? "✅ Manuel liste raporu gruba gönderildi (taze tarama + kalite eşiği)."
+        : "⚠️ Gönderilmedi: kalite eşiğinin üstünde aday yok ya da WhatsApp kapalı.");
     } catch (e: any) {
       setMsg(`Gönderim hatası: ${e?.message || e}`);
     } finally { setWaBusy(null); }
+  }, []);
+
+  // SON GÖNDERİLEN raporun değerlendirmesi (gönderim anından bu yana MFE/hedef).
+  const evaluateLast = useCallback(async () => {
+    setEvalLoading(true); setMsg(null);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/daily-rising/evaluate-last?kind=slot`, { cache: "no-store" });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d?.detail || `HTTP ${res.status}`);
+      if (d?.ok === false) {
+        setMsg(`⚠️ Değerlendirilecek rapor yok: ${d?.detail || d?.reason || "—"}`);
+        setEvalResult(null);
+      } else {
+        setEvalResult(d);
+        setMsg(`✅ Son liste değerlendirildi: ${d.count} aday, ${d.ceiling_hits}/${d.measured} tavana ulaştı.`);
+      }
+    } catch (e: any) {
+      setMsg(`Değerlendirme hatası: ${e?.message || e}`);
+    } finally { setEvalLoading(false); }
   }, []);
 
   const loadState = useCallback(async () => {
@@ -263,32 +283,85 @@ export default function DailyRisingPage() {
 
       {msg ? <div className="text-sm text-neon-yellow my-2">{msg}</div> : null}
 
-      {/* WhatsApp GRUP GÖNDERİMİ (admin) */}
-      <Card className="my-4">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div>
-            <h2 className="font-semibold">📱 WhatsApp Grubu</h2>
-            <p className="text-xs text-bunker-muted mt-1">
-              {waStatus?.enabled
-                ? <>Köprü: <b className={waStatus?.connected ? "text-neon-green" : "text-neon-red"}>
-                    {waStatus?.connected ? "bağlı" : "bağlı değil"}</b>
-                    {" · "}Grup: <b>{waStatus?.group_id || "tanımsız"}</b>
-                    {" · "}Rapor: <b>{waStatus?.notify_enabled ? "açık" : "kapalı"}</b>
-                    {" · "}Saatlik: <b>{waStatus?.hourly_enabled ? "açık" : "kapalı"}</b></>
-                : <span className="text-neon-red">WhatsApp kapalı — WHATSAPP_NOTIFY_ENABLED / köprü ayarlarını kontrol edin.</span>}
-              {waStatus?.bridge_error ? <span className="text-neon-red"> · köprü hatası: {waStatus.bridge_error}</span> : null}
-            </p>
+      {/* WhatsApp GRUP GÖNDERİMİ — yalnız admin girişinde */}
+      {isAdmin ? (
+        <Card className="my-4">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h2 className="font-semibold">📱 WhatsApp Grubu <span className="text-[10px] font-mono text-amber-300 border border-amber-400/40 rounded px-1.5 py-0.5 ml-1">ADMIN</span></h2>
+              <p className="text-xs text-bunker-muted mt-1">
+                {waStatus?.enabled
+                  ? <>Köprü: <b className={waStatus?.connected ? "text-neon-green" : "text-neon-red"}>
+                      {waStatus?.connected ? "bağlı" : "bağlı değil"}</b>
+                      {" · "}Grup: <b>{waStatus?.group_id || "tanımsız"}</b>
+                      {" · "}Rapor: <b>{waStatus?.notify_enabled ? "açık" : "kapalı"}</b>
+                      {" · "}Saatlik: <b>{waStatus?.hourly_enabled ? "açık" : "kapalı"}</b></>
+                  : <span className="text-neon-red">WhatsApp kapalı — WHATSAPP_NOTIFY_ENABLED / köprü ayarlarını kontrol edin.</span>}
+                {waStatus?.bridge_error ? <span className="text-neon-red"> · köprü hatası: {waStatus.bridge_error}</span> : null}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="primary" onClick={sendSlotReport} disabled={waBusy === "slot-report" || !waStatus?.enabled}>
+                {waBusy === "slot-report" ? "Gönderiliyor…" : "📤 Manuel Liste Gönder"}
+              </Button>
+              <Button variant="secondary" onClick={evaluateLast} disabled={evalLoading}>
+                {evalLoading ? "Değerlendiriliyor…" : "🔎 Son Gönderilen Değerlendirme"}
+              </Button>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => sendToWhatsApp("send-report")} disabled={waBusy === "send-report" || !waStatus?.enabled}>
-              {waBusy === "send-report" ? "Gönderiliyor…" : "🌅 11:30 Raporunu Gönder"}
-            </Button>
-            <Button variant="secondary" onClick={() => sendToWhatsApp("send-tracking")} disabled={waBusy === "send-tracking" || !waStatus?.enabled}>
-              {waBusy === "send-tracking" ? "Gönderiliyor…" : "📊 Saatlik Takip Tablosunu Gönder"}
-            </Button>
-          </div>
-        </div>
-      </Card>
+
+          {evalResult ? (
+            <div className="mt-3 pt-3 border-t border-bunker-700 space-y-3">
+              <div className="text-xs text-bunker-muted">
+                Değerlendirilen: son <b className="text-white">liste</b> raporu
+                {evalResult.sent_at ? <> · gönderim: <b className="text-white">{fmtDateTime(toMs(evalResult.sent_at))}</b></> : null}
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <StatCard label="Ölçülen" value={`${evalResult.measured ?? 0}/${evalResult.count ?? 0}`} />
+                <StatCard label="Tavana Ulaşan" value={evalResult.hit_rate != null ? `%${formatNumber2(evalResult.hit_rate)}` : "—"} detail={`${evalResult.ceiling_hits ?? 0} aday`} />
+                <StatCard label="Ort. Gerçekleşen Max" value={evalResult.avg_mfe_pct != null ? `+${formatNumber2(evalResult.avg_mfe_pct)}%` : "—"} />
+                <StatCard label="En Yüksek" value={evalResult.max_mfe_pct != null ? `+${formatNumber2(evalResult.max_mfe_pct)}%` : "—"} />
+              </div>
+              {Array.isArray(evalResult.rows) && evalResult.rows.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full font-mono text-xs">
+                    <thead>
+                      <tr className="text-left text-bunker-muted border-b border-bunker-700">
+                        <th className="p-2">Sembol</th>
+                        <th className="p-2">Kaynak</th>
+                        <th className="p-2 text-right">Öneri</th>
+                        <th className="p-2 text-right">Anlık</th>
+                        <th className="p-2 text-right">Değişim</th>
+                        <th className="p-2 text-right">Gerçekleşen Max</th>
+                        <th className="p-2 text-right">Tavan</th>
+                        <th className="p-2 text-center">Tavan?</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {evalResult.rows.map((r: any) => (
+                        <tr key={r.symbol} className="border-b border-bunker-800 hover:bg-bunker-800/40">
+                          <td className="p-2"><a className="text-neon-green hover:underline" href={`/charts?symbol=${r.symbol}`}>{r.symbol}</a></td>
+                          <td className="p-2 text-bunker-muted">{r.strategy === "short_squeeze" ? "⚡" : r.strategy === "both" ? "⚡📈" : "📈"}</td>
+                          <td className="p-2 text-right">{r.entry_price != null ? formatPrice(r.entry_price) : "—"}</td>
+                          <td className="p-2 text-right">{r.current_price != null ? formatPrice(r.current_price) : "—"}</td>
+                          <td className={`p-2 text-right font-semibold ${pctTone(r.change_pct)}`}>{fmtPct(r.change_pct)}</td>
+                          <td className={`p-2 text-right font-semibold ${pctTone(r.mfe_pct)}`}>{r.mfe_pct != null ? fmtPct(r.mfe_pct) : "—"}</td>
+                          <td className="p-2 text-right text-neon-yellow">{r.ceiling_pct != null ? `+%${Math.round(r.ceiling_pct)}` : "—"}</td>
+                          <td className="p-2 text-center">
+                            {r.hit_ceiling === true ? <Badge tone="positive">✓ Ulaştı</Badge>
+                              : r.hit_ceiling === false ? <Badge tone="neutral">Hayır</Badge>
+                              : <span className="text-bunker-muted">—</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
 
       {/* 1) MANUEL TARAMA SONUCU */}
       {scanned ? (

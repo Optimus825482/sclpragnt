@@ -2017,6 +2017,89 @@ async def last_daily_rising_report(kind: str = "slot") -> dict | None:
         return None
 
 
+async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
+                                       live_prices: dict | None = None,
+                                       max_sec: float = 24 * 3600.0) -> list[dict]:
+    """Rapor adaylarının `since_ts`'ten bu yana gerçekleşen performansını ölç.
+
+    Her aday için: entry (rapordaki fiyat) → anlık fiyat, o süre içindeki
+    GERÇEKLEŞEN MAX (MFE, kapanmış 5m mumlardan + canlı fiyat) ve tavan
+    hedefine ulaşıp ulaşmadığı. Uydurma yok: mum arşivi yoksa ve canlı fiyat
+    da yoksa o aday 'ölçülemedi' kalır.
+    """
+    if not candidates:
+        return []
+    def op(conn):
+        now = time.time()
+        window_end_s = min(now, float(since_ts) + max(0.0, float(max_sec)))
+        window_end_ms = window_end_s * 1000.0
+        out: list[dict] = []
+        for c in candidates:
+            sym = str(c.get("symbol") or "").upper()
+            if not sym:
+                continue
+            entry = c.get("price")
+            try:
+                base = float(entry) if entry is not None else None
+            except (TypeError, ValueError):
+                base = None
+            lp = None
+            if live_prices:
+                try:
+                    lp = float(live_prices.get(sym))
+                except (TypeError, ValueError):
+                    lp = None
+            highs: list[float] = []
+            lows: list[float] = []
+            try:
+                candles = conn.execute(
+                    "SELECT open_time, high, low FROM historical_candles "
+                    "WHERE symbol=? AND timeframe='5m' AND open_time > ? AND open_time <= ? "
+                    "ORDER BY open_time",
+                    (sym, float(since_ts) * 1000.0, window_end_ms)).fetchall()
+                for row in candles:
+                    d = dict(row)
+                    h = float(d.get("high") or 0)
+                    lo = float(d.get("low") or 0)
+                    if h > 0:
+                        highs.append(h)
+                    if lo > 0:
+                        lows.append(lo)
+            except Exception:
+                pass
+            if lp and lp > 0:
+                highs.append(lp)
+                lows.append(lp)
+            mfe = mae = None
+            if base and base > 0 and highs:
+                mfe = round((max(highs) / base - 1.0) * 100.0, 2)
+                mae = round((min(lows) / base - 1.0) * 100.0, 2) if lows else None
+            chg = round((lp / base - 1.0) * 100.0, 2) if (base and lp) else None
+            ceil_pct = c.get("ceiling_pct")
+            hit = None
+            try:
+                if mfe is not None and ceil_pct is not None:
+                    hit = bool(float(mfe) >= float(ceil_pct))
+            except (TypeError, ValueError):
+                hit = None
+            out.append({
+                "symbol": sym, "entry_price": base, "current_price": lp,
+                "change_pct": chg, "mfe_pct": mfe, "mae_pct": mae,
+                "ceiling_pct": ceil_pct,
+                "potential_pct": c.get("potential_pct"),
+                "target_probability": c.get("target_probability"),
+                "strategy": c.get("strategy"),
+                "hit_ceiling": hit,
+            })
+        return out
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("rapor değerlendirmesi başarısız", exc_info=True)
+        return []
+
+
 async def fill_daily_rising_outcomes(limit: int = 200, live_prices: dict | None = None) -> int:
     """Bekleyen günlük adayların MFE/MAE sonucunu doldur (CANLI).
 
