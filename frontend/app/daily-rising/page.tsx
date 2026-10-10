@@ -231,7 +231,7 @@ export default function DailyRisingPage() {
                   <tr className="text-left text-bunker-muted border-b border-bunker-700">
                     <th className="p-2">Sembol</th>
                     <th className="p-2 text-right">Fiyat</th>
-                    <th className="p-2 text-right">Hedef (Potansiyel)</th>
+                    <th className="p-2 text-right">Hedef</th>
                     <th className="p-2 text-right">8s Getiri</th>
                     <th className="p-2 text-right">ADX</th>
                     <th className="p-2 text-right">Eğim</th>
@@ -246,12 +246,14 @@ export default function DailyRisingPage() {
                         <a className="text-neon-green hover:underline" href={`/charts?symbol=${c.symbol}`}>{c.symbol}</a>
                       </td>
                       <td className="p-2 text-right">{c.price != null ? formatPrice(c.price) : "—"}</td>
-                      <td className="p-2 text-right text-neon-yellow">
-                        {c.target_price != null ? formatPrice(c.target_price) : "—"}{" "}
-                        <span className="text-bunker-muted">({fmtPct(c.ceiling_pct)})</span>{" "}
-                        {c.target_probability != null
-                          ? <span className="text-neon-green font-semibold" title="Hedefe ulaşım ihtimali (gerçek veriden kalibre)">%{Math.round(c.target_probability)}</span>
-                          : null}
+                      <td className="p-2 text-right text-neon-yellow whitespace-nowrap">
+                        {c.target_price != null
+                          ? <>{formatPrice(c.target_price)}<span className="text-bunker-muted">(+%{Math.round(c.ceiling_pct ?? 0)})</span>
+                              {" | "}
+                              {c.target_probability != null
+                                ? <span className="text-neon-green font-semibold" title="Hedefe ulaşım ihtimali (gerçek veriden kalibre)">%{Math.round(c.target_probability)}</span>
+                                : <span className="text-bunker-muted">—</span>}</>
+                          : "—"}
                       </td>
                       <td className={`p-2 text-right ${pctTone(c.ret_8h_pct)}`}>{fmtPct(c.ret_8h_pct)}</td>
                       <td className="p-2 text-right">{c.adx_14 != null ? formatNumber2(c.adx_14) : "—"}</td>
@@ -300,7 +302,7 @@ export default function DailyRisingPage() {
                   <th className="p-2 text-right">Giriş Fiyatı</th>
                   <th className="p-2 text-right">Anlık</th>
                   <th className="p-2 text-right">Değişim</th>
-                  <th className="p-2 text-right">Hedef (Potansiyel)</th>
+                  <th className="p-2 text-right">Hedef</th>
                   <th className="p-2 text-right">Gerçekleşen Max</th>
                   <th className="p-2 text-center">Tavan?</th>
                   <th className="p-2 text-center">Kaldır</th>
@@ -316,12 +318,13 @@ export default function DailyRisingPage() {
                     <td className="p-2 text-right">{w.entry_price != null ? formatPrice(w.entry_price) : "—"}</td>
                     <td className="p-2 text-right">{w.current_price != null ? formatPrice(w.current_price) : "—"}</td>
                     <td className={`p-2 text-right font-semibold ${pctTone(w.change_pct)}`}>{fmtPct(w.change_pct)}</td>
-                    <td className="p-2 text-right text-neon-yellow">
+                    <td className="p-2 text-right text-neon-yellow whitespace-nowrap">
                       {w.target_price != null
-                        ? <>{formatPrice(w.target_price)} <span className="text-bunker-muted">({fmtPct(w.ceiling_pct)})</span>{" "}
+                        ? <>{formatPrice(w.target_price)}<span className="text-bunker-muted">(+%{Math.round(w.ceiling_pct ?? 0)})</span>
+                            {" | "}
                             {w.target_probability != null
                               ? <span className="text-neon-green font-semibold" title="Hedefe ulaşım ihtimali (gerçek veriden kalibre)">%{Math.round(w.target_probability)}</span>
-                              : null}</>
+                              : <span className="text-bunker-muted">—</span>}</>
                         : "—"}
                     </td>
                     <td className={`p-2 text-right font-semibold ${pctTone(w.mfe_pct)}`}>
