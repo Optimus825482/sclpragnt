@@ -24,7 +24,6 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import qrcode from "qrcode-terminal";
 import pino from "pino";
-import fs from "fs";
 import "dotenv/config";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
@@ -35,22 +34,52 @@ const AUTH_DIR = process.env.AUTH_DIR || "./auth";
 let sock = null;
 let connected = false;
 let lastQrAscii = "";   // /qr ucu için son QR (ASCII) — konteynerde log okumak zorsa
+let cachedVersion = null;
+let reconnectTimer = null;
 
-const logger = pino({ level: process.env.LOG_LEVEL || "warn" });
+// Baileys'in kendi (pino) logları varsayılan olarak GÜRÜLTÜLÜDÜR:
+// "stream errored out", "init queries Timed Out", "presence update" gibi
+// satırlar JSON olarak basılır. Biz yalnız MESAJ GÖNDERİYORUZ (okuma/geçmiş
+// yok), bu yüzden bu gürültüyü varsayılan olarak susturuyoruz. İhtiyaç
+// halinde LOG_LEVEL=debug ile açılabilir.
+const logger = pino({ level: process.env.LOG_LEVEL || "silent" });
 
 async function startSock() {
+  // Yeniden bağlanmada eski soketi temizle (listener/soket sızıntısını önler).
+  if (sock) {
+    try {
+      sock.ev.removeAllListeners("connection.update");
+      sock.ev.removeAllListeners("creds.update");
+      sock.end(undefined);
+    } catch { /* yoksay */ }
+    sock = null;
+  }
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  const { version } = await fetchLatestBaileysVersion();
+  if (!cachedVersion) {
+    try { cachedVersion = (await fetchLatestBaileysVersion()).version; } catch { cachedVersion = undefined; }
+  }
 
   sock = makeWASocket({
-    version,
+    ...(cachedVersion ? { version: cachedVersion } : {}),
     auth: state,
     logger,
     printQRInTerminal: false,
     browser: ["ScalperAgent", "Chrome", "1.0"],
+    // Bizim kullanımımız YALNIZ GÖNDERİM: sohbet geçmişi/presence/okuma yok.
+    // Bu ayarlar "init queries Timed Out" ve "presence update" gürültüsünü
+    // gerçekten ortadan kaldırır (yalnız susturmak değil).
+    markOnlineOnConnect: false,       // presence aboneliği açılmaz
+    syncFullHistory: false,           // tüm mesaj geçmişi çekilmez
+    shouldSyncHistoryMessage: () => false,
+    getMessage: async () => undefined, // okuma yok → retry-receipt hatası olmaz
   });
 
   sock.ev.on("creds.update", saveCreds);
+  // Gelen mesajları işleme (yalnız gönderen bir botuz) — çözülemeyen eski
+  // mesajların "error in handling message" spam'ini önler.
+  sock.ev.on("messages.upsert", () => {});
 
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -67,9 +96,15 @@ async function startSock() {
       connected = false;
       const code = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
-      console.log(`⚠️  Bağlantı kapandı (kod ${code}). ${loggedOut ? "Çıkış yapıldı — auth/ silinip yeniden QR gerekir." : "Yeniden bağlanılıyor..."}`);
+      // 515 = restartRequired: QR eşleştirme sonrası WhatsApp "yeniden bağlan"
+      // der — NORMAL. Diğer kodlar için de yeniden bağlanılır; yalnız gerçek
+      // çıkışta (loggedOut) QR yeniden gerekir.
+      const reason = loggedOut
+        ? "Çıkış yapıldı — auth/ silinip yeniden QR gerekir."
+        : (code === 515 ? "Yeniden başlatma istendi (normal)." : "Yeniden bağlanılıyor...");
+      console.log(`⚠️  Bağlantı kapandı (kod ${code}). ${reason}`);
       if (!loggedOut) {
-        setTimeout(() => startSock().catch((e) => console.error("yeniden bağlanma hatası:", e)), 3000);
+        reconnectTimer = setTimeout(() => startSock().catch((e) => console.error("yeniden bağlanma hatası:", e)), 3000);
       }
     }
   });

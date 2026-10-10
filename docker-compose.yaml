@@ -310,7 +310,7 @@ services:
       AUTH_DIR: /app/auth
       BRIDGE_KEY: ${WHATSAPP_BRIDGE_KEY:-}
       WHATSAPP_GROUP_ID: ${WHATSAPP_GROUP_ID:-}
-      LOG_LEVEL: ${WA_LOG_LEVEL:-warn}
+      LOG_LEVEL: ${WA_LOG_LEVEL:-silent}
     volumes:
       - whatsapp_auth:/app/auth
     expose:

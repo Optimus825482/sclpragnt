@@ -103,6 +103,16 @@ değildir. Riski kabul etmiyorsanız alternatif: **Telegram bot** (resmi,
   `node:20-slim` imajında **git YOKTUR** → Dockerfile artık git + ca-certificates
   kurar ve `git+ssh` URL'lerini https'e çevirir (`insteadOf`). Bu düzeltme
   olmadan deploy bu satırda patlar.
+- **Log'da JSON gürültüsü (`stream errored out`, `init queries Timed Out`,
+  `presence update`, `error in handling message`):** Bunlar Baileys'in normal
+  gürültüsüdür ve **bağlantıyı bozmaz** — logda `✅ WhatsApp bağlandı.` görüyorsan
+  köprü çalışıyor demektir.
+  - **Kod 515** = "restartRequired": QR eşleştirmeden sonra WhatsApp'ın
+    istediği **normal** yeniden başlatma.
+  - Köprü artık `syncFullHistory=false` + `markOnlineOnConnect=false` +
+    `getMessage=undefined` ile **yalnız gönderim** modunda çalışır → bu gürültü
+    gerçekten azalır. Ek olarak `LOG_LEVEL=silent` (varsayılan) Baileys JSON
+    loglarını tamamen susturur. Sorun ayıklarken `WA_LOG_LEVEL=debug` ver.
 - **QR çıkmıyor / bağlanmıyor:** `whatsapp_auth` volume'unu sil (Coolify >
   Storages / `docker volume rm`), yeniden başlat → yeni QR.
 - **`/send` 503:** WhatsApp bağlı değil — logda `✅ WhatsApp bağlandı.` görmelisin.
