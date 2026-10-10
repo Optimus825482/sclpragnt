@@ -418,6 +418,11 @@ class Config:
     # ------------------------------------------------------------------
     DAILY_MOMENTUM_ENABLED = os.getenv("DAILY_MOMENTUM_ENABLED", "false").lower() == "true"
     DAILY_MOMENTUM_INTERVAL_MIN = max(5, int(os.getenv("DAILY_MOMENTUM_INTERVAL_MIN", "15")))
+    # Tarama ÇAPASI (2026-10-10): kanıtlanan edge GÜNDE BİR KEZ, 11:30 snapshot'ı
+    # içindi (backtest 11:30 bazlı). Bu yüzden tarama her 15 dk DEĞİL, günde bir
+    # kez bu saatte yapılır. (Sunucu saat dilimi kullanılır.)
+    DAILY_MOMENTUM_SCAN_HOUR = max(0, min(23, int(os.getenv("DAILY_MOMENTUM_SCAN_HOUR", "11"))))
+    DAILY_MOMENTUM_SCAN_MINUTE = max(0, min(59, int(os.getenv("DAILY_MOMENTUM_SCAN_MINUTE", "30"))))
     DAILY_MOMENTUM_RET_8H_MIN = float(os.getenv("DAILY_MOMENTUM_RET_8H_MIN", "2.0"))
     DAILY_MOMENTUM_ATR_MIN = float(os.getenv("DAILY_MOMENTUM_ATR_MIN", "0.5"))
     DAILY_MOMENTUM_ADX_MIN = float(os.getenv("DAILY_MOMENTUM_ADX_MIN", "25.0"))

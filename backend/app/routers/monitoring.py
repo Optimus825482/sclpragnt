@@ -19,7 +19,6 @@ from app import llm_second_eye
 from app import macd_mtf
 from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
-from app.binance_tr_public import klines as fetch_klines
 from app.alerting import deliver_web_push
 from app.ws_runtime import ws_manager
 from contextlib import asynccontextmanager
@@ -2654,27 +2653,34 @@ async def _daily_momentum_scan_once() -> int:
 
 
 async def daily_momentum_loop():
-    """15m kapanışına senkron günlük momentum tarama döngüsü."""
-    interval_sec = max(300.0, float(config.DAILY_MOMENTUM_INTERVAL_MIN) * 60.0)
-    logger.info("günlük momentum döngüsü başladı (aralık %.0f sn, enabled=%s)",
-                interval_sec, config.DAILY_MOMENTUM_ENABLED)
+    """GÜNDE BİR KEZ, 11:30'a çapalı günlük momentum tarama döngüsü.
+
+    Kanıtlanan edge (backtest 2670 gözlem) 11:30 snapshot'ı içindi; bu yüzden
+    tarama her 15 dk DEĞİL, günde bir kez `DAILY_MOMENTUM_SCAN_HOUR:MINUTE`
+    (varsayılan 11:30) anında yapılır. Aynı gün ikinci kez tarama yapılmaz.
+
+    Tespit → `_daily_momentum_scan_once` → DB kaydı + mevcut bildirim yolu
+    (`_notify`) → `try_open_from_notification` ile otonom paper.
+    Kanıt doldurma (`fill_daily_rising_outcomes`) ise her turda çalışır:
+    öneri fiyatı ↔ anlık fiyat karşılaştırması ve MFE/MAE ölçümü için.
+    """
+    poll_sec = 60.0
+    logger.info("günlük momentum döngüsü başladı (tarama %02d:%02d, enabled=%s)",
+                config.DAILY_MOMENTUM_SCAN_HOUR, config.DAILY_MOMENTUM_SCAN_MINUTE,
+                config.DAILY_MOMENTUM_ENABLED)
     await asyncio.sleep(120)
     while True:
         try:
             if config.DAILY_MOMENTUM_ENABLED:
-                # 15m kapanış senkronu: yeni kapanmış 15m mumu gelmeden tarama yapma.
-                try:
-                    tick = await fetch_klines("BTCTRY", "15m", 2)
-                    latest_close = int(tick[-1][0]) if tick else 0
-                except Exception:
-                    latest_close = 0
-                if latest_close and latest_close != _monitoring_state.get("daily_momentum_last_m15"):
-                    _monitoring_state["daily_momentum_last_m15"] = latest_close
-                    await _daily_momentum_scan_once()
-                else:
-                    await asyncio.sleep(5)
-                    continue
-            # Kanıt doldurma (MFE/MAE + anlık fiyat karşılaştırması için)
+                now = time.localtime()
+                today_key = time.strftime("%Y-%m-%d", now)
+                due = (now.tm_hour == config.DAILY_MOMENTUM_SCAN_HOUR
+                       and now.tm_min >= config.DAILY_MOMENTUM_SCAN_MINUTE)
+                if due and _monitoring_state.get("daily_momentum_last_day") != today_key:
+                    _monitoring_state["daily_momentum_last_day"] = today_key
+                    n = await _daily_momentum_scan_once()
+                    logger.info("günlük momentum taraması tamamlandı: %d aday", n)
+            # Kanıt doldurma her turda (sık) — öneri↔anlık fiyat + MFE/MAE.
             try:
                 await database.fill_daily_rising_outcomes()
             except Exception:
@@ -2683,7 +2689,7 @@ async def daily_momentum_loop():
             raise
         except Exception as exc:
             logger.warning("günlük momentum döngüsü turu: %s", exc)
-        await asyncio.sleep(interval_sec)
+        await asyncio.sleep(poll_sec)
 
 
 @router.get("/api/daily-rising/state")

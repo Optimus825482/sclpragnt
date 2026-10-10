@@ -30,7 +30,9 @@ def test_daily_momentum_thresholds_present():
     assert c.DAILY_MOMENTUM_ADX_MIN == 25.0
     assert c.DAILY_MOMENTUM_SLOPE_MIN == 0.3
     assert c.DAILY_MOMENTUM_SPREAD_MAX == 0.20
-    assert c.DAILY_MOMENTUM_INTERVAL_MIN >= 5
+    # Tarama saat çapası: kanıtlanan edge 11:30 snapshot'ı içindi.
+    assert c.DAILY_MOMENTUM_SCAN_HOUR == 11
+    assert c.DAILY_MOMENTUM_SCAN_MINUTE == 30
 
 
 def test_daily_momentum_flag_is_independent_of_passes():
