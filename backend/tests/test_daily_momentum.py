@@ -81,6 +81,15 @@ def test_daily_rising_manual_and_watchlist_endpoints():
     assert "/api/daily-rising/watchlist" in paths
 
 
+def test_whatsapp_send_endpoints_registered():
+    """WhatsApp elle-gönderim + durum uçları kayıtlı olmalı."""
+    from app.routers import monitoring
+    paths = {getattr(r, "path", "") for r in monitoring.router.routes}
+    assert "/api/daily-rising/send-report" in paths
+    assert "/api/daily-rising/send-tracking" in paths
+    assert "/api/daily-rising/whatsapp-status" in paths
+
+
 def test_short_squeeze_scan_exists_and_classifies():
     """Toplu squeeze taraması + sınıflandırma mevcut olmalı."""
     from app import derivatives_service as ds

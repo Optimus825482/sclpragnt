@@ -115,7 +115,34 @@ export default function DailyRisingPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [waStatus, setWaStatus] = useState<any>(null);
+  const [waBusy, setWaBusy] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadWaStatus = useCallback(async () => {
+    try {
+      const res = await apiRequest(`${API_BASE}/api/daily-rising/whatsapp-status`, { cache: "no-store" });
+      if (res.ok) setWaStatus(await res.json());
+    } catch { /* sessiz */ }
+  }, []);
+
+  const sendToWhatsApp = useCallback(async (endpoint: "send-report" | "send-tracking") => {
+    setWaBusy(endpoint); setMsg(null);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/daily-rising/${endpoint}`, { method: "POST" });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d?.detail || `HTTP ${res.status}`);
+      if (d?.ok) {
+        setMsg(endpoint === "send-report"
+          ? `✅ 11:30 raporu gönderildi (${d.count} aday).`
+          : `✅ Saatlik takip tablosu gönderildi (${d.count} satır).`);
+      } else {
+        setMsg(`⚠️ Gönderilemedi: ${d?.detail || d?.reason || "bilinmeyen"}`);
+      }
+    } catch (e: any) {
+      setMsg(`Gönderim hatası: ${e?.message || e}`);
+    } finally { setWaBusy(null); }
+  }, []);
 
   const loadState = useCallback(async () => {
     try {
@@ -140,7 +167,7 @@ export default function DailyRisingPage() {
     } catch { /* sessiz */ }
   }, []);
 
-  const refresh = useCallback(async () => { await Promise.all([loadState(), loadWatch()]); }, [loadState, loadWatch]);
+  const refresh = useCallback(async () => { await Promise.all([loadState(), loadWatch(), loadWaStatus()]); }, [loadState, loadWatch, loadWaStatus]);
 
   useEffect(() => {
     let alive = true;
@@ -230,6 +257,33 @@ export default function DailyRisingPage() {
       </div>
 
       {msg ? <div className="text-sm text-neon-yellow my-2">{msg}</div> : null}
+
+      {/* WhatsApp GRUP GÖNDERİMİ (admin) */}
+      <Card className="my-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h2 className="font-semibold">📱 WhatsApp Grubu</h2>
+            <p className="text-xs text-bunker-muted mt-1">
+              {waStatus?.enabled
+                ? <>Köprü: <b className={waStatus?.connected ? "text-neon-green" : "text-neon-red"}>
+                    {waStatus?.connected ? "bağlı" : "bağlı değil"}</b>
+                    {" · "}Grup: <b>{waStatus?.group_id || "tanımsız"}</b>
+                    {" · "}Rapor: <b>{waStatus?.notify_enabled ? "açık" : "kapalı"}</b>
+                    {" · "}Saatlik: <b>{waStatus?.hourly_enabled ? "açık" : "kapalı"}</b></>
+                : <span className="text-neon-red">WhatsApp kapalı — WHATSAPP_NOTIFY_ENABLED / köprü ayarlarını kontrol edin.</span>}
+              {waStatus?.bridge_error ? <span className="text-neon-red"> · köprü hatası: {waStatus.bridge_error}</span> : null}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => sendToWhatsApp("send-report")} disabled={waBusy === "send-report" || !waStatus?.enabled}>
+              {waBusy === "send-report" ? "Gönderiliyor…" : "🌅 11:30 Raporunu Gönder"}
+            </Button>
+            <Button variant="secondary" onClick={() => sendToWhatsApp("send-tracking")} disabled={waBusy === "send-tracking" || !waStatus?.enabled}>
+              {waBusy === "send-tracking" ? "Gönderiliyor…" : "📊 Saatlik Takip Tablosunu Gönder"}
+            </Button>
+          </div>
+        </div>
+      </Card>
 
       {/* 1) MANUEL TARAMA SONUCU */}
       {scanned ? (

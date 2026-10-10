@@ -2881,6 +2881,109 @@ async def daily_rising_live(request: Request = None):
 
 
 # ----------------------------------------------------------------------
+# WhatsApp gönderim tetikleyicileri (admin paneli, 2026-10-10)
+# 11:30 raporunu ve saatlik takip tablosunu ELLE göndermek için.
+# ----------------------------------------------------------------------
+@router.post("/api/daily-rising/send-report")
+async def daily_rising_send_report(request: Request = None):
+    """11:30 tarama raporunu WhatsApp grubuna gönder (elle tetikleme).
+
+    ÖNİZLEME mantıklı: taze tarama yapar, raporu üretir ve gönderir. Hiçbir
+    pozisyon açmaz; yalnız rapor mesajı gider. Admin-only.
+    """
+    from app.api_common import require_admin as _require_admin
+    from app.binance_tr_public import trading_symbols as _trading_syms
+    from app.whatsapp_notify import format_scan_report, send_whatsapp, whatsapp_enabled
+    _require_admin(request)
+    if not whatsapp_enabled():
+        return {"ok": False, "reason": "whatsapp_disabled",
+                "detail": "WHATSAPP_NOTIFY_ENABLED kapalı veya köprü adresi yok."}
+    try:
+        scan5, scan15 = await asyncio.gather(
+            detect_velocity_candidates({}, horizon_minutes=5),
+            detect_velocity_candidates({}, horizon_minutes=15),
+        )
+        try:
+            tr_syms = [s for s in await _trading_syms("TRY")]
+        except Exception:
+            tr_syms = []
+        squeeze = await _short_squeeze_candidates(tr_syms)
+    except Exception as exc:
+        logger.warning("send-report tarama hatası: %s", exc)
+        return {"ok": False, "reason": "scan_error", "detail": str(exc)}
+    mom = await _daily_momentum_candidates(scan5, scan15)
+    cands = _merge_candidates(mom, squeeze)
+    text = format_scan_report(cands)
+    sent = await send_whatsapp(text)
+    return {"ok": sent, "count": len(cands), "preview": text}
+
+
+@router.post("/api/daily-rising/send-tracking")
+async def daily_rising_send_tracking(request: Request = None):
+    """Bugünün adaylarının anlık takip tablosunu WhatsApp grubuna gönder.
+
+    Elle tetikleme; `daily_rising_candidates` (bugün) satırlarını anlık fiyatla
+    karşılaştırıp tabloyu gönderir. Admin-only.
+    """
+    from app.api_common import require_admin as _require_admin
+    from app.whatsapp_notify import format_tracking_table, send_whatsapp, whatsapp_enabled
+    _require_admin(request)
+    if not whatsapp_enabled():
+        return {"ok": False, "reason": "whatsapp_disabled",
+                "detail": "WHATSAPP_NOTIFY_ENABLED kapalı veya köprü adresi yok."}
+    rows = await database.list_daily_rising(limit=30, days=1.0)
+    table = []
+    for r in rows:
+        sym = str(r.get("symbol") or "").upper()
+        entry = r.get("price")
+        cur = _ticker_price(sym)
+        try:
+            e = float(entry) if entry else None
+            c_ = float(cur) if cur else None
+        except (TypeError, ValueError):
+            e = c_ = None
+        table.append({
+            "symbol": sym, "entry_price": e, "current_price": c_,
+            "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
+            "potential_pct": r.get("potential_pct"),
+            "hit_ceiling": r.get("hit_ceiling"),
+        })
+    text = format_tracking_table(table, title=f"📊 Aday Takip · {datetime.now().strftime('%H:%M')}")
+    sent = await send_whatsapp(text)
+    return {"ok": sent, "count": len(table), "preview": text}
+
+
+@router.get("/api/daily-rising/whatsapp-status")
+async def daily_rising_whatsapp_status(request: Request = None):
+    """WhatsApp köprüsü durumu (bağlı mı, grup tanımlı mı) — admin-only."""
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    from app.config import config as _cfg
+    from app.whatsapp_notify import whatsapp_enabled
+    import urllib.request as _urlreq
+    out = {
+        "enabled": whatsapp_enabled(),
+        "notify_enabled": bool(getattr(_cfg, "WHATSAPP_NOTIFY_ENABLED", False)),
+        "hourly_enabled": bool(getattr(_cfg, "WHATSAPP_HOURLY_ENABLED", False)),
+        "bridge_url": getattr(_cfg, "WHATSAPP_BRIDGE_URL", ""),
+        "group_id": getattr(_cfg, "WHATSAPP_GROUP_ID", ""),
+        "connected": None,
+    }
+    url = str(getattr(_cfg, "WHATSAPP_BRIDGE_URL", "") or "").strip().rstrip("/")
+    if url:
+        try:
+            def _get():
+                with _urlreq.urlopen(f"{url}/status", timeout=5) as r:
+                    return json.loads(r.read().decode("utf-8", errors="ignore"))
+            st = await asyncio.to_thread(_get)
+            out["connected"] = bool(st.get("connected"))
+            out["bridge_group_configured"] = bool(st.get("group_configured"))
+        except Exception as exc:
+            out["bridge_error"] = str(exc)
+    return out
+
+
+# ----------------------------------------------------------------------
 # MANUEL TARAMA + KULLANICIYA ÖZEL TAKİP LİSTESİ (2026-10-10)
 # Kullanıcı "Tara" der → adaylar döner → onayladıklarını kendi takip
 # listesine ekler. Takip listesi `username` bazlıdır (her kullanıcı kendi).
