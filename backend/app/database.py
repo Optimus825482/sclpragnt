@@ -1984,6 +1984,118 @@ async def fill_daily_rising_outcomes(limit: int = 200) -> int:
         return 0
 
 
+_USER_DAILY_WATCHLIST_SCHEMA_READY = False
+
+
+def _ensure_user_daily_watchlist_schema(conn) -> None:
+    """Kullanıcıya özel günlük yükseliş takip listesi tablosu (idempotent)."""
+    global _USER_DAILY_WATCHLIST_SCHEMA_READY
+    if _USER_DAILY_WATCHLIST_SCHEMA_READY:
+        return
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_daily_watchlist (
+          id BIGSERIAL PRIMARY KEY,
+          username TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          added_at DOUBLE PRECISION NOT NULL,
+          entry_price DOUBLE PRECISION,
+          ceiling_pct DOUBLE PRECISION,
+          ceiling_price DOUBLE PRECISION,
+          ret_8h DOUBLE PRECISION,
+          adx DOUBLE PRECISION,
+          slope DOUBLE PRECISION,
+          atr_pct DOUBLE PRECISION,
+          velocity_score DOUBLE PRECISION,
+          source TEXT DEFAULT 'manual_scan',
+          active BOOLEAN NOT NULL DEFAULT TRUE,
+          note TEXT,
+          UNIQUE(username, symbol)
+        )""")
+    _USER_DAILY_WATCHLIST_SCHEMA_READY = True
+
+
+async def add_to_user_daily_watchlist(username: str, item: dict) -> int | None:
+    """Adayı kullanıcının takip listesine ekle/güncelle (onay sonrası)."""
+    user = str(username or "").strip().lower()
+    if not user:
+        return None
+
+    def op(conn):
+        _ensure_user_daily_watchlist_schema(conn)
+        row = conn.execute(
+            "INSERT INTO user_daily_watchlist"
+            "(username, symbol, added_at, entry_price, ceiling_pct, ceiling_price,"
+            " ret_8h, adx, slope, atr_pct, velocity_score, source, active, note) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,TRUE,?) "
+            "ON CONFLICT(username, symbol) DO UPDATE SET "
+            "added_at=excluded.added_at, entry_price=excluded.entry_price, "
+            "ceiling_pct=excluded.ceiling_pct, ceiling_price=excluded.ceiling_price, "
+            "ret_8h=excluded.ret_8h, adx=excluded.adx, slope=excluded.slope, "
+            "atr_pct=excluded.atr_pct, velocity_score=excluded.velocity_score, "
+            "source=excluded.source, active=TRUE, note=excluded.note "
+            "RETURNING id",
+            (
+                user, str(item.get("symbol") or "?").upper(),
+                float(item.get("added_at") or time.time()),
+                item.get("entry_price"), item.get("ceiling_pct"), item.get("ceiling_price"),
+                item.get("ret_8h"), item.get("adx"), item.get("slope"), item.get("atr_pct"),
+                item.get("velocity_score"), str(item.get("source") or "manual_scan"),
+                item.get("note"),
+            ),
+        ).fetchone()
+        conn.commit()
+        return int(row[0]) if row else None
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("user_daily_watchlist eklenemedi: %s", item.get("symbol"), exc_info=True)
+        return None
+
+
+async def list_user_daily_watchlist(username: str, include_inactive: bool = False) -> list[dict]:
+    """Kullanıcının takip listesi (aktif olanlar; en yeni önce)."""
+    user = str(username or "").strip().lower()
+
+    def op(conn):
+        _ensure_user_daily_watchlist_schema(conn)
+        where = "username=?" + ("" if include_inactive else " AND active=TRUE")
+        rows = conn.execute(
+            f"SELECT id, username, symbol, added_at, entry_price, ceiling_pct, ceiling_price,"
+            f" ret_8h, adx, slope, atr_pct, velocity_score, source, active, note"
+            f" FROM user_daily_watchlist WHERE {where} ORDER BY added_at DESC LIMIT 500",
+            (user,)).fetchall()
+        return [dict(r) for r in rows]
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("user_daily_watchlist okunamadı (%s)", user, exc_info=True)
+        return []
+
+
+async def remove_from_user_daily_watchlist(username: str, symbol: str) -> bool:
+    """Sembolü kullanıcının takip listesinden çıkar (soft delete: active=FALSE)."""
+    user = str(username or "").strip().lower()
+    sym = str(symbol or "").strip().upper()
+    if not user or not sym:
+        return False
+
+    def op(conn):
+        _ensure_user_daily_watchlist_schema(conn)
+        cur = conn.execute(
+            "UPDATE user_daily_watchlist SET active=FALSE WHERE username=? AND symbol=?",
+            (user, sym))
+        conn.commit()
+        return cur.rowcount > 0
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("user_daily_watchlist silinemedi (%s/%s)", user, sym, exc_info=True)
+        return False
+
+
 def _macd_forward_outcomes(rows, base: float, t0_ms: float, now_ms: float):
     """F-02: alarmın 5m/15m/30m ileri getirisi + MFE/MAE (saf fonksiyon).
 

@@ -58,6 +58,21 @@ def test_daily_momentum_helpers_exist():
         assert hasattr(database, name), f"database.{name} eksik"
 
 
+def test_user_watchlist_helpers_exist():
+    """Kullanıcıya özel takip listesi fonksiyonları mevcut olmalı."""
+    for name in ("add_to_user_daily_watchlist", "list_user_daily_watchlist",
+                 "remove_from_user_daily_watchlist"):
+        assert hasattr(database, name), f"database.{name} eksik"
+
+
+def test_daily_rising_manual_and_watchlist_endpoints():
+    """Manuel tarama ve takip listesi uçları router'a kayıtlı olmalı."""
+    from app.routers import monitoring
+    paths = {getattr(r, "path", "") for r in monitoring.router.routes}
+    assert "/api/daily-rising/manual-scan" in paths
+    assert "/api/daily-rising/watchlist" in paths
+
+
 def test_master_surge_imported_in_velocity():
     """Tavan hesabı için master_surge velocity modülünde erişilebilir olmalı."""
     assert hasattr(velocity, "master_surge")

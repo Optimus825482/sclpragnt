@@ -2763,6 +2763,154 @@ async def daily_rising_live(request: Request = None):
     return {"paper_only": True, "generated_at": time.time(), "live": live}
 
 
+# ----------------------------------------------------------------------
+# MANUEL TARAMA + KULLANICIYA ÖZEL TAKİP LİSTESİ (2026-10-10)
+# Kullanıcı "Tara" der → adaylar döner → onayladıklarını kendi takip
+# listesine ekler. Takip listesi `username` bazlıdır (her kullanıcı kendi).
+# ----------------------------------------------------------------------
+def _daily_momentum_candidates(scan5: dict, scan15: dict) -> list[dict]:
+    """Tarama sonucundan günlük momentum onaylı adayları süz (tekrarsız, skora göre)."""
+    pool = (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
+            + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []))
+    by_sym: dict[str, dict] = {}
+    for c in pool:
+        sym = str(c.get("symbol") or "").upper()
+        if not sym or c.get("daily_momentum_ok") is not True:
+            continue
+        cur = by_sym.get(sym)
+        if cur is None or float(c.get("velocity_score") or 0) > float(cur.get("velocity_score") or 0):
+            by_sym[sym] = c
+    out = sorted(by_sym.values(), key=lambda x: float(x.get("velocity_score") or 0), reverse=True)
+    rows = []
+    for c in out:
+        sym = str(c.get("symbol") or "").upper()
+        px = _ticker_price(sym) or c.get("price")
+        try:
+            px_f = float(px) if px else None
+        except (TypeError, ValueError):
+            px_f = None
+        ceil_pct = c.get("ceiling_pct")
+        rows.append({
+            "symbol": sym, "price": px_f,
+            "target_pct": c.get("target_pct"),
+            "ceiling_pct": ceil_pct,
+            "ceiling_price": c.get("ceiling_price") or (
+                round(px_f * (1 + float(ceil_pct) / 100.0), 8) if (px_f and ceil_pct) else None),
+            "velocity_score": c.get("velocity_score"),
+            "panel_score": normalize_score(c.get("velocity_score", 0)),
+            "ret_8h_pct": c.get("ret_8h_pct"), "adx_14": c.get("adx_14"),
+            "slope_15m": c.get("slope_15m"), "atr_pct_15m": c.get("atr_pct_15m"),
+            "daily_momentum_reason": c.get("daily_momentum_reason"),
+            "horizon_minutes": c.get("horizon_minutes"),
+        })
+    return rows
+
+
+@router.post("/api/daily-rising/manual-scan")
+async def daily_rising_manual_scan(request: Request = None):
+    """Elle tarama: günlük momentum adaylarını bul ve döndür (kayıt/oto-işlem YOK).
+
+    Bu uç SALT KEŞİF amaçlıdır: hiçbir pozisyon açmaz, DB'ye takip listesi
+    yazmaz. Kullanıcı onay verirse `POST /api/daily-rising/watchlist` ile
+    kendi listesine ekler.
+    """
+    from app.api_common import rate_limit
+    if not rate_limit("daily_rising_manual", rate_per_sec=1 / 15.0, burst=2):
+        raise HTTPException(status_code=429, detail="Çok sık tarama — lütfen bekleyin")
+    try:
+        scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
+        scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
+    except Exception as exc:
+        logger.warning("manuel günlük tarama hatası: %s", exc)
+        return {"ok": False, "error": str(exc), "candidates": []}
+    cands = _daily_momentum_candidates(scan5, scan15)
+    return {"ok": True, "paper_only": True, "generated_at": time.time(),
+            "enabled": bool(config.DAILY_MOMENTUM_ENABLED),
+            "count": len(cands), "candidates": cands}
+
+
+@router.get("/api/daily-rising/watchlist")
+async def daily_rising_watchlist_get(request: Request = None):
+    """Kullanıcının kendi takip listesi + anlık fiyat karşılaştırması."""
+    from app import security
+    user = security.request_user(request.headers, request.cookies) if request else None
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    rows = await database.list_user_daily_watchlist(user.get("username"))
+    out = []
+    for r in rows:
+        sym = str(r.get("symbol") or "").upper()
+        entry = r.get("entry_price")
+        cur = _ticker_price(sym)
+        try:
+            e = float(entry) if entry else None
+            c_ = float(cur) if cur else None
+        except (TypeError, ValueError):
+            e = c_ = None
+        out.append({**{k: r.get(k) for k in
+                       ("symbol", "added_at", "entry_price", "ceiling_pct", "ceiling_price",
+                        "ret_8h", "adx", "slope", "atr_pct", "velocity_score", "source", "note")},
+                    "current_price": c_,
+                    "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None})
+    return {"paper_only": True, "generated_at": time.time(), "username": user.get("username"),
+            "watchlist": out}
+
+
+@router.post("/api/daily-rising/watchlist")
+async def daily_rising_watchlist_add(payload: dict, request: Request = None):
+    """Onaylanan aday(lar)ı KULLANICIYA ÖZEL takip listesine ekle.
+
+    body: {symbol: "OGNTRY"} veya {items: [ {symbol, entry_price, ceiling_pct, ...}, ... ]}
+    """
+    from app import security
+    user = security.request_user(request.headers, request.cookies) if request else None
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    items = []
+    if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        items = [it for it in payload["items"] if isinstance(it, dict) and it.get("symbol")]
+    elif isinstance(payload, dict) and payload.get("symbol"):
+        items = [payload]
+    if not items:
+        raise HTTPException(status_code=400, detail="Eklenecek sembol yok")
+    now = time.time()
+    added = []
+    for it in items:
+        sym = str(it.get("symbol") or "").upper()
+        px = it.get("entry_price") or _ticker_price(sym) or it.get("price")
+        try:
+            px_f = float(px) if px else None
+        except (TypeError, ValueError):
+            px_f = None
+        rid = await database.add_to_user_daily_watchlist(user.get("username"), {
+            "symbol": sym, "added_at": now, "entry_price": px_f,
+            "ceiling_pct": it.get("ceiling_pct"),
+            "ceiling_price": it.get("ceiling_price") or (
+                round(px_f * (1 + float(it["ceiling_pct"]) / 100.0), 8)
+                if (px_f and it.get("ceiling_pct")) else None),
+            "ret_8h": it.get("ret_8h_pct") or it.get("ret_8h"),
+            "adx": it.get("adx_14") or it.get("adx"),
+            "slope": it.get("slope_15m") or it.get("slope"),
+            "atr_pct": it.get("atr_pct_15m") or it.get("atr_pct"),
+            "velocity_score": it.get("velocity_score"),
+            "source": "manual_scan", "note": it.get("note"),
+        })
+        if rid:
+            added.append(sym)
+    return {"ok": True, "username": user.get("username"), "added": added, "count": len(added)}
+
+
+@router.delete("/api/daily-rising/watchlist/{symbol}")
+async def daily_rising_watchlist_remove(symbol: str, request: Request = None):
+    """Sembolü kullanıcının takip listesinden çıkar."""
+    from app import security
+    user = security.request_user(request.headers, request.cookies) if request else None
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    ok = await database.remove_from_user_daily_watchlist(user.get("username"), symbol)
+    return {"ok": ok, "symbol": str(symbol).upper()}
+
+
 async def rising_evidence_loop():
     """Bekleyen yükseliş sinyallerinin MFE/MAE sonucunu periyodik doldur.
 
