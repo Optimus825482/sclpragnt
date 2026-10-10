@@ -79,6 +79,9 @@ type Row = {
   ceiling_price: number | null;
   status: string | null;
   mfe_pct: number | null;
+  strategy?: string | null;
+  potential_pct?: number | null;
+  potential_price?: number | null;
 };
 
 type Stats = {
@@ -460,7 +463,8 @@ export default function DailyRisingPage() {
                   <th className="p-2">Sembol</th>
                   <th className="p-2">Öneri Saati</th>
                   <th className="p-2 text-right">Öneri Fiyatı</th>
-                  <th className="p-2 text-right">Tavan</th>
+                  <th className="p-2 text-right">Tavan (TP)</th>
+                  <th className="p-2 text-right">Potansiyel</th>
                   <th className="p-2 text-right">Anlık</th>
                   <th className="p-2 text-right">Değişim</th>
                   <th className="p-2 text-right">Gerçekleşen Max</th>
@@ -477,6 +481,11 @@ export default function DailyRisingPage() {
                     <td className="p-2 text-right">{r.entry_price != null ? formatPrice(r.entry_price) : "—"}</td>
                     <td className="p-2 text-right text-neon-yellow">
                       {r.ceiling_price != null ? formatPrice(r.ceiling_price) : "—"}
+                    </td>
+                    <td className="p-2 text-right text-neon-green whitespace-nowrap" title="30g zirve bazlı potansiyel üst sınır (scalping tavanından bağımsız)">
+                      {r.potential_pct != null
+                        ? <>{r.potential_price != null ? formatPrice(r.potential_price) : "—"}<span className="text-bunker-muted">(+%{Math.round(r.potential_pct)})</span></>
+                        : "—"}
                     </td>
                     <td className="p-2 text-right">{r.current_price != null ? formatPrice(r.current_price) : "—"}</td>
                     <td className={`p-2 text-right font-semibold ${pctTone(r.change_pct)}`}>{fmtPct(r.change_pct)}</td>

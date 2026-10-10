@@ -164,6 +164,15 @@ def test_state_endpoint_limited_to_top5_snapshot():
     assert hasattr(wn, "select_top")
 
 
+def test_state_endpoint_exposes_potential():
+    """Sayfa 'Potansiyel' kolonu için /state potential_pct + potential_price vermeli."""
+    import inspect
+    from app.routers import monitoring
+    src = inspect.getsource(monitoring.daily_rising_state)
+    assert '"potential_pct"' in src
+    assert '"potential_price"' in src
+
+
 def test_short_squeeze_scan_exists_and_classifies():
     """Toplu squeeze taraması + sınıflandırma mevcut olmalı."""
     from app import derivatives_service as ds

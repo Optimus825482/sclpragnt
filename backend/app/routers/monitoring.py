@@ -2915,6 +2915,9 @@ async def daily_rising_state(request: Request = None):
             "notified": r.get("notified"),
             "strategy": r.get("strategy"),
             "potential_pct": r.get("potential_pct"),
+            "potential_price": (
+                round(float(entry) * (1 + float(r["potential_pct"]) / 100.0), 8)
+                if (entry and r.get("potential_pct") is not None) else None),
             "target_probability": touch_probability(r.get("ceiling_pct"), r.get("atr_pct")),
         })
     # WhatsApp raporuyla aynı ilk 5 (aynı sıralama ölçütü → aynı semboller).
