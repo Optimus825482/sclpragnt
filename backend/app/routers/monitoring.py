@@ -2773,6 +2773,44 @@ async def daily_rising_live(request: Request = None):
 # Kullanıcı "Tara" der → adaylar döner → onayladıklarını kendi takip
 # listesine ekler. Takip listesi `username` bazlıdır (her kullanıcı kendi).
 # ----------------------------------------------------------------------
+# HEDEFE ULAŞIM İHTİMALİ — gerçek veriden kalibre edilmiş tablo.
+# 130 günlük momentum adayı (80 sembol × 70 gün), hedef = r·ATR dokunuş oranı.
+# Kaynak: work/backtest_tf.py koşumu (2026-10-10). P(MFE >= r·ATR).
+_MFE_ATR_TABLE = [
+    (0.0, 100.0), (0.25, 99.2), (0.5, 95.4), (0.75, 93.8), (1.0, 92.3),
+    (1.25, 86.2), (1.5, 82.3), (2.0, 71.5), (2.5, 67.7), (3.0, 60.0),
+    (4.0, 50.8), (5.0, 41.5), (6.0, 35.4), (8.0, 22.0),(10.0, 12.0),
+]
+
+
+def touch_probability(target_pct: float | None, atr_pct: float | None) -> float | None:
+    """Hedefe ulaşma ihtimali (%). Hedef = r·ATR; tablo doğrusal interpolasyon.
+
+    Uydurma değil: gerçek backtest dağılımından kalibre (130 gözlem). Hedef
+    ATR'ye göre ne kadar uzaksa ihtimal o kadar düşer (3·ATR ≈ %60).
+    """
+    try:
+        t = float(target_pct)
+        a = float(atr_pct)
+    except (TypeError, ValueError):
+        return None
+    if a <= 0 or t <= 0:
+        return None
+    r = t / a
+    tbl = _MFE_ATR_TABLE
+    if r <= tbl[0][0]:
+        return tbl[0][1]
+    if r >= tbl[-1][0]:
+        return round(tbl[-1][1], 1)
+    for i in range(1, len(tbl)):
+        x0, y0 = tbl[i - 1]
+        x1, y1 = tbl[i]
+        if r <= x1:
+            frac = (r - x0) / (x1 - x0) if x1 > x0 else 0.0
+            return round(y0 + frac * (y1 - y0), 1)
+    return round(tbl[-1][1], 1)
+
+
 def _daily_momentum_candidates(scan5: dict, scan15: dict) -> list[dict]:
     """Tarama sonucundan günlük momentum onaylı adayları süz (tekrarsız, skora göre)."""
     pool = (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
@@ -2807,6 +2845,10 @@ def _daily_momentum_candidates(scan5: dict, scan15: dict) -> list[dict]:
             "slope_15m": c.get("slope_15m"), "atr_pct_15m": c.get("atr_pct_15m"),
             "daily_momentum_reason": c.get("daily_momentum_reason"),
             "horizon_minutes": c.get("horizon_minutes"),
+            # Hedef = tavan (beklenen maks. yükseliş) + ulaşım ihtimali (%).
+            "target_price": (
+                round(px_f * (1 + float(ceil_pct) / 100.0), 8) if (px_f and ceil_pct) else None),
+            "target_probability": touch_probability(ceil_pct, c.get("atr_pct_15m") or c.get("atr_pct")),
         })
     return rows
 
@@ -2836,14 +2878,18 @@ async def daily_rising_manual_scan(request: Request = None):
 
 @router.get("/api/daily-rising/watchlist")
 async def daily_rising_watchlist_get(request: Request = None):
-    """Kullanıcının kendi takip listesi + anlık fiyat + başarı ölçümü (MFE/tavan)."""
+    """Kullanıcının kendi takip listesi + anlık fiyat + hedef/ihtimal + başarı (MFE)."""
     from app import security
+    from app.binance_tr_public import klines as _kl
+    from app.technical_analysis import _atr as _atr14
+    from app import master_surge as _ms
     user = security.request_user(request.headers, request.cookies) if request else None
     if not user:
         raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
     uname = user.get("username")
     rows = await database.list_user_daily_watchlist(uname)
     stats = await database.get_user_watchlist_stats(uname)
+    now_ms = int(time.time() * 1000)
     out = []
     for r in rows:
         sym = str(r.get("symbol") or "").upper()
@@ -2854,12 +2900,39 @@ async def daily_rising_watchlist_get(request: Request = None):
             c_ = float(cur) if cur else None
         except (TypeError, ValueError):
             e = c_ = None
+        # Hedef fiyat + ihtimal: tavan yoksa canlı 15m ATR'den hesapla.
+        atr_pct = None
+        try:
+            k15 = await _kl(sym, "15m", 40)
+            if k15 and int(k15[-1][0]) + 900_000 > now_ms:
+                k15 = k15[:-1]
+            if len(k15) >= 15:
+                hh = [float(x[2]) for x in k15]; ll = [float(x[3]) for x in k15]; cc = [float(x[4]) for x in k15]
+                a = _atr14(hh, ll, cc, 14)
+                if a and cc[-1]:
+                    atr_pct = a / cc[-1] * 100
+        except Exception:
+            atr_pct = None
+        ceil_pct = r.get("ceiling_pct")
+        if ceil_pct is None and atr_pct:
+            try:
+                _t = _ms.calculate_adaptive_targets(70.0, atr_pct=atr_pct, base_target_pct=3.0)
+                ceil_pct = round(max(float(_t.get("tp2_runner_pct") or 0), atr_pct * 3.0), 2)
+            except Exception:
+                ceil_pct = None
+        base_for_price = c_ or e
+        target_price = r.get("ceiling_price") or (
+            round(base_for_price * (1 + float(ceil_pct) / 100.0), 8) if (base_for_price and ceil_pct) else None)
         out.append({**{k: r.get(k) for k in
                        ("symbol", "added_at", "entry_price", "ceiling_pct", "ceiling_price",
                         "ret_8h", "adx", "slope", "atr_pct", "velocity_score", "source", "note",
                         "outcome_status", "mfe_pct", "mae_pct", "peak_at", "evaluated_at", "hit_ceiling")},
                     "current_price": c_,
-                    "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None})
+                    "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
+                    "ceiling_pct": ceil_pct,
+                    "target_price": target_price,
+                    "target_probability": touch_probability(ceil_pct, atr_pct),
+                    "atr_pct_live": round(atr_pct, 2) if atr_pct else None})
     return {"paper_only": True, "generated_at": time.time(), "username": uname,
             "stats": stats, "watchlist": out}
 

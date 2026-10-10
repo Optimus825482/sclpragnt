@@ -31,6 +31,8 @@ type Cand = {
   adx_14: number | null;
   slope_15m: number | null;
   atr_pct_15m: number | null;
+  target_price: number | null;
+  target_probability: number | null;
 };
 
 type Watch = {
@@ -46,6 +48,9 @@ type Watch = {
   mfe_pct: number | null;
   mae_pct: number | null;
   hit_ceiling: boolean | null;
+  target_price: number | null;
+  target_probability: number | null;
+  atr_pct_live: number | null;
 };
 
 type WatchStats = {
@@ -226,7 +231,7 @@ export default function DailyRisingPage() {
                   <tr className="text-left text-bunker-muted border-b border-bunker-700">
                     <th className="p-2">Sembol</th>
                     <th className="p-2 text-right">Fiyat</th>
-                    <th className="p-2 text-right">Tavan (maks.)</th>
+                    <th className="p-2 text-right">Hedef (Potansiyel)</th>
                     <th className="p-2 text-right">8s Getiri</th>
                     <th className="p-2 text-right">ADX</th>
                     <th className="p-2 text-right">Eğim</th>
@@ -242,7 +247,11 @@ export default function DailyRisingPage() {
                       </td>
                       <td className="p-2 text-right">{c.price != null ? formatPrice(c.price) : "—"}</td>
                       <td className="p-2 text-right text-neon-yellow">
-                        {c.ceiling_price != null ? formatPrice(c.ceiling_price) : "—"} <span className="text-bunker-muted">({fmtPct(c.ceiling_pct)})</span>
+                        {c.target_price != null ? formatPrice(c.target_price) : "—"}{" "}
+                        <span className="text-bunker-muted">({fmtPct(c.ceiling_pct)})</span>{" "}
+                        {c.target_probability != null
+                          ? <span className="text-neon-green font-semibold" title="Hedefe ulaşım ihtimali (gerçek veriden kalibre)">%{Math.round(c.target_probability)}</span>
+                          : null}
                       </td>
                       <td className={`p-2 text-right ${pctTone(c.ret_8h_pct)}`}>{fmtPct(c.ret_8h_pct)}</td>
                       <td className="p-2 text-right">{c.adx_14 != null ? formatNumber2(c.adx_14) : "—"}</td>
@@ -289,9 +298,9 @@ export default function DailyRisingPage() {
                   <th className="p-2">Sembol</th>
                   <th className="p-2">Eklenme</th>
                   <th className="p-2 text-right">Giriş Fiyatı</th>
-                  <th className="p-2 text-right">Tavan</th>
                   <th className="p-2 text-right">Anlık</th>
                   <th className="p-2 text-right">Değişim</th>
+                  <th className="p-2 text-right">Hedef (Potansiyel)</th>
                   <th className="p-2 text-right">Gerçekleşen Max</th>
                   <th className="p-2 text-center">Tavan?</th>
                   <th className="p-2 text-center">Kaldır</th>
@@ -305,11 +314,16 @@ export default function DailyRisingPage() {
                     </td>
                     <td className="p-2 text-bunker-muted">{w.added_at ? fmtDateTime(toMs(w.added_at)) : "—"}</td>
                     <td className="p-2 text-right">{w.entry_price != null ? formatPrice(w.entry_price) : "—"}</td>
-                    <td className="p-2 text-right text-neon-yellow">
-                      {w.ceiling_price != null ? formatPrice(w.ceiling_price) : "—"} <span className="text-bunker-muted">({fmtPct(w.ceiling_pct)})</span>
-                    </td>
                     <td className="p-2 text-right">{w.current_price != null ? formatPrice(w.current_price) : "—"}</td>
                     <td className={`p-2 text-right font-semibold ${pctTone(w.change_pct)}`}>{fmtPct(w.change_pct)}</td>
+                    <td className="p-2 text-right text-neon-yellow">
+                      {w.target_price != null
+                        ? <>{formatPrice(w.target_price)} <span className="text-bunker-muted">({fmtPct(w.ceiling_pct)})</span>{" "}
+                            {w.target_probability != null
+                              ? <span className="text-neon-green font-semibold" title="Hedefe ulaşım ihtimali (gerçek veriden kalibre)">%{Math.round(w.target_probability)}</span>
+                              : null}</>
+                        : "—"}
+                    </td>
                     <td className={`p-2 text-right font-semibold ${pctTone(w.mfe_pct)}`}>
                       {w.mfe_pct != null ? fmtPct(w.mfe_pct) : (w.outcome_status === "pending" ? "ölçülüyor…" : "—")}
                     </td>

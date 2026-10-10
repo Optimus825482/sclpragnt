@@ -74,6 +74,20 @@ def test_daily_rising_manual_and_watchlist_endpoints():
     assert "/api/daily-rising/watchlist" in paths
 
 
+def test_touch_probability_calibrated():
+    """Hedefe ulaşım ihtimali gerçek veriden kalibre: hedef=3·ATR → ~%60."""
+    from app.routers.monitoring import touch_probability
+    assert touch_probability(3.0, 1.0) == 60.0      # 3x ATR
+    assert touch_probability(1.0, 1.0) == 92.3      # 1x ATR
+    assert touch_probability(2.0, 1.0) == 71.5      # 2x ATR
+    # Hedef ATR'ye göre büyüdükçe ihtimal DÜŞMELİ (monoton azalan).
+    assert touch_probability(1.0, 1.0) > touch_probability(3.0, 1.0) > touch_probability(5.0, 1.0)
+    # Geçersiz girdi → None (uydurma yok).
+    assert touch_probability(None, 1.0) is None
+    assert touch_probability(3.0, None) is None
+    assert touch_probability(3.0, 0) is None
+
+
 def test_master_surge_imported_in_velocity():
     """Tavan hesabı için master_surge velocity modülünde erişilebilir olmalı."""
     assert hasattr(velocity, "master_surge")
