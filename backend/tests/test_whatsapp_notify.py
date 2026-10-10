@@ -38,16 +38,17 @@ def test_format_orders_both_first():
         {"symbol": "CCCTRY", "price": 3.0, "ceiling_pct": 5, "potential_pct": 90, "strategy": "daily_momentum"},
     ]
     out = wn.format_scan_report(rows)
-    # 'both' en üstte olmalı (BBBTRY), sonra potansiyele göre CCCTRY, sonra AAATRY
-    assert out.index("BBBTRY") < out.index("CCCTRY") < out.index("AAATRY")
+    # 'both' en üstte olmalı (BBB), sonra potansiyele göre CCC, sonra AAA
+    assert out.index("BBB") < out.index("CCC") < out.index("AAA")
 
 
 def test_format_contains_values():
     out = wn.format_scan_report([
         {"symbol": "MINATRY", "price": 4.68, "ceiling_pct": 3.8, "potential_pct": 81, "strategy": "both"}])
-    assert "MINATRY" in out
-    assert "potansiyel +%81" in out
-    assert "hedef +%4" in out
+    assert "MINA" in out            # TRY eki kaldırıldı
+    assert "+%81" in out            # potansiyel
+    assert "+%4" in out             # hedef (round 3.8 -> 4)
+    assert "```" in out             # monospace tablo
 
 
 def test_tracking_table_empty():
@@ -69,3 +70,19 @@ def test_tracking_table_sorted_desc():
 
 def test_hourly_default_off():
     assert config.config.WHATSAPP_HOURLY_ENABLED is False
+
+
+def test_hourly_interval_default_30():
+    """Kullanıcı kararı (2026-10-10): gönderim aralığı 30 dk."""
+    assert config.config.WHATSAPP_HOURLY_INTERVAL_MIN == 30
+
+
+def test_tracking_table_has_summary_and_no_try_suffix():
+    """Tablo: sembolden TRY eki kaldırılır + özet satırı olur."""
+    out = wn.format_tracking_table([
+        {"symbol": "MAGICTRY", "entry_price": 5.0, "current_price": 5.2, "change_pct": 4.0},
+        {"symbol": "MINATRY", "entry_price": 4.0, "current_price": 3.9, "change_pct": -2.5},
+    ])
+    assert "MAGIC" in out and "MAGICTRY" not in out   # TRY eki kaldırıldı
+    assert "yükselen" in out and "düşen" in out        # özet satırı
+    assert "```" in out                                 # monospace blok

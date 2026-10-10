@@ -951,6 +951,40 @@ def _ticker_price(symbol: str) -> float | None:
     return price if price > 0 else None
 
 
+async def _batch_prices(symbols: list[str]) -> dict[str, float]:
+    """Birden çok sembol için anlık fiyatı REST'ten TEK çağrıda çek.
+
+    NEDEN: `_ticker_price` yalnız WS aboneliğindeki (~18) sembolü bilir; aday
+    listesi ise WS evreni DIŞINDAKİ coinlerle dolu olabilir → o sembollerin
+    fiyatı `None` dönüp takip tablosunda "—" görünüyordu (kullanıcı/tablo
+    hatası 2026-10-10). Bu yardımcı WS'e önce bakar, eksikler için tek
+    `ticker_price` REST çağrısı yapar (batch; sembol başına istek değil).
+    """
+    out: dict[str, float] = {}
+    missing: list[str] = []
+    for s in symbols:
+        p = _ticker_price(s)
+        if p:
+            out[s] = p
+        else:
+            missing.append(s)
+    if missing:
+        try:
+            from app.binance_tr_public import ticker_price as _tp
+            rows = await _tp(missing)
+            for r in rows or []:
+                try:
+                    sym = str(r.get("symbol") or "").upper()
+                    px = float(r.get("price") or 0)
+                    if sym and px > 0:
+                        out[sym] = px
+                except (TypeError, ValueError):
+                    continue
+        except Exception as exc:
+            logger.debug("batch REST fiyat çekilemedi: %s", exc)
+    return out
+
+
 def _rr_ratio(target_pct: float) -> float | None:
     """Adayın ödül/risk oranı: TP mesafesi / SL mesafesi (ikisi de YÜZDE).
 
@@ -2761,17 +2795,19 @@ async def daily_momentum_loop():
 
 
 async def daily_rising_hourly_loop():
-    """Saat başı: o günün adaylarının anlık fiyat/değişimini WhatsApp'a gönder.
+    """Periyodik takip: o günün adaylarının anlık fiyat/değişimini WhatsApp'a gönder.
 
     Bugün 11:30 taramasında kaydedilen (`daily_rising_candidates`) adayların
     entry_price'ı ile anlık fiyatı karşılaştırılır; tablo gruba atılır.
-    WhatsApp yapılandırılmadıkça (`WHATSAPP_HOURLY_ENABLED` / bridge) hiçbir şey
-    yapmaz. Saat aralığı: WHATSAPP_HOURLY_START/END_HOUR (TR saati).
+    Gönderim aralığı `WHATSAPP_HOURLY_INTERVAL_MIN` (varsayılan 30 dk; kullanıcı
+    kararı 2026-10-10). Saat aralığı: WHATSAPP_HOURLY_START/END_HOUR (TR saati).
+    WhatsApp yapılandırılmadıkça hiçbir şey yapmaz.
     """
     poll_sec = 60.0
-    logger.info("saatlik aday takip döngüsü başladı (enabled=%s, %02d-%02d TR)",
+    interval_min = int(getattr(config, "WHATSAPP_HOURLY_INTERVAL_MIN", 30) or 30)
+    logger.info("aday takip döngüsü başladı (enabled=%s, %02d-%02d TR, her %d dk)",
                 config.WHATSAPP_HOURLY_ENABLED, config.WHATSAPP_HOURLY_START_HOUR,
-                config.WHATSAPP_HOURLY_END_HOUR)
+                config.WHATSAPP_HOURLY_END_HOUR, interval_min)
     try:
         from zoneinfo import ZoneInfo
         _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
@@ -2785,18 +2821,23 @@ async def daily_rising_hourly_loop():
                     format_tracking_table, send_whatsapp, whatsapp_enabled)
                 if whatsapp_enabled():
                     lt = datetime.now(_tz) if _tz else datetime.now()
-                    hour_key = lt.strftime("%Y-%m-%d %H")
+                    # Interval penceresi: gün içinde 00/interval_min slotları
+                    # (ör. 30 dk -> :00 ve :30). Slot, tam o dakikada gönderilir.
+                    slot = (lt.minute // interval_min) * interval_min
+                    slot_key = f"{lt.strftime('%Y-%m-%d %H')}:{slot:02d}"
                     in_window = (config.WHATSAPP_HOURLY_START_HOUR <= lt.hour
                                  <= config.WHATSAPP_HOURLY_END_HOUR)
-                    if in_window and lt.minute < 2 and \
-                            _monitoring_state.get("whatsapp_hourly_last") != hour_key:
-                        _monitoring_state["whatsapp_hourly_last"] = hour_key
+                    due = (lt.minute % interval_min) < 2  # slot başında 2 dk pencere
+                    if in_window and due and \
+                            _monitoring_state.get("whatsapp_hourly_last") != slot_key:
+                        _monitoring_state["whatsapp_hourly_last"] = slot_key
                         rows = await database.list_daily_rising(limit=30, days=1.0)
+                        _px = await _batch_prices([str(r.get("symbol") or "").upper() for r in rows])
                         table = []
                         for r in rows:
                             sym = str(r.get("symbol") or "").upper()
                             entry = r.get("price")
-                            cur = _ticker_price(sym)
+                            cur = _px.get(sym)
                             try:
                                 e = float(entry) if entry else None
                                 c_ = float(cur) if cur else None
@@ -2824,11 +2865,12 @@ async def daily_rising_state(request: Request = None):
     settings = await get_user_notification_settings()
     rows = await database.list_daily_rising(limit=100, days=7.0)
     stats = await database.get_daily_rising_stats(days=7.0)
+    _px = await _batch_prices([str(r.get("symbol") or "").upper() for r in rows])
     out = []
     for r in rows:
         sym = str(r.get("symbol") or "").upper()
         entry = r.get("price")
-        cur = _ticker_price(sym)
+        cur = _px.get(sym)
         chg = None
         try:
             if entry and cur:
@@ -2860,11 +2902,12 @@ async def daily_rising_state(request: Request = None):
 async def daily_rising_live(request: Request = None):
     """Canlı takip: her aday için öneri→anlık fiyat + tavan (velocity/live şablonu)."""
     rows = await database.list_daily_rising(limit=60, days=7.0)
+    _px = await _batch_prices([str(r.get("symbol") or "").upper() for r in rows])
     live = []
     for r in rows:
         sym = str(r.get("symbol") or "").upper()
         entry = r.get("price")
-        cur = _ticker_price(sym)
+        cur = _px.get(sym)
         try:
             entry_f = float(entry) if entry else None
             cur_f = float(cur) if cur else None
@@ -2932,11 +2975,12 @@ async def daily_rising_send_tracking(request: Request = None):
         return {"ok": False, "reason": "whatsapp_disabled",
                 "detail": "WHATSAPP_NOTIFY_ENABLED kapalı veya köprü adresi yok."}
     rows = await database.list_daily_rising(limit=30, days=1.0)
+    _px = await _batch_prices([str(r.get("symbol") or "").upper() for r in rows])
     table = []
     for r in rows:
         sym = str(r.get("symbol") or "").upper()
         entry = r.get("price")
-        cur = _ticker_price(sym)
+        cur = _px.get(sym)
         try:
             e = float(entry) if entry else None
             c_ = float(cur) if cur else None
@@ -3279,11 +3323,12 @@ async def daily_rising_watchlist_get(request: Request = None):
     rows = await database.list_user_daily_watchlist(uname)
     stats = await database.get_user_watchlist_stats(uname)
     now_ms = int(time.time() * 1000)
+    _px = await _batch_prices([str(r.get("symbol") or "").upper() for r in rows])
     out = []
     for r in rows:
         sym = str(r.get("symbol") or "").upper()
         entry = r.get("entry_price")
-        cur = _ticker_price(sym)
+        cur = _px.get(sym)
         try:
             e = float(entry) if entry else None
             c_ = float(cur) if cur else None

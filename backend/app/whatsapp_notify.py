@@ -88,74 +88,117 @@ def format_scan_report(candidates: list[dict], *, title: str = "🌅 Günlük Y�
         both = 1 if str(c.get("strategy") or "") == "both" else 0
         return (both, float(c.get("potential_pct") or 0), float(c.get("velocity_score") or 0))
     rows = sorted(candidates, key=_key, reverse=True)
-    lines = [title, ""]
-    for c in rows[:12]:
-        sym = str(c.get("symbol") or "?")
-        px = c.get("price")
-        px_s = f"{float(px):,.4f}".rstrip("0").rstrip(".") if px else "—"
+    # Hizalı tablo (monospace): COIN | FİYAT | HEDEF | POTANSİYEL | KAYNAK
+    def _sym(s: str) -> str:
+        s = str(s or "?").upper()
+        return (s[:-3] if s.endswith("TRY") else s)[:8]
+    header = f"{'COIN':<8}{'FİYAT':>10}{'HEDEF':>8}{'POTANSİYEL':>12}{'KAYNAK':>8}"
+    sep = "─" * len(header)
+    body = [header, sep]
+    for c in rows[:15]:
         tgt = c.get("ceiling_pct")
         pot = c.get("potential_pct")
         strat = str(c.get("strategy") or "")
         tag = "⚡📈" if strat == "both" else ("⚡" if strat == "short_squeeze" else "📈")
-        parts = [f"{tag} *{sym}*  {px_s}"]
-        if tgt is not None:
-            parts.append(f"hedef +%{round(float(tgt))}")
-        if pot is not None:
-            parts.append(f"potansiyel +%{round(float(pot))}")
-        lines.append("  • " + "  |  ".join(parts))
-    lines.append("")
-    # Strateji kırılımı: "momentum nerede?" sorusunu yanıtlar. Momentum
-    # filtresi katıdır (slope>=0.3); bazı günler momentum adayı çıkmaz — bu
-    # satır bunu açıkça gösterir.
+        body.append(
+            f"{_sym(c.get('symbol')):<8}"
+            f"{_fmt_price(c.get('price'), 10):>10}"
+            f"{(f'+%{round(float(tgt))}' if tgt is not None else '—'):>8}"
+            f"{(f'+%{round(float(pot))}' if pot is not None else '—'):>12}"
+            f"{tag:>8}"
+        )
     nm = sum(1 for c in rows if str(c.get("strategy") or "") == "daily_momentum")
     ns = sum(1 for c in rows if str(c.get("strategy") or "") == "short_squeeze")
     nb = sum(1 for c in rows if str(c.get("strategy") or "") == "both")
-    lines.append(f"Toplam {len(rows)} aday: 📈 {nm} momentum · ⚡ {ns} squeeze · ⚡📈 {nb} ikisi de")
+    lines = [title, "", "```", *body, "```",
+             f"Toplam {len(rows)} aday: 📈 {nm} momentum · ⚡ {ns} squeeze · ⚡📈 {nb} ikisi de"]
+    return "\n".join(lines)
     lines.append("📈 momentum   ⚡ short-squeeze   ⚡📈 ikisi de")
     return "\n".join(lines)
 
 
-def format_tracking_table(rows: list[dict], *, title: str = "📊 Aday Takip") -> str:
-    """11:30 adaylarının anlık fiyat/değişim tablosu (WhatsApp monospace).
+def _fmt_price(v, width: int = 8) -> str:
+    """Fiyatı sütun genişliğine sığacak biçimde akıllı formatla (0.1098 / 2.44 / 16.3 / 119)."""
+    if v is None:
+        return "—".rjust(width)
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "—".rjust(width)
+    # basamak sayısını fiyata göre seç (küçük fiyatlarda daha fazla ondalık)
+    if x >= 1000:
+        s = f"{x:,.0f}"
+    elif x >= 100:
+        s = f"{x:.1f}"
+    elif x >= 1:
+        s = f"{x:.2f}"
+    elif x >= 0.01:
+        s = f"{x:.4f}"
+    else:
+        s = f"{x:.6f}"
+    if len(s) > width:
+        s = s[:width]
+    return s.rjust(width)
 
-    `rows` her öğesi: {symbol, entry_price, current_price, change_pct,
-    potential_pct, hit_ceiling} döner. WhatsApp'ta hizalı görünmesi için
-    ``` bloğu (monospace) içinde sabit genişlikli tablo üretir.
+
+def _fmt_chg(v, width: int = 8) -> str:
+    """Değişimi işaretli + ok ile biçimle (＋/－)."""
+    if v is None:
+        return "—".rjust(width)
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "—".rjust(width)
+    arrow = "▲" if x > 0 else ("▼" if x < 0 else "•")
+    s = f"{x:+.1f}%{arrow}"
+    return s.rjust(width)
+
+
+def format_tracking_table(rows: list[dict], *, title: str = "📊 Aday Takip") -> str:
+    """Adayların anlık fiyat/değişim tablosu (WhatsApp monospace, hizalı).
+
+    Tablo düzeni (2026-10-10 revize): sembolden 'TRY' ekı kaldırılır (hizalama
+    bozuluyordu), fiyatlar sütuna göre akıllı formatlanır, değişime ok işareti
+    eklenir ve en alta özet satırı (kazanan/kaybeden sayısı + ortalama) konur.
     """
     if not rows:
         return f"{title}\n\nTakip edilecek aday yok."
-    # değişime göre azalan (en iyi üstte)
+
     def _key(r: dict):
         v = r.get("change_pct")
         return float(v) if v is not None else -999.0
     rows = sorted(rows, key=_key, reverse=True)
 
-    def _f(v, nd=4):
-        if v is None:
-            return "—"
-        try:
-            return f"{float(v):.{nd}f}".rstrip("0").rstrip(".")
-        except (TypeError, ValueError):
-            return "—"
+    def _sym(s: str) -> str:
+        s = str(s or "?").upper()
+        return (s[:-3] if s.endswith("TRY") else s)[:8]
 
-    def _p(v):
-        if v is None:
-            return "—"
-        try:
-            x = float(v)
-            return f"{x:+.1f}%"
-        except (TypeError, ValueError):
-            return "—"
-
-    header = f"{'SEMBOL':<10}{'GİRİŞ':>9}{'ANLIK':>9}{'DEĞ%':>8}"
-    sep = "-" * len(header)
+    header = f"{'COIN':<8}{'GİRİŞ':>9}{'ANLIK':>9}{'DEĞİŞİM':>10}"
+    sep = "─" * len(header)
     body = [header, sep]
-    for r in rows[:15]:
-        sym = str(r.get("symbol") or "?")[:10]
-        entry = _f(r.get("entry_price"))
-        cur = _f(r.get("current_price"))
-        chg = _p(r.get("change_pct"))
-        mark = "✓" if r.get("hit_ceiling") else ""
-        body.append(f"{sym:<10}{entry:>9}{cur:>9}{chg:>8} {mark}")
-    return f"{title}\n\n```\n" + "\n".join(body) + "\n```"
+    unchanged = 0
+    for r in rows[:20]:
+        sym = _sym(r.get("symbol"))
+        entry = _fmt_price(r.get("entry_price"), 9)
+        cur = _fmt_price(r.get("current_price"), 9)
+        chg = _fmt_chg(r.get("change_pct"), 10)
+        if r.get("current_price") is None:
+            unchanged += 1
+        mark = " ✓" if r.get("hit_ceiling") else ""
+        body.append(f"{sym:<8}{entry:>9}{cur:>9}{chg:>10}{mark}")
+
+    # Özet: kazanan/kaybeden/yatay + ortalama değişim
+    chgs = [float(r["change_pct"]) for r in rows if r.get("change_pct") is not None]
+    up = sum(1 for x in chgs if x > 0.2)
+    dn = sum(1 for x in chgs if x < -0.2)
+    flat = sum(1 for x in chgs if -0.2 <= x <= 0.2)
+    avg = (sum(chgs) / len(chgs)) if chgs else None
+    summary = f"▲ {up} yükselen · ▼ {dn} düşen · • {flat} yatay"
+    if avg is not None:
+        summary += f"  |  ort {avg:+.1f}%"
+    if unchanged:
+        summary += f"  |  {unchanged} fiyat alınamadı"
+
+    header_line = f"{title}"
+    return f"{header_line}\n\n```\n" + "\n".join(body) + "\n```\n" + summary
 
