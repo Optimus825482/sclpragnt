@@ -4,9 +4,22 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# Önce bağımlılıklar (katman önbelleği için).
-COPY package.json ./
-RUN npm install --omit=dev && npm cache clean --force
+# git GEREKLİ: Baileys'in bağımlılığı `@whiskeysockets/libsignal-node`
+# bir git bağımlılığıdır (git+ssh://git@github.com/...). node:20-slim'de git
+# YOKTUR → `npm install` "syscall spawn git / enoent" ile patlar (deploy hatası).
+# ca-certificates: git+ssh/https çekimi için TLS kök sertifikaları.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/" \
+    && git config --global --add url."https://github.com/".insteadOf "git+ssh://git@github.com/"
+
+# Önce bağımlılıklar (katman önbelleği için). Lockfile varsa `npm ci` (reproducible);
+# lockfile sürüm uyuşmazlığında güvenli fallback `npm install`.
+COPY package.json package-lock.json* ./
+RUN (npm ci --omit=dev --no-audit --no-fund \
+     || npm install --omit=dev --no-audit --no-fund) \
+    && npm cache clean --force
 
 # Uygulama kodu.
 COPY index.js ./

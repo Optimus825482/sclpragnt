@@ -98,6 +98,11 @@ değildir. Riski kabul etmiyorsanız alternatif: **Telegram bot** (resmi,
 
 ## Sorun giderme
 
+- **Build hatası: `npm error syscall spawn git` / `enoent` (exit 254):** Baileys'in
+  bağımlılığı `@whiskeysockets/libsignal-node` bir **git bağımlılığıdır**.
+  `node:20-slim` imajında **git YOKTUR** → Dockerfile artık git + ca-certificates
+  kurar ve `git+ssh` URL'lerini https'e çevirir (`insteadOf`). Bu düzeltme
+  olmadan deploy bu satırda patlar.
 - **QR çıkmıyor / bağlanmıyor:** `whatsapp_auth` volume'unu sil (Coolify >
   Storages / `docker volume rm`), yeniden başlat → yeni QR.
 - **`/send` 503:** WhatsApp bağlı değil — logda `✅ WhatsApp bağlandı.` görmelisin.
