@@ -160,3 +160,30 @@ def test_last_report_endpoint_is_public_and_live():
         assert key in src, f"alan eksik: {key}"
 
 
+def test_reports_summary_endpoint_and_shape():
+    """Gönderilen listelerin başarı özeti (kullanıcı isteği): uç kayıtlı olmalı,
+    admin kapısı OLMAMALI ve başarı alanlarını döndürmeli (hit_rate/ceiling_hits/
+    avg_mfe_pct/reports). Her rapor satırı kendi ölçümünü taşır."""
+    import inspect
+    from app.routers import monitoring
+    paths = {r.path for r in monitoring.router.routes}
+    assert "/api/daily-rising/reports/summary" in paths
+    src = inspect.getsource(monitoring.daily_rising_reports_summary)
+    assert "require_admin" not in src
+    for key in ("hit_rate", "ceiling_hits", "avg_mfe_pct", "report_count", "reports"):
+        assert key in src, f"özet alanı eksik: {key}"
+    # Rapor bazında da hit_rate/ceiling_hits hesaplanmalı.
+    assert "per_report" in src
+
+
+def test_reports_summary_counts_change():
+    """Özet ucu 'slot' raporlarını okur ve her birini evaluate_daily_rising_report
+    ile ölçer (liste raporu baz alınır; fark raporları hariç)."""
+    import inspect
+    from app.routers import monitoring
+    src = inspect.getsource(monitoring.daily_rising_reports_summary)
+    assert 'kind="slot"' in src or "kind='slot'" in src
+    assert "evaluate_daily_rising_report" in src
+
+
+

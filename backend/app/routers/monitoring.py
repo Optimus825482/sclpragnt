@@ -3136,6 +3136,81 @@ async def daily_rising_reports_list(request: Request = None, limit: int = 50,
     return {"paper_only": True, "generated_at": time.time(), "reports": rows}
 
 
+@router.get("/api/daily-rising/reports/summary")
+async def daily_rising_reports_summary(request: Request = None, days: float = 7.0,
+                                       limit: int = 200):
+    """Gönderilen HER liste raporunun başarısını ölç + genel özet döndür.
+
+    Kullanıcı isteği (2026-10-10): "raporlardaki sayfada da gönderdiklerinin
+    kaçında başarılı olmuş, başarı durumlarını gösterelim." Her `slot` raporunun
+    adayları gönderim anından bu yana değerlendirilir (tavana ulaştı mı?);
+    rapor bazında ve toplamda isabet oranı + ortalama gerçekleşen max hesaplanır.
+
+    Ölçüm penceresi 24 saattir; henüz dolmamış raporlar 'BEKLİYOR' sayılır.
+    Salt-okunur; admin kapısı yok.
+    """
+    reps = await database.list_daily_rising_reports(limit=limit, days=days, kind="slot")
+    if not reps:
+        return {"ok": True, "report_count": 0, "total_candidates": 0,
+                "measured": 0, "ceiling_hits": 0, "hit_rate": None,
+                "avg_mfe_pct": None, "pending": 0, "reports": []}
+
+    # Tüm raporların sembollerini TEK seferde topla → tek toplu fiyat çekme.
+    parsed: list[tuple[dict, list[dict]]] = []
+    all_syms: list[str] = []
+    for rep in reps:
+        c = rep.get("candidates") or []
+        try:
+            c = json.loads(c) if isinstance(c, str) else list(c)
+        except (TypeError, ValueError):
+            c = []
+        parsed.append((rep, c))
+        all_syms.extend(str(x.get("symbol") or "").upper() for x in c)
+    _px = await _batch_prices([s for s in all_syms if s])
+
+    now = time.time()
+    per_report: list[dict] = []
+    tot_measured = tot_hits = tot_mfe_n = tot_pending = 0
+    tot_mfe_sum = 0.0
+    for rep, c in parsed:
+        sent_at = float(rep.get("sent_at") or 0)
+        rows = await database.evaluate_daily_rising_report(c, sent_at, live_prices=_px)
+        mfes = [float(r["mfe_pct"]) for r in rows if r.get("mfe_pct") is not None]
+        hits = sum(1 for r in rows if r.get("hit_ceiling") is True)
+        measured = len(mfes)
+        pending = 1 if c and (now - sent_at) < 24 * 3600.0 else 0
+        avg_mfe = round(sum(mfes) / len(mfes), 2) if mfes else None
+        per_report.append({
+            "id": rep.get("id"),
+            "sent_at": sent_at,
+            "count": len(rows),
+            "measured": measured,
+            "ceiling_hits": hits,
+            "hit_rate": round(100.0 * hits / measured, 1) if measured else None,
+            "avg_mfe_pct": avg_mfe,
+            "pending": bool(pending),
+            "rows": rows,
+        })
+        tot_measured += measured
+        tot_hits += hits
+        tot_pending += pending
+        for m in mfes:
+            tot_mfe_sum += m
+            tot_mfe_n += 1
+
+    return {
+        "ok": True,
+        "report_count": len(reps),
+        "total_candidates": sum(len(c) for _r, c in parsed),
+        "measured": tot_measured,
+        "ceiling_hits": tot_hits,
+        "hit_rate": round(100.0 * tot_hits / tot_measured, 1) if tot_measured else None,
+        "avg_mfe_pct": round(tot_mfe_sum / tot_mfe_n, 2) if tot_mfe_n else None,
+        "pending": tot_pending,
+        "reports": per_report,
+    }
+
+
 @router.get("/api/daily-rising/last-report")
 async def daily_rising_last_report(request: Request = None, kind: str = "slot"):
     """SON gönderilen raporun listesi + ANLIK fiyatla karşılaştırma tablosu.
