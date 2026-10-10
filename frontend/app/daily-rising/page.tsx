@@ -42,6 +42,20 @@ type Watch = {
   ceiling_pct: number | null;
   ceiling_price: number | null;
   velocity_score: number | null;
+  outcome_status: string | null;
+  mfe_pct: number | null;
+  mae_pct: number | null;
+  hit_ceiling: boolean | null;
+};
+
+type WatchStats = {
+  total: number;
+  measured: number;
+  ceiling_hits: number;
+  hit_rate: number | null;
+  avg_mfe_pct: number | null;
+  max_mfe_pct: number | null;
+  positive: number;
 };
 
 type Row = {
@@ -83,6 +97,7 @@ export default function DailyRisingPage() {
   const [watch, setWatch] = useState<Watch[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [watchStats, setWatchStats] = useState<WatchStats | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanned, setScanned] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -109,6 +124,7 @@ export default function DailyRisingPage() {
       if (res.ok) {
         const d = await res.json();
         setWatch(Array.isArray(d?.watchlist) ? d.watchlist : []);
+        setWatchStats(d?.stats ?? null);
       }
     } catch { /* sessiz */ }
   }, []);
@@ -253,6 +269,14 @@ export default function DailyRisingPage() {
       {/* 2) TAKİP LİSTEM */}
       <Card className="my-4">
         <h2 className="font-semibold mb-2">⭐ Takip Listem ({watch.length})</h2>
+        {watch.length > 0 && watchStats ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+            <StatCard label="Ölçülen" value={`${watchStats.measured}/${watchStats.total}`} />
+            <StatCard label="Başarı (tavana ulaşan)" value={watchStats.hit_rate != null ? `%${formatNumber2(watchStats.hit_rate)}` : "—"} detail={`${watchStats.ceiling_hits} aday`} />
+            <StatCard label="Ort. Gerçekleşen Max" value={watchStats.avg_mfe_pct != null ? `+${formatNumber2(watchStats.avg_mfe_pct)}%` : "—"} />
+            <StatCard label="En Yüksek" value={watchStats.max_mfe_pct != null ? `+${formatNumber2(watchStats.max_mfe_pct)}%` : "—"} />
+          </div>
+        ) : null}
         {watch.length === 0 ? (
           <div className="text-sm text-bunker-muted">
             Henüz aday eklemedin. Yukarıdan "Tara" ile adayları bul, "+ Ekle" ile listene al.
@@ -268,6 +292,8 @@ export default function DailyRisingPage() {
                   <th className="p-2 text-right">Tavan</th>
                   <th className="p-2 text-right">Anlık</th>
                   <th className="p-2 text-right">Değişim</th>
+                  <th className="p-2 text-right">Gerçekleşen Max</th>
+                  <th className="p-2 text-center">Tavan?</th>
                   <th className="p-2 text-center">Kaldır</th>
                 </tr>
               </thead>
@@ -284,6 +310,14 @@ export default function DailyRisingPage() {
                     </td>
                     <td className="p-2 text-right">{w.current_price != null ? formatPrice(w.current_price) : "—"}</td>
                     <td className={`p-2 text-right font-semibold ${pctTone(w.change_pct)}`}>{fmtPct(w.change_pct)}</td>
+                    <td className={`p-2 text-right font-semibold ${pctTone(w.mfe_pct)}`}>
+                      {w.mfe_pct != null ? fmtPct(w.mfe_pct) : (w.outcome_status === "pending" ? "ölçülüyor…" : "—")}
+                    </td>
+                    <td className="p-2 text-center">
+                      {w.hit_ceiling === true ? <Badge tone="positive">✓ Ulaştı</Badge>
+                        : w.hit_ceiling === false ? <Badge tone="neutral">Hayır</Badge>
+                        : <span className="text-bunker-muted">—</span>}
+                    </td>
                     <td className="p-2 text-center">
                       <Button variant="danger" onClick={() => removeFromWatch(w.symbol)} disabled={busy === w.symbol}>
                         {busy === w.symbol ? "…" : "Çıkar"}
@@ -295,6 +329,10 @@ export default function DailyRisingPage() {
             </table>
           </div>
         )}
+        <p className="text-[11px] text-bunker-muted mt-2">
+          Başarı ölçümü: adayın eklendiği andan sonraki 24 saatte gerçekleşen maksimum yükseliş (MFE);
+          tavan hedefine ulaşıp ulaşmadığı otomatik hesaplanır.
+        </p>
       </Card>
 
       {/* 3) SİSTEM ADAYLARI (otomatik 11:30) */}

@@ -59,9 +59,10 @@ def test_daily_momentum_helpers_exist():
 
 
 def test_user_watchlist_helpers_exist():
-    """Kullanıcıya özel takip listesi fonksiyonları mevcut olmalı."""
+    """Kullanıcıya özel takip listesi fonksiyonları mevcut olmalı (+ başarı ölçümü)."""
     for name in ("add_to_user_daily_watchlist", "list_user_daily_watchlist",
-                 "remove_from_user_daily_watchlist"):
+                 "remove_from_user_daily_watchlist", "fill_user_watchlist_outcomes",
+                 "get_user_watchlist_stats"):
         assert hasattr(database, name), f"database.{name} eksik"
 
 

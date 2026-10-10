@@ -2694,6 +2694,11 @@ async def daily_momentum_loop():
                 await database.fill_daily_rising_outcomes()
             except Exception:
                 pass
+            # Kullanıcı takip listesi başarı ölçümü (MFE/MAE/tavan).
+            try:
+                await database.fill_user_watchlist_outcomes()
+            except Exception:
+                pass
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -2831,12 +2836,14 @@ async def daily_rising_manual_scan(request: Request = None):
 
 @router.get("/api/daily-rising/watchlist")
 async def daily_rising_watchlist_get(request: Request = None):
-    """Kullanıcının kendi takip listesi + anlık fiyat karşılaştırması."""
+    """Kullanıcının kendi takip listesi + anlık fiyat + başarı ölçümü (MFE/tavan)."""
     from app import security
     user = security.request_user(request.headers, request.cookies) if request else None
     if not user:
         raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
-    rows = await database.list_user_daily_watchlist(user.get("username"))
+    uname = user.get("username")
+    rows = await database.list_user_daily_watchlist(uname)
+    stats = await database.get_user_watchlist_stats(uname)
     out = []
     for r in rows:
         sym = str(r.get("symbol") or "").upper()
@@ -2849,11 +2856,12 @@ async def daily_rising_watchlist_get(request: Request = None):
             e = c_ = None
         out.append({**{k: r.get(k) for k in
                        ("symbol", "added_at", "entry_price", "ceiling_pct", "ceiling_price",
-                        "ret_8h", "adx", "slope", "atr_pct", "velocity_score", "source", "note")},
+                        "ret_8h", "adx", "slope", "atr_pct", "velocity_score", "source", "note",
+                        "outcome_status", "mfe_pct", "mae_pct", "peak_at", "evaluated_at", "hit_ceiling")},
                     "current_price": c_,
                     "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None})
-    return {"paper_only": True, "generated_at": time.time(), "username": user.get("username"),
-            "watchlist": out}
+    return {"paper_only": True, "generated_at": time.time(), "username": uname,
+            "stats": stats, "watchlist": out}
 
 
 @router.post("/api/daily-rising/watchlist")

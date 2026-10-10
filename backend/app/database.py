@@ -1988,7 +1988,12 @@ _USER_DAILY_WATCHLIST_SCHEMA_READY = False
 
 
 def _ensure_user_daily_watchlist_schema(conn) -> None:
-    """Kullanıcıya özel günlük yükseliş takip listesi tablosu (idempotent)."""
+    """Kullanıcıya özel günlük yükseliş takip listesi tablosu (idempotent).
+
+    Başarı ölçümü kolonları (2026-10-10): takip edilen adayın sonraki
+    performansı ölçülür → mfe_pct (gerçekleşen maks. yükseliş), mae_pct,
+    peak_at, evaluated_at, outcome_status, hit_ceiling (tavana ulaştı mı).
+    """
     global _USER_DAILY_WATCHLIST_SCHEMA_READY
     if _USER_DAILY_WATCHLIST_SCHEMA_READY:
         return
@@ -2009,8 +2014,24 @@ def _ensure_user_daily_watchlist_schema(conn) -> None:
           source TEXT DEFAULT 'manual_scan',
           active BOOLEAN NOT NULL DEFAULT TRUE,
           note TEXT,
+          outcome_status TEXT NOT NULL DEFAULT 'pending',
+          mfe_pct DOUBLE PRECISION,
+          mae_pct DOUBLE PRECISION,
+          peak_at DOUBLE PRECISION,
+          evaluated_at DOUBLE PRECISION,
+          hit_ceiling BOOLEAN,
           UNIQUE(username, symbol)
         )""")
+    # Mevcut kurulumlar için başarı ölçümü kolonları (idempotent).
+    for ddl in (
+        "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS outcome_status TEXT NOT NULL DEFAULT 'pending'",
+        "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS mfe_pct DOUBLE PRECISION",
+        "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS mae_pct DOUBLE PRECISION",
+        "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS peak_at DOUBLE PRECISION",
+        "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS evaluated_at DOUBLE PRECISION",
+        "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS hit_ceiling BOOLEAN",
+    ):
+        conn.execute(ddl)
     _USER_DAILY_WATCHLIST_SCHEMA_READY = True
 
 
@@ -2062,7 +2083,8 @@ async def list_user_daily_watchlist(username: str, include_inactive: bool = Fals
         where = "username=?" + ("" if include_inactive else " AND active=TRUE")
         rows = conn.execute(
             f"SELECT id, username, symbol, added_at, entry_price, ceiling_pct, ceiling_price,"
-            f" ret_8h, adx, slope, atr_pct, velocity_score, source, active, note"
+            f" ret_8h, adx, slope, atr_pct, velocity_score, source, active, note,"
+            f" outcome_status, mfe_pct, mae_pct, peak_at, evaluated_at, hit_ceiling"
             f" FROM user_daily_watchlist WHERE {where} ORDER BY added_at DESC LIMIT 500",
             (user,)).fetchall()
         return [dict(r) for r in rows]
@@ -2072,6 +2094,122 @@ async def list_user_daily_watchlist(username: str, include_inactive: bool = Fals
     except Exception:
         logger.debug("user_daily_watchlist okunamadı (%s)", user, exc_info=True)
         return []
+
+
+async def fill_user_watchlist_outcomes(limit: int = 500) -> int:
+    """Takip listesindeki adayların başarısını 5m mumlarla ölç (aktif satırlar).
+
+    Her satır için `added_at`'ten 24 saat sonrasına kadar MFE/MAE hesaplanır;
+    `ceiling_pct`'e ulaşıldıysa `hit_ceiling=TRUE`. Taban = entry_price (yoksa
+    t0 öncesi son kapanmış 5m mum). daily_rising ile aynı semantik.
+    """
+    def op(conn):
+        _ensure_user_daily_watchlist_schema(conn)
+        now = time.time()
+        pending = conn.execute(
+            "SELECT id, added_at, symbol, entry_price, ceiling_pct FROM user_daily_watchlist "
+            "WHERE active=TRUE AND (outcome_status='pending' OR outcome_status IS NULL) "
+            "AND added_at <= ? ORDER BY added_at ASC LIMIT ?",
+            (now - _DAILY_RISING_OUTCOME_WINDOW_SEC, max(1, min(2000, int(limit))))).fetchall()
+        filled = 0
+        touched = False
+        for row in pending:
+            values = dict(row)
+            rid = values["id"]
+            created = float(values.get("added_at") or 0)
+            try:
+                symbol = values["symbol"]
+                t0_ms = created * 1000.0
+                window_end_ms = t0_ms + _DAILY_RISING_OUTCOME_WINDOW_SEC * 1000.0
+                candles = conn.execute(
+                    "SELECT open_time, high, low FROM historical_candles "
+                    "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
+                    "ORDER BY open_time",
+                    (symbol, t0_ms - _MACD_BAR_MS, window_end_ms + _MACD_BAR_MS)).fetchall()
+                rows = [(float(dict(c)["open_time"]), float(dict(c)["high"] or 0),
+                         float(dict(c)["low"] or 0)) for c in candles]
+                expired = now - created > _DAILY_RISING_OUTCOME_EXPIRE_SEC
+                if not rows:
+                    if expired:
+                        conn.execute(
+                            "UPDATE user_daily_watchlist SET outcome_status='expired', "
+                            "evaluated_at=? WHERE id=?", (now, rid))
+                        filled += 1; touched = True
+                    continue
+                base = values.get("entry_price")
+                try:
+                    base = float(base) if base is not None else None
+                except (TypeError, ValueError):
+                    base = None
+                if base is None or base <= 0:
+                    prior = [h for stamp, h, _l in rows if stamp <= t0_ms and h > 0]
+                    # entry_price yoksa ölçemeyiz; en eski mumu taban al.
+                    base = prior[0] if prior else None
+                if base is None or base <= 0:
+                    continue
+                if rows[-1][0] + _MACD_BAR_MS < window_end_ms:
+                    continue
+                after = [(h, l) for stamp, h, l in rows if t0_ms < stamp <= window_end_ms]
+                highs = [h for h, _l in after if h > 0]
+                lows = [l for _h, l in after if l > 0]
+                if not highs:
+                    continue
+                mfe = (max(highs) / base - 1.0) * 100.0
+                mae = (min(lows) / base - 1.0) * 100.0 if lows else None
+                ceil_pct = values.get("ceiling_pct")
+                hit = bool(ceil_pct is not None and mfe >= float(ceil_pct))
+                conn.execute(
+                    "UPDATE user_daily_watchlist SET mfe_pct=?, mae_pct=?, peak_at=?, "
+                    "evaluated_at=?, outcome_status='filled', hit_ceiling=? WHERE id=?",
+                    (round(mfe, 4), round(mae, 4) if mae is not None else None,
+                     now, now, hit, rid))
+                filled += 1; touched = True
+            except Exception:
+                logger.debug("watchlist sonucu doldurulamadı (id=%s)", rid, exc_info=True)
+        if touched:
+            conn.commit()
+        return filled
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("watchlist sonuç doldurma başarısız", exc_info=True)
+        return 0
+
+
+async def get_user_watchlist_stats(username: str) -> dict:
+    """Kullanıcının takip listesi başarı özeti (isabet/ortalama MFE/tavan tutma).
+
+    'Başarı' = aday `target_pct`'e ulaştı VEYA `ceiling_pct`'e dokundu; ölçülmüş
+    (mfe_pct dolu) satırlar üzerinden hesaplanır.
+    """
+    user = str(username or "").strip().lower()
+
+    def op(conn):
+        _ensure_user_daily_watchlist_schema(conn)
+        rows = conn.execute(
+            "SELECT mfe_pct, ceiling_pct, hit_ceiling FROM user_daily_watchlist "
+            "WHERE username=?", (user,)).fetchall()
+        total = len(rows)
+        filled = [dict(r) for r in rows if dict(r).get("mfe_pct") is not None]
+        mfes = [float(d["mfe_pct"]) for d in filled]
+        hits = sum(1 for d in filled if d.get("hit_ceiling"))
+        return {
+            "total": total,
+            "measured": len(filled),
+            "ceiling_hits": hits,
+            "hit_rate": round(100.0 * hits / len(filled), 1) if filled else None,
+            "avg_mfe_pct": round(sum(mfes) / len(mfes), 2) if mfes else None,
+            "max_mfe_pct": round(max(mfes), 2) if mfes else None,
+            "positive": sum(1 for m in mfes if m > 0),
+        }
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("user watchlist stats okunamadı (%s)", user, exc_info=True)
+        return {"total": 0, "measured": 0, "ceiling_hits": 0, "hit_rate": None,
+                "avg_mfe_pct": None, "max_mfe_pct": None, "positive": 0}
 
 
 async def remove_from_user_daily_watchlist(username: str, symbol: str) -> bool:
