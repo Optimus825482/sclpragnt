@@ -73,6 +73,18 @@ def test_watchlist_outcomes_live_signature():
     assert "live_prices" in sig.parameters, "canlı fiyat parametresi eksik"
 
 
+def test_daily_rising_outcomes_live_signature():
+    """Kullanıcı isteği: günlük adayların 'Gerçekleşen Max'ı 24s beklemeden
+    canlı güncellenmeli → fill_daily_rising_outcomes live_prices kabul etmeli."""
+    import inspect
+    sig = inspect.signature(database.fill_daily_rising_outcomes)
+    assert "live_prices" in sig.parameters, "canlı fiyat parametresi eksik"
+    src = inspect.getsource(database.fill_daily_rising_outcomes)
+    # Eski 'pencere dolmadıysa atla' kapısı kaldırıldı (canlı hesap için).
+    assert "window_end_ms" in src
+    assert "sealed = now - created >= _DAILY_RISING_OUTCOME_WINDOW_SEC" in src
+
+
 def test_daily_rising_manual_and_watchlist_endpoints():
     """Manuel tarama ve takip listesi uçları router'a kayıtlı olmalı."""
     from app.routers import monitoring

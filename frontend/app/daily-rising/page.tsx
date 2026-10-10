@@ -492,6 +492,28 @@ export default function DailyRisingPage() {
             </table>
           </div>
         )}
+        {rows.length > 0 ? (() => {
+          const chgs = rows
+            .map((r) => r.change_pct)
+            .filter((v): v is number => v != null && Number.isFinite(Number(v)))
+            .map(Number);
+          if (chgs.length === 0) return null;
+          const avg = chgs.reduce((a, b) => a + b, 0) / chgs.length;
+          const up = chgs.filter((x) => x > 0.2).length;
+          const dn = chgs.filter((x) => x < -0.2).length;
+          const flat = chgs.length - up - dn;
+          return (
+            <div className="mt-3 pt-3 border-t border-bunker-700 text-sm">
+              <span className="text-bunker-muted">
+                ▲ {up} yükselen · ▼ {dn} düşen · • {flat} yatay
+              </span>
+              <span className="ml-3 font-semibold">
+                🎯 Bu {chgs.length}'in 11:30'a göre ort. değişimi:{" "}
+                <span className={pctTone(avg)}>{fmtPct(avg)}</span>
+              </span>
+            </div>
+          );
+        })() : null}
       </Card>
 
       <p className="text-[11px] text-bunker-muted mt-3">

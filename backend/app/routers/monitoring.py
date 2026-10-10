@@ -2769,9 +2769,15 @@ async def daily_momentum_loop():
                     _monitoring_state["daily_momentum_last_day"] = today_key
                     n = await _daily_momentum_scan_once()
                     logger.info("günlük momentum taraması tamamlandı: %d aday", n)
-            # Kanıt doldurma her turda (sık) — öneri↔anlık fiyat + MFE/MAE.
+            # Kanıt doldurma her turda (sık) — öneri↔anlık fiyat + CANLI MFE/MAE.
+            # Anlık fiyat `_batch_prices` ile alınır (WS + REST fallback): bugünkü
+            # adaylar (MINA/MAGIC/LPT...) WS ticker kümesinde DEĞİL; yalnız WS
+            # kullanılırsa "Gerçekleşen Max" 24 saat boyunca "—" kalır.
             try:
-                await database.fill_daily_rising_outcomes()
+                _dr_rows = await _today_rising_rows(limit=100)
+                _dr_live = await _batch_prices(
+                    [str(r.get("symbol") or "").upper() for r in _dr_rows])
+                await database.fill_daily_rising_outcomes(live_prices=_dr_live)
             except Exception:
                 pass
             # Kullanıcı takip listesi başarı ölçümü — CANLI güncelleme (her turda).

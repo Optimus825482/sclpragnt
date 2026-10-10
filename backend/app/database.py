@@ -1921,12 +1921,15 @@ async def mark_daily_rising_notified(alert_id: int) -> None:
         logger.debug("daily_rising notified işaretlenemedi", exc_info=True)
 
 
-async def fill_daily_rising_outcomes(limit: int = 200) -> int:
-    """Bekleyen günlük adayların MFE/MAE sonucunu 5m mumlarla doldur.
+async def fill_daily_rising_outcomes(limit: int = 200, live_prices: dict | None = None) -> int:
+    """Bekleyen günlük adayların MFE/MAE sonucunu doldur (CANLI).
 
-    Pencere 24 saat (günlük ufuk). Yalnız t0'dan SONRA açılan kapanmış 5m
-    mumlar ölçüye girer (sinyal anının parsiyel mumu hariç) — rising_alerts
-    ile aynı semantik.
+    Pencere 24 saat ama MFE/MAE **canlı** güncellenir (kullanıcı isteği
+    2026-10-10): aday 11:30'da eklendiğinde "Gerçekleşen Max" bir 24 saat
+    boyunca boş ("—") kalmamalı. Bu yüzden t0'dan şimdiye kadar açılan kapanmış
+    5m mumların tepe/dibi + (verilirse) anlık fiyat ölçülür; `status` yalnız
+    pencere dolunca 'filled' olarak mühürlenir, aksi halde 'pending' kalır ama
+    mfe/mae yine yazılır. `fill_user_watchlist_outcomes` ile aynı semantik.
     """
     def op(conn):
         _ensure_daily_rising_schema(conn)
@@ -1934,7 +1937,7 @@ async def fill_daily_rising_outcomes(limit: int = 200) -> int:
         pending = conn.execute(
             "SELECT id, created_at, symbol, price, target_pct FROM daily_rising_candidates "
             "WHERE status='pending' AND created_at <= ? ORDER BY created_at ASC LIMIT ?",
-            (now - _DAILY_RISING_OUTCOME_WINDOW_SEC, max(1, min(2000, int(limit))))).fetchall()
+            (now - 300.0, max(1, min(2000, int(limit))))).fetchall()
         filled = 0
         touched = False
         for row in pending:
@@ -1944,7 +1947,9 @@ async def fill_daily_rising_outcomes(limit: int = 200) -> int:
             try:
                 symbol = values["symbol"]
                 t0_ms = created * 1000.0
-                window_end_ms = t0_ms + _DAILY_RISING_OUTCOME_WINDOW_SEC * 1000.0
+                # Canlı pencere: şimdiye kadar (24s dolmasa bile).
+                window_end_s = min(now, created + _DAILY_RISING_OUTCOME_WINDOW_SEC)
+                window_end_ms = window_end_s * 1000.0
                 candles = conn.execute(
                     "SELECT open_time, high, low, close FROM historical_candles "
                     "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
@@ -1953,7 +1958,15 @@ async def fill_daily_rising_outcomes(limit: int = 200) -> int:
                 rows = [(float(dict(c)["open_time"]), float(dict(c)["high"] or 0),
                          float(dict(c)["low"] or 0), float(dict(c)["close"])) for c in candles]
                 expired = now - created > _DAILY_RISING_OUTCOME_EXPIRE_SEC
-                if not rows:
+                # Canlı fiyatı ölçüme kat (henüz kapanmamış 5m mumu kapsar). Mum
+                # arşivi boş olsa BİLE canlı fiyat varsa MFE hesaplanabilir.
+                lp = None
+                if live_prices:
+                    try:
+                        lp = float(live_prices.get(symbol))
+                    except (TypeError, ValueError):
+                        lp = None
+                if not rows and not (lp and lp > 0):
                     if expired:
                         conn.execute(
                             "UPDATE daily_rising_candidates SET status='expired', evaluated_at=? WHERE id=?",
@@ -1966,7 +1979,7 @@ async def fill_daily_rising_outcomes(limit: int = 200) -> int:
                     base = float(base) if base is not None else None
                 except (TypeError, ValueError):
                     base = None
-                if base is None or base <= 0:
+                if (base is None or base <= 0) and rows:
                     prior = [close for stamp, _h, _l, close in rows if stamp <= t0_ms and close > 0]
                     base = prior[-1] if prior else None
                 if base is None or base <= 0:
@@ -1977,20 +1990,25 @@ async def fill_daily_rising_outcomes(limit: int = 200) -> int:
                         filled += 1
                         touched = True
                     continue
-                if rows[-1][0] + _MACD_BAR_MS < window_end_ms:
-                    continue
                 after = [(high, low) for stamp, high, low, _close in rows
                          if t0_ms < stamp <= window_end_ms]
                 highs = [high for high, _low in after if high > 0]
                 lows = [low for _high, low in after if low > 0]
+                if lp and lp > 0:
+                    highs.append(lp); lows.append(lp)
                 if not highs:
                     continue
                 mfe = (max(highs) / base - 1.0) * 100.0
                 mae = (min(lows) / base - 1.0) * 100.0 if lows else None
+                # Pencere doldu mu? Dolduysa 'filled' mühürle; değilse 'pending'
+                # kalır ama mfe/mae canlı yazılır.
+                sealed = now - created >= _DAILY_RISING_OUTCOME_WINDOW_SEC
+                status = "filled" if sealed else "pending"
                 conn.execute(
                     "UPDATE daily_rising_candidates SET mfe_pct=?, mae_pct=?, "
-                    "status='filled', peak_at=?, evaluated_at=? WHERE id=?",
-                    (round(mfe, 4), round(mae, 4) if mae is not None else None, now, now, rid))
+                    "status=?, peak_at=?, evaluated_at=? WHERE id=?",
+                    (round(mfe, 4), round(mae, 4) if mae is not None else None,
+                     status, now, now, rid))
                 filled += 1
                 touched = True
             except Exception:
