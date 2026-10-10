@@ -2694,9 +2694,19 @@ async def daily_momentum_loop():
                 await database.fill_daily_rising_outcomes()
             except Exception:
                 pass
-            # Kullanıcı takip listesi başarı ölçümü (MFE/MAE/tavan).
+            # Kullanıcı takip listesi başarı ölçümü — CANLI güncelleme (her turda).
+            # Fiyatlar WS ticker'dan; yoksa ölçüm yalnız kapanmış 5m mumlarla.
             try:
-                await database.fill_user_watchlist_outcomes()
+                _wl_live = {}
+                try:
+                    for _s in list(market.tickers.keys()):
+                        _t = market.get_ticker(_s) or {}
+                        _p = _t.get("last_price")
+                        if _p:
+                            _wl_live[_s] = _p
+                except Exception:
+                    _wl_live = {}
+                await database.fill_user_watchlist_outcomes(live_prices=_wl_live)
             except Exception:
                 pass
         except asyncio.CancelledError:
@@ -2811,6 +2821,23 @@ def touch_probability(target_pct: float | None, atr_pct: float | None) -> float 
     return round(tbl[-1][1], 1)
 
 
+async def _live_atr_pct(symbol: str) -> float | None:
+    """Sembolün canlı 15m ATR%'si (kapanmış barlar). Hedef/tavan hesabı için."""
+    from app.binance_tr_public import klines as _kl
+    from app.technical_analysis import _atr as _atr14
+    try:
+        k = await _kl(symbol, "15m", 40)
+        if k and int(k[-1][0]) + 900_000 > int(time.time() * 1000):
+            k = k[:-1]
+        if len(k) < 15:
+            return None
+        h = [float(x[2]) for x in k]; l = [float(x[3]) for x in k]; c = [float(x[4]) for x in k]
+        a = _atr14(h, l, c, 14)
+        return (a / c[-1] * 100) if (a and c[-1]) else None
+    except Exception:
+        return None
+
+
 def _daily_momentum_candidates(scan5: dict, scan15: dict) -> list[dict]:
     """Tarama sonucundan günlük momentum onaylı adayları süz (tekrarsız, skora göre)."""
     pool = (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
@@ -2923,16 +2950,31 @@ async def daily_rising_watchlist_get(request: Request = None):
         base_for_price = c_ or e
         target_price = r.get("ceiling_price") or (
             round(base_for_price * (1 + float(ceil_pct) / 100.0), 8) if (base_for_price and ceil_pct) else None)
+        # CANLI MFE: döngü 60 sn'de bir güncelliyor; kullanıcı hemen görebilsin diye
+        # kayıtlı MFE ile entry→anlık-fiyat değişiminin MAKSİMUMU gösterilir.
+        stored_mfe = r.get("mfe_pct")
+        live_mfe = round((c_ / e - 1) * 100, 2) if (e and c_) else None
+        try:
+            mfe_display = max(v for v in (float(stored_mfe) if stored_mfe is not None else None,
+                                          live_mfe) if v is not None)
+        except (TypeError, ValueError):
+            mfe_display = stored_mfe if stored_mfe is not None else live_mfe
+        hit_ceiling = r.get("hit_ceiling")
+        if ceil_pct is not None and mfe_display is not None:
+            hit_ceiling = bool(mfe_display >= float(ceil_pct))
         out.append({**{k: r.get(k) for k in
                        ("symbol", "added_at", "entry_price", "ceiling_pct", "ceiling_price",
                         "ret_8h", "adx", "slope", "atr_pct", "velocity_score", "source", "note",
-                        "outcome_status", "mfe_pct", "mae_pct", "peak_at", "evaluated_at", "hit_ceiling")},
+                        "outcome_status", "peak_at", "evaluated_at")},
                     "current_price": c_,
                     "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
                     "ceiling_pct": ceil_pct,
                     "target_price": target_price,
                     "target_probability": touch_probability(ceil_pct, atr_pct),
-                    "atr_pct_live": round(atr_pct, 2) if atr_pct else None})
+                    "atr_pct_live": round(atr_pct, 2) if atr_pct else None,
+                    "mfe_pct": round(mfe_display, 2) if mfe_display is not None else None,
+                    "mae_pct": r.get("mae_pct"),
+                    "hit_ceiling": hit_ceiling})
     return {"paper_only": True, "generated_at": time.time(), "username": uname,
             "stats": stats, "watchlist": out}
 
@@ -2963,16 +3005,31 @@ async def daily_rising_watchlist_add(payload: dict, request: Request = None):
             px_f = float(px) if px else None
         except (TypeError, ValueError):
             px_f = None
+        # Hedef (tavan): aday satırında yoksa canlı 15m ATR'den hesapla → takip
+        # listesinde "Gerçekleşen Max / Tavan?" ölçümü çalışabilsin.
+        ceil_pct = it.get("ceiling_pct")
+        atr_pct_it = it.get("atr_pct_15m") or it.get("atr_pct")
+        if ceil_pct is None or atr_pct_it is None:
+            a = await _live_atr_pct(sym)
+            if atr_pct_it is None:
+                atr_pct_it = a
+            if ceil_pct is None and a:
+                try:
+                    from app import master_surge as _ms
+                    _t = _ms.calculate_adaptive_targets(70.0, atr_pct=a, base_target_pct=3.0)
+                    ceil_pct = round(max(float(_t.get("tp2_runner_pct") or 0), a * 3.0), 2)
+                except Exception:
+                    ceil_pct = None
         rid = await database.add_to_user_daily_watchlist(user.get("username"), {
             "symbol": sym, "added_at": now, "entry_price": px_f,
-            "ceiling_pct": it.get("ceiling_pct"),
+            "ceiling_pct": ceil_pct,
             "ceiling_price": it.get("ceiling_price") or (
-                round(px_f * (1 + float(it["ceiling_pct"]) / 100.0), 8)
-                if (px_f and it.get("ceiling_pct")) else None),
+                round(px_f * (1 + float(ceil_pct) / 100.0), 8)
+                if (px_f and ceil_pct) else None),
             "ret_8h": it.get("ret_8h_pct") or it.get("ret_8h"),
             "adx": it.get("adx_14") or it.get("adx"),
             "slope": it.get("slope_15m") or it.get("slope"),
-            "atr_pct": it.get("atr_pct_15m") or it.get("atr_pct"),
+            "atr_pct": atr_pct_it,
             "velocity_score": it.get("velocity_score"),
             "source": "manual_scan", "note": it.get("note"),
         })

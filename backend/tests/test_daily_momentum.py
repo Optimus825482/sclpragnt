@@ -66,6 +66,13 @@ def test_user_watchlist_helpers_exist():
         assert hasattr(database, name), f"database.{name} eksik"
 
 
+def test_watchlist_outcomes_live_signature():
+    """Canlı güncelleme: fill_user_watchlist_outcomes live_prices kabul etmeli."""
+    import inspect
+    sig = inspect.signature(database.fill_user_watchlist_outcomes)
+    assert "live_prices" in sig.parameters, "canlı fiyat parametresi eksik"
+
+
 def test_daily_rising_manual_and_watchlist_endpoints():
     """Manuel tarama ve takip listesi uçları router'a kayıtlı olmalı."""
     from app.routers import monitoring

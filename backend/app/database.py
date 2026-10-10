@@ -2096,45 +2096,55 @@ async def list_user_daily_watchlist(username: str, include_inactive: bool = Fals
         return []
 
 
-async def fill_user_watchlist_outcomes(limit: int = 500) -> int:
-    """Takip listesindeki adayların başarısını 5m mumlarla ölç (aktif satırlar).
+async def fill_user_watchlist_outcomes(limit: int = 500, live_prices: dict | None = None) -> int:
+    """Takip listesindeki adayların başarısını CANLI ölç (aktif satırlar).
 
-    Her satır için `added_at`'ten 24 saat sonrasına kadar MFE/MAE hesaplanır;
-    `ceiling_pct`'e ulaşıldıysa `hit_ceiling=TRUE`. Taban = entry_price (yoksa
-    t0 öncesi son kapanmış 5m mum). daily_rising ile aynı semantik.
+    2026-10-10 düzeltmesi: eski sürüm yalnız "eklenme + 24 saat geçmiş" satırları
+    ölçüyordu → kullanıcı bugün eklediği adayın MFE'sini 24 saat boyunca
+    göremiyordu ("ölçülüyor…" donuyordu). Artık HER TURDA hesaplanır:
+      - Kapanmış 5m mumlardan gerçekleşen max/dip (added_at → şimdi),
+      - 5m mum henüz yoksa `live_prices` (canlı ticker) ile anlık ölçüm.
+    Böylece "Gerçekleşen Max" ve "Tavan?" sütunları dinamik güncellenir.
+    Pencere: added_at → min(now, added_at+24s). `ceiling_pct` yoksa hit_ceiling None
+    kalır (uydurma yok).
     """
     def op(conn):
         _ensure_user_daily_watchlist_schema(conn)
         now = time.time()
-        pending = conn.execute(
-            "SELECT id, added_at, symbol, entry_price, ceiling_pct FROM user_daily_watchlist "
-            "WHERE active=TRUE AND (outcome_status='pending' OR outcome_status IS NULL) "
-            "AND added_at <= ? ORDER BY added_at ASC LIMIT ?",
-            (now - _DAILY_RISING_OUTCOME_WINDOW_SEC, max(1, min(2000, int(limit))))).fetchall()
-        filled = 0
+        rows_db = conn.execute(
+            "SELECT id, username, added_at, symbol, entry_price, ceiling_pct FROM user_daily_watchlist "
+            "WHERE active=TRUE ORDER BY added_at DESC LIMIT ?",
+            (max(1, min(5000, int(limit))),)).fetchall()
+        updated = 0
         touched = False
-        for row in pending:
+        for row in rows_db:
             values = dict(row)
             rid = values["id"]
             created = float(values.get("added_at") or 0)
+            if created <= 0 or now < created:
+                continue
             try:
                 symbol = values["symbol"]
                 t0_ms = created * 1000.0
-                window_end_ms = t0_ms + _DAILY_RISING_OUTCOME_WINDOW_SEC * 1000.0
+                window_end_s = min(now, created + _DAILY_RISING_OUTCOME_WINDOW_SEC)
+                window_end_ms = window_end_s * 1000.0
                 candles = conn.execute(
                     "SELECT open_time, high, low FROM historical_candles "
                     "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
                     "ORDER BY open_time",
                     (symbol, t0_ms - _MACD_BAR_MS, window_end_ms + _MACD_BAR_MS)).fetchall()
-                rows = [(float(dict(c)["open_time"]), float(dict(c)["high"] or 0),
-                         float(dict(c)["low"] or 0)) for c in candles]
-                expired = now - created > _DAILY_RISING_OUTCOME_EXPIRE_SEC
-                if not rows:
-                    if expired:
-                        conn.execute(
-                            "UPDATE user_daily_watchlist SET outcome_status='expired', "
-                            "evaluated_at=? WHERE id=?", (now, rid))
-                        filled += 1; touched = True
+                highs = [float(dict(c)["high"]) for c in candles if dict(c)["high"]]
+                lows = [float(dict(c)["low"]) for c in candles if dict(c)["low"]]
+                # Canlı fiyatı da ölçüme kat (henüz kapanmamış 5m mumu kapsar).
+                lp = None
+                if live_prices:
+                    try:
+                        lp = float(live_prices.get(symbol))
+                    except (TypeError, ValueError):
+                        lp = None
+                if lp and lp > 0:
+                    highs.append(lp); lows.append(lp)
+                if not highs:
                     continue
                 base = values.get("entry_price")
                 try:
@@ -2142,38 +2152,31 @@ async def fill_user_watchlist_outcomes(limit: int = 500) -> int:
                 except (TypeError, ValueError):
                     base = None
                 if base is None or base <= 0:
-                    prior = [h for stamp, h, _l in rows if stamp <= t0_ms and h > 0]
-                    # entry_price yoksa ölçemeyiz; en eski mumu taban al.
-                    base = prior[0] if prior else None
-                if base is None or base <= 0:
-                    continue
-                if rows[-1][0] + _MACD_BAR_MS < window_end_ms:
-                    continue
-                after = [(h, l) for stamp, h, l in rows if t0_ms < stamp <= window_end_ms]
-                highs = [h for h, _l in after if h > 0]
-                lows = [l for _h, l in after if l > 0]
-                if not highs:
                     continue
                 mfe = (max(highs) / base - 1.0) * 100.0
                 mae = (min(lows) / base - 1.0) * 100.0 if lows else None
                 ceil_pct = values.get("ceiling_pct")
                 hit = bool(ceil_pct is not None and mfe >= float(ceil_pct))
+                # Pencere doldu mu? Dolduysa 'filled' mühürle; değilse 'pending'
+                # kalır ama mfe/mae yine de canlı güncellenir.
+                sealed = now - created >= _DAILY_RISING_OUTCOME_WINDOW_SEC
+                status = "filled" if sealed else ("pending" if not values.get("outcome_status") else values.get("outcome_status"))
                 conn.execute(
                     "UPDATE user_daily_watchlist SET mfe_pct=?, mae_pct=?, peak_at=?, "
-                    "evaluated_at=?, outcome_status='filled', hit_ceiling=? WHERE id=?",
+                    "evaluated_at=?, outcome_status=?, hit_ceiling=? WHERE id=?",
                     (round(mfe, 4), round(mae, 4) if mae is not None else None,
-                     now, now, hit, rid))
-                filled += 1; touched = True
+                     now, now, status, hit, rid))
+                updated += 1; touched = True
             except Exception:
-                logger.debug("watchlist sonucu doldurulamadı (id=%s)", rid, exc_info=True)
+                logger.debug("watchlist canlı sonucu güncellenemedi (id=%s)", rid, exc_info=True)
         if touched:
             conn.commit()
-        return filled
+        return updated
 
     try:
         return await _run_db(op)
     except Exception:
-        logger.debug("watchlist sonuç doldurma başarısız", exc_info=True)
+        logger.debug("watchlist sonuç güncelleme başarısız", exc_info=True)
         return 0
 
 

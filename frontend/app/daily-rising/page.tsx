@@ -328,7 +328,7 @@ export default function DailyRisingPage() {
                         : "—"}
                     </td>
                     <td className={`p-2 text-right font-semibold ${pctTone(w.mfe_pct)}`}>
-                      {w.mfe_pct != null ? fmtPct(w.mfe_pct) : (w.outcome_status === "pending" ? "ölçülüyor…" : "—")}
+                      {w.mfe_pct != null ? fmtPct(w.mfe_pct) : "—"}
                     </td>
                     <td className="p-2 text-center">
                       {w.hit_ceiling === true ? <Badge tone="positive">✓ Ulaştı</Badge>
