@@ -1737,6 +1737,253 @@ async def fill_rising_alert_outcomes(limit: int = 200) -> tuple[int, list[dict]]
 _MACD_BAR_MS = 5 * 60_000  # historical_candles yalnız kapanmış 5m bar tutar
 
 
+# ======================================================================
+# GÜNLÜK MOMENTUM ADAYLARI (daily_rising_candidates) — 2026-10-10
+# OGN/MAGIC gibi günlük pump adaylarını saklar; öneri fiyatı vs anlık fiyat
+# karşılaştırması + MFE/MAE ölçümü ile takip eder.
+# ======================================================================
+_DAILY_RISING_SCHEMA_READY = False
+_DAILY_RISING_OUTCOME_WINDOW_SEC = 24 * 3600.0   # günlük ufuk: 24 saat
+_DAILY_RISING_OUTCOME_EXPIRE_SEC = 72 * 3600.0   # 72 saat sonra mühürle
+
+
+def _ensure_daily_rising_schema(conn) -> None:
+    """Koşan dağıtımda tabloyu idempotent hazırla (rising_alerts muadili)."""
+    global _DAILY_RISING_SCHEMA_READY
+    if _DAILY_RISING_SCHEMA_READY:
+        return
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_rising_candidates (
+          id BIGSERIAL PRIMARY KEY,
+          created_at DOUBLE PRECISION NOT NULL,
+          symbol TEXT NOT NULL,
+          price DOUBLE PRECISION,
+          target_pct DOUBLE PRECISION,
+          ceiling_pct DOUBLE PRECISION,
+          ceiling_price DOUBLE PRECISION,
+          velocity_score DOUBLE PRECISION,
+          ret_8h DOUBLE PRECISION,
+          adx DOUBLE PRECISION,
+          atr_pct DOUBLE PRECISION,
+          slope DOUBLE PRECISION,
+          spread_pct DOUBLE PRECISION,
+          horizon_minutes INTEGER,
+          status TEXT NOT NULL DEFAULT 'pending',
+          mfe_pct DOUBLE PRECISION,
+          mae_pct DOUBLE PRECISION,
+          peak_at DOUBLE PRECISION,
+          evaluated_at DOUBLE PRECISION,
+          notified BOOLEAN NOT NULL DEFAULT FALSE,
+          auto_paper_trade_id INTEGER,
+          details JSONB
+        )""")
+    _DAILY_RISING_SCHEMA_READY = True
+
+
+async def save_daily_rising(item: dict) -> int | None:
+    """Bir günlük momentum adayını kaydet; satır id'si döner (kritik yol değil)."""
+    def op(conn):
+        _ensure_daily_rising_schema(conn)
+        row = conn.execute(
+            "INSERT INTO daily_rising_candidates"
+            "(created_at, symbol, price, target_pct, ceiling_pct, ceiling_price,"
+            " velocity_score, ret_8h, adx, atr_pct, slope, spread_pct, horizon_minutes,"
+            " status, notified, details) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?) RETURNING id",
+            (
+                float(item.get("created_at") or time.time()),
+                str(item.get("symbol") or "?").upper(),
+                item.get("price"),
+                item.get("target_pct"),
+                item.get("ceiling_pct"),
+                item.get("ceiling_price"),
+                item.get("velocity_score"),
+                item.get("ret_8h"),
+                item.get("adx"),
+                item.get("atr_pct"),
+                item.get("slope"),
+                item.get("spread_pct"),
+                (int(item["horizon_minutes"]) if item.get("horizon_minutes") is not None else None),
+                bool(item.get("notified", False)),
+                json.dumps(item.get("details"), default=str) if item.get("details") is not None else None,
+            ),
+        ).fetchone()
+        conn.commit()
+        return int(row[0]) if row else None
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("daily_rising kaydı başarısız: %s", item.get("symbol"), exc_info=True)
+        return None
+
+
+async def last_daily_rising_at(symbol: str) -> float | None:
+    """Sembolün en son öneri zamanı (churn/cooldown kontrolü için)."""
+    def op(conn):
+        _ensure_daily_rising_schema(conn)
+        row = conn.execute(
+            "SELECT MAX(created_at) FROM daily_rising_candidates WHERE symbol=?",
+            (str(symbol).upper(),)).fetchone()
+        return float(dict(row)["max"]) if row and dict(row).get("max") is not None else None
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        return None
+
+
+async def list_daily_rising(limit: int = 100, days: float = 7.0) -> list[dict]:
+    """Son N günün günlük momentum adayları (en yeni önce)."""
+    def op(conn):
+        _ensure_daily_rising_schema(conn)
+        since = time.time() - max(0.1, float(days)) * 86400.0
+        rows = conn.execute(
+            "SELECT id, created_at, symbol, price, target_pct, ceiling_pct, ceiling_price,"
+            " velocity_score, ret_8h, adx, atr_pct, slope, spread_pct, horizon_minutes,"
+            " status, mfe_pct, mae_pct, peak_at, evaluated_at, notified, auto_paper_trade_id"
+            " FROM daily_rising_candidates WHERE created_at >= ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (since, max(1, min(1000, int(limit))))).fetchall()
+        return [dict(r) for r in rows]
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("daily_rising listesi okunamadı", exc_info=True)
+        return []
+
+
+async def get_daily_rising_stats(days: float = 7.0) -> dict:
+    """Özet: adet, isabet, ortalama MFE, bekleyen/dokunmuş/expired."""
+    def op(conn):
+        _ensure_daily_rising_schema(conn)
+        since = time.time() - max(0.1, float(days)) * 86400.0
+        rows = conn.execute(
+            "SELECT status, target_pct, mfe_pct FROM daily_rising_candidates "
+            "WHERE created_at >= ?", (since,)).fetchall()
+        total = len(rows)
+        filled = [dict(r) for r in rows if dict(r).get("mfe_pct") is not None]
+        touched = sum(1 for d in filled
+                      if d.get("target_pct") and d["mfe_pct"] is not None
+                      and float(d["mfe_pct"]) >= float(d["target_pct"]))
+        mfes = [float(d["mfe_pct"]) for d in filled if d.get("mfe_pct") is not None]
+        return {
+            "total": total,
+            "filled": len(filled),
+            "pending": sum(1 for r in rows if dict(r).get("status") == "pending"),
+            "hit_count": touched,
+            "hit_rate": round(100.0 * touched / len(filled), 1) if filled else None,
+            "avg_mfe_pct": round(sum(mfes) / len(mfes), 2) if mfes else None,
+            "max_mfe_pct": round(max(mfes), 2) if mfes else None,
+        }
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("daily_rising istatistik okunamadı", exc_info=True)
+        return {"total": 0, "filled": 0, "pending": 0, "hit_count": 0,
+                "hit_rate": None, "avg_mfe_pct": None, "max_mfe_pct": None}
+
+
+async def mark_daily_rising_notified(alert_id: int) -> None:
+    if not alert_id:
+        return
+    def op(conn):
+        _ensure_daily_rising_schema(conn)
+        conn.execute("UPDATE daily_rising_candidates SET notified=TRUE WHERE id=?", (alert_id,))
+        conn.commit()
+    try:
+        await _run_db(op)
+    except Exception:
+        logger.debug("daily_rising notified işaretlenemedi", exc_info=True)
+
+
+async def fill_daily_rising_outcomes(limit: int = 200) -> int:
+    """Bekleyen günlük adayların MFE/MAE sonucunu 5m mumlarla doldur.
+
+    Pencere 24 saat (günlük ufuk). Yalnız t0'dan SONRA açılan kapanmış 5m
+    mumlar ölçüye girer (sinyal anının parsiyel mumu hariç) — rising_alerts
+    ile aynı semantik.
+    """
+    def op(conn):
+        _ensure_daily_rising_schema(conn)
+        now = time.time()
+        pending = conn.execute(
+            "SELECT id, created_at, symbol, price, target_pct FROM daily_rising_candidates "
+            "WHERE status='pending' AND created_at <= ? ORDER BY created_at ASC LIMIT ?",
+            (now - _DAILY_RISING_OUTCOME_WINDOW_SEC, max(1, min(2000, int(limit))))).fetchall()
+        filled = 0
+        touched = False
+        for row in pending:
+            values = dict(row)
+            rid = values["id"]
+            created = float(values.get("created_at") or 0)
+            try:
+                symbol = values["symbol"]
+                t0_ms = created * 1000.0
+                window_end_ms = t0_ms + _DAILY_RISING_OUTCOME_WINDOW_SEC * 1000.0
+                candles = conn.execute(
+                    "SELECT open_time, high, low, close FROM historical_candles "
+                    "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
+                    "ORDER BY open_time",
+                    (symbol, t0_ms - _MACD_BAR_MS, window_end_ms + _MACD_BAR_MS)).fetchall()
+                rows = [(float(dict(c)["open_time"]), float(dict(c)["high"] or 0),
+                         float(dict(c)["low"] or 0), float(dict(c)["close"])) for c in candles]
+                expired = now - created > _DAILY_RISING_OUTCOME_EXPIRE_SEC
+                if not rows:
+                    if expired:
+                        conn.execute(
+                            "UPDATE daily_rising_candidates SET status='expired', evaluated_at=? WHERE id=?",
+                            (now, rid))
+                        filled += 1
+                        touched = True
+                    continue
+                base = values.get("price")
+                try:
+                    base = float(base) if base is not None else None
+                except (TypeError, ValueError):
+                    base = None
+                if base is None or base <= 0:
+                    prior = [close for stamp, _h, _l, close in rows if stamp <= t0_ms and close > 0]
+                    base = prior[-1] if prior else None
+                if base is None or base <= 0:
+                    if expired:
+                        conn.execute(
+                            "UPDATE daily_rising_candidates SET status='expired', evaluated_at=? WHERE id=?",
+                            (now, rid))
+                        filled += 1
+                        touched = True
+                    continue
+                if rows[-1][0] + _MACD_BAR_MS < window_end_ms:
+                    continue
+                after = [(high, low) for stamp, high, low, _close in rows
+                         if t0_ms < stamp <= window_end_ms]
+                highs = [high for high, _low in after if high > 0]
+                lows = [low for _high, low in after if low > 0]
+                if not highs:
+                    continue
+                mfe = (max(highs) / base - 1.0) * 100.0
+                mae = (min(lows) / base - 1.0) * 100.0 if lows else None
+                conn.execute(
+                    "UPDATE daily_rising_candidates SET mfe_pct=?, mae_pct=?, "
+                    "status='filled', peak_at=?, evaluated_at=? WHERE id=?",
+                    (round(mfe, 4), round(mae, 4) if mae is not None else None, now, now, rid))
+                filled += 1
+                touched = True
+            except Exception:
+                logger.debug("daily_rising sonucu doldurulamadı (id=%s)", rid, exc_info=True)
+        if touched:
+            conn.commit()
+        return filled
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("daily_rising sonuç doldurma başarısız", exc_info=True)
+        return 0
+
+
 def _macd_forward_outcomes(rows, base: float, t0_ms: float, now_ms: float):
     """F-02: alarmın 5m/15m/30m ileri getirisi + MFE/MAE (saf fonksiyon).
 

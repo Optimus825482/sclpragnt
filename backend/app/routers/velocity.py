@@ -16,7 +16,8 @@ from app.api_common import _start_background, _fresh_public_price, _background_t
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, orderbook, ticker_price
 from app.technical_analysis import (calculate_snapshot, _atr, _aroon, _bollinger,
                                     _cci, _ema, _linreg_slope_pct, _mfi, _macd, _rsi, _sma,
-                                    _wick_rejection_zscore)
+                                    _wick_rejection_zscore, _adx)
+from app import master_surge
 from app.market_intelligence import microstructure_snapshot
 from app.microflow import microflow
 from app import calibration as calibration_service
@@ -839,6 +840,67 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     slope=slope, aroon_up=aroon_up,
                     macd_bullish=macd_bullish, macd_rising=macd_rising, ret3=ret3,
                     volume_ratio=volume_ratio, leading_ok=bool(leading_ok))
+            # ---- GÜNLÜK MOMENTUM KATMANI (2026-10-10) -------------------------
+            # Backtest (2670 gözlem, 80 sembol, 70 gün): 11:30 taramasında
+            # ret_8h>=+2 & ATR%>=0.5 & ADX>=25(+DI>20) & slope>=0.3 → sonraki
+            # gün içi >=%15 hareket isabeti %19,8 (baz %5,3'ün ~3,7 katı).
+            # 15m KAPANMIŞ barlardan hesaplanır (eğitim/backtest dayanağı).
+            # BAĞIMSIZ BAYRAK: `passes`'A DOKUNMAZ; yalnız günlük momentum
+            # katmanı (bildirim/takip) okur. DAILY_MOMENTUM_ENABLED=false iken
+            # hiç hesap yapılmaz (davranış bit-bit aynı).
+            daily_momentum_ok = None
+            daily_momentum_reason = None
+            ret_8h = None
+            adx_14 = None
+            plus_di_14 = None
+            atr_pct_15m = None
+            slope_15m = None
+            if config.DAILY_MOMENTUM_ENABLED:
+                try:
+                    rows15 = await _fetch_cached(symbol, "15m", 130)
+                    # D-04: oluşmakta olan 15m mumunu düşür (backtest kapanmış bar).
+                    if rows15 and int(rows15[-1][0]) + 900_000 > now_ms:
+                        rows15 = rows15[:-1]
+                    if len(rows15) >= 60:
+                        c15 = [float(r[4]) for r in rows15]
+                        h15 = [float(r[2]) for r in rows15]
+                        l15 = [float(r[3]) for r in rows15]
+                        px15 = c15[-1]
+                        # ret_8h: 15m'de 8 saat = 32 bar
+                        if len(c15) >= 33 and c15[-33]:
+                            ret_8h = (c15[-1] / c15[-33] - 1) * 100
+                        _adx15 = _adx(h15, l15, c15, 14)
+                        if _adx15:
+                            adx_14 = _adx15.get("adx")
+                            plus_di_14 = _adx15.get("plus_di")
+                        _atr15 = _atr(h15, l15, c15, 14)
+                        if _atr15 and px15:
+                            atr_pct_15m = _atr15 / px15 * 100
+                        _sl15 = _linreg_slope_pct(c15, 10)
+                        slope_15m = _sl15
+                        spread_v = None
+                        try:
+                            _fs = (market.orderflow.get(symbol) or {})
+                            _sp = _fs.get("spread_pct")
+                            spread_v = float(_sp) if _sp is not None and float(_sp) > 0 else None
+                        except (TypeError, ValueError):
+                            spread_v = None
+                        conds = {
+                            "ret_8h": ret_8h is not None and ret_8h >= config.DAILY_MOMENTUM_RET_8H_MIN,
+                            "atr": atr_pct_15m is not None and atr_pct_15m >= config.DAILY_MOMENTUM_ATR_MIN,
+                            "adx": adx_14 is not None and adx_14 >= config.DAILY_MOMENTUM_ADX_MIN,
+                            "plus_di": plus_di_14 is not None and plus_di_14 > 20.0,
+                            "slope": slope_15m is not None and slope_15m >= config.DAILY_MOMENTUM_SLOPE_MIN,
+                            "spread": spread_v is None or spread_v <= config.DAILY_MOMENTUM_SPREAD_MAX,
+                        }
+                        daily_momentum_ok = all(conds.values())
+                        if not daily_momentum_ok:
+                            failed = [k for k, v in conds.items() if not v]
+                            daily_momentum_reason = "eksik:" + ",".join(failed)
+                        else:
+                            daily_momentum_reason = "ok"
+                except Exception as exc:
+                    logger.debug("günlük momentum hesabı %s: %s", symbol, exc)
             # --- ML tahmin: sembol bazlı adaptif hedef/süre ---
             ml_target = None
             ml_hit_prob = None
@@ -909,6 +971,22 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 spread_pct=spread_pct,
                 atr_pct=atr_pct,
             )
+            # TAVAN (günlük momentum, 2026-10-10): beklenen maksimum yükseliş.
+            # `master_surge.calculate_adaptive_targets` TP2 (koşucu) + 3×ATR üst
+            # bandın büyüğü. Yalnız günlük momentum katmanı/takip sayfası okur;
+            # `passes`/notification hedefini ETKİLEMEZ.
+            ceiling_pct = None
+            if config.DAILY_MOMENTUM_ENABLED:
+                try:
+                    _tgt = master_surge.calculate_adaptive_targets(
+                        float(_panel_score(velocity_score)), atr_pct=atr_pct,
+                        base_target_pct=float(base_target_pct))
+                    _tp2 = float(_tgt.get("tp2_runner_pct") or 0)
+                    _3atr = float(atr_pct or 0) * 3.0
+                    ceiling_pct = round(max(_tp2, _3atr), 2)
+                except Exception as exc:
+                    logger.debug("tavan hesabı %s: %s", symbol, exc)
+            ceiling_price = round(price * (1 + ceiling_pct / 100.0), 8) if (ceiling_pct and price) else None
             # KAPİ 1 — SpreadGate: spread, hedefin izinli oranını aşıyorsa elenir.
             # Kullanıcı kuralı: "%X hedefte spread+komisyon sonrası net hedef kalmalı";
             # spread hedefin %MAX_ALLOWABLE_SPREAD_RATIO'sundan fazlaysa maliyet
@@ -1012,6 +1090,17 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "m1_atr_prev": round(m1_atr_prev, 3) if m1_atr_prev is not None else None,
                     "m3_atr_prev": round(m3_atr_prev, 3) if m3_atr_prev is not None else None,
                     "leading_ok": leading_ok,
+                    # Günlük momentum katmanı (2026-10-10): bağımsız bayrak +
+                    # ölçüm alanları. `passes`'ı ETKİLEMEZ.
+                    "daily_momentum_ok": daily_momentum_ok,
+                    "daily_momentum_reason": daily_momentum_reason,
+                    "ret_8h_pct": round(ret_8h, 3) if ret_8h is not None else None,
+                    "adx_14": round(adx_14, 1) if adx_14 is not None else None,
+                    "plus_di_14": round(plus_di_14, 1) if plus_di_14 is not None else None,
+                    "atr_pct_15m": round(atr_pct_15m, 3) if atr_pct_15m is not None else None,
+                    "slope_15m": round(slope_15m, 3) if slope_15m is not None else None,
+                    "ceiling_pct": ceiling_pct,
+                    "ceiling_price": ceiling_price,
                     "base_hit_pct": VELOCITY_BASE_RATE_PCT,
                     "calibrated_hit_pct": VELOCITY_CALIBRATED_HIT_PCT if passes else None,
                     "last_closed_at": rows[-1][0]}

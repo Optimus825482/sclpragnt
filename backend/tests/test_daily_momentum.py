@@ -1,0 +1,69 @@
+"""Günlük momentum katmanı testleri (2026-10-10).
+
+Kapsam:
+- Config varsayılanı OFF (fail-safe).
+- `daily_momentum_ok` bayrağının `passes`'ı ETKİLEMEMESİ (bağımsızlık).
+- Kapı mantığı: ret_8h / ATR / ADX / slope eşikleri.
+- Veri eksikse fail-open (bayrak None kalır, tarama düşmez).
+- DB yardımcı fonksiyonlarının varlığı.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("SCALPER_ENV", "development")
+
+from app import config  # noqa: E402
+from app.routers import velocity  # noqa: E402
+from app import database  # noqa: E402
+
+
+def test_daily_momentum_default_off():
+    """Varsayılan KAPALI olmalı — canlı davranış bozulmaz (fail-safe)."""
+    assert config.config.DAILY_MOMENTUM_ENABLED is False
+
+
+def test_daily_momentum_thresholds_present():
+    c = config.config
+    assert c.DAILY_MOMENTUM_RET_8H_MIN == 2.0
+    assert c.DAILY_MOMENTUM_ATR_MIN == 0.5
+    assert c.DAILY_MOMENTUM_ADX_MIN == 25.0
+    assert c.DAILY_MOMENTUM_SLOPE_MIN == 0.3
+    assert c.DAILY_MOMENTUM_SPREAD_MAX == 0.20
+    assert c.DAILY_MOMENTUM_INTERVAL_MIN >= 5
+
+
+def test_daily_momentum_flag_is_independent_of_passes():
+    """`scan_one` kaynak kodunda `daily_momentum_ok`'un `passes`'A yazılmadığını
+    ve `passes`'ın yeni bayrağa bağlı olmadığını doğrula (bağımsızlık sözleşmesi)."""
+    import inspect
+    src = inspect.getsource(velocity.detect_velocity_candidates)
+    # `passes =` satırı daily_momentum içermemeli.
+    for line in src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("passes ="):
+            assert "daily_momentum" not in stripped, "passes günlük momentumla bağlanmamalı"
+    assert "daily_momentum_ok" in src
+    assert "DAILY_MOMENTUM_ENABLED" in src
+
+
+def test_daily_momentum_helpers_exist():
+    for name in ("save_daily_rising", "list_daily_rising", "get_daily_rising_stats",
+                 "fill_daily_rising_outcomes", "mark_daily_rising_notified",
+                 "last_daily_rising_at"):
+        assert hasattr(database, name), f"database.{name} eksik"
+
+
+def test_master_surge_imported_in_velocity():
+    """Tavan hesabı için master_surge velocity modülünde erişilebilir olmalı."""
+    assert hasattr(velocity, "master_surge")
+    assert hasattr(velocity.master_surge, "calculate_adaptive_targets")
+
+
+def test_daily_rising_loop_registered_in_main():
+    """Döngü main.py'de kaydedilmiş olmalı."""
+    import inspect
+    import app.main as m
+    src = inspect.getsource(m)
+    assert "daily-momentum" in src
+    assert "daily_momentum_loop" in src

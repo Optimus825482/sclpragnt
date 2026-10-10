@@ -408,6 +408,24 @@ class Config:
     # aday geriye düşürülür (başarı odaklı ayıklama). Kapı değil, sıralama/skora
     # etki eden fitre çarpanıdır — yenilik keskin eşik yapılmaz.
     VELOCITY_MACD_CONFIRMATION_ENABLED = os.getenv("VELOCITY_MACD_CONFIRMATION_ENABLED", "true").lower() == "true"
+    # ------------------------------------------------------------------
+    # GÜNLÜK MOMENTUM KATMANI (2026-10-10)
+    # Amaç: OGN/MAGIC gibi günlük pump adaylarını yakalamak. Backtest (2670
+    # gözlem, 80 sembol, 70 gün): ret_8h>=+2 & ATR%>=0.5 & ADX>=25(+DI>20) &
+    # slope>=0.3 → %19,8 isabet (baz %5,3'ün ~3,7 katı). Çıkış tarafı mevcut
+    # kâr kilidi + trailing (VELOCITY_TRAIL_TRIGGER_PCT) ile yönetilir.
+    # VARSAYILAN OFF: kapalıyken davranış bit-bit aynı kalır (fail-safe).
+    # ------------------------------------------------------------------
+    DAILY_MOMENTUM_ENABLED = os.getenv("DAILY_MOMENTUM_ENABLED", "false").lower() == "true"
+    DAILY_MOMENTUM_INTERVAL_MIN = max(5, int(os.getenv("DAILY_MOMENTUM_INTERVAL_MIN", "15")))
+    DAILY_MOMENTUM_RET_8H_MIN = float(os.getenv("DAILY_MOMENTUM_RET_8H_MIN", "2.0"))
+    DAILY_MOMENTUM_ATR_MIN = float(os.getenv("DAILY_MOMENTUM_ATR_MIN", "0.5"))
+    DAILY_MOMENTUM_ADX_MIN = float(os.getenv("DAILY_MOMENTUM_ADX_MIN", "25.0"))
+    DAILY_MOMENTUM_SLOPE_MIN = float(os.getenv("DAILY_MOMENTUM_SLOPE_MIN", "0.3"))
+    DAILY_MOMENTUM_SPREAD_MAX = float(os.getenv("DAILY_MOMENTUM_SPREAD_MAX", "0.20"))
+    # Aynı sembol için yeniden öneri aralığı (churn koruması): bu süre içinde
+    # zaten aday bildirilmiş bir sembol tekrar bildirilmez.
+    DAILY_MOMENTUM_REPEAT_COOLDOWN_MIN = max(15, int(os.getenv("DAILY_MOMENTUM_REPEAT_COOLDOWN_MIN", "120")))
     # Hedef gerçekçiliği: düşük ML isabet olasılığındaki zayıf sinyallere agresif
     # üst-bant hedef (4%) verilmesin — 5dk içinde dokunulması nadirdir ve başarıyı
     # düşürür. Yalnızca güçlü MACD teyidi / yüksek ML olasılığı 4% üst bandını korur.

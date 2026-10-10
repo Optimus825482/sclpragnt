@@ -19,6 +19,7 @@ from app import llm_second_eye
 from app import macd_mtf
 from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
+from app.binance_tr_public import klines as fetch_klines
 from app.alerting import deliver_web_push
 from app.ws_runtime import ws_manager
 from contextlib import asynccontextmanager
@@ -2560,6 +2561,191 @@ async def _run_rising_scan() -> dict:
 
 # Kanıt doldurma periyodu: ufuk 30 dk olduğundan 5 dakikalık tarama yeterli.
 _RISING_EVIDENCE_FILL_SEC = 300.0
+
+
+# ======================================================================
+# GÜNLÜK MOMENTUM KATMANI (2026-10-10)
+# OGN/MAGIC gibi günlük pump adaylarını 15 dk kadansla tarar; tespit edilenleri
+# KALICI olarak kaydeder, mevcut bildirim yolundan (_notify) geçirir → aynı yol
+# `try_open_from_notification` ile otonom paper pozisyonu AÇAR. Ayrı takip
+# sayfası `/daily-rising` bu kayıtları okur (öneri fiyatı vs anlık fiyat + tavan).
+# DAILY_MOMENTUM_ENABLED=false iken döngü hiç çalışmaz (davranış bit-bit aynı).
+# ======================================================================
+_daily_momentum_loop_task = None
+
+
+async def _daily_momentum_scan_once() -> int:
+    """Tek tur: velocity tara → daily_momentum_ok adayları kaydet + bildir.
+
+    DÖNÜŞ: işlenen (kaydedilen+bildirilen) aday sayısı.
+    """
+    if not config.DAILY_MOMENTUM_ENABLED:
+        return 0
+    try:
+        scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
+        scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
+    except Exception as exc:
+        logger.warning("günlük momentum taraması başarısız: %s", exc)
+        return 0
+
+    pool = list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or []) + \
+        list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or [])
+    # Sembol başına en iyi (upside_rank varsa ona göre)
+    by_sym: dict[str, dict] = {}
+    for c in pool:
+        sym = str(c.get("symbol") or "").upper()
+        if not sym or c.get("daily_momentum_ok") is not True:
+            continue
+        if str(sym) in analyzer.positions:
+            continue
+        cur = by_sym.get(sym)
+        if cur is None or float(c.get("velocity_score") or 0) > float(cur.get("velocity_score") or 0):
+            by_sym[sym] = c
+
+    if not by_sym:
+        return 0
+
+    settings = await get_user_notification_settings()
+    cooldown = float(config.DAILY_MOMENTUM_REPEAT_COOLDOWN_MIN) * 60.0
+    now = time.time()
+    processed = 0
+    for sym, c in by_sym.items():
+        try:
+            last = await database.last_daily_rising_at(sym)
+            if last is not None and (now - last) < cooldown:
+                continue
+            price = float(_ticker_price(sym) or c.get("price") or 0)
+            if price <= 0:
+                continue
+            notif = _build_notification(sym, c, settings)
+            notif["sources"] = list(set((notif.get("sources") or []) + ["daily_momentum"]))
+            notif["daily_momentum_ok"] = True
+            notif["ret_8h_pct"] = c.get("ret_8h_pct")
+            notif["adx_14"] = c.get("adx_14")
+            notif["ceiling_pct"] = c.get("ceiling_pct")
+            notif["ceiling_price"] = c.get("ceiling_price")
+            row_id = await database.save_daily_rising({
+                "created_at": now, "symbol": sym, "price": price,
+                "target_pct": c.get("target_pct"),
+                "ceiling_pct": c.get("ceiling_pct"),
+                "ceiling_price": c.get("ceiling_price") or (
+                    price * (1 + float(c["ceiling_pct"]) / 100.0) if c.get("ceiling_pct") else None),
+                "velocity_score": c.get("velocity_score"),
+                "ret_8h": c.get("ret_8h_pct"), "adx": c.get("adx_14"),
+                "atr_pct": c.get("atr_pct_15m") or c.get("atr_pct"),
+                "slope": c.get("slope_15m"),
+                "spread_pct": (market.orderflow.get(sym) or {}).get("spread_pct"),
+                "horizon_minutes": c.get("horizon_minutes"),
+                "notified": True,
+                "details": {"daily_momentum_reason": c.get("daily_momentum_reason")},
+            })
+            # Mevcut bildirim teslim yolu: push + DB + otonom paper (auto-paper).
+            try:
+                await _deliver_scan_notifications([notif])
+            except Exception as exc:
+                logger.debug("günlük momentum bildirim teslimi: %s", exc)
+            if row_id:
+                await database.mark_daily_rising_notified(row_id)
+            processed += 1
+            logger.info("günlük momentum adayı: %s @ %.6f (tavan +%%%s)", sym, price, c.get("ceiling_pct"))
+        except Exception as exc:
+            logger.debug("günlük momentum aday işleme (%s): %s", sym, exc)
+    return processed
+
+
+async def daily_momentum_loop():
+    """15m kapanışına senkron günlük momentum tarama döngüsü."""
+    interval_sec = max(300.0, float(config.DAILY_MOMENTUM_INTERVAL_MIN) * 60.0)
+    logger.info("günlük momentum döngüsü başladı (aralık %.0f sn, enabled=%s)",
+                interval_sec, config.DAILY_MOMENTUM_ENABLED)
+    await asyncio.sleep(120)
+    while True:
+        try:
+            if config.DAILY_MOMENTUM_ENABLED:
+                # 15m kapanış senkronu: yeni kapanmış 15m mumu gelmeden tarama yapma.
+                try:
+                    tick = await fetch_klines("BTCTRY", "15m", 2)
+                    latest_close = int(tick[-1][0]) if tick else 0
+                except Exception:
+                    latest_close = 0
+                if latest_close and latest_close != _monitoring_state.get("daily_momentum_last_m15"):
+                    _monitoring_state["daily_momentum_last_m15"] = latest_close
+                    await _daily_momentum_scan_once()
+                else:
+                    await asyncio.sleep(5)
+                    continue
+            # Kanıt doldurma (MFE/MAE + anlık fiyat karşılaştırması için)
+            try:
+                await database.fill_daily_rising_outcomes()
+            except Exception:
+                pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("günlük momentum döngüsü turu: %s", exc)
+        await asyncio.sleep(interval_sec)
+
+
+@router.get("/api/daily-rising/state")
+async def daily_rising_state(request: Request = None):
+    """Günlük momentum adayları + öneri/anlık fiyat karşılaştırması (salt okunur)."""
+    settings = await get_user_notification_settings()
+    rows = await database.list_daily_rising(limit=100, days=7.0)
+    stats = await database.get_daily_rising_stats(days=7.0)
+    out = []
+    for r in rows:
+        sym = str(r.get("symbol") or "").upper()
+        entry = r.get("price")
+        cur = _ticker_price(sym)
+        chg = None
+        try:
+            if entry and cur:
+                chg = round((float(cur) / float(entry) - 1) * 100, 2)
+        except (TypeError, ValueError):
+            chg = None
+        out.append({
+            "symbol": sym,
+            "created_at": r.get("created_at"),
+            "entry_price": entry,
+            "current_price": cur,
+            "change_pct": chg,
+            "target_pct": r.get("target_pct"),
+            "ceiling_pct": r.get("ceiling_pct"),
+            "ceiling_price": r.get("ceiling_price"),
+            "velocity_score": r.get("velocity_score"),
+            "ret_8h": r.get("ret_8h"), "adx": r.get("adx"),
+            "atr_pct": r.get("atr_pct"), "slope": r.get("slope"),
+            "spread_pct": r.get("spread_pct"),
+            "mfe_pct": r.get("mfe_pct"), "mae_pct": r.get("mae_pct"),
+            "status": r.get("status"),
+            "notified": r.get("notified"),
+        })
+    return {"paper_only": True, "generated_at": time.time(),
+            "stats": stats, "candidates": out}
+
+
+@router.get("/api/daily-rising/live")
+async def daily_rising_live(request: Request = None):
+    """Canlı takip: her aday için öneri→anlık fiyat + tavan (velocity/live şablonu)."""
+    rows = await database.list_daily_rising(limit=60, days=7.0)
+    live = []
+    for r in rows:
+        sym = str(r.get("symbol") or "").upper()
+        entry = r.get("price")
+        cur = _ticker_price(sym)
+        try:
+            entry_f = float(entry) if entry else None
+            cur_f = float(cur) if cur else None
+        except (TypeError, ValueError):
+            entry_f = cur_f = None
+        live.append({
+            "symbol": sym, "created_at": r.get("created_at"),
+            "entry_price": entry_f, "current_price": cur_f,
+            "change_pct": round((cur_f / entry_f - 1) * 100, 2) if (entry_f and cur_f) else None,
+            "ceiling_pct": r.get("ceiling_pct"), "ceiling_price": r.get("ceiling_price"),
+            "mfe_pct": r.get("mfe_pct"), "status": r.get("status"),
+        })
+    return {"paper_only": True, "generated_at": time.time(), "live": live}
 
 
 async def rising_evidence_loop():

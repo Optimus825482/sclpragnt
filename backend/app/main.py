@@ -96,7 +96,7 @@ from app.routers.runtime import (  # noqa: F401
     derivatives_refresh_loop)
 from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loop, load_velocity_atr_profiles  # noqa: F401
 from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
-from app.routers.monitoring import rising_evidence_loop  # noqa: F401
+from app.routers.monitoring import rising_evidence_loop, daily_momentum_loop  # noqa: F401
 from app.routers import monitoring  # noqa: F401
 
 try:
@@ -1160,6 +1160,11 @@ async def startup_services():
     # Yükseliş sinyali kanıt doldurma: Raporlar > YÜKSELİŞ EĞİLİMİ Sonuç sütunu
     # bu döngü olmadan sonsuza dek BEKLİYOR kalıyordu (kolonlar vardı, dolduran yok).
     _start_background(rising_evidence_loop, "rising-evidence")
+    await asyncio.sleep(_yield)
+    # Günlük momentum katmanı (2026-10-10): OGN/MAGIC gibi günlük pump adayları.
+    # Yalnız `DAILY_MOMENTUM_ENABLED` açıkken tarama yapar (döngü her zaman
+    # başlar ama bayrak kapalıyken hiçbir iş üretmez).
+    _start_background(daily_momentum_loop, "daily-momentum")
     await asyncio.sleep(_yield)
     _start_background(auto_paper_start_loop, "auto-paper-start")
     await asyncio.sleep(_yield)
