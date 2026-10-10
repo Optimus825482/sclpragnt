@@ -96,7 +96,8 @@ from app.routers.runtime import (  # noqa: F401
     derivatives_refresh_loop)
 from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loop, load_velocity_atr_profiles  # noqa: F401
 from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
-from app.routers.monitoring import rising_evidence_loop, daily_momentum_loop  # noqa: F401
+from app.routers.monitoring import (rising_evidence_loop, daily_momentum_loop,
+                                    daily_rising_hourly_loop)  # noqa: F401
 from app.routers import monitoring  # noqa: F401
 
 try:
@@ -1165,6 +1166,10 @@ async def startup_services():
     # Yalnız `DAILY_MOMENTUM_ENABLED` açıkken tarama yapar (döngü her zaman
     # başlar ama bayrak kapalıyken hiçbir iş üretmez).
     _start_background(daily_momentum_loop, "daily-momentum")
+    await asyncio.sleep(_yield)
+    # Saat başı aday takip tablosu (WhatsApp grubuna) — WhatsApp yapılandırılmadıkça
+    # hiçbir şey yapmaz; yalnız WHATSAPP_HOURLY_ENABLED açıkken gönderir.
+    _start_background(daily_rising_hourly_loop, "daily-rising-hourly")
     await asyncio.sleep(_yield)
     _start_background(auto_paper_start_loop, "auto-paper-start")
     await asyncio.sleep(_yield)

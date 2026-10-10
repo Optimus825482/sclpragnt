@@ -433,6 +433,11 @@ class Config:
     WHATSAPP_BRIDGE_URL = os.getenv("WHATSAPP_BRIDGE_URL", "").strip()
     WHATSAPP_BRIDGE_KEY = os.getenv("WHATSAPP_BRIDGE_KEY", "").strip()
     WHATSAPP_GROUP_ID = os.getenv("WHATSAPP_GROUP_ID", "").strip()
+    # Saat başı takip tablosu: 11:30'da seçilen adayların anlık fiyat/değişimini
+    # her saat başı gruba gönderir (11:00–23:00 TR arası).
+    WHATSAPP_HOURLY_ENABLED = os.getenv("WHATSAPP_HOURLY_ENABLED", "false").lower() == "true"
+    WHATSAPP_HOURLY_START_HOUR = max(0, min(23, int(os.getenv("WHATSAPP_HOURLY_START_HOUR", "11"))))
+    WHATSAPP_HOURLY_END_HOUR = max(0, min(23, int(os.getenv("WHATSAPP_HOURLY_END_HOUR", "23"))))
     DAILY_MOMENTUM_RET_8H_MIN = float(os.getenv("DAILY_MOMENTUM_RET_8H_MIN", "2.0"))
     DAILY_MOMENTUM_ATR_MIN = float(os.getenv("DAILY_MOMENTUM_ATR_MIN", "0.5"))
     DAILY_MOMENTUM_ADX_MIN = float(os.getenv("DAILY_MOMENTUM_ADX_MIN", "25.0"))

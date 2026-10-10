@@ -106,3 +106,49 @@ def format_scan_report(candidates: list[dict], *, title: str = "🌅 Günlük Y�
     lines.append("")
     lines.append("📈 momentum   ⚡ short-squeeze   ⚡📈 ikisi de")
     return "\n".join(lines)
+
+
+def format_tracking_table(rows: list[dict], *, title: str = "📊 Aday Takip") -> str:
+    """11:30 adaylarının anlık fiyat/değişim tablosu (WhatsApp monospace).
+
+    `rows` her öğesi: {symbol, entry_price, current_price, change_pct,
+    potential_pct, hit_ceiling} döner. WhatsApp'ta hizalı görünmesi için
+    ``` bloğu (monospace) içinde sabit genişlikli tablo üretir.
+    """
+    if not rows:
+        return f"{title}\n\nTakip edilecek aday yok."
+    # değişime göre azalan (en iyi üstte)
+    def _key(r: dict):
+        v = r.get("change_pct")
+        return float(v) if v is not None else -999.0
+    rows = sorted(rows, key=_key, reverse=True)
+
+    def _f(v, nd=4):
+        if v is None:
+            return "—"
+        try:
+            return f"{float(v):.{nd}f}".rstrip("0").rstrip(".")
+        except (TypeError, ValueError):
+            return "—"
+
+    def _p(v):
+        if v is None:
+            return "—"
+        try:
+            x = float(v)
+            return f"{x:+.1f}%"
+        except (TypeError, ValueError):
+            return "—"
+
+    header = f"{'SEMBOL':<10}{'GİRİŞ':>9}{'ANLIK':>9}{'DEĞ%':>8}"
+    sep = "-" * len(header)
+    body = [header, sep]
+    for r in rows[:15]:
+        sym = str(r.get("symbol") or "?")[:10]
+        entry = _f(r.get("entry_price"))
+        cur = _f(r.get("current_price"))
+        chg = _p(r.get("change_pct"))
+        mark = "✓" if r.get("hit_ceiling") else ""
+        body.append(f"{sym:<10}{entry:>9}{cur:>9}{chg:>8} {mark}")
+    return f"{title}\n\n```\n" + "\n".join(body) + "\n```"
+

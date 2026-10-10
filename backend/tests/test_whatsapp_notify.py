@@ -48,3 +48,24 @@ def test_format_contains_values():
     assert "MINATRY" in out
     assert "potansiyel +%81" in out
     assert "hedef +%4" in out
+
+
+def test_tracking_table_empty():
+    out = wn.format_tracking_table([])
+    assert "aday yok" in out.lower()
+
+
+def test_tracking_table_sorted_desc():
+    rows = [
+        {"symbol": "AAA", "entry_price": 1.0, "current_price": 0.98, "change_pct": -2.0},
+        {"symbol": "BBB", "entry_price": 1.0, "current_price": 1.10, "change_pct": 10.0},
+        {"symbol": "CCC", "entry_price": 1.0, "current_price": 1.05, "change_pct": 5.0},
+    ]
+    out = wn.format_tracking_table(rows)
+    # en iyi (BBB +%10) en üstte, sonra CCC, sonra AAA
+    assert out.index("BBB") < out.index("CCC") < out.index("AAA")
+    assert "```" in out  # monospace blok
+
+
+def test_hourly_default_off():
+    assert config.config.WHATSAPP_HOURLY_ENABLED is False

@@ -2760,6 +2760,64 @@ async def daily_momentum_loop():
         await asyncio.sleep(poll_sec)
 
 
+async def daily_rising_hourly_loop():
+    """Saat başı: o günün adaylarının anlık fiyat/değişimini WhatsApp'a gönder.
+
+    Bugün 11:30 taramasında kaydedilen (`daily_rising_candidates`) adayların
+    entry_price'ı ile anlık fiyatı karşılaştırılır; tablo gruba atılır.
+    WhatsApp yapılandırılmadıkça (`WHATSAPP_HOURLY_ENABLED` / bridge) hiçbir şey
+    yapmaz. Saat aralığı: WHATSAPP_HOURLY_START/END_HOUR (TR saati).
+    """
+    poll_sec = 60.0
+    logger.info("saatlik aday takip döngüsü başladı (enabled=%s, %02d-%02d TR)",
+                config.WHATSAPP_HOURLY_ENABLED, config.WHATSAPP_HOURLY_START_HOUR,
+                config.WHATSAPP_HOURLY_END_HOUR)
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
+    except Exception:
+        _tz = None
+    await asyncio.sleep(90)
+    while True:
+        try:
+            if config.WHATSAPP_HOURLY_ENABLED:
+                from app.whatsapp_notify import (
+                    format_tracking_table, send_whatsapp, whatsapp_enabled)
+                if whatsapp_enabled():
+                    lt = datetime.now(_tz) if _tz else datetime.now()
+                    hour_key = lt.strftime("%Y-%m-%d %H")
+                    in_window = (config.WHATSAPP_HOURLY_START_HOUR <= lt.hour
+                                 <= config.WHATSAPP_HOURLY_END_HOUR)
+                    if in_window and lt.minute < 2 and \
+                            _monitoring_state.get("whatsapp_hourly_last") != hour_key:
+                        _monitoring_state["whatsapp_hourly_last"] = hour_key
+                        rows = await database.list_daily_rising(limit=30, days=1.0)
+                        table = []
+                        for r in rows:
+                            sym = str(r.get("symbol") or "").upper()
+                            entry = r.get("price")
+                            cur = _ticker_price(sym)
+                            try:
+                                e = float(entry) if entry else None
+                                c_ = float(cur) if cur else None
+                            except (TypeError, ValueError):
+                                e = c_ = None
+                            table.append({
+                                "symbol": sym, "entry_price": e, "current_price": c_,
+                                "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
+                                "potential_pct": r.get("potential_pct"),
+                                "hit_ceiling": r.get("hit_ceiling"),
+                            })
+                        if table:
+                            await send_whatsapp(format_tracking_table(
+                                table, title=f"📊 Aday Takip · {lt.strftime('%H:%M')}"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("saatlik aday takip turu: %s", exc)
+        await asyncio.sleep(poll_sec)
+
+
 @router.get("/api/daily-rising/state")
 async def daily_rising_state(request: Request = None):
     """Günlük momentum adayları + öneri/anlık fiyat karşılaştırması (salt okunur)."""
