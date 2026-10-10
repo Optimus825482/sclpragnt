@@ -119,6 +119,16 @@ services:
       BINANCE_TR_BRIDGE_AUTO_TRADE: ${BINANCE_TR_BRIDGE_AUTO_TRADE:-0}
       BINANCE_TR_BRIDGE_MIN_SCORE: ${BINANCE_TR_BRIDGE_MIN_SCORE:-0.0}
       BINANCE_TR_BRIDGE_COOLDOWN_SEC: ${BINANCE_TR_BRIDGE_COOLDOWN_SEC:-60.0}
+      # WhatsApp grup bildirimi (Baileys köprüsü — ayrı konteyner).
+      # Varsayılan KAPALI; operatör .env'den açar. URL iç ağ adıdır
+      # (whatsapp-bridge:3001) — köprü dışarıya port AÇMAZ.
+      WHATSAPP_NOTIFY_ENABLED: ${WHATSAPP_NOTIFY_ENABLED:-false}
+      WHATSAPP_HOURLY_ENABLED: ${WHATSAPP_HOURLY_ENABLED:-false}
+      WHATSAPP_HOURLY_START_HOUR: ${WHATSAPP_HOURLY_START_HOUR:-11}
+      WHATSAPP_HOURLY_END_HOUR: ${WHATSAPP_HOURLY_END_HOUR:-23}
+      WHATSAPP_BRIDGE_URL: ${WHATSAPP_BRIDGE_URL:-http://whatsapp-bridge:3001}
+      WHATSAPP_BRIDGE_KEY: ${WHATSAPP_BRIDGE_KEY:-}
+      WHATSAPP_GROUP_ID: ${WHATSAPP_GROUP_ID:-}
     # 2026-10-07 (P1-11 #2): GİZLİ DEĞERLER ARTIK .env'DEN GELİR — repoda düz
     # metin YOKTUR. `environment:` altındaki `${...:?}` başvuruları host
     # ortamından ya da compose'un otomatik okuduğu git-ignored kök `.env`
@@ -278,9 +288,41 @@ services:
   #   docker cp <postgres>:/tmp/bak.dump ./bak.dump
   # Geri yükleme: pg_restore (psql DEĞİL — custom format `-Fc`).
 
+  # WhatsApp köprüsü (Baileys) — 11:30 raporu + saat başı takip tablosunu
+  # gruba iletir. Backend iç ağdan (http://whatsapp-bridge:3001) çağırır.
+  # DIŞARIYA PORT AÇILMAZ (expose, ports DEĞİL) + traefik kapalı → internete
+  # kapalı. Oturum (QR sonrası) `whatsapp_auth` volume'unda kalıcıdır; deploy
+  # QR'ı tekrar gerektirmez.
+  whatsapp-bridge:
+    build:
+      context: ./whatsapp-bridge
+    restart: unless-stopped
+    stop_grace_period: 5s
+    mem_limit: 512m
+    cpus: 0.5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    environment:
+      PORT: "3001"
+      AUTH_DIR: /app/auth
+      BRIDGE_KEY: ${WHATSAPP_BRIDGE_KEY:-}
+      WHATSAPP_GROUP_ID: ${WHATSAPP_GROUP_ID:-}
+      LOG_LEVEL: ${WA_LOG_LEVEL:-warn}
+    volumes:
+      - whatsapp_auth:/app/auth
+    expose:
+      - "3001"
+    labels:
+      - "traefik.enable=false"
+    logging: *default-logging
+
 volumes:
   scalper_data:
   scalper_postgres_data:
+  whatsapp_auth:
 
 # Coolify proxy (Traefik) ağı — compose dışında tanımlı external ağ.
 networks:

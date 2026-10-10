@@ -34,6 +34,7 @@ const AUTH_DIR = process.env.AUTH_DIR || "./auth";
 
 let sock = null;
 let connected = false;
+let lastQrAscii = "";   // /qr ucu için son QR (ASCII) — konteynerde log okumak zorsa
 
 const logger = pino({ level: process.env.LOG_LEVEL || "warn" });
 
@@ -54,11 +55,13 @@ async function startSock() {
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
-      console.log("\n=== WHATSAPP QR — telefondan okutun (WhatsApp > Bağlı Cihazlar) ===\n");
-      qrcode.generate(qr, { small: true });
+      console.log("\n=== WHATSAPP QR — telefondan okutun (WhatsApp > Bağlı Cihazlar) ===");
+      console.log("    (Konteyner logunda okumak zorsa: GET /qr ucu ASCII QR döner)\n");
+      qrcode.generate(qr, { small: true }, (ascii) => { lastQrAscii = ascii; console.log(ascii); });
     }
     if (connection === "open") {
       connected = true;
+      lastQrAscii = "";
       console.log("✅ WhatsApp bağlandı.");
     } else if (connection === "close") {
       connected = false;
@@ -92,7 +95,14 @@ app.get("/status", (req, res) => {
     connected,
     group_configured: Boolean(GROUP_ID),
     group_id: GROUP_ID || null,
+    qr_pending: Boolean(lastQrAscii) && !connected,
   });
+});
+
+app.get("/qr", (req, res) => {
+  if (connected) return res.type("text/plain").send("✅ Zaten bağlı — QR gerekmez.");
+  if (!lastQrAscii) return res.type("text/plain").send("QR henüz hazır değil; birkaç saniye sonra tekrar deneyin.");
+  res.type("text/plain").send(lastQrAscii);
 });
 
 app.get("/groups", async (req, res) => {
