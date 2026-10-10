@@ -2849,6 +2849,11 @@ async def daily_rising_hourly_loop():
                                 "symbol": sym, "entry_price": e, "current_price": c_,
                                 "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
                                 "potential_pct": r.get("potential_pct"),
+                                "strategy": r.get("strategy"),
+                                # İhtimal raporunkiyle AYNI girdilerden yeniden üretilir
+                                # (ceiling_pct + atr_pct) → aynı ilk 5 seçilir.
+                                "target_probability": touch_probability(
+                                    r.get("ceiling_pct"), r.get("atr_pct")),
                                 "hit_ceiling": r.get("hit_ceiling"),
                             })
                         if table:
@@ -2992,6 +2997,8 @@ async def daily_rising_send_tracking(request: Request = None):
             "symbol": sym, "entry_price": e, "current_price": c_,
             "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
             "potential_pct": r.get("potential_pct"),
+            "strategy": r.get("strategy"),
+            "target_probability": touch_probability(r.get("ceiling_pct"), r.get("atr_pct")),
             "hit_ceiling": r.get("hit_ceiling"),
         })
     text = format_tracking_table(table, title=f"📊 Aday Takip · {datetime.now().strftime('%H:%M')}")

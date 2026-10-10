@@ -115,6 +115,46 @@ def test_tracking_table_emoji_legend_present():
     assert "🪙" not in data_line and "💵" not in data_line and "📈" not in data_line
 
 
+def test_tracking_table_top5_and_avg_vs_1130():
+    """Kullanıcı isteği: takip tablosu raporla AYNI ilk 5'i gösterir ve en altta
+    bu 5'in 11:30'a göre ortalama % değişimi yazılır."""
+    rows = [
+        {"symbol": f"C{i}TRY", "entry_price": 1.0, "current_price": 1.0 + i * 0.01,
+         "change_pct": float(i), "potential_pct": 90 - i, "target_probability": 60,
+         "strategy": "daily_momentum"}
+        for i in range(8)
+    ]
+    out = wn.format_tracking_table(rows)
+    data_rows = [ln for ln in out.splitlines() if ln.startswith("C") and "%" in ln]
+    assert len(data_rows) == 5                     # yalnızca ilk 5 (rapordaki gibi)
+    assert "11:30'a göre ort. değişimi" in out     # ortalama değişim satırı
+    assert "```" in out
+
+
+def test_tracking_table_same_selection_as_report():
+    """Aynı aday kümesi → raporda ve takip tablosunda aynı ilk 5 sembol."""
+    cands = [
+        {"symbol": "AAATRY", "price": 1.0, "ceiling_pct": 3, "potential_pct": 200,
+         "target_probability": 10, "strategy": "daily_momentum"},   # puan 20
+        {"symbol": "BBBTRY", "price": 2.0, "ceiling_pct": 4, "potential_pct": 90,
+         "target_probability": 80, "strategy": "daily_momentum"},   # puan 72
+        {"symbol": "CCCTRY", "price": 3.0, "ceiling_pct": 5, "potential_pct": 50,
+         "target_probability": 60, "strategy": "short_squeeze"},    # puan 30
+    ]
+    rep = wn.format_scan_report(cands)
+    track = wn.format_tracking_table([
+        {"symbol": c["symbol"], "entry_price": c["price"], "current_price": c["price"],
+         "change_pct": 0.0, "potential_pct": c["potential_pct"],
+         "target_probability": c["target_probability"], "strategy": c["strategy"]}
+        for c in cands
+    ])
+    order_rep = [s for s in ("AAA", "BBB", "CCC") if s in rep]
+    order_rep.sort(key=rep.index)
+    order_trk = [s for s in ("AAA", "BBB", "CCC") if s in track]
+    order_trk.sort(key=track.index)
+    assert order_rep == order_trk == ["BBB", "CCC", "AAA"]
+
+
 def test_scan_report_limits_to_top5_and_avg_line():
     """Kullanıcı kararı: ilk 5 sembol + altında ortalama yükselme beklentisi."""
     rows = [{"symbol": f"C{i}TRY", "price": 1.0 + i, "ceiling_pct": 3.0 + i,

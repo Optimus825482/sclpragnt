@@ -76,6 +76,23 @@ async def send_whatsapp(text: str) -> bool:
         return False
 
 
+def _is_both(c: dict) -> int:
+    return 1 if str(c.get("strategy") or "") == "both" else 0
+
+
+def _combined_score(c: dict) -> float:
+    """Birleşik aday puanı: ihtimal(%) × potansiyel(%) / 100.
+
+    Rapor ve takip tablosu AYNI puana göre sıralanır → ikisinde de aynı ilk 5
+    sembol görünür. İhtimal yoksa nötr taban (%50) kullanılır; potansiyel yoksa
+    puan 0 olur (sıralamada geriye düşer).
+    """
+    pot = float(c.get("potential_pct") or 0)
+    prob = c.get("target_probability")
+    p = float(prob) if prob is not None else 50.0
+    return p * max(pot, 0.0) / 100.0
+
+
 def format_scan_report(candidates: list[dict], *, title: str = "🌅 Günlük Yükseliş Adayları") -> str:
     """Aday listesini emoji başlıklı + sayısal hizalı biçime çevir (en iyi 5).
 
@@ -93,15 +110,8 @@ def format_scan_report(candidates: list[dict], *, title: str = "🌅 Günlük Y�
     if not candidates:
         return f"{title}\n\nBugün koşulları geçen aday bulunamadı."
 
-    def _score(c: dict) -> float:
-        pot = float(c.get("potential_pct") or 0)
-        prob = c.get("target_probability")
-        p = float(prob) if prob is not None else 50.0   # ihtimal yoksa nötr taban
-        return p * max(pot, 0.0) / 100.0
-
     def _key(c: dict):
-        both = 1 if str(c.get("strategy") or "") == "both" else 0
-        return (both, _score(c))
+        return (_is_both(c), _combined_score(c))
     rows = sorted(candidates, key=_key, reverse=True)
 
     def _sym(s: str) -> str:
@@ -178,55 +188,62 @@ def _fmt_price(v, width: int = 8) -> str:
 def format_tracking_table(rows: list[dict], *, title: str = "📊 Aday Takip") -> str:
     """Adayların anlık fiyat/değişim tablosu — emoji başlıklı + sayısal hizalı.
 
-    Tasarım (2026-10-10 revize): WhatsApp monospace'te EMOJI genişliği
-    değişken olduğu için emojiler VERİ SÜTUNLARINA konmaz (hizalamayı bozar).
-    - Üstte bir **emoji açıklama satırı** (🪙/💵/📈/⚡ ikon sözlüğü),
-    - Altında **tam sayısal hizalı** düz sütunlar (yön oku kaldırıldı; +/- ve
-      renk zaten anlamlı),
-    - Strateji etiketi (⚡📈) yalnızca EN SONA konur → rakam sütunlarını etkilemez.
+    Tasarım (2026-10-10 revize):
+    - Rapor ile AYNI ilk 5 sembol gösterilir: sıralama `_combined_score`
+      (ihtimal × potansiyel) ile yapılır → 30 dk'lık güncelleme, 11:30 raporunun
+      takip ettiği sembollerle tutarlı kalır.
+    - EMOJI genişliği monospace'te sabit değildir → emoji yalnız **açıklama
+      satırında** ve strateji etiketinde (satır SONUNDA); rakam sütunları düz.
+    - En altta bu 5'in **11:30'a göre ortalama % değişimi** yazılır (giriş fiyatı
+      11:30 taramasındaki fiyattır).
     """
     if not rows:
         return f"{title}\n\nTakip edilecek aday yok."
 
     def _key(r: dict):
-        v = r.get("change_pct")
-        return float(v) if v is not None else -999.0
+        chg = r.get("change_pct")
+        return (_is_both(r), _combined_score(r),
+                float(chg) if chg is not None else -999.0)
     rows = sorted(rows, key=_key, reverse=True)
 
     def _sym(s: str) -> str:
         s = str(s or "?").upper()
-        return (s[:-3] if s.endswith("TRY") else s)[:9]
+        return (s[:-3] if s.endswith("TRY") else s)[:8]
 
     # Emoji açıklama barı (başlık) + hizalı etiket barı
     legend = "🪙 coin   💵 giriş   📈 anlık   ⚡ değişim"
-    header = f"{'COIN':<9}{'GİRİŞ':>10}{'ANLIK':>10}{'DEĞİŞİM':>10}"
+    header = f"{'COIN':<8}{'GİRİŞ':>10}{'ANLIK':>10}{'DEĞİŞİM':>10}  KAYNAK"
     sep = "─" * len(header)
     body = [legend, header, sep]
     unchanged = 0
-    for r in rows[:20]:
+    shown = rows[:5]  # rapor ile aynı: en yüksek puanlı 5 sembol
+    for r in shown:
         sym = _sym(r.get("symbol"))
         entry = _fmt_price(r.get("entry_price"), 10)
         cur = _fmt_price(r.get("current_price"), 10)
-        # değişim: yalnız işaretli yüzde (ok yok → hizalama korunur)
         if r.get("change_pct") is None:
             chg = "—".rjust(10)
         else:
             chg = f"{float(r['change_pct']):+.1f}%".rjust(10)
         if r.get("current_price") is None:
             unchanged += 1
-        mark = " ✓" if r.get("hit_ceiling") else ""
-        body.append(f"{sym:<9}{entry:>10}{cur:>10}{chg:>10}{mark}")
+        strat = str(r.get("strategy") or "")
+        tag = "⚡📈" if strat == "both" else ("⚡" if strat == "short_squeeze"
+                                              else ("📈" if strat else ""))
+        mark = "✓" if r.get("hit_ceiling") else ""
+        suffix = f"  {tag}{(' ' + mark) if mark else ''}"
+        body.append(f"{sym:<8}{entry:>10}{cur:>10}{chg:>10}{suffix}")
 
-    chgs = [float(r["change_pct"]) for r in rows if r.get("change_pct") is not None]
+    chgs = [float(r["change_pct"]) for r in shown if r.get("change_pct") is not None]
     up = sum(1 for x in chgs if x > 0.2)
     dn = sum(1 for x in chgs if x < -0.2)
     flat = sum(1 for x in chgs if -0.2 <= x <= 0.2)
-    avg = (sum(chgs) / len(chgs)) if chgs else None
     summary = f"▲ {up} yükselen · ▼ {dn} düşen · • {flat} yatay"
-    if avg is not None:
-        summary += f"  |  ort {avg:+.1f}%"
     if unchanged:
         summary += f"  |  {unchanged} fiyat alınamadı"
+    # Kullanıcı isteği: bu 5'in 11:30'a göre ORTALAMA % değişimi en altta.
+    if chgs:
+        summary += f"\n🎯 Bu {len(shown)}'in 11:30'a göre ort. değişimi: {sum(chgs) / len(chgs):+.2f}%"
 
     return f"{title}\n\n```\n" + "\n".join(body) + "\n```\n" + summary
 

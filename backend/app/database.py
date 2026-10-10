@@ -1849,7 +1849,8 @@ async def list_daily_rising(limit: int = 100, days: float = 7.0) -> list[dict]:
         rows = conn.execute(
             "SELECT id, created_at, symbol, price, target_pct, ceiling_pct, ceiling_price,"
             " velocity_score, ret_8h, adx, atr_pct, slope, spread_pct, horizon_minutes,"
-            " status, mfe_pct, mae_pct, peak_at, evaluated_at, notified, auto_paper_trade_id"
+            " status, mfe_pct, mae_pct, peak_at, evaluated_at, notified, auto_paper_trade_id,"
+            " strategy, potential_pct"
             " FROM daily_rising_candidates WHERE created_at >= ? "
             "ORDER BY created_at DESC LIMIT ?",
             (since, max(1, min(1000, int(limit))))).fetchall()
