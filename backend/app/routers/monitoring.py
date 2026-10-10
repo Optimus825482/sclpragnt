@@ -2629,6 +2629,7 @@ async def _daily_momentum_scan_once() -> int:
     cooldown = float(config.DAILY_MOMENTUM_REPEAT_COOLDOWN_MIN) * 60.0
     now = time.time()
     processed = 0
+    _report_rows: list[dict] = []
     for sym, c in by_sym.items():
         try:
             last = await database.last_daily_rising_at(sym)
@@ -2677,9 +2678,21 @@ async def _daily_momentum_scan_once() -> int:
             if row_id:
                 await database.mark_daily_rising_notified(row_id)
             processed += 1
+            _report_rows.append({
+                "symbol": sym, "price": price, "ceiling_pct": c.get("ceiling_pct"),
+                "potential_pct": _pot.get("potential_pct") if _pot else None,
+                "strategy": _strat, "velocity_score": c.get("velocity_score"),
+            })
             logger.info("yükseliş adayı (%s): %s @ %.6f (tavan +%%%s)", _strat, sym, price, c.get("ceiling_pct"))
         except Exception as exc:
             logger.debug("günlük momentum aday işleme (%s): %s", sym, exc)
+    # WhatsApp grup raporu (yalnız 11:30 otomatik taraması; yapılandırılmadıkça atlar).
+    try:
+        from app.whatsapp_notify import format_scan_report, send_whatsapp, whatsapp_enabled
+        if whatsapp_enabled():
+            await send_whatsapp(format_scan_report(_report_rows))
+    except Exception as exc:
+        logger.debug("WhatsApp rapor gönderimi: %s", exc)
     return processed
 
 

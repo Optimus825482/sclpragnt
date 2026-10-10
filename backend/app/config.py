@@ -426,6 +426,13 @@ class Config:
     DAILY_MOMENTUM_SCAN_HOUR = max(0, min(23, int(os.getenv("DAILY_MOMENTUM_SCAN_HOUR", "11"))))
     DAILY_MOMENTUM_SCAN_MINUTE = max(0, min(59, int(os.getenv("DAILY_MOMENTUM_SCAN_MINUTE", "30"))))
     DAILY_MOMENTUM_TZ = os.getenv("DAILY_MOMENTUM_TZ", "Europe/Istanbul")
+    # WhatsApp grup bildirimi (Baileys köprüsü üzerinden, 2026-10-10).
+    # Resmi API YOK; ayrı `whatsapp-bridge/` Node servisiyle HTTP konuşulur.
+    # VARSAYILAN KAPALI: yapılandırılmadıkça hiçbir şey gönderilmez.
+    WHATSAPP_NOTIFY_ENABLED = os.getenv("WHATSAPP_NOTIFY_ENABLED", "false").lower() == "true"
+    WHATSAPP_BRIDGE_URL = os.getenv("WHATSAPP_BRIDGE_URL", "").strip()
+    WHATSAPP_BRIDGE_KEY = os.getenv("WHATSAPP_BRIDGE_KEY", "").strip()
+    WHATSAPP_GROUP_ID = os.getenv("WHATSAPP_GROUP_ID", "").strip()
     DAILY_MOMENTUM_RET_8H_MIN = float(os.getenv("DAILY_MOMENTUM_RET_8H_MIN", "2.0"))
     DAILY_MOMENTUM_ATR_MIN = float(os.getenv("DAILY_MOMENTUM_ATR_MIN", "0.5"))
     DAILY_MOMENTUM_ADX_MIN = float(os.getenv("DAILY_MOMENTUM_ADX_MIN", "25.0"))
