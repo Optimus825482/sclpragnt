@@ -1776,11 +1776,13 @@ def _ensure_daily_rising_schema(conn) -> None:
           notified BOOLEAN NOT NULL DEFAULT FALSE,
           auto_paper_trade_id INTEGER,
           strategy TEXT,
+          potential_pct DOUBLE PRECISION,
           details JSONB
         )""")
     # Mevcut kurulumlar için strateji kolonu (kaynak izleme: daily_momentum /
     # short_squeeze / both). İleride hangi stratejinin isabetli olduğu ölçülebilsin.
     conn.execute("ALTER TABLE daily_rising_candidates ADD COLUMN IF NOT EXISTS strategy TEXT")
+    conn.execute("ALTER TABLE daily_rising_candidates ADD COLUMN IF NOT EXISTS potential_pct DOUBLE PRECISION")
     _DAILY_RISING_SCHEMA_READY = True
 
 
@@ -1792,8 +1794,8 @@ async def save_daily_rising(item: dict) -> int | None:
             "INSERT INTO daily_rising_candidates"
             "(created_at, symbol, price, target_pct, ceiling_pct, ceiling_price,"
             " velocity_score, ret_8h, adx, atr_pct, slope, spread_pct, horizon_minutes,"
-            " status, notified, strategy, details) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?) RETURNING id",
+            " status, notified, strategy, potential_pct, details) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?) RETURNING id",
             (
                 float(item.get("created_at") or time.time()),
                 str(item.get("symbol") or "?").upper(),
@@ -1810,6 +1812,7 @@ async def save_daily_rising(item: dict) -> int | None:
                 (int(item["horizon_minutes"]) if item.get("horizon_minutes") is not None else None),
                 bool(item.get("notified", False)),
                 str(item.get("strategy") or "daily_momentum"),
+                item.get("potential_pct"),
                 json.dumps(item.get("details"), default=str) if item.get("details") is not None else None,
             ),
         ).fetchone()
@@ -2033,6 +2036,7 @@ def _ensure_user_daily_watchlist_schema(conn) -> None:
           active BOOLEAN NOT NULL DEFAULT TRUE,
           note TEXT,
           strategy TEXT,
+          potential_pct DOUBLE PRECISION,
           outcome_status TEXT NOT NULL DEFAULT 'pending',
           mfe_pct DOUBLE PRECISION,
           mae_pct DOUBLE PRECISION,
@@ -2050,6 +2054,7 @@ def _ensure_user_daily_watchlist_schema(conn) -> None:
         "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS evaluated_at DOUBLE PRECISION",
         "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS hit_ceiling BOOLEAN",
         "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS strategy TEXT",
+        "ALTER TABLE user_daily_watchlist ADD COLUMN IF NOT EXISTS potential_pct DOUBLE PRECISION",
     ):
         conn.execute(ddl)
     _USER_DAILY_WATCHLIST_SCHEMA_READY = True
@@ -2066,14 +2071,15 @@ async def add_to_user_daily_watchlist(username: str, item: dict) -> int | None:
         row = conn.execute(
             "INSERT INTO user_daily_watchlist"
             "(username, symbol, added_at, entry_price, ceiling_pct, ceiling_price,"
-            " ret_8h, adx, slope, atr_pct, velocity_score, source, strategy, active, note) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,TRUE,?) "
+            " ret_8h, adx, slope, atr_pct, velocity_score, source, strategy, potential_pct, active, note) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,TRUE,?) "
             "ON CONFLICT(username, symbol) DO UPDATE SET "
             "added_at=excluded.added_at, entry_price=excluded.entry_price, "
             "ceiling_pct=excluded.ceiling_pct, ceiling_price=excluded.ceiling_price, "
             "ret_8h=excluded.ret_8h, adx=excluded.adx, slope=excluded.slope, "
             "atr_pct=excluded.atr_pct, velocity_score=excluded.velocity_score, "
-            "source=excluded.source, strategy=excluded.strategy, active=TRUE, note=excluded.note "
+            "source=excluded.source, strategy=excluded.strategy, potential_pct=excluded.potential_pct, "
+            "active=TRUE, note=excluded.note "
             "RETURNING id",
             (
                 user, str(item.get("symbol") or "?").upper(),
@@ -2081,7 +2087,7 @@ async def add_to_user_daily_watchlist(username: str, item: dict) -> int | None:
                 item.get("entry_price"), item.get("ceiling_pct"), item.get("ceiling_price"),
                 item.get("ret_8h"), item.get("adx"), item.get("slope"), item.get("atr_pct"),
                 item.get("velocity_score"), str(item.get("source") or "manual_scan"),
-                item.get("strategy"),
+                item.get("strategy"), item.get("potential_pct"),
                 item.get("note"),
             ),
         ).fetchone()
@@ -2104,7 +2110,7 @@ async def list_user_daily_watchlist(username: str, include_inactive: bool = Fals
         where = "username=?" + ("" if include_inactive else " AND active=TRUE")
         rows = conn.execute(
             f"SELECT id, username, symbol, added_at, entry_price, ceiling_pct, ceiling_price,"
-            f" ret_8h, adx, slope, atr_pct, velocity_score, source, active, note,"
+            f" ret_8h, adx, slope, atr_pct, velocity_score, source, active, note, strategy, potential_pct,"
             f" outcome_status, mfe_pct, mae_pct, peak_at, evaluated_at, hit_ceiling"
             f" FROM user_daily_watchlist WHERE {where} ORDER BY added_at DESC LIMIT 500",
             (user,)).fetchall()

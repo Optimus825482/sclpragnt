@@ -34,6 +34,9 @@ type Cand = {
   target_price: number | null;
   target_probability: number | null;
   strategy?: string | null;
+  potential_price?: number | null;
+  potential_pct?: number | null;
+  potential_levels?: number[] | null;
 };
 
 type Watch = {
@@ -52,6 +55,8 @@ type Watch = {
   target_price: number | null;
   target_probability: number | null;
   atr_pct_live: number | null;
+  strategy?: string | null;
+  potential_pct?: number | null;
 };
 
 type WatchStats = {
@@ -170,7 +175,12 @@ export default function DailyRisingPage() {
     try {
       const res = await apiRequest(`${API_BASE}/api/daily-rising/watchlist`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol: c.symbol }),
+        body: JSON.stringify({
+          symbol: c.symbol,
+          ceiling_pct: c.ceiling_pct,
+          strategy: c.strategy ?? null,
+          potential_pct: c.potential_pct ?? null,
+        }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d?.detail || `HTTP ${res.status}`);
@@ -235,7 +245,8 @@ export default function DailyRisingPage() {
                     <th className="p-2">Sembol</th>
                     <th className="p-2">Kaynak</th>
                     <th className="p-2 text-right">Fiyat</th>
-                    <th className="p-2 text-right">Hedef</th>
+                    <th className="p-2 text-right">Hedef (TP)</th>
+                    <th className="p-2 text-right">Potansiyel</th>
                     <th className="p-2 text-right">8s Getiri</th>
                     <th className="p-2 text-right">ADX</th>
                     <th className="p-2 text-right">Eğim</th>
@@ -260,6 +271,11 @@ export default function DailyRisingPage() {
                               {c.target_probability != null
                                 ? <span className="text-neon-green font-semibold" title="Hedefe ulaşım ihtimali (gerçek veriden kalibre)">%{Math.round(c.target_probability)}</span>
                                 : <span className="text-bunker-muted">—</span>}</>
+                          : "—"}
+                      </td>
+                      <td className="p-2 text-right text-neon-green whitespace-nowrap" title={c.potential_levels ? `Ara dirençler: ${c.potential_levels.map((l) => formatPrice(l)).join(" · ")}` : "30g zirve bazlı potansiyel"}>
+                        {c.potential_pct != null
+                          ? <>{c.potential_price != null ? formatPrice(c.potential_price) : "—"}<span className="text-bunker-muted">(+%{Math.round(c.potential_pct)})</span></>
                           : "—"}
                       </td>
                       <td className={`p-2 text-right ${pctTone(c.ret_8h_pct)}`}>{fmtPct(c.ret_8h_pct)}</td>
@@ -309,7 +325,8 @@ export default function DailyRisingPage() {
                   <th className="p-2 text-right">Giriş Fiyatı</th>
                   <th className="p-2 text-right">Anlık</th>
                   <th className="p-2 text-right">Değişim</th>
-                  <th className="p-2 text-right">Hedef</th>
+                  <th className="p-2 text-right">Hedef (TP)</th>
+                  <th className="p-2 text-right">Potansiyel</th>
                   <th className="p-2 text-right">Gerçekleşen Max</th>
                   <th className="p-2 text-center">Tavan?</th>
                   <th className="p-2 text-center">Kaldır</th>
@@ -333,6 +350,9 @@ export default function DailyRisingPage() {
                               ? <span className="text-neon-green font-semibold" title="Hedefe ulaşım ihtimali (gerçek veriden kalibre)">%{Math.round(w.target_probability)}</span>
                               : <span className="text-bunker-muted">—</span>}</>
                         : "—"}
+                    </td>
+                    <td className="p-2 text-right text-neon-green whitespace-nowrap" title="30g zirve bazlı potansiyel üst sınır">
+                      {w.potential_pct != null ? `+%${Math.round(w.potential_pct)}` : "—"}
                     </td>
                     <td className={`p-2 text-right font-semibold ${pctTone(w.mfe_pct)}`}>
                       {w.mfe_pct != null ? fmtPct(w.mfe_pct) : "—"}

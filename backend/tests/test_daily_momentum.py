@@ -111,6 +111,21 @@ def test_strategy_column_persisted():
     assert "strategy" in src2
 
 
+def test_potential_helper_exists():
+    """Potansiyel üst sınır (fib/30g zirve) yardımcısı mevcut olmalı."""
+    from app.routers import monitoring
+    assert hasattr(monitoring, "_compute_potential")
+    import inspect
+    assert inspect.iscoroutinefunction(monitoring._compute_potential)
+
+
+def test_potential_column_persisted():
+    """potential_pct DB fonksiyonlarında taşınmalı (migration 009)."""
+    import inspect
+    assert "potential_pct" in inspect.getsource(database.save_daily_rising)
+    assert "potential_pct" in inspect.getsource(database.add_to_user_daily_watchlist)
+
+
 def test_touch_probability_calibrated():
     """Hedefe ulaşım ihtimali gerçek veriden kalibre: hedef=3·ATR → ~%60."""
     from app.routers.monitoring import touch_probability

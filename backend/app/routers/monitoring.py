@@ -2648,6 +2648,9 @@ async def _daily_momentum_scan_once() -> int:
             notif["ceiling_price"] = c.get("ceiling_price")
             if c.get("funding_rate_pct") is not None:
                 notif["funding_rate_pct"] = c.get("funding_rate_pct")
+            _pot = await _compute_potential(sym, price)
+            if _pot:
+                notif["potential_pct"] = _pot.get("potential_pct")
             row_id = await database.save_daily_rising({
                 "created_at": now, "symbol": sym, "price": price,
                 "target_pct": c.get("target_pct"),
@@ -2662,6 +2665,7 @@ async def _daily_momentum_scan_once() -> int:
                 "horizon_minutes": c.get("horizon_minutes"),
                 "notified": True,
                 "strategy": _strat,
+                "potential_pct": _pot.get("potential_pct") if _pot else None,
                 "details": {"daily_momentum_reason": c.get("daily_momentum_reason"),
                             "funding_state": c.get("funding_state")},
             })
@@ -2848,6 +2852,51 @@ def touch_probability(target_pct: float | None, atr_pct: float | None) -> float 
     return round(tbl[-1][1], 1)
 
 
+async def _compute_potential(symbol: str, price: float) -> dict | None:
+    """Potansiyel üst sınır (fib/direnç bazlı) — scalping tavanından BAĞIMSIZ.
+
+    Kullanıcı isteği: mevcut TP (~%6) "hızlı kâr" hedefi; ama pump coinler
+    (%100+) için gerçek potansiyel ayrı gösterilmeli. Bu fonksiyon 30 günlük
+    zirve + son swing üzerinden fib seviyeleri üretir (forex/teknik standart).
+
+    DÖNÜŞ: {"potential_price": 5.47, "potential_pct": 17.0, "levels": [4.78,5.47,6.03],
+            "basis": "30g_zirve_fib"} veya None (veri yoksa — uydurma yok).
+    """
+    from app.binance_tr_public import klines as _kl
+    try:
+        d = await _kl(symbol, "1d", 40)
+        if not d:
+            return None
+        dh = [float(x[2]) for x in d]
+        dl = [float(x[3]) for x in d]
+        # 30g zirve/dip
+        hi30 = max(dh[-30:])
+        lo30 = min(dl[-30:])
+        if hi30 <= lo30 or price <= 0:
+            return None
+        span = hi30 - lo30
+        # Fibonacci geri çekilme/direnç seviyeleri (dip=taban):
+        # 0.236 / 0.382 / 0.5 / 0.618 / 1.0 (tam dönüş = 30g zirve)
+        fibs = [0.236, 0.382, 0.5, 0.618, 1.0]
+        levels = sorted({round(lo30 + span * f, 8) for f in fibs})
+        # Fiyatın ÜSTÜNDEKİ ilk 3 direnç seviyesi (potansiyel yol haritası)
+        above = [lv for lv in levels if lv > price]
+        if not above:
+            # fiyat 30g zirveye eşit/üstünde → yalnız 30g zirve referansı
+            return {"potential_price": round(hi30, 8),
+                    "potential_pct": round((hi30 / price - 1) * 100, 2),
+                    "levels": [round(hi30, 8)],
+                    "basis": "30g_zirve"}
+        # Potansiyel hedef: en yakın üst direnç DEĞİL, anlamlı uzak hedef —
+        # 30g zirve (tam dönüş) potential olarak kullanılır; ara seviyeler liste.
+        return {"potential_price": round(hi30, 8),
+                "potential_pct": round((hi30 / price - 1) * 100, 2),
+                "levels": above[:3],
+                "basis": "30g_zirve_fib"}
+    except Exception:
+        return None
+
+
 async def _live_atr_pct(symbol: str) -> float | None:
     """Sembolün canlı 15m ATR%'si (kapanmış barlar). Hedef/tavan hesabı için."""
     from app.binance_tr_public import klines as _kl
@@ -2865,7 +2914,7 @@ async def _live_atr_pct(symbol: str) -> float | None:
         return None
 
 
-def _daily_momentum_candidates(scan5: dict, scan15: dict) -> list[dict]:
+async def _daily_momentum_candidates(scan5: dict, scan15: dict) -> list[dict]:
     """Tarama sonucundan günlük momentum onaylı adayları süz (tekrarsız, skora göre)."""
     pool = (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
             + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []))
@@ -2887,6 +2936,7 @@ def _daily_momentum_candidates(scan5: dict, scan15: dict) -> list[dict]:
         except (TypeError, ValueError):
             px_f = None
         ceil_pct = c.get("ceiling_pct")
+        pot = await _compute_potential(sym, px_f) if px_f else None
         rows.append({
             "symbol": sym, "price": px_f,
             "target_pct": c.get("target_pct"),
@@ -2900,10 +2950,14 @@ def _daily_momentum_candidates(scan5: dict, scan15: dict) -> list[dict]:
             "daily_momentum_reason": c.get("daily_momentum_reason"),
             "horizon_minutes": c.get("horizon_minutes"),
             "strategy": "daily_momentum",
-            # Hedef = tavan (beklenen maks. yükseliş) + ulaşım ihtimali (%).
+            # Hızlı kâr hedefi (scalping, ~%6 tavan).
             "target_price": (
                 round(px_f * (1 + float(ceil_pct) / 100.0), 8) if (px_f and ceil_pct) else None),
             "target_probability": touch_probability(ceil_pct, c.get("atr_pct_15m") or c.get("atr_pct")),
+            # POTANSİYEL üst sınır (fib/30g zirve — scalping tavanından bağımsız).
+            "potential_price": pot.get("potential_price") if pot else None,
+            "potential_pct": pot.get("potential_pct") if pot else None,
+            "potential_levels": pot.get("levels") if pot else None,
         })
     return rows
 
@@ -2950,6 +3004,7 @@ async def _short_squeeze_candidates(tr_symbols: list[str]) -> list[dict]:
             ceil_pct = round(max(float(_t.get("tp2_runner_pct") or 0), atr_pct * 3.0), 2)
         except Exception:
             ceil_pct = round(atr_pct * 3.0, 2)
+        pot = await _compute_potential(sym, px_f)
         rows.append({
             "symbol": sym, "price": px_f,
             "target_pct": ceil_pct,
@@ -2965,6 +3020,9 @@ async def _short_squeeze_candidates(tr_symbols: list[str]) -> list[dict]:
             "strategy": "short_squeeze",
             "target_price": round(px_f * (1 + ceil_pct / 100.0), 8),
             "target_probability": touch_probability(ceil_pct, atr_pct),
+            "potential_price": pot.get("potential_price") if pot else None,
+            "potential_pct": pot.get("potential_pct") if pot else None,
+            "potential_levels": pot.get("levels") if pot else None,
         })
     return rows
 
@@ -3024,7 +3082,7 @@ async def daily_rising_manual_scan(request: Request = None):
     scan5 = scan5 if isinstance(scan5, dict) else {}
     scan15 = scan15 if isinstance(scan15, dict) else {}
     squeeze = squeeze if isinstance(squeeze, list) else []
-    mom = _daily_momentum_candidates(scan5, scan15)
+    mom = await _daily_momentum_candidates(scan5, scan15)
     cands = _merge_candidates(mom, squeeze)
     return {"ok": True, "paper_only": True, "generated_at": time.time(),
             "enabled": bool(config.DAILY_MOMENTUM_ENABLED),
@@ -3095,6 +3153,7 @@ async def daily_rising_watchlist_get(request: Request = None):
         out.append({**{k: r.get(k) for k in
                        ("symbol", "added_at", "entry_price", "ceiling_pct", "ceiling_price",
                         "ret_8h", "adx", "slope", "atr_pct", "velocity_score", "source", "note",
+                        "strategy", "potential_pct",
                         "outcome_status", "peak_at", "evaluated_at")},
                     "current_price": c_,
                     "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
@@ -3162,6 +3221,7 @@ async def daily_rising_watchlist_add(payload: dict, request: Request = None):
             "atr_pct": atr_pct_it,
             "velocity_score": it.get("velocity_score"),
             "strategy": it.get("strategy"),
+            "potential_pct": it.get("potential_pct"),
             "source": "manual_scan", "note": it.get("note"),
         })
         if rid:
