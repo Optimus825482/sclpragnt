@@ -86,3 +86,58 @@ def test_tracking_table_has_summary_and_no_try_suffix():
     assert "MAGIC" in out and "MAGICTRY" not in out   # TRY eki kaldırıldı
     assert "yükselen" in out and "düşen" in out        # özet satırı
     assert "```" in out                                 # monospace blok
+
+
+def test_scan_report_emoji_legend_and_no_emoji_in_rows():
+    """Emoji YALNIZCA açıklama satırında + strateji etiketinde; veri satırlarında yok.
+
+    Emoji genişliği monospace'te sabit olmadığı için rakam sütunlarını bozar;
+    bu yüzden veri satırlarında emoji bulunmamalı (etiket sonda).
+    """
+    out = wn.format_scan_report([
+        {"symbol": "MINATRY", "price": 4.68, "ceiling_pct": 3.8,
+         "potential_pct": 81, "strategy": "both"},
+    ])
+    assert "🎯" in out and "🚀" in out          # emoji açıklama satırı var
+    # veri satırı: emoji yok, yalnız sondaki strateji etiketi
+    data_line = next(ln for ln in out.splitlines() if ln.startswith("MINA"))
+    assert "🎯" not in data_line and "🚀" not in data_line and "🪙" not in data_line
+    assert data_line.rstrip().endswith("📈")    # strateji etiketi en sonda
+
+
+def test_tracking_table_emoji_legend_present():
+    """Takip tablosu: emoji açıklama satırı olmalı, veri satırlarında emoji olmamalı."""
+    out = wn.format_tracking_table([
+        {"symbol": "MAGIC", "entry_price": 5.0, "current_price": 5.2, "change_pct": 4.0},
+    ])
+    assert "🪙" in out and "💵" in out and "📈" in out   # açıklama (başlık) satırı
+    data_line = next(ln for ln in out.splitlines() if ln.startswith("MAGIC"))
+    assert "🪙" not in data_line and "💵" not in data_line and "📈" not in data_line
+
+
+def test_scan_report_limits_to_top5_and_avg_line():
+    """Kullanıcı kararı: ilk 5 sembol + altında ortalama yükselme beklentisi."""
+    rows = [{"symbol": f"C{i}TRY", "price": 1.0 + i, "ceiling_pct": 3.0 + i,
+             "potential_pct": 90 - i, "strategy": "daily_momentum"} for i in range(10)]
+    out = wn.format_scan_report(rows)
+    data_rows = [ln for ln in out.splitlines() if ln.startswith("C") and "%" in ln]
+    assert len(data_rows) == 5                     # yalnızca ilk 5
+    assert "ort. potansiyel" in out and "ort. hedef" in out   # ortalama satırı
+    assert "```" in out
+
+
+def test_scan_report_shows_probability_and_sorted_by_score():
+    """İhtimal kolonu gösterilir; sıralama ihtimal×potansiyel birleşik puanına göre."""
+    rows = [
+        # yüksek potansiyel ama düşük ihtimal -> düşük puan
+        {"symbol": "LOWPTRY", "price": 1.0, "ceiling_pct": 9, "potential_pct": 200,
+         "target_probability": 10, "strategy": "daily_momentum"},
+        # orta potansiyel ama yüksek ihtimal -> en yüksek puan (80*90/100=72)
+        {"symbol": "TOPTRY", "price": 2.0, "ceiling_pct": 4, "potential_pct": 90,
+         "target_probability": 80, "strategy": "daily_momentum"},
+    ]
+    out = wn.format_scan_report(rows)
+    assert "%80" in out and "%10" in out            # ihtimal kolonu
+    assert "🎲" in out                              # emoji açıklamasında ihtimal ikonu
+    assert out.index("TOP") < out.index("LOWP")     # birleşik puana göre TOP önde
+    assert "ort. ihtimal" in out

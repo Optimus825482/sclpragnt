@@ -2716,6 +2716,8 @@ async def _daily_momentum_scan_once() -> int:
                 "symbol": sym, "price": price, "ceiling_pct": c.get("ceiling_pct"),
                 "potential_pct": _pot.get("potential_pct") if _pot else None,
                 "strategy": _strat, "velocity_score": c.get("velocity_score"),
+                "target_probability": touch_probability(
+                    c.get("ceiling_pct"), c.get("atr_pct_15m") or c.get("atr_pct")),
             })
             logger.info("yükseliş adayı (%s): %s @ %.6f (tavan +%%%s)", _strat, sym, price, c.get("ceiling_pct"))
         except Exception as exc:

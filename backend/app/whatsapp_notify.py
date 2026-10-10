@@ -77,44 +77,78 @@ async def send_whatsapp(text: str) -> bool:
 
 
 def format_scan_report(candidates: list[dict], *, title: str = "🌅 Günlük Yükseliş Adayları") -> str:
-    """Aday listesini WhatsApp için okunur metne çevir.
+    """Aday listesini emoji başlıklı + sayısal hizalı biçime çevir (en iyi 5).
 
-    Sıralama önceliği: strategy='both' (momentum+squeeze onaylı) üstte, sonra
-    potansiyel %, sonra skor. WhatsApp düz metin + emoji kullanır (tablo yok).
+    TASARIM (2026-10-10 revize):
+    - Kullanıcı kararı: liste **10 değil**, **en yüksek 5** sembol olsun; sıralama
+      "yükselme ihtimali × potansiyel" birleşik puanına göre.
+    - WhatsApp monospace'te EMOJI genişliği sabit değildir; veri sütunlarına emoji
+      koymak hizalamayı bozar → üstte bir **emoji açıklama satırı**, altında
+      **tam sayısal hizalı** düz sütunlar, strateji etiketi (⚡📈) satır SONUNDA.
+    - Alt satırda gösterilen 5'in **ortalama ihtimal/hedef/potansiyel %**'leri.
+
+    Sıralama puanı: ihtimal(%) × potansiyel(%) / 100; ihtimal yoksa potansiyele
+    düşer. Eşitlikte momentum+squeeze onaylı ('both') öne geçer.
     """
     if not candidates:
         return f"{title}\n\nBugün koşulları geçen aday bulunamadı."
+
+    def _score(c: dict) -> float:
+        pot = float(c.get("potential_pct") or 0)
+        prob = c.get("target_probability")
+        p = float(prob) if prob is not None else 50.0   # ihtimal yoksa nötr taban
+        return p * max(pot, 0.0) / 100.0
+
     def _key(c: dict):
         both = 1 if str(c.get("strategy") or "") == "both" else 0
-        return (both, float(c.get("potential_pct") or 0), float(c.get("velocity_score") or 0))
+        return (both, _score(c))
     rows = sorted(candidates, key=_key, reverse=True)
-    # Hizalı tablo (monospace): COIN | FİYAT | HEDEF | POTANSİYEL | KAYNAK
+
     def _sym(s: str) -> str:
         s = str(s or "?").upper()
         return (s[:-3] if s.endswith("TRY") else s)[:8]
-    header = f"{'COIN':<8}{'FİYAT':>10}{'HEDEF':>8}{'POTANSİYEL':>12}{'KAYNAK':>8}"
+
+    legend = "🪙 coin  💵 fiyat  🎲 ihtimal  🎯 hedef  🚀 potansiyel"
+    header = f"{'COIN':<8}{'FİYAT':>9}{'İHTİMAL':>9}{'HEDEF':>7}{'POTANSİYEL':>12}  KAYNAK"
     sep = "─" * len(header)
-    body = [header, sep]
-    for c in rows[:15]:
+    body = [legend, header, sep]
+    shown = rows[:5]  # kullanıcı kararı: en yüksek puanlı 5 sembol (10 fazla)
+    for c in shown:
         tgt = c.get("ceiling_pct")
         pot = c.get("potential_pct")
+        prob = c.get("target_probability")
         strat = str(c.get("strategy") or "")
         tag = "⚡📈" if strat == "both" else ("⚡" if strat == "short_squeeze" else "📈")
+        prob_s = f"%{prob:.0f}" if prob is not None else "—"
         body.append(
             f"{_sym(c.get('symbol')):<8}"
-            f"{_fmt_price(c.get('price'), 10):>10}"
-            f"{(f'+%{round(float(tgt))}' if tgt is not None else '—'):>8}"
+            f"{_fmt_price(c.get('price'), 9):>9}"
+            f"{prob_s:>9}"
+            f"{(f'+%{round(float(tgt))}' if tgt is not None else '—'):>7}"
             f"{(f'+%{round(float(pot))}' if pot is not None else '—'):>12}"
-            f"{tag:>8}"
+            f"  {tag}"
         )
     nm = sum(1 for c in rows if str(c.get("strategy") or "") == "daily_momentum")
     ns = sum(1 for c in rows if str(c.get("strategy") or "") == "short_squeeze")
     nb = sum(1 for c in rows if str(c.get("strategy") or "") == "both")
-    lines = [title, "", "```", *body, "```",
-             f"Toplam {len(rows)} aday: 📈 {nm} momentum · ⚡ {ns} squeeze · ⚡📈 {nb} ikisi de"]
-    return "\n".join(lines)
-    lines.append("📈 momentum   ⚡ short-squeeze   ⚡📈 ikisi de")
-    return "\n".join(lines)
+    footer = f"Toplam {len(rows)} aday: 📈 {nm} momentum · ⚡ {ns} squeeze · ⚡📈 {nb} ikisi de"
+    # Bu 5'in ortalamaları (yalnız veri olan kalemler üzerinden)
+    probs = [float(c["target_probability"]) for c in shown
+             if c.get("target_probability") is not None]
+    pots = [float(c["potential_pct"]) for c in shown if c.get("potential_pct") is not None]
+    tgts = [float(c["ceiling_pct"]) for c in shown if c.get("ceiling_pct") is not None]
+    avg_bits = []
+    if probs:
+        avg_bits.append(f"ort. ihtimal %{sum(probs) / len(probs):.0f}")
+    if tgts:
+        avg_bits.append(f"ort. hedef +%{sum(tgts) / len(tgts):.1f}")
+    if pots:
+        avg_bits.append(f"ort. potansiyel +%{sum(pots) / len(pots):.1f}")
+    avg_line = ("Bu 5'in " + " · ".join(avg_bits)) if avg_bits else ""
+    out_lines = [title, "", "```", *body, "```", footer]
+    if avg_line:
+        out_lines.append(avg_line)
+    return "\n".join(out_lines)
 
 
 def _fmt_price(v, width: int = 8) -> str:
@@ -141,25 +175,15 @@ def _fmt_price(v, width: int = 8) -> str:
     return s.rjust(width)
 
 
-def _fmt_chg(v, width: int = 8) -> str:
-    """Değişimi işaretli + ok ile biçimle (＋/－)."""
-    if v is None:
-        return "—".rjust(width)
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return "—".rjust(width)
-    arrow = "▲" if x > 0 else ("▼" if x < 0 else "•")
-    s = f"{x:+.1f}%{arrow}"
-    return s.rjust(width)
-
-
 def format_tracking_table(rows: list[dict], *, title: str = "📊 Aday Takip") -> str:
-    """Adayların anlık fiyat/değişim tablosu (WhatsApp monospace, hizalı).
+    """Adayların anlık fiyat/değişim tablosu — emoji başlıklı + sayısal hizalı.
 
-    Tablo düzeni (2026-10-10 revize): sembolden 'TRY' ekı kaldırılır (hizalama
-    bozuluyordu), fiyatlar sütuna göre akıllı formatlanır, değişime ok işareti
-    eklenir ve en alta özet satırı (kazanan/kaybeden sayısı + ortalama) konur.
+    Tasarım (2026-10-10 revize): WhatsApp monospace'te EMOJI genişliği
+    değişken olduğu için emojiler VERİ SÜTUNLARINA konmaz (hizalamayı bozar).
+    - Üstte bir **emoji açıklama satırı** (🪙/💵/📈/⚡ ikon sözlüğü),
+    - Altında **tam sayısal hizalı** düz sütunlar (yön oku kaldırıldı; +/- ve
+      renk zaten anlamlı),
+    - Strateji etiketi (⚡📈) yalnızca EN SONA konur → rakam sütunlarını etkilemez.
     """
     if not rows:
         return f"{title}\n\nTakip edilecek aday yok."
@@ -171,23 +195,28 @@ def format_tracking_table(rows: list[dict], *, title: str = "📊 Aday Takip") -
 
     def _sym(s: str) -> str:
         s = str(s or "?").upper()
-        return (s[:-3] if s.endswith("TRY") else s)[:8]
+        return (s[:-3] if s.endswith("TRY") else s)[:9]
 
-    header = f"{'COIN':<8}{'GİRİŞ':>9}{'ANLIK':>9}{'DEĞİŞİM':>10}"
+    # Emoji açıklama barı (başlık) + hizalı etiket barı
+    legend = "🪙 coin   💵 giriş   📈 anlık   ⚡ değişim"
+    header = f"{'COIN':<9}{'GİRİŞ':>10}{'ANLIK':>10}{'DEĞİŞİM':>10}"
     sep = "─" * len(header)
-    body = [header, sep]
+    body = [legend, header, sep]
     unchanged = 0
     for r in rows[:20]:
         sym = _sym(r.get("symbol"))
-        entry = _fmt_price(r.get("entry_price"), 9)
-        cur = _fmt_price(r.get("current_price"), 9)
-        chg = _fmt_chg(r.get("change_pct"), 10)
+        entry = _fmt_price(r.get("entry_price"), 10)
+        cur = _fmt_price(r.get("current_price"), 10)
+        # değişim: yalnız işaretli yüzde (ok yok → hizalama korunur)
+        if r.get("change_pct") is None:
+            chg = "—".rjust(10)
+        else:
+            chg = f"{float(r['change_pct']):+.1f}%".rjust(10)
         if r.get("current_price") is None:
             unchanged += 1
         mark = " ✓" if r.get("hit_ceiling") else ""
-        body.append(f"{sym:<8}{entry:>9}{cur:>9}{chg:>10}{mark}")
+        body.append(f"{sym:<9}{entry:>10}{cur:>10}{chg:>10}{mark}")
 
-    # Özet: kazanan/kaybeden/yatay + ortalama değişim
     chgs = [float(r["change_pct"]) for r in rows if r.get("change_pct") is not None]
     up = sum(1 for x in chgs if x > 0.2)
     dn = sum(1 for x in chgs if x < -0.2)
@@ -199,6 +228,5 @@ def format_tracking_table(rows: list[dict], *, title: str = "📊 Aday Takip") -
     if unchanged:
         summary += f"  |  {unchanged} fiyat alınamadı"
 
-    header_line = f"{title}"
-    return f"{header_line}\n\n```\n" + "\n".join(body) + "\n```\n" + summary
+    return f"{title}\n\n```\n" + "\n".join(body) + "\n```\n" + summary
 
