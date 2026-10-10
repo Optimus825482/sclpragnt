@@ -414,15 +414,18 @@ class Config:
     # gözlem, 80 sembol, 70 gün): ret_8h>=+2 & ATR%>=0.5 & ADX>=25(+DI>20) &
     # slope>=0.3 → %19,8 isabet (baz %5,3'ün ~3,7 katı). Çıkış tarafı mevcut
     # kâr kilidi + trailing (VELOCITY_TRAIL_TRIGGER_PCT) ile yönetilir.
-    # VARSAYILAN OFF: kapalıyken davranış bit-bit aynı kalır (fail-safe).
+    # VARSAYILAN AÇIK (2026-10-10 kullanıcı kararı): "direkt çalışsın".
+    # Kapatmak için DAILY_MOMENTUM_ENABLED=false yeterlidir (fail-safe).
     # ------------------------------------------------------------------
-    DAILY_MOMENTUM_ENABLED = os.getenv("DAILY_MOMENTUM_ENABLED", "false").lower() == "true"
+    DAILY_MOMENTUM_ENABLED = os.getenv("DAILY_MOMENTUM_ENABLED", "true").lower() == "true"
     DAILY_MOMENTUM_INTERVAL_MIN = max(5, int(os.getenv("DAILY_MOMENTUM_INTERVAL_MIN", "15")))
     # Tarama ÇAPASI (2026-10-10): kanıtlanan edge GÜNDE BİR KEZ, 11:30 snapshot'ı
     # içindi (backtest 11:30 bazlı). Bu yüzden tarama her 15 dk DEĞİL, günde bir
-    # kez bu saatte yapılır. (Sunucu saat dilimi kullanılır.)
+    # kez bu saatte yapılır. Saat dilimi AÇIKÇA verilir (varsayılan Türkiye) —
+    # sunucu UTC olsa bile 11:30 TÜRKİYE saatiyle çalışır.
     DAILY_MOMENTUM_SCAN_HOUR = max(0, min(23, int(os.getenv("DAILY_MOMENTUM_SCAN_HOUR", "11"))))
     DAILY_MOMENTUM_SCAN_MINUTE = max(0, min(59, int(os.getenv("DAILY_MOMENTUM_SCAN_MINUTE", "30"))))
+    DAILY_MOMENTUM_TZ = os.getenv("DAILY_MOMENTUM_TZ", "Europe/Istanbul")
     DAILY_MOMENTUM_RET_8H_MIN = float(os.getenv("DAILY_MOMENTUM_RET_8H_MIN", "2.0"))
     DAILY_MOMENTUM_ATR_MIN = float(os.getenv("DAILY_MOMENTUM_ATR_MIN", "0.5"))
     DAILY_MOMENTUM_ADX_MIN = float(os.getenv("DAILY_MOMENTUM_ADX_MIN", "25.0"))

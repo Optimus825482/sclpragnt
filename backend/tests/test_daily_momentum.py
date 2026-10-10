@@ -18,9 +18,10 @@ from app.routers import velocity  # noqa: E402
 from app import database  # noqa: E402
 
 
-def test_daily_momentum_default_off():
-    """Varsayılan KAPALI olmalı — canlı davranış bozulmaz (fail-safe)."""
-    assert config.config.DAILY_MOMENTUM_ENABLED is False
+def test_daily_momentum_default_on():
+    """Kullanıcı kararı (2026-10-10): katman varsayılan AÇIK ("direkt çalışsın").
+    Kapatmak için DAILY_MOMENTUM_ENABLED=false yeterlidir."""
+    assert config.config.DAILY_MOMENTUM_ENABLED is True
 
 
 def test_daily_momentum_thresholds_present():
@@ -33,6 +34,7 @@ def test_daily_momentum_thresholds_present():
     # Tarama saat çapası: kanıtlanan edge 11:30 snapshot'ı içindi.
     assert c.DAILY_MOMENTUM_SCAN_HOUR == 11
     assert c.DAILY_MOMENTUM_SCAN_MINUTE == 30
+    assert c.DAILY_MOMENTUM_TZ == "Europe/Istanbul"
 
 
 def test_daily_momentum_flag_is_independent_of_passes():

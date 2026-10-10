@@ -2653,29 +2653,38 @@ async def _daily_momentum_scan_once() -> int:
 
 
 async def daily_momentum_loop():
-    """GÜNDE BİR KEZ, 11:30'a çapalı günlük momentum tarama döngüsü.
+    """GÜNDE BİR KEZ, 11:30 (Türkiye saati) çapalı günlük momentum taraması.
 
     Kanıtlanan edge (backtest 2670 gözlem) 11:30 snapshot'ı içindi; bu yüzden
     tarama her 15 dk DEĞİL, günde bir kez `DAILY_MOMENTUM_SCAN_HOUR:MINUTE`
-    (varsayılan 11:30) anında yapılır. Aynı gün ikinci kez tarama yapılmaz.
+    anında yapılır. Saat dilimi AÇIKÇA `DAILY_MOMENTUM_TZ` (varsayılan
+    Europe/Istanbul) ile belirlenir → sunucu UTC olsa bile doğru saatte çalışır.
 
     Tespit → `_daily_momentum_scan_once` → DB kaydı + mevcut bildirim yolu
     (`_notify`) → `try_open_from_notification` ile otonom paper.
-    Kanıt doldurma (`fill_daily_rising_outcomes`) ise her turda çalışır:
-    öneri fiyatı ↔ anlık fiyat karşılaştırması ve MFE/MAE ölçümü için.
+    Kanıt doldurma (`fill_daily_rising_outcomes`) her turda çalışır.
     """
     poll_sec = 60.0
-    logger.info("günlük momentum döngüsü başladı (tarama %02d:%02d, enabled=%s)",
+    logger.info("günlük momentum döngüsü başladı (tarama %02d:%02d %s, enabled=%s)",
                 config.DAILY_MOMENTUM_SCAN_HOUR, config.DAILY_MOMENTUM_SCAN_MINUTE,
-                config.DAILY_MOMENTUM_ENABLED)
+                config.DAILY_MOMENTUM_TZ, config.DAILY_MOMENTUM_ENABLED)
+
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
+    except Exception as exc:
+        logger.warning("günlük momentum saat dilimi yüklenemedi (%s), yerel saat kullanılır",
+                       exc)
+        _tz = None
+
     await asyncio.sleep(120)
     while True:
         try:
             if config.DAILY_MOMENTUM_ENABLED:
-                now = time.localtime()
-                today_key = time.strftime("%Y-%m-%d", now)
-                due = (now.tm_hour == config.DAILY_MOMENTUM_SCAN_HOUR
-                       and now.tm_min >= config.DAILY_MOMENTUM_SCAN_MINUTE)
+                lt = datetime.now(_tz) if _tz else datetime.now()
+                today_key = lt.strftime("%Y-%m-%d")
+                due = (lt.hour == config.DAILY_MOMENTUM_SCAN_HOUR
+                       and lt.minute >= config.DAILY_MOMENTUM_SCAN_MINUTE)
                 if due and _monitoring_state.get("daily_momentum_last_day") != today_key:
                     _monitoring_state["daily_momentum_last_day"] = today_key
                     n = await _daily_momentum_scan_once()
