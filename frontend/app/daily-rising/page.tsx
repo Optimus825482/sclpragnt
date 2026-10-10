@@ -134,8 +134,10 @@ export default function DailyRisingPage() {
       if (!res.ok) throw new Error(d?.detail || `HTTP ${res.status}`);
       if (d?.ok) {
         setMsg(endpoint === "send-report"
-          ? `✅ 11:30 raporu gönderildi (${d.count} aday).`
+          ? `✅ Bugünkü 11:30 raporu (anlık görüntü) gönderildi — ${d.count} aday.`
           : `✅ Saatlik takip tablosu gönderildi (${d.count} satır).`);
+      } else if (endpoint === "send-report" && d?.reason === "no_scan_today") {
+        setMsg("⚠️ Bugün 11:30 taraması henüz kaydedilmedi — önce taramanın çalışması gerek.");
       } else {
         setMsg(`⚠️ Gönderilemedi: ${d?.detail || d?.reason || "bilinmeyen"}`);
       }

@@ -2833,7 +2833,7 @@ async def daily_rising_hourly_loop():
                     if in_window and due and \
                             _monitoring_state.get("whatsapp_hourly_last") != slot_key:
                         _monitoring_state["whatsapp_hourly_last"] = slot_key
-                        rows = await database.list_daily_rising(limit=30, days=1.0)
+                        rows = await _today_rising_rows(limit=30)
                         _px = await _batch_prices([str(r.get("symbol") or "").upper() for r in rows])
                         table = []
                         for r in rows:
@@ -2934,35 +2934,73 @@ async def daily_rising_live(request: Request = None):
 # WhatsApp gönderim tetikleyicileri (admin paneli, 2026-10-10)
 # 11:30 raporunu ve saatlik takip tablosunu ELLE göndermek için.
 # ----------------------------------------------------------------------
+async def _today_rising_rows(limit: int = 100) -> list[dict]:
+    """BUGÜN (DAILY_MOMENTUM_TZ takvim günü) kaydedilen aday satırları.
+
+    `days=1.0` penceresi dünkü taramayı da kapsayabileceğinden satırlar takvim
+    gününe göre süzülür. Rapor ve takip tablosu AYNI kümeyi kullanır → ikisinde
+    de aynı ilk 5 sembol görünür.
+    """
+    rows = await database.list_daily_rising(limit=limit, days=1.0)
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
+    except Exception:
+        _tz = None
+    today_key = (datetime.now(_tz) if _tz else datetime.now()).strftime("%Y-%m-%d")
+
+    def _local_day(ts) -> str:
+        try:
+            dt = datetime.fromtimestamp(float(ts), _tz) if _tz else datetime.fromtimestamp(float(ts))
+            return dt.strftime("%Y-%m-%d")
+        except (TypeError, ValueError, OSError):
+            return ""
+    return [r for r in rows if _local_day(r.get("created_at")) == today_key]
+
+
+async def _today_scan_rows() -> list[dict]:
+    """Bugünkü 11:30 tarama anlık görüntüsü — `format_scan_report` aday sözlükleri.
+
+    İhtimal, rapordakiyle AYNI girdilerden (ceiling_pct + atr_pct) yeniden
+    üretilir → ekran/gönderim tutarlı.
+    """
+    out: list[dict] = []
+    for r in await _today_rising_rows(limit=100):
+        out.append({
+            "symbol": str(r.get("symbol") or "").upper(),
+            "price": r.get("price"),
+            "ceiling_pct": r.get("ceiling_pct"),
+            "potential_pct": r.get("potential_pct"),
+            "strategy": r.get("strategy"),
+            "velocity_score": r.get("velocity_score"),
+            "target_probability": touch_probability(r.get("ceiling_pct"), r.get("atr_pct")),
+        })
+    return out
+
+
 @router.post("/api/daily-rising/send-report")
 async def daily_rising_send_report(request: Request = None):
-    """11:30 tarama raporunu WhatsApp grubuna gönder (elle tetikleme).
+    """BUGÜN 11:30'da kaydedilen tarama anlık görüntüsünü WhatsApp grubuna gönder.
 
-    ÖNİZLEME mantıklı: taze tarama yapar, raporu üretir ve gönderir. Hiçbir
-    pozisyon açmaz; yalnız rapor mesajı gider. Admin-only.
+    Kullanıcı kararı (2026-10-10): bu buton taze tarama YAPMAZ; 11:30 döngüsünün
+    o gün için sabitlediği `daily_rising_candidates` satırlarını gönderir. Böylece
+    buton adı ("11:30 Raporu") ile içerik birebir uyuşur; öğleden sonra basılsa
+    bile 11:30 anlık görüntüsü gider. Hiçbir pozisyon açmaz. Admin-only.
     """
     from app.api_common import require_admin as _require_admin
-    from app.binance_tr_public import trading_symbols as _trading_syms
     from app.whatsapp_notify import format_scan_report, send_whatsapp, whatsapp_enabled
     _require_admin(request)
     if not whatsapp_enabled():
         return {"ok": False, "reason": "whatsapp_disabled",
                 "detail": "WHATSAPP_NOTIFY_ENABLED kapalı veya köprü adresi yok."}
     try:
-        scan5, scan15 = await asyncio.gather(
-            detect_velocity_candidates({}, horizon_minutes=5),
-            detect_velocity_candidates({}, horizon_minutes=15),
-        )
-        try:
-            tr_syms = [s for s in await _trading_syms("TRY")]
-        except Exception:
-            tr_syms = []
-        squeeze = await _short_squeeze_candidates(tr_syms)
+        cands = await _today_scan_rows()
     except Exception as exc:
-        logger.warning("send-report tarama hatası: %s", exc)
-        return {"ok": False, "reason": "scan_error", "detail": str(exc)}
-    mom = await _daily_momentum_candidates(scan5, scan15)
-    cands = _merge_candidates(mom, squeeze)
+        logger.warning("send-report (11:30 anlık görüntü) okuma hatası: %s", exc)
+        return {"ok": False, "reason": "read_error", "detail": str(exc)}
+    if not cands:
+        return {"ok": False, "reason": "no_scan_today",
+                "detail": "Bugün 11:30 taraması henüz kaydedilmemiş."}
     text = format_scan_report(cands)
     sent = await send_whatsapp(text)
     return {"ok": sent, "count": len(cands), "preview": text}
@@ -2972,8 +3010,9 @@ async def daily_rising_send_report(request: Request = None):
 async def daily_rising_send_tracking(request: Request = None):
     """Bugünün adaylarının anlık takip tablosunu WhatsApp grubuna gönder.
 
-    Elle tetikleme; `daily_rising_candidates` (bugün) satırlarını anlık fiyatla
-    karşılaştırıp tabloyu gönderir. Admin-only.
+    Elle tetikleme; BUGÜN (takvim günü) kaydedilen `daily_rising_candidates`
+    satırlarını anlık fiyatla karşılaştırıp tabloyu gönderir. Rapor ucuyla AYNI
+    satır kümesini kullanır (aynı ilk 5). Admin-only.
     """
     from app.api_common import require_admin as _require_admin
     from app.whatsapp_notify import format_tracking_table, send_whatsapp, whatsapp_enabled
@@ -2981,7 +3020,7 @@ async def daily_rising_send_tracking(request: Request = None):
     if not whatsapp_enabled():
         return {"ok": False, "reason": "whatsapp_disabled",
                 "detail": "WHATSAPP_NOTIFY_ENABLED kapalı veya köprü adresi yok."}
-    rows = await database.list_daily_rising(limit=30, days=1.0)
+    rows = await _today_rising_rows(limit=30)
     _px = await _batch_prices([str(r.get("symbol") or "").upper() for r in rows])
     table = []
     for r in rows:

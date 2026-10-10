@@ -90,6 +90,52 @@ def test_whatsapp_send_endpoints_registered():
     assert "/api/daily-rising/whatsapp-status" in paths
 
 
+def test_send_report_reads_1130_snapshot_not_fresh_scan():
+    """Kullanıcı kararı: '11:30 Raporu' butonu TAZE tarama yapmaz; bugün 11:30'da
+    kaydedilen anlık görüntüyü (DB) gönderir. Kaynak kodda yeni velzi taraması
+    (detect_velocity_candidates / _short_squeeze_candidates) OLMAMALI."""
+    import inspect
+    from app.routers import monitoring
+    src = inspect.getsource(monitoring.daily_rising_send_report)
+    assert "detect_velocity_candidates" not in src
+    assert "_short_squeeze_candidates" not in src
+    assert "_today_scan_rows" in src        # DB anlık görüntüsünden okur
+
+
+def test_today_rising_rows_helper_exists():
+    """Rapor ve takip ucu AYNI bugün penceresini kullanmalı (aynı ilk 5)."""
+    from app.routers import monitoring
+    assert hasattr(monitoring, "_today_rising_rows")
+    assert hasattr(monitoring, "_today_scan_rows")
+    import inspect
+    assert inspect.iscoroutinefunction(monitoring._today_rising_rows)
+
+
+def test_today_rising_rows_filters_previous_day(monkeypatch):
+    """`days=1.0` penceresi dünü de kapsayabilir; yardımcı yalnız BUGÜNÜ döndürmeli."""
+    import asyncio
+    import time
+    from app.routers import monitoring
+
+    now = time.time()
+    rows = [
+        {"symbol": "TODAYTRY", "created_at": now, "atr_pct": 1.0, "ceiling_pct": 3.0},
+        {"symbol": "OLDTRY", "created_at": now - 2 * 86400, "atr_pct": 1.0, "ceiling_pct": 3.0},
+    ]
+
+    async def _fake_list(limit=100, days=7.0):
+        return list(rows)
+    monkeypatch.setattr(monitoring.database, "list_daily_rising", _fake_list)
+
+    today = asyncio.run(monitoring._today_rising_rows(limit=100))
+    syms = [r["symbol"] for r in today]
+    assert "TODAYTRY" in syms
+    assert "OLDTRY" not in syms        # dün/önceki gün süzüldü
+    scan = asyncio.run(monitoring._today_scan_rows())
+    assert [c["symbol"] for c in scan] == ["TODAYTRY"]
+    assert scan[0]["target_probability"] is not None   # ihtimal yeniden üretildi
+
+
 def test_short_squeeze_scan_exists_and_classifies():
     """Toplu squeeze taraması + sınıflandırma mevcut olmalı."""
     from app import derivatives_service as ds
