@@ -1376,7 +1376,7 @@ function RadarSettingsPanel() {
               <div>
                 <p className="eyebrow text-bunker-muted">LİSTE ADEDİ (TOP N)</p>
                 <input type="number" min={1} max={10} step={1} value={combinedTopN}
-                  onChange={(e) => setCombinedTopN(e.target.value)} placeholder="3" className={numInputCls} />
+                  onChange={(e) => setCombinedTopN(e.target.value)} placeholder="2" className={numInputCls} />
                 <p className="text-[11px] text-bunker-muted mt-1">1-10 (varsayılan 3)</p>
               </div>
               <div>
@@ -1388,7 +1388,7 @@ function RadarSettingsPanel() {
               <div>
                 <p className="eyebrow text-bunker-muted">LİSTE PERİYODU (DK)</p>
                 <input type="number" min={5} max={120} step={5} value={combinedListMin}
-                  onChange={(e) => setCombinedListMin(e.target.value)} placeholder="20" className={numInputCls} />
+                  onChange={(e) => setCombinedListMin(e.target.value)} placeholder="15" className={numInputCls} />
                 <p className="text-[11px] text-bunker-muted mt-1">Kaç dk'da bir yeni liste (son listeden itibaren)</p>
               </div>
               <div>

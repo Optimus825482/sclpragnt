@@ -628,13 +628,13 @@ async def combined_rising_settings() -> dict:
     """
     s = await get_user_notification_settings()
     return {
-        "enabled": bool(s.get("combined_rising_enabled", True)),
-        "top_n": int(s.get("combined_rising_top_n", 3)),
-        "min_score": float(s.get("combined_rising_min_score", 10.0)),
-        "start_hour": int(s.get("combined_rising_start_hour", 9)),
-        "end_hour": int(s.get("combined_rising_end_hour", 23)),
-        "list_min": int(s.get("combined_rising_list_min", 30)),
-        "track_min": int(s.get("combined_rising_track_min", 10)),
+        "enabled": bool(s.get("combined_rising_enabled", getattr(config, "COMBINED_RISING_ENABLED", True))),
+        "top_n": int(s.get("combined_rising_top_n", getattr(config, "COMBINED_RISING_TOP_N", 2))),
+        "min_score": float(s.get("combined_rising_min_score", getattr(config, "COMBINED_RISING_MIN_SCORE", 10.0))),
+        "start_hour": int(s.get("combined_rising_start_hour", getattr(config, "COMBINED_RISING_START_HOUR", 9))),
+        "end_hour": int(s.get("combined_rising_end_hour", getattr(config, "COMBINED_RISING_END_HOUR", 23))),
+        "list_min": int(s.get("combined_rising_list_min", getattr(config, "COMBINED_RISING_LIST_MIN", 15))),
+        "track_min": int(s.get("combined_rising_track_min", getattr(config, "COMBINED_RISING_TRACK_MIN", 5))),
     }
 
 
@@ -3793,11 +3793,21 @@ async def daily_rising_state(request: Request = None):
     stats = await database.get_daily_rising_stats(days=7.0)
     try:
         cfg = await combined_rising_settings()
-        top_n = int(cfg.get("top_n", 3))
+        top_n = int(cfg.get("top_n", 2))
+        list_min = int(cfg.get("list_min", 15))
     except Exception:
-        top_n = 3
+        top_n = 2
+        list_min = 15
+    # SONRAKİ LİSTE ZAMANI (kullanıcı isteği 2026-10-11): sayfada geri sayım
+    # gösterilir. Son liste gönderiminden `list_min` dk sonrası = sonraki liste.
+    recent = await database.last_daily_rising_report(COMBINED_LIST_KIND)
+    last_list_sent = float((recent or {}).get("sent_at") or 0)
+    next_list_at = (last_list_sent + list_min * 60.0) if last_list_sent else None
+    schedule = {"list_min": list_min, "top_n": top_n,
+                "last_list_sent": last_list_sent or None,
+                "next_list_at": next_list_at}
     # 1) En son gönderilen kombine liste (bildirim anındaki fiyat = notify_price).
-    rep = await database.last_daily_rising_report(COMBINED_LIST_KIND)
+    rep = recent
     sent_rows = []
     if rep:
         c = rep.get("candidates") or []
@@ -3841,7 +3851,7 @@ async def daily_rising_state(request: Request = None):
             })
         return {"paper_only": True, "generated_at": generated_at,
                 "source": "last_sent", "sent_at": rep.get("sent_at"),
-                "stats": stats, "candidates": out}
+                "schedule": schedule, "stats": stats, "candidates": out}
     # 2) Gönderilmiş liste yok → anlık kombine tarama (ilk TOP-N).
     try:
         cands = (await _combined_scan_rows())[:top_n]
@@ -3870,7 +3880,7 @@ async def daily_rising_state(request: Request = None):
         })
     return {"paper_only": True, "generated_at": generated_at,
             "source": "live_scan", "sent_at": None,
-            "stats": stats, "candidates": out}
+            "schedule": schedule, "stats": stats, "candidates": out}
 
 
 @router.get("/api/daily-rising/live")

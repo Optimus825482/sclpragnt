@@ -139,7 +139,17 @@ export default function DailyRisingPage() {
   const [evalResult, setEvalResult] = useState<any>(null);
   const [evalLoading, setEvalLoading] = useState(false);
   const [lastReport, setLastReport] = useState<any>(null);
+  // Sonraki listeye kalan süre (geri sayım) — /state schedule alanından.
+  const [nextListAt, setNextListAt] = useState<number | null>(null);
+  const [listMin, setListMin] = useState<number | null>(null);
+  const [topN, setTopN] = useState<number | null>(null);
+  const [nowTs, setNowTs] = useState<number>(() => Date.now() / 1000);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Geri sayım için saniyede bir saat tazele.
+  useEffect(() => {
+    const t = setInterval(() => setNowTs(Date.now() / 1000), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const loadLastReport = useCallback(async () => {
     try {
@@ -200,6 +210,10 @@ export default function DailyRisingPage() {
         const d = await res.json();
         setRows(Array.isArray(d?.candidates) ? d.candidates : []);
         setStats(d?.stats ?? null);
+        const sch = d?.schedule || {};
+        setNextListAt(sch.next_list_at ?? null);
+        setListMin(sch.list_min ?? null);
+        setTopN(sch.top_n ?? null);
         setUpdatedAt(Date.now());
       }
     } catch { /* sessiz */ } finally { setLoading(false); }
@@ -286,18 +300,37 @@ export default function DailyRisingPage() {
     <div className="page-shell">
       <div className="page-heading">
         <div>
-          <div className="eyebrow">Günlük Momentum Katmanı</div>
+          <div className="eyebrow">Kombine Yükseliş Katmanı</div>
           <h1 className="text-xl font-semibold">🌅 Yükseliş Adayları</h1>
           <p className="text-sm text-bunker-muted mt-1">
-            Elle tara, beğendiğin adayları <b>kendi takip listene</b> ekle. Sistem ayrıca her gün
-            11:30'da otomatik tarar ve adayları bildirir.
+            Tüm radar stratejilerinin birleştiği kombine tarama {listMin ?? 15} dk'da bir çalışır;
+            eşiğin üzerindeki en yüksek puanlı <b>{topN ?? 2}</b> aday WhatsApp grubuna gönderilir ve
+            burada listelenir. Arada 5 dk'da bir durum bildirimi gider.
             <br />
-            <span className="text-xs">Tarama iki stratejiyi birden çalıştırır: 📈 momentum &nbsp;·&nbsp; ⚡ short-squeeze.</span>
+            <span className="text-xs">Stratejiler: 📈 hız/momentum &nbsp;·&nbsp; ⚡ short-squeeze &nbsp;·&nbsp; 🧠 MACD + Master Surge + mikro yapı.</span>
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
+          {(() => {
+            // SONRAKİ LİSTEYE KALAN SÜRE (kullanıcı isteği): geri sayım.
+            if (nextListAt == null) {
+              return <span className="font-mono text-xs text-bunker-muted">Sonraki liste: ilk gönderim bekleniyor…</span>;
+            }
+            const rem = Math.max(0, Math.round(nextListAt - nowTs));
+            const mm = Math.floor(rem / 60);
+            const ss = rem % 60;
+            const soon = rem <= 0;
+            return (
+              <div className={`rounded-xl border px-3 py-1.5 font-mono text-sm font-bold ${
+                soon ? "border-neon-green/50 bg-neon-green/15 text-neon-green animate-pulse"
+                     : "border-sky-400/40 bg-sky-400/10 text-sky-300"}`}
+                   title="Bir sonraki komine liste gönderimine kalan süre">
+                ⏳ Sonraki liste: {soon ? "şimdi" : `${mm}:${String(ss).padStart(2, "0")}`}
+              </div>
+            );
+          })()}
           <Button variant="primary" onClick={runScan} disabled={scanning}>
-            {scanning ? "Taranıyor…" : "🔍 Tara"}
+            {scanning ? "Taranıyor…" : "🔍 Elle Tara"}
           </Button>
           <span className="text-xs text-bunker-muted">
             {updatedAt ? `Güncelleme: ${fmtDateTime(updatedAt)}` : ""}

@@ -76,6 +76,22 @@ def test_combined_paper_trail_trigger_and_gap_not_too_tight():
     assert c.COMBINED_PAPER_TRAIL_TRIGGER_PCT >= 0.8
 
 
+def test_trailing_trigger_greater_than_gap_no_loss():
+    """Kullanıcı mantığı (2026-10-11): "trailing %1 kârda aktive olup %1 geriden
+    takip ederse işlem ZARARDA kapanabilir; %2 kârda başlayıp %1 geriden takip
+    etmeli." KURAL: trigger > gap → stop her zaman GİRİŞİN ÜSTÜNDE kalır."""
+    c = config.config
+    assert c.COMBINED_PAPER_TRAIL_TRIGGER_PCT > c.COMBINED_PAPER_TRAIL_GAP_PCT, \
+        "trigger, gap'ten büyük olmalı (aksi halde kâr zarara döner)"
+    assert c.AUTO_PAPER_TRAILING_TRIGGER_PCT > c.AUTO_PAPER_TRAILING_GAP_PCT, \
+        "otonom paper: trigger, gap'ten büyük olmalı"
+    # Somut doğrulama: en erken aktivasyonda bile stop girişin üstünde.
+    entry = 100.0
+    peak = entry * (1 + c.AUTO_PAPER_TRAILING_TRIGGER_PCT / 100)
+    stop = peak * (1 - c.AUTO_PAPER_TRAILING_GAP_PCT / 100)
+    assert stop > entry, "aktivasyonda stop girişin altında → kâr zarara döner"
+
+
 def test_autonomous_and_combined_trailing_equal():
     """Kullanıcı isteği (2026-10-11): "bu trailing ayarlarını NORMAL paper trade'de
     de aynı şekilde yapalım." Otonom paper ve kombine paper trailing tetik/boşluğu

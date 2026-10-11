@@ -195,13 +195,16 @@ class LadderParityTests(unittest.TestCase):
         self.assertEqual(defaults["breakeven_buffer_pct"], config.AUTO_PAPER_BREAKEVEN_BUFFER_PCT)
 
     def test_trailing_gap_default_is_truthful(self):
-        """Varsayılan, GERÇEKTEN uygulanan değeri söylemeli.
+        """Varsayılan, GERÇEKTEN uygulanan değeri söylemeli + canlıya uygun olmalı.
 
-        Kanıt: breakeven ratchet'i (%0.60) hem daha sıkı hem önce değerlendirildiği
-        için 0.80'lik varsayılan hiç uygulanmıyordu (471 işlemlik gerçek replay'de
-        `trailing_stop` 0 kez). Etkin değer 0.60'tı; varsayılan artık onu söylüyor.
+        2026-10-11 DÜZELTMESİ: eski 0.6/0.3 değerleri canlı 5 sn ticker gürültüsünde
+        anında yakalanmaya yol açıyordu (kâr büyüyemeden kapanma). Ayrıca trigger ≤
+        gap iken stop girişin altına düşüp kârı zarara çevirebiliyordu. Yeni kural:
+        gap >= 0.8 (anlamlı tolerans) VE trigger > gap (kâr kilidi güvenli).
         """
-        self.assertLessEqual(config.AUTO_PAPER_TRAILING_GAP_PCT, 0.6)
+        self.assertGreaterEqual(config.AUTO_PAPER_TRAILING_GAP_PCT, 0.8)
+        self.assertGreater(config.AUTO_PAPER_TRAILING_TRIGGER_PCT,
+                           config.AUTO_PAPER_TRAILING_GAP_PCT)
 
     def test_take_profit_is_detected(self):
         entry = 100.0

@@ -1832,23 +1832,29 @@ async def _migrate_bad_settings_once() -> None:
             return
         changed = {}
         gap_default = config.AUTO_PAPER_TRAILING_GAP_PCT  # 1.0
+        trig_default = config.AUTO_PAPER_TRAILING_TRIGGER_PCT  # 2.0
         # Yalnız ESKİ/KÖTÜ değerleri hedefle (operatörün yeni seçimine dokunmaz).
         if abs(float(settings.get("stop_loss_pct", 0) or 0) - 1.5) < 1e-6:
             settings["stop_loss_pct"] = config.AUTO_PAPER_SL_PCT_DEFAULT  # 5.0
             changed["stop_loss_pct"] = settings["stop_loss_pct"]
-        # Trailing tetik: eski 1.8 VE önceki turda yanlışlıkla yazılan 0.8 →
-        # config değerine (1.0) çekilir; böylece OTONOM paper = KOMBİNE paper
-        # (aynı trailing mantığı — kullanıcı isteği 2026-10-11).
+        # Trailing tetik: eski 1.8 / 1.0 / 0.8 → config (2.0). Kural: trigger, gap'ten
+        # BÜYÜK olmalı — aksi halde stop girişin altına düşüp kârı zarara çevirir.
         _trig = float(settings.get("trailing_trigger_pct", 0) or 0)
-        if _trig and (abs(_trig - 1.8) < 1e-6 or abs(_trig - 0.8) < 1e-6) \
-                and abs(_trig - config.AUTO_PAPER_TRAILING_TRIGGER_PCT) > 1e-6:
-            settings["trailing_trigger_pct"] = config.AUTO_PAPER_TRAILING_TRIGGER_PCT
-            changed["trailing_trigger_pct"] = settings["trailing_trigger_pct"]
-        # Dar gap (0.3 veya 0.6) → gevşek (1.0): canlıda anında yakalanmayı bitirir.
+        if _trig and abs(_trig - trig_default) > 1e-6:
+            settings["trailing_trigger_pct"] = trig_default
+            changed["trailing_trigger_pct"] = trig_default
+        # Dar gap (0.3 / 0.6) → gevşek (1.0): canlıda anında yakalanmayı bitirir.
         _gap = float(settings.get("trailing_gap_pct", 0) or 0)
         if _gap and _gap < 0.8 and abs(_gap - gap_default) > 1e-6:
             settings["trailing_gap_pct"] = gap_default
             changed["trailing_gap_pct"] = gap_default
+        # GÜVENLİK KURALI (her durumda): trigger > gap. Operatör gap'i trigger'dan
+        # büyük kaydettiyse bile burada düzeltilir → kâr kilidi asla zarara dönmez.
+        _t = float(settings.get("trailing_trigger_pct") or trig_default)
+        _g = float(settings.get("trailing_gap_pct") or gap_default)
+        if _g >= _t:
+            settings["trailing_trigger_pct"] = round(_g + 1.0, 2)
+            changed["trailing_trigger_pct"] = settings["trailing_trigger_pct"]
         if changed:
             await database.set_llm_setting("auto_paper_settings", json.dumps(settings))
             logger.warning("auto_paper AYAR ONARIMI (tek seferlik): %s "

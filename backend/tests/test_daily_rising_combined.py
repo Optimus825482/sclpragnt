@@ -24,10 +24,10 @@ from app import database  # noqa: E402
 def test_combined_config_defaults():
     c = config.config
     assert c.COMBINED_RISING_ENABLED is True
-    assert c.COMBINED_RISING_TOP_N == 3
+    # Kullanıcı kararı (2026-10-11): TOP-N 2, liste 15 dk, durum 5 dk.
+    assert c.COMBINED_RISING_TOP_N == 2
     assert c.COMBINED_RISING_MIN_SCORE == 10.0
-    # Kullanıcı kararı (2026-10-11): liste 20 dk, durum 5 dk.
-    assert c.COMBINED_RISING_LIST_MIN == 20
+    assert c.COMBINED_RISING_LIST_MIN == 15
     assert c.COMBINED_RISING_TRACK_MIN == 5
     # Eski slot ayarları KALDIRILDI.
     assert not hasattr(c, "DAILY_RISING_SLOT_ENABLED")

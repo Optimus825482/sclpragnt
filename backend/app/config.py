@@ -456,9 +456,10 @@ class Config:
     # döngüleri KALDIRILDI (çift gönderim yok).
     # ------------------------------------------------------------------
     COMBINED_RISING_ENABLED = os.getenv("COMBINED_RISING_ENABLED", "true").lower() == "true"
-    COMBINED_RISING_LIST_MIN = max(5, int(os.getenv("COMBINED_RISING_LIST_MIN", "20")))
+    # Kullanıcı kararı (2026-10-11): liste 15 dk, durum 5 dk, en fazla 2 aday.
+    COMBINED_RISING_LIST_MIN = max(5, int(os.getenv("COMBINED_RISING_LIST_MIN", "15")))
     COMBINED_RISING_TRACK_MIN = max(1, int(os.getenv("COMBINED_RISING_TRACK_MIN", "5")))
-    COMBINED_RISING_TOP_N = max(1, int(os.getenv("COMBINED_RISING_TOP_N", "3")))
+    COMBINED_RISING_TOP_N = max(1, int(os.getenv("COMBINED_RISING_TOP_N", "2")))
     # Birleşik puan eşiği: listedeki 1. aday bile bunun altındaysa gönderilmez.
     COMBINED_RISING_MIN_SCORE = float(os.getenv("COMBINED_RISING_MIN_SCORE", "10.0"))
     COMBINED_RISING_START_HOUR = max(0, min(23, int(os.getenv("COMBINED_RISING_START_HOUR", "9"))))
@@ -482,9 +483,11 @@ class Config:
     # Trailing: kâr bu eşiği geçince kâr kilidi + trailing devreye girer.
     # 2026-10-11 GERİ BİLDİRİM DÜZELTMESİ: %0.4 tetik + %0.3 boşluk ÇOK SIKIYDI —
     # TRY coinlerinin gürültüsünde fiyat tepeden %0.3 geri çekilince anında
-    # yakalanıyor ve pozisyon kârı büyütemeden kapanıyordu. Artık: trigger %1.0,
-    # gap %1.0 (tepkiden %1 geri çekilme toleransı) — anlamlı kâr biriktirir.
-    COMBINED_PAPER_TRAIL_TRIGGER_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_TRIGGER_PCT", "1.0"))
+    # yakalanıyor ve pozisyon kârı büyütemeden kapanıyordu. Ayrıca trigger ≤ gap
+    # iken stop girişin altına düşüp kârı zarara çevirebiliyordu. Kural: trigger
+    # gap'ten BÜYÜK olmalı → trigger %2.0, gap %1.0 (aktifleşince stop en kötü
+    # girişin +%1 üstünde kalır → kâr kilitli).
+    COMBINED_PAPER_TRAIL_TRIGGER_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_TRIGGER_PCT", "2.0"))
     COMBINED_PAPER_TRAIL_GAP_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_GAP_PCT", "1.0"))
     COMBINED_PAPER_MAX_HOLD_MIN = float(os.getenv("COMBINED_PAPER_MAX_HOLD_MIN", "120"))
     # İlk koruma stop'u (kâr kilidi öncesi zarar sınırı) — potansiyel ile ölçeklenir,
@@ -932,15 +935,18 @@ class Config:
     # kara geçince aktifleşir ve fiyatı trailing_gap_pct geriden takip eder.
     # Varsayılan AÇIK; trailing_enabled=false ile kapatılabilir.
     AUTO_PAPER_TRAILING_ENABLED = os.getenv("AUTO_PAPER_TRAILING_ENABLED", "true").lower() == "true"
-    # 2026-10-07 OPTIMIZASYON: 1.8 -> 1.0. KANIT: trigger 0.8/1.0/1.2/1.5/2.0
-    # sirasiyla +1.41/+1.38/+1.31/+1.24/+1.18%/islem. Erken devreye giren trailing
-    # kazananlari daha cok tasiyor. Plato genis (0.8-1.2 hepsi iyi) — saglam.
-    AUTO_PAPER_TRAILING_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_TRAILING_TRIGGER_PCT", "1.0"))
+    # 2026-10-11 KULLANICI DÜZELTMESİ: trailing %1 kârda aktive olup %1 geriden
+    # takip ederse stop = tepe×(1−0.01) girişe çok yakın/altına düşebilir →
+    # kâra geçmiş işlem ZARARLA kapanabilir. Kural: aktive eşiği (trigger) takip
+    # boşluğundan (gap) BÜYÜK olmalı → trigger %2, gap %1. Böylece aktifleştiğinde
+    # stop en kötü ihtimalle girişin +%1 üstünde kalır (kâr kilitli).
+    AUTO_PAPER_TRAILING_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_TRAILING_TRIGGER_PCT", "2.0"))
     # 2026-10-11 CANLI GERİ BİLDİRİM: gap 0.3 ÇOK DARDI — canlı 5 sn ticker
     # gürültüsünde fiyat tepeden %0.3 geri çekilince pozisyon ANINDA kapanıyor,
     # kâr büyüyemiyordu ("trailing çok yakın takip ediyor" — kullanıcı). Backtest
     # 1m barlarıyla yapıldığı için 0.3'ü "iyi" gösteriyordu; canlıda ticker daha
     # gürültülü. Canlıya uygun: 1.0 (tepeden anlamlı geri çekilme toleransı).
+    # NOT: gap, trigger'dan KÜÇÜK olmalı (yukarıdaki kural) → %2 tetik / %1 gap.
     AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "1.0"))
     # Trailing/breakeven kapanışı sonrası aynı bildirimle yeniden açılış
     # (fiyat bildirim fiyatının üzerinde + ufuk süresi dolmadı + yükselme
