@@ -184,26 +184,43 @@ def format_combined_list(candidates: list[dict], *, n: int = 3,
             f"{teyit_s:>7}"
             f"{puan_s:>6}"
         )
-    # Puanın ne olduğunu açıkla (100 = kesin DEĞİL).
-    footer = ("⭐ Puan = sinyal gücü (0-99), olasılık DEĞİL. "
-              "🧩 Teyit = motor+katman sayısı.")
-    return f"{title}\n\n```\n" + "\n".join(body) + "\n```\n" + footer
+    # ALT SATIR: puan açıklaması yerine ortalamalar (kullanıcı isteği 2026-10-11) —
+    # yükselme miktarı (hedef) ortalaması + yükselme potansiyeli ortalaması.
+    mikts = [float(c["ceiling_pct"]) for c in shown if c.get("ceiling_pct") is not None]
+    pots = [float(c["potential_pct"]) for c in shown if c.get("potential_pct") is not None]
+    avg_bits = []
+    if mikts:
+        avg_bits.append(f"📈 ort. yükselme miktarı +%{sum(mikts) / len(mikts):.1f}")
+    if pots:
+        avg_bits.append(f"🚀 ort. potansiyel +%{sum(pots) / len(pots):.1f}")
+    footer = ("  ·  ".join(avg_bits)) if avg_bits else ""
+    out = f"{title}\n\n```\n" + "\n".join(body) + "\n```"
+    return f"{out}\n{footer}" if footer else out
 
 
 def format_combined_status(rows: list[dict], *, title: str,
-                           baseline_label: str) -> str:
-    """Bu 3 adayın BİLDİRİM ANINA göre anlık durumu (fark) + ortalama değişim.
+                           baseline_label: str, show_peak: bool = False) -> str:
+    """Bu adayların BİLDİRİM ANINA göre anlık durumu (fark) + ortalama değişim.
 
-    Her 10 dk'da bir, bir sonraki liste belirlenene kadar gönderilir. En altta
-    üçünün ORTALAMA % değişimi yazılır.
+    `track_min` (5) dk'da bir, bir sonraki liste belirlenene kadar gönderilir.
+    En altta adayların ORTALAMA % değişimi yazılır.
+
+    `show_peak=True` (BİR SONRAKİ listeden önceki SON bildirim): her satıra,
+    listeyi oluşturduktan sonra görülen **EN YÜKSEK değişim (zirve)** sütunu
+    eklenir. Zirve, adayın liste ömrü boyunca ne kadar tepe yaptığını gösterir
+    → sonraki değerlendirmelere veri sağlar.
     """
     if not rows:
         return f"{title}\n\nTakip edilecek aday yok."
     shown = sorted(rows, key=lambda r: (float(r["change_pct"])
                                         if r.get("change_pct") is not None else -999.0),
                    reverse=True)
-    legend = "🪙 coin   💵 bildirim   📈 anlık   ⚡ değişim"
-    header = f"{'COIN':<8}{'BİLDİRİM':>10}{'ANLIK':>10}{'DEĞİŞİM':>10}"
+    if show_peak:
+        legend = "🪙 coin   💵 bildirim   📈 anlık   ⚡ değişim   🏔️ zirve"
+        header = f"{'COIN':<8}{'BİLDİRİM':>10}{'ANLIK':>10}{'DEĞİŞİM':>10}{'ZİRVE':>9}"
+    else:
+        legend = "🪙 coin   💵 bildirim   📈 anlık   ⚡ değişim"
+        header = f"{'COIN':<8}{'BİLDİRİM':>10}{'ANLIK':>10}{'DEĞİŞİM':>10}"
     sep = "─" * len(header)
     body = [legend, header, sep]
     for r in shown:
@@ -213,13 +230,22 @@ def format_combined_status(rows: list[dict], *, title: str,
             chg = "—".rjust(10)
         else:
             chg = f"{float(r['change_pct']):+.2f}%".rjust(10)
-        body.append(f"{_sym(r.get('symbol')):<8}{entry:>10}{cur:>10}{chg:>10}")
+        line = f"{_sym(r.get('symbol')):<8}{entry:>10}{cur:>10}{chg:>10}"
+        if show_peak:
+            pk = r.get("peak_pct")
+            pk_s = f"{float(pk):+.2f}%".rjust(9) if pk is not None else "—".rjust(9)
+            line += pk_s
+        body.append(line)
     chgs = [float(r["change_pct"]) for r in shown if r.get("change_pct") is not None]
+    peaks = [float(r["peak_pct"]) for r in shown if r.get("peak_pct") is not None]
     up = sum(1 for x in chgs if x > 0.2)
     dn = sum(1 for x in chgs if x < -0.2)
     flat = len(chgs) - up - dn
     summary = f"▲ {up} yükselen · ▼ {dn} düşen · • {flat} yatay"
     if chgs:
-        summary += f"\n🐢 ÜÇÜN ORT. DEĞİŞİMİ ({baseline_label}'e göre): {sum(chgs) / len(chgs):+.2f}%"
+        summary += f"\n🐢 ORT. DEĞİŞİM ({baseline_label}'e göre): {sum(chgs) / len(chgs):+.2f}%"
+    if show_peak and peaks:
+        summary += (f"\n🏔️ Liste zirvesi (en yüksek değişim ort.): "
+                    f"{sum(peaks) / len(peaks):+.2f}%")
     return f"{title}\n\n```\n" + "\n".join(body) + "\n```\n" + summary
 

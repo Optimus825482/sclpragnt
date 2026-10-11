@@ -1388,14 +1388,14 @@ function RadarSettingsPanel() {
               <div>
                 <p className="eyebrow text-bunker-muted">LİSTE PERİYODU (DK)</p>
                 <input type="number" min={5} max={120} step={5} value={combinedListMin}
-                  onChange={(e) => setCombinedListMin(e.target.value)} placeholder="30" className={numInputCls} />
-                <p className="text-[11px] text-bunker-muted mt-1">Kaç dk'da bir yeni liste</p>
+                  onChange={(e) => setCombinedListMin(e.target.value)} placeholder="20" className={numInputCls} />
+                <p className="text-[11px] text-bunker-muted mt-1">Kaç dk'da bir yeni liste (son listeden itibaren)</p>
               </div>
               <div>
                 <p className="eyebrow text-bunker-muted">DURUM PERİYODU (DK)</p>
                 <input type="number" min={1} max={60} step={1} value={combinedTrackMin}
-                  onChange={(e) => setCombinedTrackMin(e.target.value)} placeholder="10" className={numInputCls} />
-                <p className="text-[11px] text-bunker-muted mt-1">Arada kaç dk'da bir fark</p>
+                  onChange={(e) => setCombinedTrackMin(e.target.value)} placeholder="5" className={numInputCls} />
+                <p className="text-[11px] text-bunker-muted mt-1">Arada kaç dk'da bir fark (son durumdan itibaren)</p>
               </div>
               <div>
                 <p className="eyebrow text-bunker-muted">SAAT ARALIĞI (TR)</p>

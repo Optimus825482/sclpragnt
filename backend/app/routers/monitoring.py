@@ -3214,26 +3214,33 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     return sent
 
 
-async def _send_combined_status() -> bool:
-    """Son kombine listenin 3 adayının bildirim anına göre anlık durumu + ortalama.
+async def _send_combined_status(*, cfg: dict | None = None, force: bool = False) -> bool:
+    """Son kombine listenin adaylarının bildirim anına göre anlık durumu + ortalama.
 
-    RESTART KORUMASI: durum takibi de DB-yaş kontrollü — son durum gönderiminden
-    `track_min`'den az süre geçtiyse atlanır (restart spam'ini önler).
+    İSTENEN AKIŞ (2026-10-11): listeden sonra `track_min` (5) dk'da bir değişim
+    bildirimi gider. BİR SONRAKİ listeden ÖNCEKİ son durum bildiriminde ayrıca
+    her adayın LİSTE OLUŞTURULDUKTAN SONRAKİ EN YÜKSEK değişimi (zirve) gösterilir
+    — liste ömrü boyunca ne kadar tepe yaptığı bilgisi sonradan değerlendirmeye
+    yarar. Zirve değerleri hem mesaja hem DB'ye yazılır (`peak_pct`).
+
+    RESTART KORUMASI: son durumdan `track_min`'den az süre geçtiyse atlanır.
     """
     from app.whatsapp_notify import format_combined_status, send_whatsapp, whatsapp_enabled
     if not whatsapp_enabled():
         return False
-    try:
-        cfg = await combined_rising_settings()
-        track_min = max(1, int(cfg.get("track_min", 10) or 10))
-        last_status = await database.last_daily_rising_report(COMBINED_STATUS_KIND)
-        if last_status and last_status.get("sent"):
-            age = time.time() - float(last_status.get("sent_at") or 0)
-            if age < (track_min * 60.0 - 60.0):
-                logger.info("kombine durum atlandı: son gönderim %d sn önce", int(age))
-                return False
-    except Exception:
-        pass
+    cfg = cfg or await combined_rising_settings()
+    track_min = max(1, int(cfg.get("track_min", 5) or 5))
+    list_min = max(1, int(cfg.get("list_min", 20) or 20))
+    if not force:  # elle gönderim bu korumayı atlar
+        try:
+            last_status = await database.last_daily_rising_report(COMBINED_STATUS_KIND)
+            if last_status and last_status.get("sent"):
+                age = time.time() - float(last_status.get("sent_at") or 0)
+                if age < (track_min * 60.0 - 30.0):
+                    logger.info("kombine durum atlandı: son gönderim %d sn önce", int(age))
+                    return False
+        except Exception:
+            pass
     prev = await database.last_daily_rising_report(COMBINED_LIST_KIND)
     if not prev:
         return False
@@ -3244,8 +3251,34 @@ async def _send_combined_status() -> bool:
         prev_rows = []
     if not prev_rows:
         return False
+    # BİR SONRAKİ LİSTE YAKIN MI? Son liste üzerinden list_min'e yaklaşıldıysa bu
+    # "son durum bildirimi"dir → zirve sütunu eklenir.
+    list_age = time.time() - float(prev.get("sent_at") or 0)
+    is_last_before_next = list_age >= (list_min * 60.0 - track_min * 60.0)
     syms = [str(r.get("symbol") or "").upper() for r in prev_rows]
     _px = await _batch_prices(syms)
+    # Zirve takibi: önceki durum kayıtlarındaki birikmiş peak + şimdiki değişim.
+    prev_peak: dict[str, float] = {}
+    try:
+        statuses = await database.list_daily_rising_reports(
+            limit=50, days=1.0, kind=COMBINED_STATUS_KIND)
+        for st in statuses:
+            if int(st.get("id") or 0) <= int(prev.get("id") or 0):
+                continue
+            c = st.get("candidates") or []
+            try:
+                c = json.loads(c) if isinstance(c, str) else list(c)
+            except (TypeError, ValueError):
+                c = []
+            for x in c:
+                s = str(x.get("symbol") or "").upper()
+                try:
+                    pk = float(x.get("peak_pct"))
+                except (TypeError, ValueError):
+                    continue
+                prev_peak[s] = max(prev_peak.get(s, -1e9), pk)
+    except Exception:
+        prev_peak = {}
     rows = []
     for r in prev_rows:
         sym = str(r.get("symbol") or "").upper()
@@ -3256,9 +3289,15 @@ async def _send_combined_status() -> bool:
             c_ = float(cur) if cur else None
         except (TypeError, ValueError):
             e = c_ = None
+        chg = round((c_ / e - 1) * 100, 2) if (e and c_) else None
+        # ZİRVE: liste ömrü boyunca görülen en yüksek değişim (şimdiki + geçmiş).
+        peak = prev_peak.get(sym)
+        if chg is not None:
+            peak = chg if peak is None else max(peak, chg)
         rows.append({
             "symbol": sym, "entry_price": e, "current_price": c_,
-            "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
+            "change_pct": chg,
+            "peak_pct": round(peak, 2) if peak is not None else None,
             "strategy": r.get("strategy"),
         })
     try:
@@ -3268,8 +3307,11 @@ async def _send_combined_status() -> bool:
         _tz = None
     lt = datetime.now(_tz) if _tz else datetime.now()
     baseline = time.strftime("%H:%M", time.localtime(float(prev.get("sent_at") or 0)))
-    text = format_combined_status(rows, title=f"📊 Aday Durum Takibi · {lt.strftime('%H:%M')}",
-                                  baseline_label=baseline)
+    title = f"📊 Aday Durum Takibi · {lt.strftime('%H:%M')}"
+    if is_last_before_next:
+        title = f"🏁 Son Durum (Zirve) · {lt.strftime('%H:%M')}"
+    text = format_combined_status(rows, title=title, baseline_label=baseline,
+                                  show_peak=is_last_before_next)
     sent = await send_whatsapp(text)
     await database.save_daily_rising_report({
         "kind": COMBINED_STATUS_KIND, "sent_at": time.time(), "sent": bool(sent),
@@ -3279,17 +3321,16 @@ async def _send_combined_status() -> bool:
 
 
 async def daily_rising_combined_loop():
-    """TEK WhatsApp kanalı: `list_min` dk'da bir TOP-N liste, `track_min` dk'da
-    bir durum takibi. Ayarlar Ayarlar sayfasından (DB) okunur → env gerekmez.
+    """TEK WhatsApp kanalı — ARALIK BAZLI: `list_min` dk'da bir TOP-N liste,
+    `track_min` dk'da bir durum takibi. Ayarlar Ayarlar sayfasından (DB).
 
-    RESTART DAYANIKLILIĞI (2026-10-11 düzeltmesi): "ilk tarama hemen" kararı
-    ARTIK BELLEĞE DEĞİL VERİTABANINA dayanır. Eskiden bellek-içi bir bayrak
-    (`startup_list_done`) restart'ta sıfırlanıyordu → her yeniden deploy döngüyü
-    "ilk çalıştırma" sanıp gruba tekrar liste atıyordu (17:49/17:59/18:02/18:03
-    spam'i). Şimdi: döngü başlar başlamaz BİR kez taze liste dener; ama
-    `_send_combined_list` içindeki DB-cooldown son gönderim `list_min`'in
-    yarısından yeniyse göndermez → restart spam'i imkânsız. Sonrasında normal
-    takvim: `list_min`'e hizalı liste dakikaları, `track_min`'de durum.
+    ARALIK BAZLI (2026-10-11 düzeltmesi): eskiden takvim saatine hizalıydı
+    (`:00/:20/:40`) — ilk gönderim 18:11'de olunca 18:20 slotu restart-korumasına
+    takılıp bir sonraki liste 18:40'a kayıyordu (kullanıcı gözlemi: "18:11'den
+    sonra bir daha göndermedi"). Artık karar SAATE değil SON GÖNDERİM YAŞINA
+    bağlı: son listeden `list_min` dk geçtiyse yeni liste, son durumdan
+    `track_min` dk geçtiyse yeni durum gönderilir. Böylece 18:11'de gönderim
+    olduysa 18:31'de yenisi gider (saate hizalama yok).
     """
     poll_sec = 30.0
     try:
@@ -3297,45 +3338,43 @@ async def daily_rising_combined_loop():
         _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
     except Exception:
         _tz = None
-    logger.info("kombine yükseliş döngüsü başladı (DB-cooldown korumalı)")
-    # Piyasa verisinin (WS/ticker/kline) ısınması için kısa bekleme; ardından
-    # BİR kez taze liste denenir (DB-cooldown gerçekten gerekip gerekmediğine
-    # karar verir — restart'ta zaten gönderilmişse atlar).
+    logger.info("kombine yükseliş döngüsü başladı (aralık bazlı)")
+    # Piyasa verisinin ısınması için kısa bekleme; ardından BİR kez taze liste
+    # denenir (DB-cooldown gerçekten gerekip gerekmediğine karar verir).
     await asyncio.sleep(60)
     startup_attempted = False
     while True:
         try:
-            # AYARLAR: Ayarlar sayfası (DB) → config varsayılanı. Her turda okunur
-            # ki panelden yapılan değişiklik ANINDA etkili olsun.
             cfg = await combined_rising_settings()
             if cfg.get("enabled"):
                 from app.whatsapp_notify import whatsapp_enabled
                 if whatsapp_enabled():
                     lt = datetime.now(_tz) if _tz else datetime.now()
-                    list_min = max(1, int(cfg.get("list_min", 30)))
-                    track_min = max(1, int(cfg.get("track_min", 10)))
+                    list_min = max(1, int(cfg.get("list_min", 20)))
+                    track_min = max(1, int(cfg.get("track_min", 5)))
                     in_window = (int(cfg.get("start_hour", 9)) <= lt.hour
                                  <= int(cfg.get("end_hour", 23)))
                     if in_window:
-                        if not startup_attempted:
-                            # TEK deneme; gönderip göndermemeye DB-cooldown karar verir.
+                        now = time.time()
+                        # --- LİSTE: son listeden list_min dk geçti mi? ---
+                        last_list = await database.last_daily_rising_report(COMBINED_LIST_KIND)
+                        list_age = (now - float(last_list.get("sent_at") or 0)
+                                    if last_list else 1e9)
+                        if (not startup_attempted) or list_age >= list_min * 60.0:
                             startup_attempted = True
                             await _send_combined_list(cfg=cfg)
-                            continue
-                        window = (poll_sec / 60.0) + 0.01
-                        minute = lt.minute
-                        list_due = (minute % list_min) < window
-                        status_due = (minute % track_min) < window and not list_due
-                        if list_due:
-                            key = f"{lt.strftime('%Y-%m-%d %H')}:{minute - minute % list_min:02d}:list"
-                            if _monitoring_state.get("combined_list_last") != key:
-                                _monitoring_state["combined_list_last"] = key
-                                await _send_combined_list(cfg=cfg)
-                        elif status_due:
-                            key = f"{lt.strftime('%Y-%m-%d %H')}:{minute - minute % track_min:02d}:status"
-                            if _monitoring_state.get("combined_status_last") != key:
-                                _monitoring_state["combined_status_last"] = key
-                                await _send_combined_status()
+                            # Liste gönderildiyse durum sayacı sıfırlanır.
+                            last_status = await database.last_daily_rising_report(COMBINED_STATUS_KIND)
+                            status_age = (now - float(last_status.get("sent_at") or 0)
+                                          if last_status else 1e9)
+                            if status_age < track_min * 60.0:
+                                continue
+                        # --- DURUM: son durumdan track_min dk geçti mi? ---
+                        last_status = await database.last_daily_rising_report(COMBINED_STATUS_KIND)
+                        status_age = (now - float(last_status.get("sent_at") or 0)
+                                      if last_status else 1e9)
+                        if status_age >= track_min * 60.0:
+                            await _send_combined_status(cfg=cfg)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -3520,7 +3559,7 @@ async def daily_rising_send_delta_report(request: Request = None):
     çağırır; son kombine listenin 3 adayının bildirim anına göre farkını atar."""
     from app.api_common import require_admin as _require_admin
     _require_admin(request)
-    sent = await _send_combined_status()
+    sent = await _send_combined_status(force=True)
     return {"ok": sent}
 
 

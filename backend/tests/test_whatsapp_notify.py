@@ -45,6 +45,19 @@ def test_combined_list_empty_and_fields():
     assert "İHTİMAL" in out and "PUAN" in out
 
 
+def test_combined_list_footer_averages():
+    """Kullanıcı isteği (2026-10-11): alt satırda puan açıklaması yerine yükselme
+    miktarı (hedef) ortalaması + potansiyel ortalaması yazılır."""
+    rows = [
+        {"symbol": "AAATRY", "price": 1, "ceiling_pct": 4.0, "potential_pct": 10.0, "scan_score": 80},
+        {"symbol": "BBBTRY", "price": 1, "ceiling_pct": 6.0, "potential_pct": 20.0, "scan_score": 70},
+    ]
+    out = wn.format_combined_list(rows, n=3)
+    assert "ort. yükselme miktarı +%5.0" in out     # (4+6)/2
+    assert "ort. potansiyel +%15.0" in out          # (10+20)/2
+    assert "Puan = sinyal gücü" not in out          # eski açıklama KALDIRILDI
+
+
 def test_combined_list_limits_top_n():
     """n=3 → en yüksek puanlı 3 aday seçilir (sıralama puana göre)."""
     rows = [{"symbol": f"S{i}TRY", "price": i + 1, "scan_score": 50 - i} for i in range(6)]
@@ -72,7 +85,7 @@ def test_combined_status_avg_line():
         {"symbol": "BBBTRY", "entry_price": 1.0, "current_price": 0.96, "change_pct": -4.0},
     ]
     out = wn.format_combined_status(rows, title="T", baseline_label="12:00")
-    assert "ORT. DEĞİŞİMİ" in out
+    assert "ORT. DEĞİŞİM" in out
     assert "-1.00%" in out        # (2.0 - 4.0)/2
 
 

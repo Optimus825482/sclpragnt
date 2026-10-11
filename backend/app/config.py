@@ -446,17 +446,18 @@ class Config:
     # günlük momentum, short-squeeze, MACD jump/erken, yükseliş eğilimi, Master
     # Surge 4 katman, MACD MTF konfluans, mikro yapı) TEK taramada birleşir;
     # TEK birleşik puan üretilir:
-    #   HER 30 DK → en iyi `TOP_N` (ilk 3) aday LİSTE olarak gruba gider
-    #               (sembol · o anki fiyat · yükselme ihtimali · potansiyel ·
-    #                yükselme miktarı(%) · tarama puanı)
-    #   HER 10 DK → o 3 adayın bildirim anına göre ANLIK durumu (değişim farkı)
-    #               + üçünün ORTALAMA değişimi gruba gider
+    #   HER 20 DK → eşiğin ÜZERİNDEKİ en yüksek puanlı TOP_N (max 3) aday LİSTE
+    #               olarak gruba gider (sembol · o anki fiyat · yükselme ihtimali ·
+    #               potansiyel · yükselme miktarı(%) · tarama puanı)
+    #   HER 5 DK  → o adayların bildirim anına göre ANLIK durumu (değişim farkı)
+    #               + ortalaması; BİR SONRAKİ listeden önceki SON bildirimde ayrıca
+    #               "liste oluşturulduktan sonraki EN YÜKSEK değişim" gösterilir
     # Her gönderim DB'ye kaydedilir. Eski 11:30 raporu / 30 dk takip / slot
     # döngüleri KALDIRILDI (çift gönderim yok).
     # ------------------------------------------------------------------
     COMBINED_RISING_ENABLED = os.getenv("COMBINED_RISING_ENABLED", "true").lower() == "true"
-    COMBINED_RISING_LIST_MIN = max(5, int(os.getenv("COMBINED_RISING_LIST_MIN", "30")))
-    COMBINED_RISING_TRACK_MIN = max(1, int(os.getenv("COMBINED_RISING_TRACK_MIN", "10")))
+    COMBINED_RISING_LIST_MIN = max(5, int(os.getenv("COMBINED_RISING_LIST_MIN", "20")))
+    COMBINED_RISING_TRACK_MIN = max(1, int(os.getenv("COMBINED_RISING_TRACK_MIN", "5")))
     COMBINED_RISING_TOP_N = max(1, int(os.getenv("COMBINED_RISING_TOP_N", "3")))
     # Birleşik puan eşiği: listedeki 1. aday bile bunun altındaysa gönderilmez.
     COMBINED_RISING_MIN_SCORE = float(os.getenv("COMBINED_RISING_MIN_SCORE", "10.0"))

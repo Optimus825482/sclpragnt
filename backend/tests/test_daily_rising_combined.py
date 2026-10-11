@@ -26,6 +26,9 @@ def test_combined_config_defaults():
     assert c.COMBINED_RISING_ENABLED is True
     assert c.COMBINED_RISING_TOP_N == 3
     assert c.COMBINED_RISING_MIN_SCORE == 10.0
+    # Kullanıcı kararı (2026-10-11): liste 20 dk, durum 5 dk.
+    assert c.COMBINED_RISING_LIST_MIN == 20
+    assert c.COMBINED_RISING_TRACK_MIN == 5
     # Eski slot ayarları KALDIRILDI.
     assert not hasattr(c, "DAILY_RISING_SLOT_ENABLED")
     assert not hasattr(c, "DAILY_RISING_SLOT_MIN_SCORE")
@@ -101,7 +104,7 @@ def test_format_combined_status_avg_and_sort():
         {"symbol": "CCCTRY", "entry_price": 1.0, "current_price": 1.0, "change_pct": 0.0},
     ]
     out = format_combined_status(rows, title="T", baseline_label="12:00")
-    assert "ORT. DEĞİŞİMİ" in out
+    assert "ORT. DEĞİŞİM" in out
     # (2.0 - 4.0 + 0.0) / 3 = -0.67
     assert "-0.67%" in out
     # En çok yükselen üstte
@@ -239,6 +242,40 @@ def test_status_send_has_restart_guard():
     src = inspect.getsource(mo._send_combined_status)
     assert "last_daily_rising_report" in src
     assert "COMBINED_STATUS_KIND" in src
+
+
+def test_combined_loop_is_interval_based_not_clock_aligned():
+    """Kullanıcı gözlemi (2026-10-11): '18:11'de gönderdi, bir daha göndermedi'.
+    Kök neden takvim-hizalı slotlar + restart koruması çakışması. Düzeltme: döngü
+    artık SAATE değil SON GÖNDERİM YAŞINA bakar (aralık bazlı)."""
+    import inspect
+    from app.routers import monitoring as mo
+    src = inspect.getsource(mo.daily_rising_combined_loop)
+    # Aralık bazlı: son gönderim yaşı periyotla kıyaslanır.
+    assert "list_age" in src and "status_age" in src
+    assert "list_min * 60.0" in src and "track_min * 60.0" in src
+    # Takvim-hizalı modulo slotları KALDIRILDI.
+    assert "% list_min" not in src
+    assert "combined_list_last" not in src
+
+
+def test_status_last_before_next_shows_peak():
+    """İstenen akış: bir SONRAKİ listeden önceki son durum bildiriminde adayların
+    liste oluşturulduktan sonraki EN YÜKSEK değişimi (zirve) gösterilir."""
+    import inspect
+    from app.routers import monitoring as mo
+    from app.whatsapp_notify import format_combined_status
+    status_src = inspect.getsource(mo._send_combined_status)
+    assert "is_last_before_next" in status_src
+    assert "peak_pct" in status_src
+    assert "show_peak" in status_src
+    fmt_src = inspect.getsource(format_combined_status)
+    assert "show_peak" in fmt_src and "ZİRVE" in fmt_src
+    # Davranış: zirve verilince mesajda zirve sütunu/başlığı çıkar.
+    rows = [{"symbol": "AAATRY", "entry_price": 1.0, "current_price": 1.01,
+             "change_pct": 1.0, "peak_pct": 3.5}]
+    out = format_combined_status(rows, title="T", baseline_label="12:00", show_peak=True)
+    assert "ZİRVE" in out and "+3.50%" in out and "zirve" in out.lower()
 
 
 def test_send_combined_list_skips_when_recent(monkeypatch):
