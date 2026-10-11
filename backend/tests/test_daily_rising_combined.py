@@ -432,3 +432,74 @@ def test_legacy_momentum_scan_no_whatsapp():
     from app.routers import monitoring as mo
     src = inspect.getsource(mo._daily_momentum_scan_once)
     assert "send_whatsapp" not in src
+
+
+def test_min_score_applies_to_every_candidate(monkeypatch):
+    """Kullanıcı geri bildirimi (2026-10-12): eşik 80 iken 83 ve 75 puanlı adaylar
+    listeye girmişti. KÖK NEDEN: eşik yalnız 1. adaya uygulanıyordu. Düzeltme:
+    eşiğin ALTINDAKİ adaylar listeden ÇIKARILIR.
+
+    GERÇEK davranış: tarama 83/75/60 puanlı 3 aday döndürür, eşik 80 → listeye
+    YALNIZ 83 girer; 75 ve 60 elenir."""
+    import asyncio
+    import time
+    from app.routers import monitoring as mo
+
+    sent_rows = []
+
+    async def _scan():
+        return [
+            {"symbol": "HIGHTRY", "price": 1.0, "scan_score": 83},
+            {"symbol": "MIDTRY", "price": 1.0, "scan_score": 75},
+            {"symbol": "LOWTRY", "price": 1.0, "scan_score": 60},
+        ]
+    monkeypatch.setattr(mo, "_combined_scan_rows", _scan)
+
+    async def _last(kind=mo.COMBINED_LIST_KIND):
+        return None
+    monkeypatch.setattr(mo.database, "last_daily_rising_report", _last)
+
+    # whatsapp_enabled True + gönderimi yakala.
+    import app.whatsapp_notify as wn
+    sent = {}
+    monkeypatch.setattr(wn, "whatsapp_enabled", lambda: True)
+
+    async def _fake_send(text):
+        sent["text"] = text
+        return True
+    monkeypatch.setattr(wn, "send_whatsapp", _fake_send)
+    monkeypatch.setattr(wn, "format_combined_list", lambda cands, **k: "X")
+
+    async def _save(item):
+        sent_rows.append(item)
+        return 1
+    monkeypatch.setattr(mo.database, "save_daily_rising_report", _save)
+
+    cfg = {"top_n": 3, "min_score": 80.0, "list_min": 15, "track_min": 5}
+    asyncio.run(mo._send_combined_list(cfg=cfg, force=True))
+
+    assert sent_rows, "liste gönderilmeliydi (83 eşiği geçer)"
+    syms = [c["symbol"] for c in sent_rows[-1]["candidates"]]
+    assert syms == ["HIGHTRY"], f"yalnız eşik üstü girmeli, ama: {syms}"
+
+
+def test_min_score_skips_list_when_none_passes(monkeypatch):
+    """Hiçbir aday eşiği geçmiyorsa liste GÖNDERİLMEZ."""
+    import asyncio
+    from app.routers import monitoring as mo
+
+    async def _scan():
+        return [{"symbol": "A", "price": 1.0, "scan_score": 70},
+                {"symbol": "B", "price": 1.0, "scan_score": 55}]
+    monkeypatch.setattr(mo, "_combined_scan_rows", _scan)
+    async def _last(kind=mo.COMBINED_LIST_KIND):
+        return None
+    monkeypatch.setattr(mo.database, "last_daily_rising_report", _last)
+    import app.whatsapp_notify as wn
+    monkeypatch.setattr(wn, "whatsapp_enabled", lambda: True)
+    async def _fake_send(text):
+        raise AssertionError("eşiği geçen yok → gönderim olmamalı")
+    monkeypatch.setattr(wn, "send_whatsapp", _fake_send)
+
+    cfg = {"top_n": 3, "min_score": 80.0, "list_min": 15, "track_min": 5}
+    assert asyncio.run(mo._send_combined_list(cfg=cfg, force=True)) is False

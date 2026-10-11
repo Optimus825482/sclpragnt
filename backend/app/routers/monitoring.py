@@ -3223,13 +3223,17 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
         logger.warning("kombine tarama başarısız: %s", exc)
         return False
     n = int(cfg.get("top_n", 3) or 3)
-    top = cands[:n]
+    min_score = float(cfg.get("min_score", 10.0))
+    # EŞİK HER ADAYA UYGULANIR (kullanıcı geri bildirimi 2026-10-12): eskiden
+    # yalnız 1. adayın (en iyi) puanı kontrol ediliyordu; en iyi aday eşiği
+    # geçince ALTINDAKİLER (ör. 75 < eşik 80) de listeye giriyordu. Artık eşiğin
+    # ALTINDAKİ adaylar listeden ÇIKARILIR → listedeki her sembol eşiği geçmiş olur.
+    ranked = [c for c in cands if float(c.get("scan_score") or 0) >= min_score]
+    top = ranked[:n]
     if not top:
-        return False
-    best = float(top[0].get("scan_score") or 0)
-    if best < float(cfg.get("min_score", 10.0)):
-        logger.info("kombine liste atlandı: en iyi puan %.2f < eşik %.2f",
-                    best, cfg.get("min_score", 10.0))
+        best_all = float((cands[0].get("scan_score") if cands else 0) or 0)
+        logger.info("kombine liste atlandı: eşiği (%.1f) geçen aday yok (en iyi %.2f)",
+                    min_score, best_all)
         return False
     # REFERANS FİYAT DEVRALMA (kullanıcı kuralı 2026-10-11): yeni listede bir
     # sembol ÖNCEKİ listede de varsa, başlangıç (referans) fiyatı İLK bildirildiği
@@ -3272,7 +3276,8 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
             await combined_paper.on_combined_list_sent(built, report_id=row_id)
         except Exception as exc:
             logger.debug("kombine paper otonom açılış: %s", exc)
-    logger.info("kombine liste gönderildi: %d aday (en iyi puan %.1f)", len(top), best)
+    logger.info("kombine liste gönderildi: %d aday (en iyi puan %.1f)",
+                len(top), float(top[0].get("scan_score") or 0))
     return sent
 
 
@@ -3793,11 +3798,10 @@ async def daily_rising_state(request: Request = None):
     stats = await database.get_daily_rising_stats(days=7.0)
     try:
         cfg = await combined_rising_settings()
-        top_n = int(cfg.get("top_n", 2))
-        list_min = int(cfg.get("list_min", 15))
     except Exception:
-        top_n = 2
-        list_min = 15
+        cfg = {}
+    top_n = int(cfg.get("top_n", 2))
+    list_min = int(cfg.get("list_min", 15))
     # SONRAKİ LİSTE ZAMANI (kullanıcı isteği 2026-10-11): sayfada geri sayım
     # gösterilir. Son liste gönderiminden `list_min` dk sonrası = sonraki liste.
     recent = await database.last_daily_rising_report(COMBINED_LIST_KIND)
@@ -3852,9 +3856,11 @@ async def daily_rising_state(request: Request = None):
         return {"paper_only": True, "generated_at": generated_at,
                 "source": "last_sent", "sent_at": rep.get("sent_at"),
                 "schedule": schedule, "stats": stats, "candidates": out}
-    # 2) Gönderilmiş liste yok → anlık kombine tarama (ilk TOP-N).
+    # 2) Gönderilmiş liste yok → anlık kombine tarama (eşik üstü ilk TOP-N).
     try:
-        cands = (await _combined_scan_rows())[:top_n]
+        _min_sc = float(cfg.get("min_score", 10.0))
+        _scan = await _combined_scan_rows()
+        cands = [c for c in _scan if float(c.get("scan_score") or 0) >= _min_sc][:top_n]
     except Exception as exc:
         logger.debug("state anlık kombine tarama: %s", exc)
         cands = []
