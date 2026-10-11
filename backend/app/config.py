@@ -489,7 +489,18 @@ class Config:
     # girişin +%1 üstünde kalır → kâr kilitli).
     COMBINED_PAPER_TRAIL_TRIGGER_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_TRIGGER_PCT", "2.0"))
     COMBINED_PAPER_TRAIL_GAP_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_GAP_PCT", "1.0"))
+    # Trailing aktifken SABİT TP KALDIRILIR (kullanıcı kararı 2026-10-12): aksi
+    # halde kazanan pozisyon TP'ye (ör. %4) takılıp erken kapanır; oysa sembol
+    # %20 yükselebilir. Trailing devreye girince çıkış tamamen kâr kilidi/trailing
+    # ile yönetilir (trend sürdükçe taşır).
+    COMBINED_PAPER_TP_CANCEL_ON_TRAIL = os.getenv(
+        "COMBINED_PAPER_TP_CANCEL_ON_TRAIL", "true").lower() == "true"
     COMBINED_PAPER_MAX_HOLD_MIN = float(os.getenv("COMBINED_PAPER_MAX_HOLD_MIN", "120"))
+    # KÂRSIZ KAPANIŞ (kullanıcı kararı 2026-10-12): pozisyon bu süre içinde
+    # KÂRA GEÇMEDİYSE otomatik kapat (ölü sermaye / fırsat maliyeti). Kâra
+    # geçmişse (peak >= giriş) bu kural UYGULANMAZ; o zaman normal TP/trailing/
+    # max-hold işler. 0 = kapalı.
+    COMBINED_PAPER_NO_PROFIT_MIN = float(os.getenv("COMBINED_PAPER_NO_PROFIT_MIN", "30"))
     # İlk koruma stop'u (kâr kilidi öncesi zarar sınırı) — potansiyel ile ölçeklenir,
     # ama en az bu taban uygulanır.
     COMBINED_PAPER_SL_PCT = float(os.getenv("COMBINED_PAPER_SL_PCT", "3.0"))

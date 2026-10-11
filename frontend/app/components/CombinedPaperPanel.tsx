@@ -69,6 +69,7 @@ const price = (v: number | null | undefined): string => {
 const reasonLabel: Record<string, string> = {
   take_profit: "TP", trailing_stop: "Trailing", stop_loss: "Stop",
   max_duration: "Süre doldu", manual_close: "Elle kapatıldı", symbol_deactivated: "Sembol pasif",
+  no_profit_timeout: "Kârsız süre doldu",
 };
 
 /** KOMBİNE PAPER PORTFÖY (ayrı 5.000 TL) — WhatsApp kombine listesi adaylarının

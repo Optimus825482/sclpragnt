@@ -160,11 +160,15 @@ async def _manage_single(trade: dict, now: float) -> None:
 
     gain_pct = (price / entry - 1) * 100 if entry else 0.0
     peak_gain_pct = (peak / entry - 1) * 100 if entry else 0.0
-    trigger = float(getattr(config, "COMBINED_PAPER_TRAIL_TRIGGER_PCT", 1.0))
-    gap = float(getattr(config, "COMBINED_PAPER_TRAIL_GAP_PCT", 0.4))
+    trigger = float(getattr(config, "COMBINED_PAPER_TRAIL_TRIGGER_PCT", 2.0))
+    gap = float(getattr(config, "COMBINED_PAPER_TRAIL_GAP_PCT", 1.0))
+    tp_cancel_on_trail = bool(getattr(config, "COMBINED_PAPER_TP_CANCEL_ON_TRAIL", True))
+    trailing_on = bool(fields.get("trailing_activated")) or bool(trade.get("trailing_activated"))
 
-    # 1) TP (hedef fiyat) — potansiyele göre belirlenen hedef.
-    if tp is not None and price >= tp:
+    # 1) TP (hedef fiyat) — ANCAK trailing AKTİF DEĞİLKEN. Trailing bağlandıysa
+    # TP kaldırılır (kullanıcı kararı 2026-10-12): "%4'te TP'ye ulaştı ama sembol
+    # %20 arttı; trailing ile daha fazla kâr alınabilirdi." Trend sürdükçe taşır.
+    if tp is not None and price >= tp and not (tp_cancel_on_trail and trailing_on):
         await database.close_combined_paper_trade(tid, min(price, tp), now, "take_profit")
         logger.info("combined_paper %s: TP (+%%%.2f)", sym, gain_pct)
         return
@@ -196,6 +200,17 @@ async def _manage_single(trade: dict, now: float) -> None:
         reason = "trailing_stop" if fields.get("trailing_activated") or trade.get("trailing_activated") else "stop_loss"
         await database.close_combined_paper_trade(tid, max(price, effective_stop), now, reason)
         logger.info("combined_paper %s: %s (%+.2f%%)", sym, reason, gain_pct)
+        return
+
+    # 4a) KÂRSIZ KAPANIŞ (kullanıcı kararı 2026-10-12): `no_profit_min` dk içinde
+    # KÂRA GEÇMEDİYSE kapat. "Kâra geçmiş" = tepe (peak) girişin üstünde. Kâra
+    # geçtiyse bu kural UYGULANMAZ (normal TP/trailing/max-hold işler); böylece
+    # kazanan pozisyon erken kesilmez, ama yatay/zararda bekleyen ölü sermaye
+    # serbest bırakılır.
+    no_profit_min = float(getattr(config, "COMBINED_PAPER_NO_PROFIT_MIN", 30.0))
+    if no_profit_min > 0 and hold_min >= no_profit_min and peak <= entry:
+        await database.close_combined_paper_trade(tid, price, now, "no_profit_timeout")
+        logger.info("combined_paper %s: KÂRSIZ SÜRE DOLDU (%.0f dk, %+.2f%%)", sym, hold_min, gain_pct)
         return
 
     # 4) Süre doldu → kapanış.

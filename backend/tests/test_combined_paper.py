@@ -165,3 +165,97 @@ def test_manager_loop_registered_in_main():
     src = inspect.getsource(m)
     assert "combined_paper_management_loop" in src
     assert "combined-paper" in src
+
+
+def test_tp_cancelled_when_trailing_active(monkeypatch):
+    """Kullanıcı kararı (2026-10-12): trailing bağlandıysa TP KALDIRILIR —
+    kazanan pozisyon TP'ye (ör. %4) takılıp erken kapanmaz, trend sürer.
+
+    GERÇEK davranış: trailing_activated=True iken fiyat TP'nin üzerinde olsa bile
+    kapanış olmamalı (take_profit çağrılmamalı)."""
+    import asyncio
+    import time
+    from app import combined_paper as cp
+
+    closed = []
+
+    async def _close(tid, price, now, reason):
+        closed.append(reason)
+        return {"pnl": 0}
+    monkeypatch.setattr(cp.database, "close_combined_paper_trade", _close)
+
+    async def _price(_s):
+        return 105.0   # TP=104'ün üzerinde
+    monkeypatch.setattr(cp, "_price", _price)
+    async def _upd(*_a, **_k):
+        return None
+    monkeypatch.setattr(cp.database, "update_combined_paper_trade", _upd)
+
+    trade = {"id": 1, "symbol": "T", "entry_price": 100.0, "quantity": 1.0,
+             "take_profit": 104.0, "stop_loss": 97.0, "peak_price": 105.0,
+             "trailing_activated": True, "trailing_stop": 103.0,
+             "entry_time": time.time()}
+    asyncio.run(cp._manage_single(trade, time.time()))
+    assert "take_profit" not in closed, "trailing aktifken TP ile kapanmamalı"
+
+
+def test_tp_fires_when_trailing_not_active(monkeypatch):
+    """Trailing YOKSA TP normal çalışır (klasik davranış korunur)."""
+    import asyncio
+    import time
+    from app import combined_paper as cp
+    closed = []
+    async def _close(tid, price, now, reason):
+        closed.append(reason); return {"pnl": 0}
+    monkeypatch.setattr(cp.database, "close_combined_paper_trade", _close)
+    async def _price(_s):
+        return 105.0
+    monkeypatch.setattr(cp, "_price", _price)
+    trade = {"id": 1, "symbol": "T", "entry_price": 100.0, "quantity": 1.0,
+             "take_profit": 104.0, "stop_loss": 97.0, "peak_price": 100.0,
+             "trailing_activated": False, "entry_time": time.time()}
+    asyncio.run(cp._manage_single(trade, time.time()))
+    assert "take_profit" in closed
+
+
+def test_no_profit_timeout_closes_loser(monkeypatch):
+    """Kullanıcı kararı (2026-10-12): pozisyon 30 dk içinde KÂRA GEÇMEDİYSE
+    (peak <= giriş) otomatik kapanır → no_profit_timeout."""
+    import asyncio
+    import time
+    from app import combined_paper as cp
+    closed = []
+    async def _close(tid, price, now, reason):
+        closed.append(reason); return {"pnl": -1.0}
+    monkeypatch.setattr(cp.database, "close_combined_paper_trade", _close)
+    async def _price(_s):
+        return 99.0   # hâlâ zararda, hiç kâra geçmedi
+    monkeypatch.setattr(cp, "_price", _price)
+    trade = {"id": 1, "symbol": "T", "entry_price": 100.0, "quantity": 1.0,
+             "take_profit": 110.0, "stop_loss": 90.0, "peak_price": 100.0,
+             "trailing_activated": False, "entry_time": time.time() - 31 * 60}
+    asyncio.run(cp._manage_single(trade, time.time()))
+    assert "no_profit_timeout" in closed
+
+
+def test_no_profit_timeout_skips_winner(monkeypatch):
+    """Kâra GEÇMİŞ (peak > giriş) pozisyon no_profit_timeout ile KAPANMAZ —
+    kazanan erken kesilmez (normal trailing/max-hold işler)."""
+    import asyncio
+    import time
+    from app import combined_paper as cp
+    closed = []
+    async def _close(tid, price, now, reason):
+        closed.append(reason); return {"pnl": 1.0}
+    monkeypatch.setattr(cp.database, "close_combined_paper_trade", _close)
+    async def _price(_s):
+        return 100.5   # girişin hafif üstünde ama TP'ye uzak
+    monkeypatch.setattr(cp, "_price", _price)
+    async def _upd(*_a, **_k):
+        return None
+    monkeypatch.setattr(cp.database, "update_combined_paper_trade", _upd)
+    trade = {"id": 1, "symbol": "T", "entry_price": 100.0, "quantity": 1.0,
+             "take_profit": 110.0, "stop_loss": 90.0, "peak_price": 102.0,
+             "trailing_activated": False, "entry_time": time.time() - 31 * 60}
+    asyncio.run(cp._manage_single(trade, time.time()))
+    assert "no_profit_timeout" not in closed
