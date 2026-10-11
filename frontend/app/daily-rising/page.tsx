@@ -138,7 +138,7 @@ export default function DailyRisingPage() {
 
   const loadLastReport = useCallback(async () => {
     try {
-      const res = await apiRequest(`${API_BASE}/api/daily-rising/last-report?kind=slot`, { cache: "no-store" });
+      const res = await apiRequest(`${API_BASE}/api/daily-rising/last-report?kind=combined_list`, { cache: "no-store" });
       if (res.ok) {
         const d = await res.json();
         setLastReport(d?.ok ? d : null);
@@ -173,7 +173,7 @@ export default function DailyRisingPage() {
   const evaluateLast = useCallback(async () => {
     setEvalLoading(true); setMsg(null);
     try {
-      const res = await apiRequest(`${API_BASE}/api/daily-rising/evaluate-last?kind=slot`, { cache: "no-store" });
+      const res = await apiRequest(`${API_BASE}/api/daily-rising/evaluate-last?kind=combined_list`, { cache: "no-store" });
       const d = await res.json();
       if (!res.ok) throw new Error(d?.detail || `HTTP ${res.status}`);
       if (d?.ok === false) {
@@ -313,15 +313,14 @@ export default function DailyRisingPage() {
                   ? <>Köprü: <b className={waStatus?.connected ? "text-neon-green" : "text-neon-red"}>
                       {waStatus?.connected ? "bağlı" : "bağlı değil"}</b>
                       {" · "}Grup: <b>{waStatus?.group_id || "tanımsız"}</b>
-                      {" · "}Rapor: <b>{waStatus?.notify_enabled ? "açık" : "kapalı"}</b>
-                      {" · "}Saatlik: <b>{waStatus?.hourly_enabled ? "açık" : "kapalı"}</b></>
+                      {" · "}Kombine döngü: <b>{waStatus?.combined_enabled ? `açık (TOP-${waStatus?.combined_top_n ?? 3})` : "kapalı"}</b></>
                   : <span className="text-neon-red">WhatsApp kapalı — WHATSAPP_NOTIFY_ENABLED / köprü ayarlarını kontrol edin.</span>}
                 {waStatus?.bridge_error ? <span className="text-neon-red"> · köprü hatası: {waStatus.bridge_error}</span> : null}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
               <Button variant="primary" onClick={sendSlotReport} disabled={waBusy === "slot-report" || !waStatus?.enabled}>
-                {waBusy === "slot-report" ? "Gönderiliyor…" : "📤 Manuel Liste Gönder"}
+                {waBusy === "slot-report" ? "Gönderiliyor…" : "📤 Kombine Liste Gönder"}
               </Button>
               <Button variant="secondary" onClick={evaluateLast} disabled={evalLoading}>
                 {evalLoading ? "Değerlendiriliyor…" : "🔎 Son Gönderilen Değerlendirme"}

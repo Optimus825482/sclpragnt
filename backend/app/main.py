@@ -97,8 +97,7 @@ from app.routers.runtime import (  # noqa: F401
 from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loop, load_velocity_atr_profiles  # noqa: F401
 from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
 from app.routers.monitoring import (rising_evidence_loop, daily_momentum_loop,
-                                    daily_rising_hourly_loop,
-                                    daily_rising_slot_loop)  # noqa: F401
+                                    daily_rising_combined_loop)  # noqa: F401
 from app.routers import monitoring  # noqa: F401
 
 try:
@@ -1168,13 +1167,11 @@ async def startup_services():
     # başlar ama bayrak kapalıyken hiçbir iş üretmez).
     _start_background(daily_momentum_loop, "daily-momentum")
     await asyncio.sleep(_yield)
-    # Saat başı aday takip tablosu (WhatsApp grubuna) — WhatsApp yapılandırılmadıkça
-    # hiçbir şey yapmaz; yalnız WHATSAPP_HOURLY_ENABLED açıkken gönderir.
-    _start_background(daily_rising_hourly_loop, "daily-rising-hourly")
-    await asyncio.sleep(_yield)
-    # SLOT rapor döngüsü (2026-10-10): :00/:30 liste + :15/:45 fark+otlama raporu.
-    # Aktifken 11:30 tek WhatsApp raporu ve 30 dk takip tablosu kendi içinde kapalı.
-    _start_background(daily_rising_slot_loop, "daily-rising-slot")
+    # TEK WhatsApp kanalı (2026-10-11): kombine yükseliş döngüsü.
+    # 30 dk'da bir tüm radar stratejilerinin birleştiği TOP-3 liste, 10 dk'da bir
+    # o adayların bildirim anına göre durum takibi gruba gider. Eski 11:30 raporu,
+    # 30 dk takip tablosu ve slot döngüsü KALDIRILDI (çift gönderim yok).
+    _start_background(daily_rising_combined_loop, "daily-rising-combined")
     await asyncio.sleep(_yield)
     _start_background(auto_paper_start_loop, "auto-paper-start")
     await asyncio.sleep(_yield)

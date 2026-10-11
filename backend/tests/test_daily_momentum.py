@@ -94,28 +94,22 @@ def test_daily_rising_manual_and_watchlist_endpoints():
 
 
 def test_whatsapp_send_endpoints_registered():
-    """WhatsApp elle-gönderim + durum uçları kayıtlı olmalı."""
+    """Tek WhatsApp kanalı (2026-10-11): kombine liste/durum uçları + durum ucu.
+
+    Eski `/send-report` (11:30 raporu) ve `/send-tracking` KALDIRILDI; tek kanal
+    `send-slot-report` (kombine liste) + `send-delta-report` (kombine durum)."""
     from app.routers import monitoring
     paths = {getattr(r, "path", "") for r in monitoring.router.routes}
-    assert "/api/daily-rising/send-report" in paths
-    assert "/api/daily-rising/send-tracking" in paths
+    assert "/api/daily-rising/send-slot-report" in paths
+    assert "/api/daily-rising/send-delta-report" in paths
     assert "/api/daily-rising/whatsapp-status" in paths
-
-
-def test_send_report_reads_1130_snapshot_not_fresh_scan():
-    """Kullanıcı kararı: '11:30 Raporu' butonu TAZE tarama yapmaz; bugün 11:30'da
-    kaydedilen anlık görüntüyü (DB) gönderir. Kaynak kodda yeni velzi taraması
-    (detect_velocity_candidates / _short_squeeze_candidates) OLMAMALI."""
-    import inspect
-    from app.routers import monitoring
-    src = inspect.getsource(monitoring.daily_rising_send_report)
-    assert "detect_velocity_candidates" not in src
-    assert "_short_squeeze_candidates" not in src
-    assert "_today_scan_rows" in src        # DB anlık görüntüsünden okur
+    # Eski uçlar KALDIRILDI.
+    assert "/api/daily-rising/send-report" not in paths
+    assert "/api/daily-rising/send-tracking" not in paths
 
 
 def test_today_rising_rows_helper_exists():
-    """Rapor ve takip ucu AYNI bugün penceresini kullanmalı (aynı ilk 5)."""
+    """Bugün penceresi yardımcıları korunur (kombine motor + state hâlâ kullanır)."""
     from app.routers import monitoring
     assert hasattr(monitoring, "_today_rising_rows")
     assert hasattr(monitoring, "_today_scan_rows")

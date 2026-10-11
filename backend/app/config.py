@@ -441,24 +441,27 @@ class Config:
     # Gönderim aralığı (dakika): 30 = yarım saatte bir (2026-10-10 kullanıcı kararı).
     WHATSAPP_HOURLY_INTERVAL_MIN = max(5, int(os.getenv("WHATSAPP_HOURLY_INTERVAL_MIN", "30")))
     # ------------------------------------------------------------------
-    # SLOT RAPOR DÖNGÜSÜ (2026-10-10 kullanıcı kararı) — 11:30 tek tarama yerine
-    # HER SAAT BAŞI VE :30'da taze tarama yapılır; her tarama bir "slot raporu"
-    # (liste) + 15 dk sonra bir "fark raporu" üretir:
-    #   :00 / :30 → LİSTE (en iyi 1-5 coin, anlık fiyat + ihtimal + potansiyel)
-    #   :15 / :45 → FARK (önceki listenin adaylarının o ana kadar durumu + en
-    #               altta otlama = öneri fiyatından bu yana ort. % değişim)
-    # Çakışmayı önlemek için eski 11:30 tek tarama ve 30 dk takip döngüsü bu
-    # döngü aktifken çalışmaz (aşağıdaki bayraklarla kapatılır).
+    # KOMBİNE YÜKSELİŞ DÖNGÜSÜ (2026-10-11 kullanıcı kararı) — TEK WhatsApp
+    # gönderim sistemi. Radar döngülerindeki TÜM stratejiler (velocity/hız,
+    # günlük momentum, short-squeeze, MACD jump/erken, yükseliş eğilimi, Master
+    # Surge 4 katman, MACD MTF konfluans, mikro yapı) TEK taramada birleşir;
+    # TEK birleşik puan üretilir:
+    #   HER 30 DK → en iyi `TOP_N` (ilk 3) aday LİSTE olarak gruba gider
+    #               (sembol · o anki fiyat · yükselme ihtimali · potansiyel ·
+    #                yükselme miktarı(%) · tarama puanı)
+    #   HER 10 DK → o 3 adayın bildirim anına göre ANLIK durumu (değişim farkı)
+    #               + üçünün ORTALAMA değişimi gruba gider
+    # Her gönderim DB'ye kaydedilir. Eski 11:30 raporu / 30 dk takip / slot
+    # döngüleri KALDIRILDI (çift gönderim yok).
     # ------------------------------------------------------------------
-    DAILY_RISING_SLOT_ENABLED = os.getenv("DAILY_RISING_SLOT_ENABLED", "true").lower() == "true"
-    # Kalite eşiği: listenin 1. sırası bile bunun ALTINDAYSA hiçbir şey GÖNDERİLMEZ
-    # ("göndermiş olmak için göndermeyelim"). Puan = ihtimal × potansiyel / 100.
-    DAILY_RISING_SLOT_MIN_SCORE = float(os.getenv("DAILY_RISING_SLOT_MIN_SCORE", "10.0"))
-    # En az / en çok gönderilen aday sayısı (kullanıcı kararı: 1..5).
-    DAILY_RISING_SLOT_MAX_COUNT = max(1, int(os.getenv("DAILY_RISING_SLOT_MAX_COUNT", "5")))
-    # Tavanına (ceiling) ulaşan adaylar listeden ÇIKARILIR (o günkü hedefine
-    # ulaştıysa tekrar önerilmez); listede kimse kalmazsa slot raporu gönderilmez.
-    DAILY_RISING_SLOT_EXCLUDE_HIT = os.getenv("DAILY_RISING_SLOT_EXCLUDE_HIT", "true").lower() == "true"
+    COMBINED_RISING_ENABLED = os.getenv("COMBINED_RISING_ENABLED", "true").lower() == "true"
+    COMBINED_RISING_LIST_MIN = max(5, int(os.getenv("COMBINED_RISING_LIST_MIN", "30")))
+    COMBINED_RISING_TRACK_MIN = max(1, int(os.getenv("COMBINED_RISING_TRACK_MIN", "10")))
+    COMBINED_RISING_TOP_N = max(1, int(os.getenv("COMBINED_RISING_TOP_N", "3")))
+    # Birleşik puan eşiği: listedeki 1. aday bile bunun altındaysa gönderilmez.
+    COMBINED_RISING_MIN_SCORE = float(os.getenv("COMBINED_RISING_MIN_SCORE", "10.0"))
+    COMBINED_RISING_START_HOUR = max(0, min(23, int(os.getenv("COMBINED_RISING_START_HOUR", "9"))))
+    COMBINED_RISING_END_HOUR = max(0, min(23, int(os.getenv("COMBINED_RISING_END_HOUR", "23"))))
     DAILY_MOMENTUM_RET_8H_MIN = float(os.getenv("DAILY_MOMENTUM_RET_8H_MIN", "2.0"))
     DAILY_MOMENTUM_ATR_MIN = float(os.getenv("DAILY_MOMENTUM_ATR_MIN", "0.5"))
     DAILY_MOMENTUM_ADX_MIN = float(os.getenv("DAILY_MOMENTUM_ADX_MIN", "25.0"))

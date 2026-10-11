@@ -6,7 +6,7 @@ import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
 import MacdMtfTab from "./MacdMtfTab";
 import LlmVsRulesTab from "./LlmVsRulesTab";
-import DailyRisingTab from "./DailyRisingTab";
+import CombinedRisingTab from "./CombinedRisingTab";
 import {
   formatSignedTL,
   formatTL,
@@ -1773,7 +1773,7 @@ export default function ReportsPage() {
     { id: "llm_compare", label: "🤖 Kural vs LLM", icon: "🤖" },
     { id: "symbols", label: "📈 Sembol Başarısı", icon: "📈" },
     { id: "mtf", label: "🧠 MTF Konfluans", icon: "🧠" },
-    { id: "daily_rising", label: "🌅 Günlük Yükseliş", icon: "🌅" },
+    { id: "daily_rising", label: "🌅 Kombine Yükseliş", icon: "🌅" },
     ...(isAdmin ? [{ id: "advanced", label: "⚙️ Gelişmiş Teşhis", icon: "⚙️" }] : []),
   ];
 
@@ -1897,7 +1897,7 @@ export default function ReportsPage() {
       {tab === "llm_compare" && <LlmVsRulesTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "symbols" && <SymbolsTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "mtf" && <MacdMtfTab includeArchived={includeArchived} />}
-      {tab === "daily_rising" && <DailyRisingTab />}
+      {tab === "daily_rising" && <CombinedRisingTab />}
       {tab === "advanced" && isAdmin && (
         <div className="space-y-4">
           <AdvancedAdminTabs subTab={advancedSubTab} setSubTab={setAdvancedSubTab} />
