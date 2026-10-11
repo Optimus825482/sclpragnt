@@ -3164,6 +3164,7 @@ def _inherit_anchor_prices(top: list[dict], prev_candidates: list[dict],
 
     Döner: her adaya `notified_at` (bu liste anı), `notify_price` (bu listenin
     fiyatı), `anchor_price` (zincir başı fiyatı), `anchor_at` (zincir başı anı)
+    ve `carried` (bu sembol önceki listeden DEVAM ediyor mu: zincir sürüyor)
     eklenmiş kopya liste.
     """
     prev_by_symbol: dict[str, dict] = {}
@@ -3175,14 +3176,16 @@ def _inherit_anchor_prices(top: list[dict], prev_candidates: list[dict],
     for c in top:
         sym = str(c.get("symbol") or "").upper()
         prv = prev_by_symbol.get(sym)
-        if prv and (prv.get("anchor_price") or prv.get("notify_price") or prv.get("price")):
+        carried = bool(prv and (prv.get("anchor_price") or prv.get("notify_price") or prv.get("price")))
+        if carried:
             anchor_price = prv.get("anchor_price") or prv.get("notify_price") or prv.get("price")
             anchor_at = prv.get("anchor_at") or prv.get("notified_at") or sent_at
         else:
             anchor_price = c.get("price")
             anchor_at = sent_at
         built.append({**c, "notified_at": sent_at, "notify_price": c.get("price"),
-                      "anchor_price": anchor_price, "anchor_at": anchor_at})
+                      "anchor_price": anchor_price, "anchor_at": anchor_at,
+                      "carried": carried})
     return built
 
 
@@ -3351,6 +3354,7 @@ async def _send_combined_status(*, cfg: dict | None = None, force: bool = False)
             "symbol": sym, "entry_price": e, "current_price": c_,
             "change_pct": chg,
             "peak_pct": round(peak, 2) if peak is not None else None,
+            "carried": bool(r.get("carried")),
             "strategy": r.get("strategy"),
         })
     try:
@@ -3552,10 +3556,20 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         is_pending = (rid == newest_id)
         window_end = float(nxt) if nxt else now
         max_sec = max(1.0, window_end - sent_at)
+        # ÖLÇÜM REFERANSI = zincir başı (`anchor_price`): arka arkaya devam eden
+        # sembolde "ilk bildirimden toplam artış" ölçülür (modal/grafik bunu
+        # gösterir). Anchor yoksa bu listenin fiyatı.
+        base_c = [{**x, "price": x.get("anchor_price") or x.get("notify_price") or x.get("price")}
+                  for x in c]
         rows = await database.evaluate_daily_rising_report(
-            c, sent_at, live_prices=_px, max_sec=max_sec)
-        # Sembol → orijinal aday (kaynak bilgisi için).
+            base_c, sent_at, live_prices=_px, max_sec=max_sec)
+        # Sembol → orijinal aday (kaynak + carried bilgisi için).
         by_symbol = {str(x.get("symbol") or "").upper(): x for x in c}
+        # Her satıra anchor + carried taşı (modal grafiği ve rozet kullanır).
+        for r in rows:
+            src_c = by_symbol.get(str(r.get("symbol") or "").upper()) or {}
+            r["anchor_price"] = src_c.get("anchor_price") or r.get("entry_price")
+            r["carried"] = bool(src_c.get("carried"))
         mfes = [float(r["mfe_pct"]) for r in rows if r.get("mfe_pct") is not None]
         hits = sum(1 for r in rows if r.get("hit_ceiling") is True)
         measured = len(mfes)

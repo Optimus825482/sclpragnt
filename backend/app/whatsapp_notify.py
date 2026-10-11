@@ -194,6 +194,24 @@ def format_combined_list(candidates: list[dict], *, n: int = 3,
     if pots:
         avg_bits.append(f"🚀 ort. potansiyel +%{sum(pots) / len(pots):.1f}")
     footer = ("  ·  ".join(avg_bits)) if avg_bits else ""
+    # DEVAM EDEN SEMBOLLER (kullanıcı isteği 2026-10-11): önceki listeden arka
+    # arkaya taşınanlar alt satırda belirtilir; her biri için anchor (ilk bildirim)
+    # fiyatından bu yana toplam değişim yazılır.
+    carried = [c for c in shown if c.get("carried")]
+    if carried:
+        bits = []
+        for c in carried:
+            a = c.get("anchor_price")
+            p = c.get("price")
+            try:
+                chg = (float(p) / float(a) - 1) * 100 if (a and p) else None
+            except (TypeError, ValueError):
+                chg = None
+            if chg is not None:
+                bits.append(f"{_sym(c.get('symbol'))} {chg:+.2f}%")
+            else:
+                bits.append(_sym(c.get("symbol")))
+        footer += ("\n🔁 Devam eden (ilk bildirimden beri): " + " · ".join(bits))
     out = f"{title}\n\n```\n" + "\n".join(body) + "\n```"
     return f"{out}\n{footer}" if footer else out
 
@@ -247,5 +265,9 @@ def format_combined_status(rows: list[dict], *, title: str,
     if show_peak and peaks:
         summary += (f"\n🏔️ Liste zirvesi (en yüksek değişim ort.): "
                     f"{sum(peaks) / len(peaks):+.2f}%")
+    # DEVAM EDEN SEMBOLLER: önceki listeden taşınanlar (kullanıcı isteği 2026-10-11).
+    carried = [r for r in rows if r.get("carried")]
+    if carried:
+        summary += "\n🔁 Devam eden: " + " · ".join(_sym(r.get("symbol")) for r in carried)
     return f"{title}\n\n```\n" + "\n".join(body) + "\n```\n" + summary
 

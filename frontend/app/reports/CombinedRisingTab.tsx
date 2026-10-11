@@ -30,6 +30,9 @@ type Candidate = {
   quality_score?: number;
   confirm_sources?: number;
   confirm_layers?: number;
+  mfe_pct?: number | null;
+  mae_pct?: number | null;
+  carried?: boolean;
   strategy?: string;
 };
 
@@ -109,6 +112,79 @@ const hitTone = (rate: number | null | undefined): string => {
   return "text-neon-red";
 };
 
+/** Detay penceresi (modal): tıklanan listenin her adayını, ilk bildirim fiyatına
+    (anchor) göre TOPLAM artışıyla BAR grafiği olarak gösterir. */
+function ListDetailModal({ row, onClose }: { row: SummaryRow; onClose: () => void }) {
+  const cands = Array.isArray(row.rows) ? row.rows : [];
+  // Toplam artış: anchor (ilk bildirim) → şimdi; yoksa change_pct; yoksa mfe.
+  const items = cands.map((c) => {
+    const anchor = (c as any).anchor_price ?? c.entry_price ?? c.notify_price ?? c.price;
+    const now = c.current_price ?? (c as any).price;
+    let total: number | null = null;
+    try {
+      if (anchor && now) total = (Number(now) / Number(anchor) - 1) * 100;
+    } catch { total = null; }
+    if (total == null && c.change_pct != null) total = Number(c.change_pct);
+    const peak = c.mfe_pct != null ? Number(c.mfe_pct) : null;
+    return { symbol: String(c.symbol || ""), anchor, now, total, peak };
+  });
+  const maxAbs = Math.max(1, ...items.map((i) => Math.abs(i.total ?? 0)));
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+         onClick={onClose}>
+      <div className="w-full max-w-2xl rounded-2xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 border-b border-bunker-800 pb-3">
+          <div>
+            <h3 className="font-mono text-base font-black text-white">🌅 Liste Detayı — Toplam Artış</h3>
+            <p className="mt-0.5 text-xs text-bunker-muted font-mono">
+              Gönderim: <b className="text-white">{fmtDateTime(row.sent_at * 1000)}</b> · {items.length} aday
+              {row.pending
+                ? <> · <span className="text-yellow-300">⏳ sürüyor</span></>
+                : <> · <span className="text-bunker-muted">✓ bitti</span></>}
+            </p>
+          </div>
+          <button type="button" onClick={onClose}
+            className="rounded-lg border border-bunker-700 bg-bunker-900 px-2.5 py-1 font-mono text-xs text-bunker-muted hover:text-white">
+            ✕ Kapat
+          </button>
+        </div>
+        <div className="mt-4 space-y-3">
+          {items.length === 0 ? (
+            <p className="py-6 text-center font-mono text-xs text-bunker-muted">Aday verisi yok.</p>
+          ) : items.map((it) => {
+            const t = it.total ?? 0;
+            const w = Math.round((Math.abs(t) / maxAbs) * 100);
+            const pos = t >= 0;
+            return (
+              <div key={it.symbol}>
+                <div className="flex items-baseline justify-between font-mono text-xs">
+                  <SymbolLink symbol={it.symbol} className="font-bold text-white hover:text-neon-green" />
+                  <span className="text-bunker-muted">
+                    ilk {price(it.anchor as number | undefined)} → şimdi {price(it.now as number | undefined)}
+                  </span>
+                  <span className={`font-black ${pos ? "text-neon-green" : "text-neon-red"}`}>
+                    {it.total != null ? `${pos ? "+" : ""}${t.toFixed(2)}%` : "—"}
+                  </span>
+                </div>
+                <div className="mt-1 h-3 w-full rounded bg-bunker-900 overflow-hidden">
+                  <div className={`h-full rounded ${pos ? "bg-neon-green" : "bg-neon-red"}`}
+                       style={{ width: `${Math.max(2, w)}%` }} />
+                </div>
+                {it.peak != null && (
+                  <p className="mt-0.5 font-mono text-[10px] text-bunker-muted">
+                    en yüksek (zirve): {pct(it.peak)}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Kombine Günlük Yükseliş rapor sekmesi (2026-10-11).
 
     Tek WhatsApp kanalını yansıtır: 30 dk'da bir TOP-3 liste, 10 dk'da bir durum
@@ -123,6 +199,8 @@ export default function CombinedRisingTab() {
   const [filter, setFilter] = useState<"all" | "list" | "status">("all");
   const [expanded, setExpanded] = useState<number | null>(null);
   const [sending, setSending] = useState("");
+  // Detay penceresi (modal): tıklanan listenin adaylarının toplam artışı.
+  const [detail, setDetail] = useState<SummaryRow | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -337,7 +415,9 @@ export default function CombinedRisingTab() {
               </thead>
               <tbody>
                 {summary.reports.map((r) => (
-                  <tr key={r.id}>
+                  <tr key={r.id} className="cursor-pointer hover:bg-bunker-800/40"
+                      onClick={() => setDetail(r)}
+                      title="Tıklayın: adayların toplam artış detayı (grafik)">
                     <td className="font-mono text-xs text-bunker-muted whitespace-nowrap">{fmtDateTime(r.sent_at * 1000)}</td>
                     <td className="text-right font-mono text-xs text-white">{r.count}</td>
                     <td className="text-right font-mono text-xs text-amber-300">{r.avg_target_pct != null ? `+${Number(r.avg_target_pct).toFixed(2)}%` : "—"}</td>
@@ -346,6 +426,7 @@ export default function CombinedRisingTab() {
                       {r.pending
                         ? <span className="inline-flex items-center rounded border border-yellow-400/40 bg-yellow-400/10 px-2 py-0.5 font-mono text-[10px] font-bold text-yellow-300">⏳ SÜRÜYOR</span>
                         : <span className="inline-flex items-center rounded border border-bunker-700 bg-bunker-800 px-2 py-0.5 font-mono text-[10px] font-bold text-bunker-muted">✓ BİTTİ</span>}
+                      <span className="ml-2 font-mono text-[10px] text-bunker-muted underline">detay</span>
                     </td>
                   </tr>
                 ))}
@@ -440,6 +521,9 @@ export default function CombinedRisingTab() {
           })}
         </div>
       )}
+
+      {/* Detay penceresi (modal) — listeye tıklayınca toplam artış grafiği */}
+      {detail ? <ListDetailModal row={detail} onClose={() => setDetail(null)} /> : null}
     </div>
   );
 }
