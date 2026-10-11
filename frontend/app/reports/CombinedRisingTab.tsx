@@ -296,34 +296,28 @@ export default function CombinedRisingTab() {
         </button>
       </div>
 
-      {/* Rapor bazında başarı tablosu */}
+      {/* Rapor bazında ortalama yükselme tablosu */}
       {summary && summary.reports.length > 0 ? (
         <section className="card rounded-2xl border border-bunker-800 bg-bunker-950/60 p-4 space-y-3">
-          <h3 className="font-mono text-sm font-black text-white">📋 GÖNDERİLEN LİSTELERİN BAŞARI DURUMU</h3>
+          <h3 className="font-mono text-sm font-black text-white">📋 GÖNDERİLEN LİSTELER — ORTALAMA YÜKSELME</h3>
           <div className="table-scroll">
             <table className="data-table table-compact">
               <thead>
                 <tr>
-                  <th>Gönderim</th><th>Aday</th><th className="text-right">Ölçülen</th>
-                  <th className="text-right">Tavana Ulaşan</th><th className="text-right">Başarı</th>
-                  <th className="text-right">Ort. Max</th><th>Durum</th>
+                  <th>Gönderim</th><th className="text-right">Aday</th>
+                  <th className="text-right">Ort. Yükselme %</th><th>Durum</th>
                 </tr>
               </thead>
               <tbody>
                 {summary.reports.map((r) => (
                   <tr key={r.id}>
                     <td className="font-mono text-xs text-bunker-muted whitespace-nowrap">{fmtDateTime(r.sent_at * 1000)}</td>
-                    <td className="font-mono text-xs text-white">{r.count}</td>
-                    <td className="text-right font-mono text-xs text-bunker-muted">{r.measured}</td>
-                    <td className="text-right font-mono text-xs font-bold text-neon-green">{r.ceiling_hits}</td>
-                    <td className={`text-right font-mono text-xs font-bold ${hitTone(r.hit_rate)}`}>{r.hit_rate != null ? `%${r.hit_rate.toFixed(1)}` : "—"}</td>
-                    <td className={`text-right font-mono text-xs ${(r.avg_mfe_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{r.avg_mfe_pct != null ? pct(r.avg_mfe_pct) : "—"}</td>
+                    <td className="text-right font-mono text-xs text-white">{r.count}</td>
+                    <td className={`text-right font-mono text-sm font-bold ${(r.avg_mfe_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{r.avg_mfe_pct != null ? pct(r.avg_mfe_pct) : "—"}</td>
                     <td>
                       {r.pending
-                        ? <span className="inline-flex items-center rounded border border-yellow-400/40 bg-yellow-400/10 px-2 py-0.5 font-mono text-[10px] font-bold text-yellow-300">⏳ BEKLİYOR</span>
-                        : r.ceiling_hits > 0
-                          ? <span className="inline-flex items-center rounded border border-neon-green/50 bg-neon-green/15 px-2 py-0.5 font-mono text-[10px] font-bold text-neon-green">✓ BAŞARILI</span>
-                          : <span className="inline-flex items-center rounded border border-neon-red/40 bg-neon-red/10 px-2 py-0.5 font-mono text-[10px] font-bold text-neon-red">✗ BAŞARISIZ</span>}
+                        ? <span className="inline-flex items-center rounded border border-yellow-400/40 bg-yellow-400/10 px-2 py-0.5 font-mono text-[10px] font-bold text-yellow-300">⏳ SÜRÜYOR</span>
+                        : <span className="inline-flex items-center rounded border border-bunker-700 bg-bunker-800 px-2 py-0.5 font-mono text-[10px] font-bold text-bunker-muted">✓ BİTTİ</span>}
                     </td>
                   </tr>
                 ))}
