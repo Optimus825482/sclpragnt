@@ -90,8 +90,11 @@ const pctText = (v?: number | null) => {
   return `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
 };
 
+// Renk tonu: `.data-table td` (beyaz) Tailwind text-* sınıfını özgüllükte ezerdi
+// → tablo hücrelerinde K/Z BEYAZ kalıyordu. Kanonik `ui-tone-*` sınıfları
+// (globals.css) `td.` seçicisiyle tanımlı olduğundan rengi gerçekten uygular.
 const tone = (v?: number | null) =>
-  v == null || !Number.isFinite(v) ? "text-bunker-muted" : v >= 0 ? "text-neon-green" : "text-neon-red";
+  v == null || !Number.isFinite(v) ? "ui-tone-muted" : v >= 0 ? "ui-tone-positive" : "ui-tone-negative";
 
 const fmtDay = (ts?: number | null) => {
   if (!ts) return "—";
@@ -559,9 +562,9 @@ export default function PortfolioPage() {
                       <tr key={t.id}>
                         <td><SymbolLink symbol={t.symbol} className="font-bold text-white hover:text-neon-green" /></td>
                         <td className="font-mono text-xs text-right tabular-nums">{formatPrice(entry)}</td>
-                        <td className={`font-mono text-xs text-right tabular-nums ${tpDist !== null && tpDist <= 0 ? "text-neon-green font-bold" : ""}`}>{current == null ? "—" : formatPrice(current)}</td>
-                        <td className={`font-mono text-xs text-right tabular-nums ${t.take_profit ? "text-neon-green" : "text-bunker-muted"}`}>{t.take_profit ? formatPrice(Number(t.take_profit)) : "—"}</td>
-                        <td className={`font-mono text-xs text-right tabular-nums ${t.stop_loss ? "text-neon-red" : "text-bunker-muted"}`}>{t.stop_loss ? formatPrice(Number(t.stop_loss)) : "—"}</td>
+                        <td className={`font-mono text-xs text-right tabular-nums ${tpDist !== null && tpDist <= 0 ? "ui-tone-positive font-bold" : ""}`}>{current == null ? "—" : formatPrice(current)}</td>
+                        <td className={`font-mono text-xs text-right tabular-nums ${t.take_profit ? "ui-tone-positive" : "ui-tone-muted"}`}>{t.take_profit ? formatPrice(Number(t.take_profit)) : "—"}</td>
+                        <td className={`font-mono text-xs text-right tabular-nums ${t.stop_loss ? "ui-tone-negative" : "ui-tone-muted"}`}>{t.stop_loss ? formatPrice(Number(t.stop_loss)) : "—"}</td>
                         <td className={`font-mono text-xs text-right tabular-nums ${tone(pnl)}`}>{signedMoney(pnl)}</td>
                         <td className={`font-mono text-xs text-right tabular-nums ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
                         <td className="font-mono text-xs text-right tabular-nums text-bunker-muted">{held != null ? `${held} dk` : "—"}</td>

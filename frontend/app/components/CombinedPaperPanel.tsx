@@ -195,18 +195,22 @@ export default function CombinedPaperPanel() {
                   // net_try/net_pct verir; yoksa unrealized_pct'e düş.
                   const netT = t.net_try ?? null;
                   const netP = t.net_pct ?? t.unrealized_pct ?? null;
-                  const pos = (netP ?? 0) >= 0;
-                  const cls = netP == null ? "text-bunker-muted" : pos ? "text-neon-green" : "text-neon-red";
+                  // ÖNEMLİ: `.data-table td` kuralı (beyaz) Tailwind text-* sınıfını
+                  // özgüllükte ezer → projedeki KANONİK `ui-tone-positive/negative`
+                  // sınıfları kullanılır (globals.css:449-450) ki renk gerçekten
+                  // uygulanır (yeşil kâr / kırmızı zarar).
+                  const toneCls = netP == null ? "text-bunker-muted"
+                    : (netP >= 0 ? "ui-tone-positive" : "ui-tone-negative");
                   return (
                   <tr key={t.id}>
                     <td><SymbolLink symbol={t.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                     <td className="text-right font-mono text-xs text-white">{price(t.entry_price)}</td>
                     <td className="text-right font-mono text-xs text-white">{price(t.current_price)}</td>
                     <td className="text-right font-mono text-xs text-bunker-muted">{formatSignedTL(t.order_value_try)}</td>
-                    <td className="text-right font-mono text-xs text-neon-green">{t.tp_pct != null ? `+${Number(t.tp_pct).toFixed(1)}` : "—"}</td>
-                    <td className="text-right font-mono text-xs text-amber-300">{t.potential_pct != null ? `+%${Math.round(Number(t.potential_pct))}` : "—"}</td>
-                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${cls}`}>{netT != null ? formatSignedTL(netT) : "—"}</td>
-                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${cls}`}>{pct(netP)}</td>
+                    <td className="text-right font-mono text-xs ui-tone-green">{t.tp_pct != null ? `+${Number(t.tp_pct).toFixed(1)}` : "—"}</td>
+                    <td className="text-right font-mono text-xs ui-tone-amber">{t.potential_pct != null ? `+%${Math.round(Number(t.potential_pct))}` : "—"}</td>
+                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${toneCls}`}>{netT != null ? formatSignedTL(netT) : "—"}</td>
+                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${toneCls}`}>{pct(netP)}</td>
                     <td className="font-mono text-[10px]">
                       {t.trailing_activated
                         ? <span className="rounded border border-neon-green/50 bg-neon-green/15 px-1.5 py-0.5 text-neon-green">🔒 trailing</span>
@@ -266,8 +270,8 @@ export default function CombinedPaperPanel() {
                         {reasonLabel[reason] || reason || "—"}
                       </span>
                     </td>
-                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${win ? "text-neon-green" : "text-neon-red"}`}>{formatSignedTL(t.pnl)}</td>
-                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${win ? "text-neon-green" : "text-neon-red"}`}>{pct(t.pnl_pct)}</td>
+                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${win ? "ui-tone-positive" : "ui-tone-negative"}`}>{formatSignedTL(t.pnl)}</td>
+                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${win ? "ui-tone-positive" : "ui-tone-negative"}`}>{pct(t.pnl_pct)}</td>
                   </tr>
                   );
                 })}
