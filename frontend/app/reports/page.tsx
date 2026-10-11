@@ -7,6 +7,7 @@ import SymbolLink from "../components/SymbolLink";
 import MacdMtfTab from "./MacdMtfTab";
 import LlmVsRulesTab from "./LlmVsRulesTab";
 import CombinedRisingTab from "./CombinedRisingTab";
+import CombinedPaperPanel from "../components/CombinedPaperPanel";
 import {
   formatSignedTL,
   formatTL,
@@ -1750,7 +1751,7 @@ function SelfLearningTab() {
 export default function ReportsPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
-  const [tab, setTab] = useState<"overview" | "bridge" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "daily_rising" | "advanced">("overview");
+  const [tab, setTab] = useState<"overview" | "bridge" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "daily_rising" | "combined_paper" | "advanced">("overview");
   const [advancedSubTab, setAdvancedSubTab] = useState("velocity");
   // VARSAYILAN: "bu deploy" görünümü. `day=all` + arşiv kapalı = yalnız rapor
   // başlangıcı (2026-10-07 11:30) SONRASI veri. `selectedDay` bir güne
@@ -1774,6 +1775,7 @@ export default function ReportsPage() {
     { id: "symbols", label: "📈 Sembol Başarısı", icon: "📈" },
     { id: "mtf", label: "🧠 MTF Konfluans", icon: "🧠" },
     { id: "daily_rising", label: "🌅 Kombine Yükseliş", icon: "🌅" },
+    { id: "combined_paper", label: "💠 Kombine Paper", icon: "💠" },
     ...(isAdmin ? [{ id: "advanced", label: "⚙️ Gelişmiş Teşhis", icon: "⚙️" }] : []),
   ];
 
@@ -1898,6 +1900,7 @@ export default function ReportsPage() {
       {tab === "symbols" && <SymbolsTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "mtf" && <MacdMtfTab includeArchived={includeArchived} />}
       {tab === "daily_rising" && <CombinedRisingTab />}
+      {tab === "combined_paper" && <CombinedPaperPanel />}
       {tab === "advanced" && isAdmin && (
         <div className="space-y-4">
           <AdvancedAdminTabs subTab={advancedSubTab} setSubTab={setAdvancedSubTab} />

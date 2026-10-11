@@ -3256,13 +3256,22 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     lt = datetime.now(_tz) if _tz else datetime.now()
     text = format_combined_list(top, n=n, title=f"🌅 KOMBİNE YÜKSELİŞ LİSTESİ · {lt.strftime('%H:%M')}")
     sent = await send_whatsapp(text)
-    await database.save_daily_rising_report({
+    row_id = await database.save_daily_rising_report({
         "kind": COMBINED_LIST_KIND, "sent_at": sent_at, "sent": bool(sent),
         "message": text,
         # `notify_price`: bu listedeki fiyat (liste içi gösterim).
         # `anchor_price`: zincirin başındaki (ilk bildirilen) referans fiyat.
         "candidates": built,
     })
+    # OTONOM PAPER (ayrı 5.000 TL portföy, 2026-10-11): gönderilen listeyi bu
+    # portföyde otomatik aç (serbest bakiyenin %10'u, potansiyele göre TP,
+    # kâra geçince trailing). Gönderimi ETKİLEMEZ (hata yutar).
+    if sent:
+        try:
+            from app import combined_paper
+            await combined_paper.on_combined_list_sent(built, report_id=row_id)
+        except Exception as exc:
+            logger.debug("kombine paper otonom açılış: %s", exc)
     logger.info("kombine liste gönderildi: %d aday (en iyi puan %.1f)", len(top), best)
     return sent
 
@@ -3935,6 +3944,69 @@ async def _today_scan_rows() -> list[dict]:
             "target_probability": touch_probability(r.get("ceiling_pct"), r.get("atr_pct")),
         })
     return out
+
+
+# ----------------------------------------------------------------------
+# KOMBİNE PAPER PORTFÖY UÇLARI (2026-10-11) — ayrı 5.000 TL sanal portföy.
+# WhatsApp kombine listesi adaylarının otonom açtığı pozisyonlar.
+# ----------------------------------------------------------------------
+@router.get("/api/combined-paper/state")
+async def combined_paper_state(request: Request = None):
+    """Kombine paper portföy: özet + açık + son kapanan işlemler (salt okunur)."""
+    stats = await database.get_combined_paper_stats()
+    open_trades = await database.list_combined_paper_trades(status="open", limit=100)
+    closed = await database.list_combined_paper_trades(status="closed", limit=100)
+    # Açık pozisyonlara anlık fiyat + gerçekleşmemiş K/Z ekle.
+    live = []
+    for t in open_trades:
+        sym = str(t.get("symbol") or "").upper()
+        cur = _ticker_price(sym)
+        entry = float(t.get("entry_price") or 0)
+        upnl_pct = round((cur / entry - 1) * 100, 2) if (cur and entry) else None
+        live.append({
+            "id": t.get("id"), "symbol": sym, "entry_price": entry,
+            "current_price": cur, "quantity": t.get("quantity"),
+            "order_value_try": t.get("order_value_try"),
+            "tp_pct": t.get("tp_pct"), "take_profit": t.get("take_profit"),
+            "stop_loss": t.get("stop_loss"), "peak_price": t.get("peak_price"),
+            "trailing_activated": t.get("trailing_activated"),
+            "trailing_stop": t.get("trailing_stop"),
+            "potential_pct": t.get("potential_pct"),
+            "unrealized_pct": upnl_pct,
+            "entry_time": t.get("entry_time"),
+        })
+    return {"paper_only": True, "generated_at": time.time(),
+            "stats": stats, "open": live, "closed": closed}
+
+
+@router.post("/api/combined-paper/reset")
+async def combined_paper_reset(request: Request = None, balance: float | None = None):
+    """Kombine paper portföyü sıfırla (tüm işlemler silinir, cüzdan başlangıca)."""
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    amount = await database.reset_combined_paper_portfolio(balance)
+    return {"ok": True, "balance_try": amount}
+
+
+@router.post("/api/combined-paper/close/{trade_id}")
+async def combined_paper_close(trade_id: int, request: Request = None):
+    """Açık kombine paper pozisyonunu anlık fiyattan elle kapat."""
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    trades = await database.list_combined_paper_trades(status="open", limit=500)
+    tr = next((t for t in trades if int(t.get("id") or 0) == int(trade_id)), None)
+    if not tr:
+        raise HTTPException(status_code=404, detail="Açık pozisyon bulunamadı")
+    sym = str(tr.get("symbol") or "").upper()
+    price = _ticker_price(sym)
+    if not price:
+        raise HTTPException(status_code=409, detail="Anlık fiyat yok (taze ticker bekleniyor)")
+    closed = await database.close_combined_paper_trade(int(trade_id), price, time.time(), "manual_close")
+    if not closed:
+        raise HTTPException(status_code=409, detail="Kapanış başarısız")
+    return {"ok": True, "symbol": sym, "exit_price": price,
+            "pnl": round(float(closed.get("pnl") or 0), 2),
+            "pnl_pct": round(float(closed.get("pnl_pct") or 0), 2)}
 
 
 @router.get("/api/daily-rising/whatsapp-status")

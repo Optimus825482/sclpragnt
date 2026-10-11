@@ -463,6 +463,29 @@ class Config:
     COMBINED_RISING_MIN_SCORE = float(os.getenv("COMBINED_RISING_MIN_SCORE", "10.0"))
     COMBINED_RISING_START_HOUR = max(0, min(23, int(os.getenv("COMBINED_RISING_START_HOUR", "9"))))
     COMBINED_RISING_END_HOUR = max(0, min(23, int(os.getenv("COMBINED_RISING_END_HOUR", "23"))))
+    # ------------------------------------------------------------------
+    # KOMBİNE PAPER PORTFÖY (2026-10-11 kullanıcı kararı) — WhatsApp'a gönderilen
+    # kombine liste adayları AYRI bir 5.000 TL sanal portföyde OTONOM paper
+    # işlemle açılır. Mevcut otonom paper'dan BAĞIMSIZ (kendi cüzdanı, kendi
+    # defteri). Kurallar:
+    #   * Pozisyon büyüklüğü: her sembol için SERBEST TL bakiyesinin %10'u.
+    #   * Komisyon: Binance TR ile aynı (maker/taker 0.0015 = %0,15/bacak;
+    #     COMMISSION_PCT ile hizalı) + kayma (ESTIMATED_SLIPPAGE_PCT).
+    #   * TP: adayın YÜKSELME POTANSİYELİNE göre belirlenir (potential_pct).
+    #   * Kâra geçince trailing mantığıyla MAKSİMUM kâr alınmaya çalışılır.
+    # ------------------------------------------------------------------
+    COMBINED_PAPER_ENABLED = os.getenv("COMBINED_PAPER_ENABLED", "true").lower() == "true"
+    COMBINED_PAPER_INITIAL_BALANCE_TRY = float(
+        os.getenv("COMBINED_PAPER_INITIAL_BALANCE_TRY", "5000.0"))
+    COMBINED_PAPER_POSITION_PCT = float(os.getenv("COMBINED_PAPER_POSITION_PCT", "10.0"))  # serbest bakiyenin %'si
+    COMBINED_PAPER_MAX_OPEN = max(0, int(os.getenv("COMBINED_PAPER_MAX_OPEN", "5")))       # 0 = sınırsız
+    # Trailing: kâr bu eşiği geçince kâr kilidi + trailing devreye girer.
+    COMBINED_PAPER_TRAIL_TRIGGER_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_TRIGGER_PCT", "1.0"))
+    COMBINED_PAPER_TRAIL_GAP_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_GAP_PCT", "0.4"))
+    COMBINED_PAPER_MAX_HOLD_MIN = float(os.getenv("COMBINED_PAPER_MAX_HOLD_MIN", "120"))
+    # İlk koruma stop'u (kâr kilidi öncesi zarar sınırı) — potansiyel ile ölçeklenir,
+    # ama en az bu taban uygulanır.
+    COMBINED_PAPER_SL_PCT = float(os.getenv("COMBINED_PAPER_SL_PCT", "3.0"))
     DAILY_MOMENTUM_RET_8H_MIN = float(os.getenv("DAILY_MOMENTUM_RET_8H_MIN", "2.0"))
     DAILY_MOMENTUM_ATR_MIN = float(os.getenv("DAILY_MOMENTUM_ATR_MIN", "0.5"))
     DAILY_MOMENTUM_ADX_MIN = float(os.getenv("DAILY_MOMENTUM_ADX_MIN", "25.0"))

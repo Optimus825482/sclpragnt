@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
+import CombinedPaperPanel from "../components/CombinedPaperPanel";
 import { Button } from "../components/ui";
 import { formatSignedTL, formatTL, toMs } from "../lib/format";
 import { closedPnlTry, netOpenPnlPct, netOpenPnlTry } from "../lib/pnl";
@@ -169,6 +170,8 @@ export default function PortfolioPage() {
   // Otonom karar akışı (decision_logs, strategy=AUTO_PAPER)
   const [decisions, setDecisions] = useState<any[]>([]);
   const [decisionsExpanded, setDecisionsExpanded] = useState(false);
+  // Sayfa sekmeleri: ana portföy + kombine paper (ayrı 5.000 TL).
+  const [pageTab, setPageTab] = useState<"main" | "combined">("main");
 
   const loadMain = useCallback(() => {
     apiRequest(`${API_BASE}/api/positions`, { cache: "no-store" })
@@ -445,13 +448,31 @@ export default function PortfolioPage() {
         </div>
       </div>
 
+      {/* Sayfa sekmeleri: Ana Portföy + Kombine Paper (ayrı 5.000 TL) */}
+      <div className="mt-3 grid grid-cols-2 gap-2 rounded-2xl border border-bunker-800/80 bg-bunker-950/70 p-1.5">
+        <button type="button" onClick={() => setPageTab("main")}
+          className={`rounded-xl px-3 py-2.5 font-mono text-xs font-bold transition-all ${
+            pageTab === "main" ? "bg-neon-green/20 text-neon-green border border-neon-green/50" : "bg-bunker-900/60 text-bunker-muted hover:text-white border border-bunker-800/50"}`}>
+          📊 Ana Portföy &amp; Otonom Paper
+        </button>
+        <button type="button" onClick={() => setPageTab("combined")}
+          className={`rounded-xl px-3 py-2.5 font-mono text-xs font-bold transition-all ${
+            pageTab === "combined" ? "bg-neon-green/20 text-neon-green border border-neon-green/50" : "bg-bunker-900/60 text-bunker-muted hover:text-white border border-bunker-800/50"}`}>
+          💠 Kombine Paper (5.000 ₺)
+        </button>
+      </div>
+
+      {pageTab === "combined" ? (
+        <div className="mt-4">
+          <CombinedPaperPanel />
+        </div>
+      ) : (
+      <>
       {lastEvent && (
         <div className="mb-4 rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 font-mono text-xs text-neon-green">
           ⚡ Otonom işlem: {lastEvent.text} · {new Date(lastEvent.at).toLocaleTimeString("tr-TR")}
         </div>
       )}
-
-      {/* H-05: bağlantı hatası "boş portföy / veri yok" gibi görünmesin */}
       {loadError && (
         <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neon-red/40 bg-neon-red/5 px-3 py-2">
           <p className="font-mono text-xs text-neon-red">⚠ Backend'e ulaşılamıyor — pozisyonlar güncellenemiyor (aşağıdaki değerler bayat olabilir).</p>
@@ -763,6 +784,8 @@ export default function PortfolioPage() {
           </div>
         )}
       </section>
+      </>
+      )}
 
       <p className="mt-4 text-center font-mono text-[10px] text-bunker-muted/60">
         Paper trading · gerçek para kullanılmaz · veriler canlı WS ve 10 sn'de bir yenilenir

@@ -98,6 +98,7 @@ from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loo
 from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
 from app.routers.monitoring import (rising_evidence_loop, daily_momentum_loop,
                                     daily_rising_combined_loop)  # noqa: F401
+from app.combined_paper import combined_paper_management_loop  # noqa: F401
 from app.routers import monitoring  # noqa: F401
 
 try:
@@ -1172,6 +1173,10 @@ async def startup_services():
     # o adayların bildirim anına göre durum takibi gruba gider. Eski 11:30 raporu,
     # 30 dk takip tablosu ve slot döngüsü KALDIRILDI (çift gönderim yok).
     _start_background(daily_rising_combined_loop, "daily-rising-combined")
+    await asyncio.sleep(_yield)
+    # KOMBİNE PAPER YÖNETİM (2026-10-11): kombine liste adaylarının açıldığı AYRI
+    # 5.000 TL sanal portföyün açık pozisyonlarını yönetir (TP/trailing/süre).
+    _start_background(combined_paper_management_loop, "combined-paper")
     await asyncio.sleep(_yield)
     _start_background(auto_paper_start_loop, "auto-paper-start")
     await asyncio.sleep(_yield)

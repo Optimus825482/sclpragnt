@@ -7212,3 +7212,276 @@ async def get_llm_vs_rules_comparison(
         return {"stats": stats, "trades": trades}
 
     return await _run_db(op)
+
+
+# ======================================================================
+# KOMBİNE PAPER PORTFÖY (combined_paper_trades) — 2026-10-11
+# WhatsApp'a gönderilen kombine liste adayları AYRI bir 5.000 TL sanal
+# portföyde otonom açılır. Mevcut auto_paper'dan BAĞIMSIZ cüzdan/defter.
+# ======================================================================
+_COMBINED_PAPER_SCHEMA_READY = False
+
+
+def _ensure_combined_paper_schema(conn) -> None:
+    """Koşan dağıtımda tablo + cüzdan satırını idempotent hazırla."""
+    global _COMBINED_PAPER_SCHEMA_READY
+    if _COMBINED_PAPER_SCHEMA_READY:
+        return
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS combined_paper_trades (
+          id BIGSERIAL PRIMARY KEY,
+          symbol TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'open',
+          entry_price DOUBLE PRECISION,
+          quantity DOUBLE PRECISION,
+          order_value_try DOUBLE PRECISION,
+          take_profit DOUBLE PRECISION,
+          stop_loss DOUBLE PRECISION,
+          tp_pct DOUBLE PRECISION,
+          potential_pct DOUBLE PRECISION,
+          score DOUBLE PRECISION,
+          peak_price DOUBLE PRECISION,
+          trailing_activated BOOLEAN DEFAULT FALSE,
+          trailing_stop DOUBLE PRECISION,
+          breakeven_activated BOOLEAN DEFAULT FALSE,
+          breakeven_stop DOUBLE PRECISION,
+          exit_price DOUBLE PRECISION,
+          exit_reason TEXT,
+          pnl DOUBLE PRECISION,
+          pnl_pct DOUBLE PRECISION,
+          commission DOUBLE PRECISION,
+          report_id BIGINT,
+          notification_key TEXT,
+          entry_time DOUBLE PRECISION NOT NULL,
+          exit_time DOUBLE PRECISION,
+          last_checked_at DOUBLE PRECISION,
+          created_at DOUBLE PRECISION,
+          updated_at DOUBLE PRECISION
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_combined_paper_status ON combined_paper_trades(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_combined_paper_symbol ON combined_paper_trades(symbol)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS combined_paper_wallet (
+          asset TEXT PRIMARY KEY,
+          amount DOUBLE PRECISION
+        )""")
+    row = conn.execute("SELECT amount FROM combined_paper_wallet WHERE asset=?",
+                       (config.CASH_ASSET,)).fetchone()
+    if row is None:
+        conn.execute("INSERT INTO combined_paper_wallet(asset, amount) VALUES(?, ?)",
+                     (config.CASH_ASSET,
+                      float(getattr(config, "COMBINED_PAPER_INITIAL_BALANCE_TRY", 5000.0))))
+    _COMBINED_PAPER_SCHEMA_READY = True
+
+
+async def get_combined_paper_wallet(asset: str | None = None) -> float:
+    """Kombine paper cüzdan bakiyesi (açık pozisyonlara ayrılmamış nakit)."""
+    def op(conn):
+        _ensure_combined_paper_schema(conn)
+        row = conn.execute("SELECT amount FROM combined_paper_wallet WHERE asset=?",
+                           (asset or config.CASH_ASSET,)).fetchone()
+        return float(dict(row)["amount"]) if row and dict(row).get("amount") is not None else 0.0
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("combined_paper cüzdan okunamadı", exc_info=True)
+        return 0.0
+
+
+async def reset_combined_paper_portfolio(balance: float | None = None) -> float:
+    """Kombine paper portföyü sıfırla: tüm işlemler silinir, cüzdan başlangıca döner."""
+    def op(conn):
+        _ensure_combined_paper_schema(conn)
+        conn.execute("DELETE FROM combined_paper_trades")
+        amount = float(balance if balance is not None
+                       else getattr(config, "COMBINED_PAPER_INITIAL_BALANCE_TRY", 5000.0))
+        conn.execute(
+            "INSERT INTO combined_paper_wallet(asset,amount) VALUES(?,?) "
+            "ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount",
+            (config.CASH_ASSET, amount))
+        conn.commit()
+        return amount
+    return await _run_db(op)
+
+
+async def open_combined_paper_trade(trade: dict) -> tuple[dict | None, str]:
+    """Kombine paper pozisyonu ATOMİK aç (advisory lock + açık pozisyon kontrolü).
+
+    Durum: "opened" | "already_open" | "max_open" | "insufficient_balance" | "error".
+    """
+    symbol = str(trade.get("symbol") or "").upper()
+
+    def op(conn):
+        _ensure_combined_paper_schema(conn)
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("combined_paper_open",))
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"combined_paper_open_{symbol}",))
+        row = conn.execute(
+            "SELECT * FROM combined_paper_trades WHERE symbol=? AND status='open' LIMIT 1",
+            (symbol,)).fetchone()
+        if row:
+            return (dict(row), "already_open")
+        gmax = int(trade.get("max_open") if trade.get("max_open") is not None
+                   else getattr(config, "COMBINED_PAPER_MAX_OPEN", 5) or 0)
+        if gmax > 0:
+            cnt = conn.execute(
+                "SELECT COUNT(*) AS n FROM combined_paper_trades WHERE status='open'").fetchone()
+            if int(dict(cnt)["n"]) >= gmax:
+                return (None, "max_open")
+        cash_row = conn.execute("SELECT amount FROM combined_paper_wallet WHERE asset=?",
+                                (config.CASH_ASSET,)).fetchone()
+        cash = float(dict(cash_row)["amount"]) if cash_row and dict(cash_row).get("amount") is not None else 0.0
+        order_value = float(trade.get("order_value_try") or 0.0)
+        commission_pct = float(getattr(config, "COMMISSION_PCT", 0.0015))
+        debit = order_value * (1 + commission_pct)
+        if order_value <= 0 or debit > cash + 1e-9:
+            return (None, "insufficient_balance")
+        now = float(trade.get("entry_time") or time.time())
+        commission = order_value * commission_pct
+        inserted = conn.execute(
+            "INSERT INTO combined_paper_trades"
+            "(symbol, status, entry_price, quantity, order_value_try, take_profit, stop_loss,"
+            " tp_pct, potential_pct, score, peak_price, trailing_activated, breakeven_activated,"
+            " report_id, notification_key, entry_time, last_checked_at, created_at, updated_at, commission) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,FALSE,FALSE,?,?,?,?,?,?,?) RETURNING *",
+            (symbol, "open", trade.get("entry_price"), trade.get("quantity"), order_value,
+             trade.get("take_profit"), trade.get("stop_loss"), trade.get("tp_pct"),
+             trade.get("potential_pct"), trade.get("score"), trade.get("entry_price"),
+             trade.get("report_id"), trade.get("notification_key"), now, now, now, now, commission),
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO combined_paper_wallet(asset,amount) VALUES(?,?) "
+            "ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount",
+            (config.CASH_ASSET, cash - debit))
+        conn.commit()
+        return (dict(inserted), "opened")
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("combined_paper açılış hatası: %s", symbol, exc_info=True)
+        return (None, "error")
+
+
+async def close_combined_paper_trade(trade_id: int, exit_price: float, exit_time: float,
+                                     reason: str) -> dict | None:
+    """Kombine paper pozisyonu atomik kapat; PnL (giriş+çıkış komisyonu + kayma) + cüzdana iade."""
+    def op(conn):
+        _ensure_combined_paper_schema(conn)
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("combined_paper_open",))
+        row = conn.execute(
+            "SELECT * FROM combined_paper_trades WHERE id=? AND status='open' FOR UPDATE",
+            (trade_id,)).fetchone()
+        if not row:
+            return None
+        t = dict(row)
+        entry_price = float(t["entry_price"])
+        quantity = float(t["quantity"])
+        commission_pct = float(getattr(config, "COMMISSION_PCT", 0.0015))
+        slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+        fill_price = exit_price * (1.0 - slip)
+        total_commission = (entry_price * quantity + fill_price * quantity) * commission_pct
+        pnl = (fill_price - entry_price) * quantity - total_commission
+        invested = entry_price * quantity
+        pnl_pct = (pnl / invested * 100) if invested else 0.0
+        conn.execute(
+            "UPDATE combined_paper_trades SET status='closed', exit_price=?, exit_time=?,"
+            " exit_reason=?, pnl=?, pnl_pct=?, commission=?, updated_at=? WHERE id=?",
+            (fill_price, exit_time, reason, pnl, pnl_pct, total_commission, time.time(), trade_id))
+        proceed = fill_price * quantity * (1 - commission_pct)
+        cash_row = conn.execute("SELECT amount FROM combined_paper_wallet WHERE asset=? FOR UPDATE",
+                                (config.CASH_ASSET,)).fetchone()
+        cash = float(dict(cash_row)["amount"]) if cash_row and dict(cash_row)["amount"] is not None else 0.0
+        conn.execute(
+            "INSERT INTO combined_paper_wallet(asset,amount) VALUES(?,?) "
+            "ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount",
+            (config.CASH_ASSET, cash + proceed))
+        conn.commit()
+        out = dict(t)
+        out.update({"status": "closed", "exit_price": fill_price, "exit_time": exit_time,
+                    "exit_reason": reason, "pnl": pnl, "pnl_pct": pnl_pct,
+                    "commission": total_commission})
+        return out
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("combined_paper kapanış hatası (id=%s)", trade_id, exc_info=True)
+        return None
+
+
+async def update_combined_paper_trade(trade_id: int, fields: dict) -> None:
+    """İzleme alanlarını (peak/trailing/breakeven/last_checked) güncelle."""
+    if not fields:
+        return
+    allowed = ("peak_price", "trailing_activated", "trailing_stop",
+               "breakeven_activated", "breakeven_stop", "last_checked_at")
+    sets = [f"{k}=?" for k in allowed if k in fields]
+    vals = [fields[k] for k in allowed if k in fields]
+    if not sets:
+        return
+    vals.append(time.time())
+    vals.append(trade_id)
+    def op(conn):
+        _ensure_combined_paper_schema(conn)
+        conn.execute(
+            f"UPDATE combined_paper_trades SET {', '.join(sets)}, updated_at=? WHERE id=?", vals)
+        conn.commit()
+    try:
+        await _run_db(op)
+    except Exception:
+        logger.debug("combined_paper güncelleme hatası (id=%s)", trade_id, exc_info=True)
+
+
+async def list_combined_paper_trades(status: str | None = None, limit: int = 200) -> list[dict]:
+    """Kombine paper işlemleri (en yeni önce)."""
+    def op(conn):
+        _ensure_combined_paper_schema(conn)
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM combined_paper_trades WHERE status=? ORDER BY entry_time DESC LIMIT ?",
+                (status, max(1, min(2000, int(limit))))).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM combined_paper_trades ORDER BY entry_time DESC LIMIT ?",
+                (max(1, min(2000, int(limit))),)).fetchall()
+        return [dict(r) for r in rows]
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("combined_paper listesi okunamadı", exc_info=True)
+        return []
+
+
+async def get_combined_paper_stats() -> dict:
+    """Kombine paper portföy özeti: kapanan/kazanan PnL, açık pozisyon, cüzdan."""
+    def op(conn):
+        _ensure_combined_paper_schema(conn)
+        rows = conn.execute("SELECT status, pnl, pnl_pct FROM combined_paper_trades").fetchall()
+        cash_row = conn.execute("SELECT amount FROM combined_paper_wallet WHERE asset=?",
+                                (config.CASH_ASSET,)).fetchone()
+        cash = float(dict(cash_row)["amount"]) if cash_row and dict(cash_row)["amount"] is not None else 0.0
+        allrows = [dict(r) for r in rows]
+        closed = [r for r in allrows if r.get("status") == "closed"]
+        openn = [r for r in allrows if r.get("status") == "open"]
+        pnls = [float(r["pnl"]) for r in closed if r.get("pnl") is not None]
+        pcts = [float(r["pnl_pct"]) for r in closed if r.get("pnl_pct") is not None]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+        initial = float(getattr(config, "COMBINED_PAPER_INITIAL_BALANCE_TRY", 5000.0))
+        return {
+            "initial_balance_try": initial,
+            "cash_try": round(cash, 2),
+            "open_count": len(openn),
+            "closed_count": len(closed),
+            "winning": len(wins),
+            "losing": len(losses),
+            "win_rate": round(100.0 * len(wins) / len(closed), 1) if closed else None,
+            "realized_pnl_try": round(sum(pnls), 2) if pnls else 0.0,
+            "gross_avg_pnl_pct": round(sum(pcts) / len(pcts), 2) if pcts else None,
+            "best_pnl_try": round(max(pnls), 2) if pnls else None,
+            "worst_pnl_try": round(min(pnls), 2) if pnls else None,
+        }
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.debug("combined_paper istatistik okunamadı", exc_info=True)
+        return {}
