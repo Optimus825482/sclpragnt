@@ -119,12 +119,37 @@ export default function CombinedPaperPanel() {
   const equity = stats ? (stats.cash_try || 0) : 0;
   // Açık pozisyonların TOPLAM net K/Z'si (komisyon düşülmüş) — renkli gösterilir.
   const openNet = open.reduce((a, t) => a + (t.net_try ?? 0), 0);
-  // Toplam portföy değeri = nakit + açık pozisyonların net değeri.
+  // Açık pozisyonların net değeri = maliyet + gerçekleşmemiş net K/Z.
   const openValue = open.reduce((a, t) => a + (t.order_value_try ?? 0), 0);
   const openNetPct = openValue > 0 ? (openNet / openValue) * 100 : null;
+  // TOPLAM PORTFÖY DEĞERİ (kullanıcı isteği 2026-10-12) = serbest nakit + açık
+  // pozisyonların net değeri. Başlangıca göre toplam getiriyi de hesaplar.
+  const totalValue = equity + openValue + openNet;
+  const initial = stats ? (stats.initial_balance_try || 0) : 0;
+  const totalReturnPct = initial > 0 ? ((totalValue / initial - 1) * 100) : null;
 
   return (
     <div className="space-y-4">
+      {/* TOPLAM PORTFÖY DEĞERİ — öne çıkan özet şerit */}
+      {stats ? (
+        <div className="rounded-2xl border border-neon-green/30 bg-bunker-900/60 p-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] text-bunker-muted font-mono">TOPLAM PORTFÖY DEĞERİ</p>
+            <p className="font-mono text-3xl font-black text-white">{formatSignedTL(totalValue)}</p>
+            <p className="text-[10px] text-bunker-muted font-mono">
+              nakit {formatSignedTL(equity)} + açık pozisyon net {formatSignedTL(openValue + openNet)}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-[10px] text-bunker-muted font-mono">BAŞLANGICA GÖRE</p>
+            <p className={`font-mono text-2xl font-black ${(totalReturnPct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+              {totalReturnPct != null ? `${totalReturnPct >= 0 ? "+" : ""}${totalReturnPct.toFixed(2)}%` : "—"}
+            </p>
+            <p className="text-[10px] text-bunker-muted font-mono">başlangıç {formatSignedTL(initial)}</p>
+          </div>
+        </div>
+      ) : null}
+
       {/* KPI kartları */}
       {stats ? (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
