@@ -315,6 +315,20 @@ def test_reports_summary_has_source_breakdown():
     assert "evaluate_daily_rising_report" in src
 
 
+def test_reports_endpoints_exclude_legacy_slot():
+    """Kullanıcı isteği (2026-10-11): raporlarda YALNIZ 3'lü sistem (combined_list
+    + combined_status) görünsün; kaldırılan eski `slot`/`delta` kayıtları HARİÇ."""
+    import inspect
+    from app.routers import monitoring as mo
+    summ = inspect.getsource(mo.daily_rising_reports_summary)
+    # Varsayılan türler yalnız combined_list; eski "slot" varsayılana EKLENMEMELİ.
+    assert '["slot"' not in summ and ", \"slot\"]" not in summ
+    assert "COMBINED_LIST_KIND" in summ
+    hist = inspect.getsource(mo.daily_rising_reports_list)
+    assert "COMBINED_STATUS_KIND" in hist
+    assert 'COMBINED_LIST_KIND, "slot"' not in hist
+
+
 def test_last_report_defaults_to_combined():
     import inspect
     from app.routers import monitoring as mo

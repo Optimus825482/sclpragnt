@@ -3392,9 +3392,23 @@ async def daily_rising_combined_loop():
 @router.get("/api/daily-rising/reports")
 async def daily_rising_reports_list(request: Request = None, limit: int = 50,
                                     days: float = 7.0, kind: str = ""):
-    """Slot/delta rapor geçmişi — Raporlar sayfasının 'Günlük Yükseliş' sekmesi."""
-    rows = await database.list_daily_rising_reports(
-        limit=limit, days=days, kind=str(kind) if kind else None)
+    """Kombine rapor geçmişi — Raporlar sayfasının 'Kombine Yükseliş' sekmesi.
+
+    Kullanıcı isteği (2026-10-11): "3'lü sistem sonrasını görmek istiyorum,
+    eskileri istemiyorum." Bu yüzden varsayılan olarak YALNIZ yeni sistem
+    türleri (`combined_list` + `combined_status`) döner; kaldırılan eski
+    `slot`/`delta` kayıtları HARİÇ tutulur.
+    """
+    if kind:
+        rows = await database.list_daily_rising_reports(
+            limit=limit, days=days, kind=str(kind))
+    else:
+        rows = []
+        for k in (COMBINED_LIST_KIND, COMBINED_STATUS_KIND):
+            rows.extend(await database.list_daily_rising_reports(
+                limit=limit, days=days, kind=k))
+        rows.sort(key=lambda r: float(r.get("sent_at") or 0), reverse=True)
+        rows = rows[:max(1, int(limit))]
     return {"paper_only": True, "generated_at": time.time(), "reports": rows}
 
 
@@ -3403,15 +3417,16 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
                                        limit: int = 200, kind: str = ""):
     """Gönderilen HER liste raporunun başarısını ölç + genel özet döndür.
 
-    Kullanıcı isteği (2026-10-11): "raporlar kısmında bunların başarı durumlarını
-    ve genel olarak bu tarama modülünün başarısını takip edebileceğim ayrı bir
-    rapor sekmesi." Her liste raporunun (varsayılan `combined_list`) adayları
+    Kullanıcı isteği (2026-10-11): "3'lü sistem geldikten SONRAKİ başarıyı ve
+    gönderilen listeleri görmek istiyorum; eskileri istemiyorum." Bu yüzden
+    varsayılan olarak YALNIZ `combined_list` (yeni 3'lü liste) ölçülür; eski
+    `slot` kayıtları (15-20 adaylı, kaldırılan döngü) HARİÇ tutulur. Her liste
     gönderim anından bu yana değerlendirilir (tavana ulaştı mı?); rapor bazında
-    ve toplamda isabet oranı + ortalama gerçekleşen max + KAYNAK (strateji)
-    bazında kırılım hesaplanır. Ölçüm penceresi 24 saattir; dolmamış raporlar
-    'BEKLİYOR' sayılır. Salt-okunur; admin kapısı yok.
+    ve toplamda isabet + ort. gerçekleşen max + KAYNAK (strateji) kırılımı
+    hesaplanır. Ölçüm penceresi 24 saat; dolmamış raporlar 'BEKLİYOR'.
+    Salt-okunur; admin kapısı yok.
     """
-    kinds = [str(kind)] if kind else [COMBINED_LIST_KIND, "slot"]
+    kinds = [str(kind)] if kind else [COMBINED_LIST_KIND]
     reps: list[dict] = []
     for k in kinds:
         reps.extend(await database.list_daily_rising_reports(limit=limit, days=days, kind=k))
