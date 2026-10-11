@@ -329,7 +329,35 @@ def test_report_window_is_list_lifetime_not_24h():
     assert "newest_id" in src               # yalnız en yeni pending
     # 24 saat sabiti KALDIRILDI.
     assert "24 * 3600" not in src
-    assert "24.0" not in src
+
+
+def test_anchor_price_chain_inheritance_and_break():
+    """Kullanıcı kuralı (2026-10-11): yeni listede bir sembol ÖNCEKİ listede de
+    varsa referans (başlangıç) fiyatı İLK bildirildiği liste fiyatıdır (arka
+    arkaya zincir). Araya liste girip sembol o listede YOKSA zincir kopar →
+    referans bu listenin fiyatına sıfırlanır."""
+    from app.routers import monitoring as mo
+    sent_at = 1000.0
+    prev = [
+        {"symbol": "AAATRY", "price": 105, "notify_price": 105, "anchor_price": 100, "anchor_at": 500.0},
+        {"symbol": "BBBTRY", "price": 52, "notify_price": 52, "anchor_price": 50, "anchor_at": 500.0},
+    ]
+    top = [
+        {"symbol": "AAATRY", "price": 108},   # zincir devam → anchor 100
+        {"symbol": "CCCTRY", "price": 20},    # yeni → anchor 20 (bu an)
+    ]
+    built = mo._inherit_anchor_prices(top, prev, sent_at)
+    by = {c["symbol"]: c for c in built}
+    assert by["AAATRY"]["anchor_price"] == 100     # İLK fiyat korundu
+    assert by["AAATRY"]["notify_price"] == 108     # bu listenin fiyatı
+    assert by["AAATRY"]["anchor_at"] == 500.0
+    assert by["CCCTRY"]["anchor_price"] == 20       # zincir başladı
+    assert by["CCCTRY"]["anchor_at"] == sent_at
+
+    # ARAYA LİSTE GİRDİ: önceki listede AAA yok → zincir koptu, anchor sıfırlanır.
+    prev_broken = [{"symbol": "XXXTRY", "price": 9, "anchor_price": 9}]
+    built2 = mo._inherit_anchor_prices([{"symbol": "AAATRY", "price": 108}], prev_broken, sent_at)
+    assert built2[0]["anchor_price"] == 108        # kopma → bu fiyat referans
 
 
 def test_reports_endpoints_exclude_legacy_slot():

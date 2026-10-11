@@ -3153,6 +3153,39 @@ async def _combined_scan_rows() -> list[dict]:
     return out
 
 
+def _inherit_anchor_prices(top: list[dict], prev_candidates: list[dict],
+                           sent_at: float) -> list[dict]:
+    """Yeni liste adaylarına REFERANS (zincir başı) fiyat atar.
+
+    Kullanıcı kuralı (2026-10-11): yeni listede bir sembol ÖNCEKİ listede de
+    varsa, başlangıç fiyatı İLK bildirildiği listedeki fiyattır — arka arkaya
+    gelen listeler zinciri. Araya liste girip sembol o listede YOKSA zincir
+    kopar → referans o anki (bu listenin) fiyatına sıfırlanır.
+
+    Döner: her adaya `notified_at` (bu liste anı), `notify_price` (bu listenin
+    fiyatı), `anchor_price` (zincir başı fiyatı), `anchor_at` (zincir başı anı)
+    eklenmiş kopya liste.
+    """
+    prev_by_symbol: dict[str, dict] = {}
+    for x in (prev_candidates or []):
+        s = str(x.get("symbol") or "").upper()
+        if s:
+            prev_by_symbol[s] = x
+    built: list[dict] = []
+    for c in top:
+        sym = str(c.get("symbol") or "").upper()
+        prv = prev_by_symbol.get(sym)
+        if prv and (prv.get("anchor_price") or prv.get("notify_price") or prv.get("price")):
+            anchor_price = prv.get("anchor_price") or prv.get("notify_price") or prv.get("price")
+            anchor_at = prv.get("anchor_at") or prv.get("notified_at") or sent_at
+        else:
+            anchor_price = c.get("price")
+            anchor_at = sent_at
+        built.append({**c, "notified_at": sent_at, "notify_price": c.get("price"),
+                      "anchor_price": anchor_price, "anchor_at": anchor_at})
+    return built
+
+
 async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -> bool:
     """Kombine tarama → kalite eşiği → TOP N liste → WhatsApp + DB.
 
@@ -3195,7 +3228,23 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
         logger.info("kombine liste atlandı: en iyi puan %.2f < eşik %.2f",
                     best, cfg.get("min_score", 10.0))
         return False
+    # REFERANS FİYAT DEVRALMA (kullanıcı kuralı 2026-10-11): yeni listede bir
+    # sembol ÖNCEKİ listede de varsa, başlangıç (referans) fiyatı İLK bildirildiği
+    # listedeki fiyattır — arka arkaya gelen listeler zinciri. Araya liste girip
+    # sembol o listede YOKSA zincir kopar → referans o anki (bu listenin) fiyatı.
+    prev_candidates: list[dict] = []
+    try:
+        prev = await database.last_daily_rising_report(COMBINED_LIST_KIND)
+        if prev:
+            pc = prev.get("candidates") or []
+            try:
+                prev_candidates = json.loads(pc) if isinstance(pc, str) else list(pc)
+            except (TypeError, ValueError):
+                prev_candidates = []
+    except Exception:
+        prev_candidates = []
     sent_at = time.time()
+    built = _inherit_anchor_prices(top, prev_candidates, sent_at)
     try:
         from zoneinfo import ZoneInfo
         _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
@@ -3207,8 +3256,9 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     await database.save_daily_rising_report({
         "kind": COMBINED_LIST_KIND, "sent_at": sent_at, "sent": bool(sent),
         "message": text,
-        # Bildirim anındaki fiyat = `price` (durum takibi bu tabanı kullanır).
-        "candidates": [{**c, "notified_at": sent_at, "notify_price": c.get("price")} for c in top],
+        # `notify_price`: bu listedeki fiyat (liste içi gösterim).
+        # `anchor_price`: zincirin başındaki (ilk bildirilen) referans fiyat.
+        "candidates": built,
     })
     logger.info("kombine liste gönderildi: %d aday (en iyi puan %.1f)", len(top), best)
     return sent
@@ -3282,7 +3332,10 @@ async def _send_combined_status(*, cfg: dict | None = None, force: bool = False)
     rows = []
     for r in prev_rows:
         sym = str(r.get("symbol") or "").upper()
-        entry = r.get("notify_price") or r.get("price")
+        # REFERANS: zincirin başındaki fiyat (`anchor_price`) — sembol arka arkaya
+        # listelerde tekrar ediyorsa İLK bildirildiği fiyat; araya liste girip
+        # sembol düştüyse zincir kopmuş ve anchor o listenin fiyatıdır.
+        entry = r.get("anchor_price") or r.get("notify_price") or r.get("price")
         cur = _px.get(sym)
         try:
             e = float(entry) if entry else None
@@ -3558,8 +3611,11 @@ async def daily_rising_last_report(request: Request = None, kind: str = COMBINED
         return {"ok": False, "reason": "empty", "detail": "Rapor adayı boş."}
     syms = [str(c.get("symbol") or "").upper() for c in cands]
     _px = await _batch_prices(syms)
-    # Bildirim anındaki fiyat = `notify_price` (kombine liste) veya `price`.
-    base_cands = [{**c, "price": c.get("notify_price") or c.get("price")} for c in cands]
+    # REFERANS = zincirin başı (`anchor_price`): sembol arka arkaya listelerde
+    # tekrar ediyorsa İLK bildirildiği fiyat; araya liste girip sembol düştüyse
+    # zincir kopar ve anchor o listenin fiyatıdır. Yoksa `notify_price`/`price`.
+    base_cands = [{**c, "price": c.get("anchor_price") or c.get("notify_price") or c.get("price")}
+                  for c in cands]
     rows = await database.evaluate_daily_rising_report(
         base_cands, float(rep.get("sent_at") or 0), live_prices=_px)
     chgs = [float(r["change_pct"]) for r in rows if r.get("change_pct") is not None]
@@ -3621,8 +3677,11 @@ async def daily_rising_evaluate_last(request: Request = None, kind: str = COMBIN
         return {"ok": False, "reason": "empty", "detail": "Rapor adayı boş."}
     syms = [str(c.get("symbol") or "").upper() for c in cands]
     _px = await _batch_prices(syms)
-    # Bildirim anındaki fiyat = `notify_price` (kombine liste) veya `price`.
-    base_cands = [{**c, "price": c.get("notify_price") or c.get("price")} for c in cands]
+    # REFERANS = zincirin başı (`anchor_price`): sembol arka arkaya listelerde
+    # tekrar ediyorsa İLK bildirildiği fiyat; araya liste girip sembol düştüyse
+    # zincir kopar ve anchor o listenin fiyatıdır. Yoksa `notify_price`/`price`.
+    base_cands = [{**c, "price": c.get("anchor_price") or c.get("notify_price") or c.get("price")}
+                  for c in cands]
     rows = await database.evaluate_daily_rising_report(
         base_cands, float(rep.get("sent_at") or 0), live_prices=_px)
     mfes = [float(r["mfe_pct"]) for r in rows if r.get("mfe_pct") is not None]
@@ -3678,7 +3737,8 @@ async def daily_rising_state(request: Request = None):
         out = []
         for r in sent_rows:
             sym = str(r.get("symbol") or "").upper()
-            entry = r.get("notify_price") or r.get("price")
+            # Zincir başı referans (`anchor_price`) → yoksa bu listenin fiyatı.
+            entry = r.get("anchor_price") or r.get("notify_price") or r.get("price")
             cur = _px.get(sym)
             try:
                 e = float(entry) if entry else None
