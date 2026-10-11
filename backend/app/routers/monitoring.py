@@ -3956,13 +3956,24 @@ async def combined_paper_state(request: Request = None):
     stats = await database.get_combined_paper_stats()
     open_trades = await database.list_combined_paper_trades(status="open", limit=100)
     closed = await database.list_combined_paper_trades(status="closed", limit=100)
-    # Açık pozisyonlara anlık fiyat + gerçekleşmemiş K/Z ekle.
+    # Açık pozisyonlara anlık fiyat + K/Z ekle. K/Z NET hesaplanır: gidiş-dönüş
+    # komisyon (Binance TR %0,15/bacak) düşülür — gerçekten ele geçecek tutar.
+    commission_pct = float(getattr(config, "COMMISSION_PCT", 0.0015))
     live = []
     for t in open_trades:
         sym = str(t.get("symbol") or "").upper()
         cur = _ticker_price(sym)
         entry = float(t.get("entry_price") or 0)
-        upnl_pct = round((cur / entry - 1) * 100, 2) if (cur and entry) else None
+        qty = float(t.get("quantity") or 0)
+        # BRÜT (komisyonsuz) ile NET (gidiş-dönüş komisyon düşülmüş) birlikte.
+        gross_pct = round((cur / entry - 1) * 100, 2) if (cur and entry) else None
+        net_try = net_pct = None
+        if cur and entry and qty:
+            gross = (cur - entry) * qty
+            fees = commission_pct * qty * (entry + cur)
+            net_try = round(gross - fees, 2)
+            invested = entry * qty
+            net_pct = round((net_try / invested) * 100, 2) if invested else None
         live.append({
             "id": t.get("id"), "symbol": sym, "entry_price": entry,
             "current_price": cur, "quantity": t.get("quantity"),
@@ -3972,7 +3983,10 @@ async def combined_paper_state(request: Request = None):
             "trailing_activated": t.get("trailing_activated"),
             "trailing_stop": t.get("trailing_stop"),
             "potential_pct": t.get("potential_pct"),
-            "unrealized_pct": upnl_pct,
+            "gross_pct": gross_pct,          # komisyonsuz (fiyat hareketi)
+            "net_try": net_try,              # komisyon düşülmüş TL
+            "net_pct": net_pct,              # komisyon düşülmüş %
+            "unrealized_pct": net_pct,       # geriye dönük uyumluluk
             "entry_time": t.get("entry_time"),
         })
     return {"paper_only": True, "generated_at": time.time(),

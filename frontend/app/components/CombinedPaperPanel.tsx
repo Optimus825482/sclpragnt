@@ -20,6 +20,9 @@ type OpenRow = {
   trailing_stop: number | null;
   potential_pct: number | null;
   unrealized_pct: number | null;
+  gross_pct?: number | null;   // komisyonsuz fiyat hareketi
+  net_try?: number | null;     // komisyon düşülmüş TL
+  net_pct?: number | null;     // komisyon düşülmüş %
   entry_time: number | null;
 };
 
@@ -113,6 +116,11 @@ export default function CombinedPaperPanel() {
   };
 
   const equity = stats ? (stats.cash_try || 0) : 0;
+  // Açık pozisyonların TOPLAM net K/Z'si (komisyon düşülmüş) — renkli gösterilir.
+  const openNet = open.reduce((a, t) => a + (t.net_try ?? 0), 0);
+  // Toplam portföy değeri = nakit + açık pozisyonların net değeri.
+  const openValue = open.reduce((a, t) => a + (t.order_value_try ?? 0), 0);
+  const openNetPct = openValue > 0 ? (openNet / openValue) * 100 : null;
 
   return (
     <div className="space-y-4">
@@ -141,7 +149,9 @@ export default function CombinedPaperPanel() {
           <div className="rounded-xl border border-bunker-800 bg-bunker-900/60 p-3">
             <p className="text-[10px] text-bunker-muted font-mono">AÇIK POZİSYON</p>
             <p className="font-mono text-2xl font-black text-yellow-300">{stats.open_count}</p>
-            <p className="text-[10px] text-bunker-muted font-mono">ort. K/Z% {stats.gross_avg_pnl_pct != null ? pct(stats.gross_avg_pnl_pct) : "—"}</p>
+            <p className={`text-[10px] font-mono font-bold ${openNet >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+              net {formatSignedTL(openNet)}{openNetPct != null ? ` (${pct(openNetPct)})` : ""}
+            </p>
           </div>
         </div>
       ) : null}
@@ -173,12 +183,21 @@ export default function CombinedPaperPanel() {
                 <tr>
                   <th>Sembol</th><th className="text-right">Giriş</th><th className="text-right">Anlık</th>
                   <th className="text-right">Değer</th><th className="text-right">TP%</th>
-                  <th className="text-right">Potansiyel</th><th className="text-right">K/Z%</th>
+                  <th className="text-right">Potansiyel</th>
+                  <th className="text-right" title="Komisyon düşülmüş net kâr/zarar (₺)">Net K/Z ₺</th>
+                  <th className="text-right" title="Komisyon düşülmüş net kâr/zarar (%)">Net %</th>
                   <th>Durum</th><th></th>
                 </tr>
               </thead>
               <tbody>
-                {open.map((t) => (
+                {open.map((t) => {
+                  // NET = komisyon düşülmüş (yeşil kâr / kırmızı zarar). Backend
+                  // net_try/net_pct verir; yoksa unrealized_pct'e düş.
+                  const netT = t.net_try ?? null;
+                  const netP = t.net_pct ?? t.unrealized_pct ?? null;
+                  const pos = (netP ?? 0) >= 0;
+                  const cls = netP == null ? "text-bunker-muted" : pos ? "text-neon-green" : "text-neon-red";
+                  return (
                   <tr key={t.id}>
                     <td><SymbolLink symbol={t.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                     <td className="text-right font-mono text-xs text-white">{price(t.entry_price)}</td>
@@ -186,7 +205,8 @@ export default function CombinedPaperPanel() {
                     <td className="text-right font-mono text-xs text-bunker-muted">{formatSignedTL(t.order_value_try)}</td>
                     <td className="text-right font-mono text-xs text-neon-green">{t.tp_pct != null ? `+${Number(t.tp_pct).toFixed(1)}` : "—"}</td>
                     <td className="text-right font-mono text-xs text-amber-300">{t.potential_pct != null ? `+%${Math.round(Number(t.potential_pct))}` : "—"}</td>
-                    <td className={`text-right font-mono text-sm font-bold ${(t.unrealized_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{pct(t.unrealized_pct)}</td>
+                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${cls}`}>{netT != null ? formatSignedTL(netT) : "—"}</td>
+                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${cls}`}>{pct(netP)}</td>
                     <td className="font-mono text-[10px]">
                       {t.trailing_activated
                         ? <span className="rounded border border-neon-green/50 bg-neon-green/15 px-1.5 py-0.5 text-neon-green">🔒 trailing</span>
@@ -199,7 +219,8 @@ export default function CombinedPaperPanel() {
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
