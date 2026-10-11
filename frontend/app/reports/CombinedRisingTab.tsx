@@ -168,7 +168,7 @@ export default function CombinedRisingTab() {
               <p className="mt-0.5 text-xs text-bunker-muted">
                 Tüm radar stratejilerinin birleştiği tek taramanın başarısı. Her gönderilen
                 liste, gönderim anından bu yana değerlendirilir (tavan hedefine ulaştı mı?).
-                {summary.pending > 0 ? <>&nbsp;<b className="text-yellow-300">{summary.pending}</b> liste 24 saatlik pencereyi henüz doldurmadı.</> : null}
+                {summary.pending > 0 ? <>&nbsp;<b className="text-yellow-300">{summary.pending}</b> liste hâlâ sürüyor (sonraki liste bekleniyor).</> : null}
               </p>
             </div>
             <span className="font-mono text-[11px] text-bunker-muted whitespace-nowrap">

@@ -3420,10 +3420,13 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
     Kullanıcı isteği (2026-10-11): "3'lü sistem geldikten SONRAKİ başarıyı ve
     gönderilen listeleri görmek istiyorum; eskileri istemiyorum." Bu yüzden
     varsayılan olarak YALNIZ `combined_list` (yeni 3'lü liste) ölçülür; eski
-    `slot` kayıtları (15-20 adaylı, kaldırılan döngü) HARİÇ tutulur. Her liste
-    gönderim anından bu yana değerlendirilir (tavana ulaştı mı?); rapor bazında
-    ve toplamda isabet + ort. gerçekleşen max + KAYNAK (strateji) kırılımı
-    hesaplanır. Ölçüm penceresi 24 saat; dolmamış raporlar 'BEKLİYOR'.
+    `slot` kayıtları (15-20 adaylı, kaldırılan döngü) HARİÇ tutulur.
+
+    ÖLÇÜM PENCERESİ = LİSTE ÖMRÜ (kullanıcı düzeltmesi 2026-10-11): bir listenin
+    işi BİR SONRAKİ liste gönderildiğinde tamamlanır (20 dk). 24 saat beklemek
+    yanlıştı → saatler önceki listeler bile 'BEKLİYOR' görünüyordu. Artık her
+    liste [gönderim, sonraki liste] aralığında ölçülür ve MÜHÜRLENİR; yalnızca
+    EN YENİ liste (henüz sonraki gelmedi) 'BEKLİYOR' sayılır.
     Salt-okunur; admin kapısı yok.
     """
     kinds = [str(kind)] if kind else [COMBINED_LIST_KIND]
@@ -3436,6 +3439,15 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         return {"ok": True, "report_count": 0, "total_candidates": 0,
                 "measured": 0, "ceiling_hits": 0, "hit_rate": None,
                 "avg_mfe_pct": None, "pending": 0, "reports": [], "by_source": {}}
+
+    # Her listenin ÖMRÜ = bir sonraki listenin zamanı (en yeni liste hâlâ sürüyor).
+    # sent_at artan sıralı zaman çizgisi kurulur.
+    asc = sorted(reps, key=lambda r: float(r.get("sent_at") or 0))
+    next_at: dict[int, float | None] = {}
+    for i, rep in enumerate(asc):
+        nxt = float(asc[i + 1].get("sent_at") or 0) if i + 1 < len(asc) else None
+        next_at[int(rep.get("id") or 0)] = nxt
+    newest_id = int(asc[-1].get("id") or 0) if asc else 0
 
     # Tüm raporların sembollerini TEK seferde topla → tek toplu fiyat çekme.
     parsed: list[tuple[dict, list[dict]]] = []
@@ -3459,14 +3471,20 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
     tot_measured = tot_hits = tot_mfe_n = tot_pending = 0
     tot_mfe_sum = 0.0
     for rep, c in parsed:
+        rid = int(rep.get("id") or 0)
         sent_at = float(rep.get("sent_at") or 0)
-        rows = await database.evaluate_daily_rising_report(c, sent_at, live_prices=_px)
+        # PENCERE: sonraki listeye kadar (mühürlü) ya da şimdiye kadar (sürüyor).
+        nxt = next_at.get(rid)
+        is_pending = (rid == newest_id)
+        window_end = float(nxt) if nxt else now
+        max_sec = max(1.0, window_end - sent_at)
+        rows = await database.evaluate_daily_rising_report(
+            c, sent_at, live_prices=_px, max_sec=max_sec)
         # Sembol → orijinal aday (kaynak bilgisi için).
         by_symbol = {str(x.get("symbol") or "").upper(): x for x in c}
         mfes = [float(r["mfe_pct"]) for r in rows if r.get("mfe_pct") is not None]
         hits = sum(1 for r in rows if r.get("hit_ceiling") is True)
         measured = len(mfes)
-        pending = 1 if c and (now - sent_at) < 24 * 3600.0 else 0
         avg_mfe = round(sum(mfes) / len(mfes), 2) if mfes else None
         for r in rows:
             src = str((by_symbol.get(str(r.get("symbol") or "").upper()) or {}).get("strategy") or "combined")
@@ -3476,20 +3494,21 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
             if r.get("hit_ceiling") is True:
                 src_hits[src] += 1
         per_report.append({
-            "id": rep.get("id"),
+            "id": rid,
             "kind": rep.get("kind"),
             "sent_at": sent_at,
+            "window_end": window_end,
             "count": len(rows),
             "measured": measured,
             "ceiling_hits": hits,
             "hit_rate": round(100.0 * hits / measured, 1) if measured else None,
             "avg_mfe_pct": avg_mfe,
-            "pending": bool(pending),
+            "pending": bool(is_pending),
             "rows": rows,
         })
         tot_measured += measured
         tot_hits += hits
-        tot_pending += pending
+        tot_pending += 1 if is_pending else 0
         for m in mfes:
             tot_mfe_sum += m
             tot_mfe_n += 1

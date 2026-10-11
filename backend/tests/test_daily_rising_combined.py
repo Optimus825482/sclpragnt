@@ -315,6 +315,23 @@ def test_reports_summary_has_source_breakdown():
     assert "evaluate_daily_rising_report" in src
 
 
+def test_report_window_is_list_lifetime_not_24h():
+    """Kullanıcı düzeltmesi (2026-10-11): bir listenin ömrü BİR SONRAKİ liste
+    gelene kadar (20 dk); 24 saat beklemek yanlıştı. Özet artık pencereyi
+    sonraki listenin zamanına göre kurar ve YALNIZ en yeni listeyi 'bekliyor'
+    sayar."""
+    import inspect
+    from app.routers import monitoring as mo
+    src = inspect.getsource(mo.daily_rising_reports_summary)
+    assert "next_at" in src                 # sonraki liste zamanı çizelgesi
+    assert "window_end" in src              # pencere = sonraki liste
+    assert "max_sec" in src
+    assert "newest_id" in src               # yalnız en yeni pending
+    # 24 saat sabiti KALDIRILDI.
+    assert "24 * 3600" not in src
+    assert "24.0" not in src
+
+
 def test_reports_endpoints_exclude_legacy_slot():
     """Kullanıcı isteği (2026-10-11): raporlarda YALNIZ 3'lü sistem (combined_list
     + combined_status) görünsün; kaldırılan eski `slot`/`delta` kayıtları HARİÇ."""
