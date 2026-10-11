@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, apiRequest, getJSON } from "../lib/api";
+import { useLiveMessages } from "../lib/liveSocket";
 import { fmtDateTime, formatSignedTL } from "../lib/format";
 import SymbolLink from "../components/SymbolLink";
 
@@ -81,6 +82,25 @@ export default function CombinedPaperPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  // CANLI FİYAT (WebSocket): `binance_price` mesajı saniyede bir TRY fiyatlarını
+  // yayınlar; panel K/Z'yi bu tick'lerle ANLIK günceller (30 sn REST poll yalnız
+  // yedek). Sembol → TRY fiyat.
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
+  const liveRef = useRef<Record<string, number>>({});
+
+  useLiveMessages((message) => {
+    if (message?.type !== "binance_price") return;
+    const d = message.data as { ticks?: Record<string, { price?: number }> } | null;
+    if (!d?.ticks) return;
+    // ticks hem "XAITRY" hem "XAI" anahtarıyla gelebilir; ikisini de al.
+    const next: Record<string, number> = {};
+    for (const [k, v] of Object.entries(d.ticks)) {
+      const p = Number(v?.price || 0);
+      if (p > 0) next[String(k).toUpperCase()] = p;
+    }
+    liveRef.current = { ...liveRef.current, ...next };
+    setLivePrices(liveRef.current);
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -98,8 +118,10 @@ export default function CombinedPaperPanel() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  // REST poll yalnız YEDEK: açık pozisyon listesini/istatistiği tazeler (60 sn).
+  // Fiyat/K-Z WS ile anlık geldiği için sık poll gerekmez.
   useEffect(() => {
-    const t = setInterval(() => { void load(); }, 30_000);
+    const t = setInterval(() => { void load(); }, 60_000);
     return () => clearInterval(t);
   }, [load]);
 
@@ -117,10 +139,31 @@ export default function CombinedPaperPanel() {
   };
 
   const equity = stats ? (stats.cash_try || 0) : 0;
-  // Açık pozisyonların TOPLAM net K/Z'si (komisyon düşülmüş) — renkli gösterilir.
-  const openNet = open.reduce((a, t) => a + (t.net_try ?? 0), 0);
+  // CANLI FİYATLA zenginleştirilmiş açık pozisyonlar: WS tick'i varsa anlık
+  // fiyat + NET K/Z (komisyon düşülmüş) yeniden hesaplanır; yoksa API değeri
+  // (yedek) kullanılır. Komisyon oranı Binance TR %0,15/bacak (2 bacak).
+  const COMMISSION = 0.0015;
+  const openRows = open.map((t) => {
+    const sym = String(t.symbol || "").toUpperCase();
+    const live = livePrices[sym] ?? livePrices[sym.replace(/TRY$/, "")] ?? null;
+    const cur = live ?? t.current_price ?? null;
+    const entry = Number(t.entry_price || 0);
+    const qty = Number(t.quantity || 0);
+    let netTry: number | null = t.net_try ?? null;
+    let netPct: number | null = t.net_pct ?? t.unrealized_pct ?? null;
+    if (cur && entry > 0 && qty > 0) {
+      const gross = (cur - entry) * qty;
+      const fees = COMMISSION * qty * (entry + cur);
+      netTry = Math.round((gross - fees) * 100) / 100;
+      const invested = entry * qty;
+      netPct = invested ? Math.round((netTry / invested) * 10000) / 100 : null;
+    }
+    return { ...t, _cur: cur, _netTry: netTry, _netPct: netPct };
+  });
+  // Açık pozisyonların TOPLAM net K/Z'si (komisyon düşülmüş) — canlı.
+  const openNet = openRows.reduce((a, t) => a + (t._netTry ?? 0), 0);
   // Açık pozisyonların net değeri = maliyet + gerçekleşmemiş net K/Z.
-  const openValue = open.reduce((a, t) => a + (t.order_value_try ?? 0), 0);
+  const openValue = openRows.reduce((a, t) => a + (t.order_value_try ?? 0), 0);
   const openNetPct = openValue > 0 ? (openNet / openValue) * 100 : null;
   // TOPLAM PORTFÖY DEĞERİ (kullanıcı isteği 2026-10-12) = serbest nakit + açık
   // pozisyonların net değeri. Başlangıca göre toplam getiriyi de hesaplar.
@@ -216,22 +259,21 @@ export default function CombinedPaperPanel() {
                 </tr>
               </thead>
               <tbody>
-                {open.map((t) => {
-                  // NET = komisyon düşülmüş (yeşil kâr / kırmızı zarar). Backend
-                  // net_try/net_pct verir; yoksa unrealized_pct'e düş.
-                  const netT = t.net_try ?? null;
-                  const netP = t.net_pct ?? t.unrealized_pct ?? null;
+                {openRows.map((t) => {
+                  // NET = komisyon düşülmüş (yeşil kâr / kırmızı zarar). WS canlı
+                  // fiyatla hesaplandı; WS gelmezse API değeri (yedek).
+                  const netT = t._netTry;
+                  const netP = t._netPct;
                   // ÖNEMLİ: `.data-table td` kuralı (beyaz) Tailwind text-* sınıfını
-                  // özgüllükte ezer → projedeki KANONİK `ui-tone-positive/negative`
-                  // sınıfları kullanılır (globals.css:449-450) ki renk gerçekten
-                  // uygulanır (yeşil kâr / kırmızı zarar).
+                  // özgüllükte ezer → projenin KANONİK `ui-tone-positive/negative`
+                  // sınıfları kullanılır (globals.css) ki renk uygulanır.
                   const toneCls = netP == null ? "text-bunker-muted"
                     : (netP >= 0 ? "ui-tone-positive" : "ui-tone-negative");
                   return (
                   <tr key={t.id}>
                     <td><SymbolLink symbol={t.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                     <td className="text-right font-mono text-xs text-white">{price(t.entry_price)}</td>
-                    <td className="text-right font-mono text-xs text-white">{price(t.current_price)}</td>
+                    <td className="text-right font-mono text-xs text-white">{price(t._cur)}</td>
                     <td className="text-right font-mono text-xs text-bunker-muted">{formatSignedTL(t.order_value_try)}</td>
                     <td className="text-right font-mono text-xs ui-tone-green">{t.tp_pct != null ? `+${Number(t.tp_pct).toFixed(1)}` : "—"}</td>
                     <td className="text-right font-mono text-xs ui-tone-amber">{t.potential_pct != null ? `+%${Math.round(Number(t.potential_pct))}` : "—"}</td>
