@@ -229,6 +229,18 @@ export default function CombinedPaperPanel() {
             </table>
           </div>
         )}
+        {/* AÇIK POZİSYONLARIN TOPLAM NET K/Z'si (kullanıcı isteği 2026-10-11) —
+            listenin alt kısmında, renkli. */}
+        {open.length > 0 ? (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-bunker-800 pt-3 font-mono text-sm">
+            <span className="text-bunker-muted">
+              Açık {open.length} pozisyonun toplam net K/Z'si (komisyon düşülmüş):
+            </span>
+            <span className={`font-black text-base ${openNet >= 0 ? "ui-tone-positive" : "ui-tone-negative"}`}>
+              {formatSignedTL(openNet)}{openNetPct != null ? ` (${pct(openNetPct)})` : ""}
+            </span>
+          </div>
+        ) : null}
       </section>
 
       {/* Kapanan işlemler */}

@@ -575,6 +575,17 @@ export default function PortfolioPage() {
               </table>
             </div>
           )}
+          {/* AÇIK OTONOM POZİSYONLARIN TOPLAM NET K/Z'si (kullanıcı isteği) */}
+          {apTrades.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-bunker-800 pt-3 font-mono text-sm">
+              <span className="text-bunker-muted">
+                Açık {apTrades.length} otonom pozisyonun toplam net K/Z'si (komisyon düşülmüş):
+              </span>
+              <span className={`font-black text-base ${(apOpenPnl ?? 0) >= 0 ? "ui-tone-positive" : "ui-tone-negative"}`}>
+                {signedMoney(apOpenPnl)}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Son kapananlar */}

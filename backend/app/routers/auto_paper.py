@@ -1815,15 +1815,15 @@ async def _migrate_bad_settings_once() -> None:
     içine kötü bir kombinasyon kaydedilmişti (ölçüldü, 70 kapanan işlem):
       * stop_loss_pct = 1.5        → çok sıkı stop, gürültüde tetikleniyor
       * trailing_trigger_pct = 1.8 → kâr kilidi çok GEÇ devreye giriyor
-      * trailing_gap_pct = 0.6     → kârı geri veriyor
-    Sonuç: kazanan az (25), kaybeden çok (45), net −557 TL; 24 işlem stop ile
-    ortalama −%1,97 kapandı. Simülasyon (aynı 70 işlem): erken kâr kilidi
-    (trigger ~%0.3-0.5) ortalamayı −%0.25 → +%0.04..+0.15, kazanmayı %36 → %53-63.
-    Stop'u gevşetmek + kâr kilidini öne almak verinin açıkça desteklediği yön.
+      * trailing_gap_pct = 0.6     → tepeden geri çekilmede kârı veriyor
+    Ayrıca trailing gap 0.3 gibi ÇOK DAR değerler canlıda "anında yakalanma"
+    (kâr büyüyemeden kapanma) üretiyor — canlı ticker gürültüsüne karşı yeterli
+    mesafe şart. Bu yüzden onarım gap'i GEVŞEK değere (config varsayılanı 1.0)
+    çeker; hem eski 0.6 hem de dar 0.3 kayıtlı değerler hedeflenir.
 
-    Bu fonksiyon yalnız KÖTÜ kayıtlı değerleri düzeltir (operatörün bilinçli
-    seçtiği iyi değerlere dokunmaz): SL 1.5→5.0, trigger 1.8→0.8, gap 0.6→0.3.
-    İdempotent: bir kez çalışır (bayrak), sonraki restart'ta atlar.
+    Yalnız KÖTÜ kayıtlı değerleri düzeltir (operatörün bilinçli iyi seçimine
+    dokunmaz): SL 1.5→5.0, trigger 1.8→0.8, gap 0.6/0.3→1.0.
+    İdempotent: bir kez çalışır, sonraki restart'ta atlar.
     """
     try:
         raw = await database.get_llm_setting("auto_paper_settings", "{}")
@@ -1831,20 +1831,23 @@ async def _migrate_bad_settings_once() -> None:
         if not isinstance(settings, dict) or not settings:
             return
         changed = {}
+        gap_default = config.AUTO_PAPER_TRAILING_GAP_PCT  # 1.0
         # Yalnız ESKİ/KÖTÜ değerleri hedefle (operatörün yeni seçimine dokunmaz).
         if abs(float(settings.get("stop_loss_pct", 0) or 0) - 1.5) < 1e-6:
             settings["stop_loss_pct"] = config.AUTO_PAPER_SL_PCT_DEFAULT  # 5.0
             changed["stop_loss_pct"] = settings["stop_loss_pct"]
         if abs(float(settings.get("trailing_trigger_pct", 0) or 0) - 1.8) < 1e-6:
-            settings["trailing_trigger_pct"] = 0.8
-            changed["trailing_trigger_pct"] = 0.8
-        if abs(float(settings.get("trailing_gap_pct", 0) or 0) - 0.6) < 1e-6:
-            settings["trailing_gap_pct"] = config.AUTO_PAPER_TRAILING_GAP_PCT  # 0.3
-            changed["trailing_gap_pct"] = settings["trailing_gap_pct"]
+            settings["trailing_trigger_pct"] = max(0.8, config.AUTO_PAPER_TRAILING_TRIGGER_PCT)
+            changed["trailing_trigger_pct"] = settings["trailing_trigger_pct"]
+        # Dar gap (0.3 veya 0.6) → gevşek (1.0): canlıda anında yakalanmayı bitirir.
+        _gap = float(settings.get("trailing_gap_pct", 0) or 0)
+        if _gap and _gap < 0.8 and abs(_gap - gap_default) > 1e-6:
+            settings["trailing_gap_pct"] = gap_default
+            changed["trailing_gap_pct"] = gap_default
         if changed:
             await database.set_llm_setting("auto_paper_settings", json.dumps(settings))
             logger.warning("auto_paper AYAR ONARIMI (tek seferlik): %s "
-                           "(kötü kayıtlı değerler veriye göre düzeltildi)", changed)
+                           "(kötü/dar kayıtlı değerler canlıya uygun değere çekildi)", changed)
         else:
             logger.info("auto_paper ayar onarımı: kötü kayıtlı değer yok, atlandı")
     except Exception as exc:

@@ -67,12 +67,25 @@ def test_combined_paper_endpoints_registered():
     assert "/api/combined-paper/close/{trade_id}" in paths
 
 
-def test_combined_paper_early_trail_trigger():
-    """Veri (70 kapanan işlem): erken kâr kilidi trigger %0.3-0.5 belirleyici.
-    Kombine paper varsayılanı ERKEN olmalı (>=%1 değil)."""
+def test_combined_paper_trail_trigger_and_gap_not_too_tight():
+    """Kullanıcı geri bildirimi (2026-10-11): "trailing mesafeleri çok yakın takip
+    ediyor, hemen yakalanıyorlar." Gap %1.0 (tepeden anlamlı geri çekilme
+    toleransı) ve trigger %1.0 olmalı — %0.3 gibi sıkı değerler DEĞİL."""
     c = config.config
-    assert c.COMBINED_PAPER_TRAIL_TRIGGER_PCT <= 0.5
-    assert c.COMBINED_PAPER_TRAIL_GAP_PCT <= 0.4
+    assert c.COMBINED_PAPER_TRAIL_GAP_PCT >= 0.8, "trailing gap çok dar — hemen yakalanır"
+    assert c.COMBINED_PAPER_TRAIL_TRIGGER_PCT >= 0.8
+
+
+def test_trailing_stop_stays_below_price_on_first_activation():
+    """İlk aktivasyonda stop fiyatın ALTINDA kalmalı (anında kapanma yok) ve
+    tepeden gap kadar geride olmalı."""
+    import inspect
+    from app import combined_paper as cp
+    src = inspect.getsource(cp._manage_single)
+    # İlk aktivasyon koruması + tepeden gap.
+    assert "was_active" in src
+    assert "peak * (1 - gap / 100.0)" in src
+    assert "cost_floor" in src
 
 
 def test_auto_paper_settings_repair_targets_bad_values():

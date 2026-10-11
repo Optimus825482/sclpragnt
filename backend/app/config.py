@@ -480,11 +480,12 @@ class Config:
     COMBINED_PAPER_POSITION_PCT = float(os.getenv("COMBINED_PAPER_POSITION_PCT", "10.0"))  # serbest bakiyenin %'si
     COMBINED_PAPER_MAX_OPEN = max(0, int(os.getenv("COMBINED_PAPER_MAX_OPEN", "5")))       # 0 = sınırsız
     # Trailing: kâr bu eşiği geçince kâr kilidi + trailing devreye girer.
-    # 2026-10-11: veri (70 kapanan otonom işlem) erken kâr kilidinin belirleyici
-    # olduğunu gösterdi — trigger %0.3-0.5 ortalamayı negatiften pozitife çevirip
-    # kazanmayı %36→%63 yaptı. Bu yüzden DEFAULT %0.4 (erken).
-    COMBINED_PAPER_TRAIL_TRIGGER_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_TRIGGER_PCT", "0.4"))
-    COMBINED_PAPER_TRAIL_GAP_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_GAP_PCT", "0.3"))
+    # 2026-10-11 GERİ BİLDİRİM DÜZELTMESİ: %0.4 tetik + %0.3 boşluk ÇOK SIKIYDI —
+    # TRY coinlerinin gürültüsünde fiyat tepeden %0.3 geri çekilince anında
+    # yakalanıyor ve pozisyon kârı büyütemeden kapanıyordu. Artık: trigger %1.0,
+    # gap %1.0 (tepkiden %1 geri çekilme toleransı) — anlamlı kâr biriktirir.
+    COMBINED_PAPER_TRAIL_TRIGGER_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_TRIGGER_PCT", "1.0"))
+    COMBINED_PAPER_TRAIL_GAP_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_GAP_PCT", "1.0"))
     COMBINED_PAPER_MAX_HOLD_MIN = float(os.getenv("COMBINED_PAPER_MAX_HOLD_MIN", "120"))
     # İlk koruma stop'u (kâr kilidi öncesi zarar sınırı) — potansiyel ile ölçeklenir,
     # ama en az bu taban uygulanır.
@@ -935,11 +936,12 @@ class Config:
     # sirasiyla +1.41/+1.38/+1.31/+1.24/+1.18%/islem. Erken devreye giren trailing
     # kazananlari daha cok tasiyor. Plato genis (0.8-1.2 hepsi iyi) — saglam.
     AUTO_PAPER_TRAILING_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_TRAILING_TRIGGER_PCT", "1.0"))
-    # 2026-10-07 OPTIMIZASYON: 0.6 -> 0.3. KANIT: gap 0.2/0.3/0.4/0.5/0.6
-    # sirasiyla +1.34/+1.38/+1.35/+1.36/+1.31%/islem. Dar gap = tepeden geri
-    # cekilmede daha az kar kaybi. (Eski "TP birincil cikis" varsayimi gecerli
-    # DEGIL: TP cikisi kapatilinca sonuc 3 katina cikiyor, bkz. TP_PRIMARY.)
-    AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "0.3"))
+    # 2026-10-11 CANLI GERİ BİLDİRİM: gap 0.3 ÇOK DARDI — canlı 5 sn ticker
+    # gürültüsünde fiyat tepeden %0.3 geri çekilince pozisyon ANINDA kapanıyor,
+    # kâr büyüyemiyordu ("trailing çok yakın takip ediyor" — kullanıcı). Backtest
+    # 1m barlarıyla yapıldığı için 0.3'ü "iyi" gösteriyordu; canlıda ticker daha
+    # gürültülü. Canlıya uygun: 1.0 (tepeden anlamlı geri çekilme toleransı).
+    AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "1.0"))
     # Trailing/breakeven kapanışı sonrası aynı bildirimle yeniden açılış
     # (fiyat bildirim fiyatının üzerinde + ufuk süresi dolmadı + yükselme
     # eğilimi varsa). 2026-09-29 kârlılık analizi: koruma kapanışı sonrası

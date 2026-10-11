@@ -146,15 +146,22 @@ async def _manage_single(trade: dict, now: float) -> None:
         return
 
     # 2) Kâra geçince (trigger) kâr kilidi + trailing.
-    # KÂR KİLİDİ TABANI (2026-10-11): trailing stop, gidiş-dönüş komisyonunun
-    # ÜSTÜNDE olmalı ki "kilitli kâr" gerçekten net pozitif olsun (aksi halde
-    # trailing kârı komisyon altına indirip başa-baş kapatır). Taban =
-    # entry × (1 + 2×komisyon) + küçük pay; asla bunun altına inmez.
+    # TRAILING MESAFESİ (2026-10-11 GERİ BİLDİRİM DÜZELTMESİ): eskiden stop
+    # yalnız `peak*(1-gap)` + komisyon tabanıydı; gap %0.3 ÇOK DARDI → fiyat
+    # tepeden küçük bir geri çekilmede anında kapanıyordu. Artık:
+    #   * gap varsayılanı %1.0 (tepeden anlamlı geri çekilme toleransı),
+    #   * taban = gidiş-dönüş komisyon + pay (net pozitif kâr kilidi),
+    #   * İLK aktivasyonda stop fiyatın ALTINDA kalır (saniyesinde kapanmasın).
+    # Pozisyon kârı büyütmesine izin verilir; kâr korunur ama sıkıştırılmaz.
     effective_stop = float(trade["stop_loss"]) if trade.get("stop_loss") else None
     if peak_gain_pct >= trigger:
-        trail_price = peak * (1 - gap / 100.0)
-        cost_floor = entry * (1 + 2 * float(getattr(config, "COMMISSION_PCT", 0.0015)))
-        trail_price = max(trail_price, cost_floor)
+        commission = float(getattr(config, "COMMISSION_PCT", 0.0015))
+        cost_floor = entry * (1 + 2 * commission + 0.002)   # net pozitif taban
+        trail_price = max(peak * (1 - gap / 100.0), cost_floor)
+        was_active = bool(trade.get("trailing_activated", False))
+        # İlk devreye girişte stop fiyatın altında olmalı (anında kapanma yok).
+        if not was_active and trail_price >= price:
+            trail_price = price * (1 - min(gap, 1.0) / 100.0)
         new_trail = max(float(trade.get("trailing_stop") or 0.0), trail_price)
         fields["trailing_activated"] = True
         fields["trailing_stop"] = new_trail
