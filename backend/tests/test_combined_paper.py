@@ -76,6 +76,22 @@ def test_combined_paper_trail_trigger_and_gap_not_too_tight():
     assert c.COMBINED_PAPER_TRAIL_TRIGGER_PCT >= 0.8
 
 
+def test_autonomous_and_combined_trailing_equal():
+    """Kullanıcı isteği (2026-10-11): "bu trailing ayarlarını NORMAL paper trade'de
+    de aynı şekilde yapalım." Otonom paper ve kombine paper trailing tetik/boşluğu
+    BİREBİR aynı olmalı (DB'deki kayıtlı otonom değer de config ile eşitlenir)."""
+    c = config.config
+    assert c.COMBINED_PAPER_TRAIL_GAP_PCT == c.AUTO_PAPER_TRAILING_GAP_PCT, \
+        "gap eşit değil — iki paper sistemi ayrışır"
+    assert c.COMBINED_PAPER_TRAIL_TRIGGER_PCT == c.AUTO_PAPER_TRAILING_TRIGGER_PCT, \
+        "trigger eşit değil — iki paper sistemi ayrışır"
+    # Onarım fonksiyonu eski/dar değerleri (0.8 ve 1.8) config'e çekmeli.
+    import inspect
+    from app.routers import auto_paper as ap
+    src = inspect.getsource(ap._migrate_bad_settings_once)
+    assert "0.8" in src and "1.8" in src
+
+
 def test_trailing_stop_stays_below_price_on_first_activation():
     """İlk aktivasyonda stop fiyatın ALTINDA kalmalı (anında kapanma yok) ve
     tepeden gap kadar geride olmalı."""

@@ -1836,8 +1836,13 @@ async def _migrate_bad_settings_once() -> None:
         if abs(float(settings.get("stop_loss_pct", 0) or 0) - 1.5) < 1e-6:
             settings["stop_loss_pct"] = config.AUTO_PAPER_SL_PCT_DEFAULT  # 5.0
             changed["stop_loss_pct"] = settings["stop_loss_pct"]
-        if abs(float(settings.get("trailing_trigger_pct", 0) or 0) - 1.8) < 1e-6:
-            settings["trailing_trigger_pct"] = max(0.8, config.AUTO_PAPER_TRAILING_TRIGGER_PCT)
+        # Trailing tetik: eski 1.8 VE önceki turda yanlışlıkla yazılan 0.8 →
+        # config değerine (1.0) çekilir; böylece OTONOM paper = KOMBİNE paper
+        # (aynı trailing mantığı — kullanıcı isteği 2026-10-11).
+        _trig = float(settings.get("trailing_trigger_pct", 0) or 0)
+        if _trig and (abs(_trig - 1.8) < 1e-6 or abs(_trig - 0.8) < 1e-6) \
+                and abs(_trig - config.AUTO_PAPER_TRAILING_TRIGGER_PCT) > 1e-6:
+            settings["trailing_trigger_pct"] = config.AUTO_PAPER_TRAILING_TRIGGER_PCT
             changed["trailing_trigger_pct"] = settings["trailing_trigger_pct"]
         # Dar gap (0.3 veya 0.6) → gevşek (1.0): canlıda anında yakalanmayı bitirir.
         _gap = float(settings.get("trailing_gap_pct", 0) or 0)
