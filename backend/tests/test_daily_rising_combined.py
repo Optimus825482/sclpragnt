@@ -503,3 +503,29 @@ def test_min_score_skips_list_when_none_passes(monkeypatch):
 
     cfg = {"top_n": 3, "min_score": 80.0, "list_min": 15, "track_min": 5}
     assert asyncio.run(mo._send_combined_list(cfg=cfg, force=True)) is False
+
+
+def test_in_send_window_wraps_midnight():
+    """Kullanıcı geri bildirimi (2026-10-12): "01:17'de liste gelmedi". Kök neden:
+    saat penceresi kontrolü `start <= hour <= end` idi → gece yarısını saran
+    pencereler (ör. 23→09) HİÇ çalışmıyordu. `_in_send_window` artık sarar."""
+    from app.routers.monitoring import _in_send_window
+    # 24 saat (start == end).
+    assert _in_send_window(0, 0, 0) is True
+    assert _in_send_window(23, 0, 0) is True
+    # Gündüz penceresi 09-23: 01 KAPALI (kullanıcının gördüğü durum).
+    assert _in_send_window(1, 9, 23) is False
+    assert _in_send_window(10, 9, 23) is True
+    # Gece yarısını saran pencere 22→06.
+    assert _in_send_window(23, 22, 6) is True
+    assert _in_send_window(3, 22, 6) is True
+    assert _in_send_window(12, 22, 6) is False
+    # Tam gün 0-23.
+    assert _in_send_window(1, 0, 23) is True
+
+
+def test_combined_default_window_is_24h():
+    """Varsayılan pencere artık 24 SAAT (0-23) → ayar kaydedilmese bile gece gönderir."""
+    c = config.config
+    assert c.COMBINED_RISING_START_HOUR == 0
+    assert c.COMBINED_RISING_END_HOUR == 23

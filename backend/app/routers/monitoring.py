@@ -3391,6 +3391,23 @@ async def _send_combined_status(*, cfg: dict | None = None, force: bool = False)
     return sent
 
 
+def _in_send_window(hour: int, start: int, end: int) -> bool:
+    """Saat `hour`, [start, end] gönderim penceresinde mi? GECE YARISINI SARAR.
+
+    KRİTİK (2026-10-12): eski kontrol `start <= hour <= end` idi → gece yarısını
+    saran pencereler (ör. 23→09) HİÇ çalışmıyordu. Kullanıcı 01:17'de liste
+    bekleyip gelmediğinde kök neden buydu (pencere 09-23, saat 01). Kural:
+      * start == end  → 24 SAAT (tüm gün açık)
+      * start < end   → start..end (normal)
+      * start > end   → start..23 + 0..end (sarma; ör. 22→06)
+    """
+    if start == end:
+        return True
+    if start < end:
+        return start <= hour <= end
+    return hour >= start or hour <= end
+
+
 async def daily_rising_combined_loop():
     """TEK WhatsApp kanalı — ARALIK BAZLI: `list_min` dk'da bir TOP-N liste,
     `track_min` dk'da bir durum takibi. Ayarlar Ayarlar sayfasından (DB).
@@ -3421,10 +3438,12 @@ async def daily_rising_combined_loop():
                 from app.whatsapp_notify import whatsapp_enabled
                 if whatsapp_enabled():
                     lt = datetime.now(_tz) if _tz else datetime.now()
-                    list_min = max(1, int(cfg.get("list_min", 20)))
+                    list_min = max(1, int(cfg.get("list_min", 15)))
                     track_min = max(1, int(cfg.get("track_min", 5)))
-                    in_window = (int(cfg.get("start_hour", 9)) <= lt.hour
-                                 <= int(cfg.get("end_hour", 23)))
+                    in_window = _in_send_window(
+                        lt.hour,
+                        int(cfg.get("start_hour", getattr(config, "COMBINED_RISING_START_HOUR", 0))),
+                        int(cfg.get("end_hour", getattr(config, "COMBINED_RISING_END_HOUR", 23))))
                     if in_window:
                         now = time.time()
                         # --- LİSTE: son listeden list_min dk geçti mi? ---

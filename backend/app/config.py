@@ -462,7 +462,11 @@ class Config:
     COMBINED_RISING_TOP_N = max(1, int(os.getenv("COMBINED_RISING_TOP_N", "2")))
     # Birleşik puan eşiği: listedeki 1. aday bile bunun altındaysa gönderilmez.
     COMBINED_RISING_MIN_SCORE = float(os.getenv("COMBINED_RISING_MIN_SCORE", "10.0"))
-    COMBINED_RISING_START_HOUR = max(0, min(23, int(os.getenv("COMBINED_RISING_START_HOUR", "9"))))
+    # 2026-10-12 düzeltmesi: varsayılan pencere 09-23'tü → gece gönderim DURUYORDU
+    # (kullanıcı 01:17'de liste bekledi, gelmedi). Artık 24 SAAT (00-23): aksi
+    # açıkça ayarlanmadıkça gece de gönderilir. Pencere gece yarısını SARABİLİR
+    # (start > end ise ör. 23→09) — bkz. `_in_send_window`.
+    COMBINED_RISING_START_HOUR = max(0, min(23, int(os.getenv("COMBINED_RISING_START_HOUR", "0"))))
     COMBINED_RISING_END_HOUR = max(0, min(23, int(os.getenv("COMBINED_RISING_END_HOUR", "23"))))
     # ------------------------------------------------------------------
     # KOMBİNE PAPER PORTFÖY (2026-10-11 kullanıcı kararı) — WhatsApp'a gönderilen

@@ -1401,11 +1401,12 @@ function RadarSettingsPanel() {
                 <p className="eyebrow text-bunker-muted">SAAT ARALIĞI (TR)</p>
                 <div className="mt-1 flex items-center gap-1.5">
                   <input type="number" min={0} max={23} value={combinedStart}
-                    onChange={(e) => setCombinedStart(e.target.value)} placeholder="9" className={timeInputCls} />
+                    onChange={(e) => setCombinedStart(e.target.value)} placeholder="0" className={timeInputCls} />
                   <span className="font-mono text-xs text-bunker-muted">→</span>
                   <input type="number" min={0} max={23} value={combinedEnd}
                     onChange={(e) => setCombinedEnd(e.target.value)} placeholder="23" className={timeInputCls} />
                 </div>
+                <p className="text-[11px] text-bunker-muted mt-1">0→23 = 24 saat (gece dahil). Gece yarısını sarmak için başlangıç &gt; bitiş (ör. 22→6).</p>
               </div>
               <button type="button" onClick={saveCombined} disabled={saving}
                 className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
