@@ -263,8 +263,17 @@ def format_combined_status(rows: list[dict], *, title: str,
     if chgs:
         summary += f"\n🐢 ORT. DEĞİŞİM ({baseline_label}'e göre): {sum(chgs) / len(chgs):+.2f}%"
     if show_peak and peaks:
-        summary += (f"\n🏔️ Liste zirvesi (en yüksek değişim ort.): "
+        # SON DURUM BİLDİRİMİ (bir sonraki listeden ÖNCE): maks MFE artışının
+        # ortalaması — yani adayların liste ömrü boyunca tepe yaptığı en yüksek
+        # değişimlerin ortalaması (kullanıcı isteği 2026-10-11).
+        summary += (f"\n🏔️ MAKS MFE (en yüksek değişim) ort.: "
                     f"{sum(peaks) / len(peaks):+.2f}%")
+        best = max(shown, key=lambda r: float(r.get("peak_pct") or -1e9))
+        try:
+            summary += (f"\n🥇 En çok tepe: {_sym(best.get('symbol'))} "
+                        f"{float(best.get('peak_pct')):+.2f}%")
+        except (TypeError, ValueError):
+            pass
     # DEVAM EDEN SEMBOLLER: önceki listeden taşınanlar (kullanıcı isteği 2026-10-11).
     carried = [r for r in rows if r.get("carried")]
     if carried:

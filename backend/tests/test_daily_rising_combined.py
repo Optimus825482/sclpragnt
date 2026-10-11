@@ -303,6 +303,24 @@ def test_status_last_before_next_shows_peak():
     assert "ZİRVE" in out and "+3.50%" in out and "zirve" in out.lower()
 
 
+def test_final_status_shows_max_mfe_average():
+    """Kullanıcı isteği (2026-10-11): SON durum bildiriminde (bir sonraki listeden
+    önce) maks MFE artışları + MAKS MFE ortalaması yazılır."""
+    import inspect
+    from app.whatsapp_notify import format_combined_status
+    src = inspect.getsource(format_combined_status)
+    assert "MAKS MFE" in src and "ort." in src
+    rows = [
+        {"symbol": "AAATRY", "entry_price": 1.0, "current_price": 1.01, "change_pct": 1.0, "peak_pct": 8.0},
+        {"symbol": "BBBTRY", "entry_price": 1.0, "current_price": 1.02, "change_pct": 2.0, "peak_pct": 4.0},
+    ]
+    out = format_combined_status(rows, title="T", baseline_label="12:00", show_peak=True)
+    # (8 + 4) / 2 = +6.00% maks MFE ortalaması
+    assert "MAKS MFE" in out and "+6.00%" in out
+    # En çok tepe yapan sembol ayrıca yazılır (AAA +8.00%).
+    assert "En çok tepe" in out and "AAA" in out
+
+
 def test_send_combined_list_skips_when_recent(monkeypatch):
     """GERÇEK davranış: son liste gönderimi tazeyse `_send_combined_list`
     tarama bile yapmadan False döner (restart spam'i ölür). force=True atlar."""
