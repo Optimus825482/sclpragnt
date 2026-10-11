@@ -83,6 +83,8 @@ type Row = {
   strategy?: string | null;
   potential_pct?: number | null;
   potential_price?: number | null;
+  scan_score?: number | null;
+  target_probability?: number | null;
 };
 
 type Stats = {
@@ -592,28 +594,29 @@ export default function DailyRisingPage() {
       </div>
 
       <Card>
-        <h2 className="font-semibold mb-2">Sistem Adayları (otomatik 11:30 · en iyi 5)</h2>
+        <h2 className="font-semibold mb-2">Sistem Adayları (son gönderilen · en iyi 3)</h2>
         <p className="text-xs text-bunker-muted mb-2">
-          Bugün 11:30 taramasında seçilen adaylar — WhatsApp grubuna gönderilen liste ile <b>aynı 5 sembol</b>.
+          WhatsApp grubuna gönderilen <b>en son kombine listenin</b> ilk 3 adayı — gönderim anındaki
+          fiyat ile anlık fiyat karşılaştırmalı. Henüz gönderim yoksa anlık taramanın ilk 3'ü.
         </p>
         {loading ? (
           <div className="p-6 text-sm text-bunker-muted">Yükleniyor…</div>
         ) : rows.length === 0 ? (
-          <div className="p-6 text-sm text-bunker-muted">Bugün için sistem adayı yok.</div>
+          <div className="p-6 text-sm text-bunker-muted">Şu an sistem adayı yok.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full font-mono text-xs">
               <thead>
                 <tr className="text-left text-bunker-muted border-b border-bunker-700">
                   <th className="p-2">Sembol</th>
-                  <th className="p-2">Öneri Saati</th>
-                  <th className="p-2 text-right">Öneri Fiyatı</th>
+                  <th className="p-2">Bildirim</th>
+                  <th className="p-2 text-right">Bildirim Fiyatı</th>
                   <th className="p-2 text-right">Tavan (TP)</th>
                   <th className="p-2 text-right">Potansiyel</th>
                   <th className="p-2 text-right">Anlık</th>
                   <th className="p-2 text-right">Değişim</th>
-                  <th className="p-2 text-right">Gerçekleşen Max</th>
-                  <th className="p-2">Durum</th>
+                  <th className="p-2 text-right">İhtimal</th>
+                  <th className="p-2 text-right">Puan</th>
                 </tr>
               </thead>
               <tbody>
@@ -625,7 +628,7 @@ export default function DailyRisingPage() {
                     <td className="p-2 text-bunker-muted">{r.created_at ? fmtDateTime(toMs(r.created_at)) : "—"}</td>
                     <td className="p-2 text-right">{r.entry_price != null ? formatPrice(r.entry_price) : "—"}</td>
                     <td className="p-2 text-right text-neon-yellow">
-                      {r.ceiling_price != null ? formatPrice(r.ceiling_price) : "—"}
+                      {r.ceiling_price != null ? formatPrice(r.ceiling_price) : (r.ceiling_pct != null ? `+%${Math.round(r.ceiling_pct)}` : "—")}
                     </td>
                     <td className="p-2 text-right text-neon-green whitespace-nowrap" title="30g zirve bazlı potansiyel üst sınır (scalping tavanından bağımsız)">
                       {r.potential_pct != null
@@ -634,12 +637,8 @@ export default function DailyRisingPage() {
                     </td>
                     <td className="p-2 text-right">{r.current_price != null ? formatPrice(r.current_price) : "—"}</td>
                     <td className={`p-2 text-right font-semibold ${pctTone(r.change_pct)}`}>{fmtPct(r.change_pct)}</td>
-                    <td className={`p-2 text-right ${pctTone(r.mfe_pct)}`}>{r.mfe_pct != null ? fmtPct(r.mfe_pct) : "—"}</td>
-                    <td className="p-2">
-                      <Badge tone={r.status === "filled" ? "positive" : r.status === "pending" ? "warning" : "neutral"}>
-                        {r.status === "pending" ? "BEKLİYOR" : r.status === "filled" ? "TAMAMLANDI" : (r.status || "—").toUpperCase()}
-                      </Badge>
-                    </td>
+                    <td className="p-2 text-right text-sky-300">{r.target_probability != null ? `%${Math.round(r.target_probability)}` : "—"}</td>
+                    <td className="p-2 text-right font-bold text-white">{r.scan_score != null ? Math.round(r.scan_score) : "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -662,7 +661,7 @@ export default function DailyRisingPage() {
                 ▲ {up} yükselen · ▼ {dn} düşen · • {flat} yatay
               </span>
               <span className="ml-3 font-semibold">
-                🎯 Bu {chgs.length}'in 11:30'a göre ort. değişimi:{" "}
+                🎯 Bu {chgs.length}'in bildirim anına göre ort. değişimi:{" "}
                 <span className={pctTone(avg)}>{fmtPct(avg)}</span>
               </span>
             </div>

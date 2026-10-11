@@ -31,6 +31,36 @@ def test_combined_config_defaults():
     assert not hasattr(c, "DAILY_RISING_SLOT_MIN_SCORE")
 
 
+def test_combined_settings_from_db_not_env():
+    """Kullanıcı isteği (2026-10-11): kombine ayarlar env DEĞİL Ayarlar sayfasından
+    (DB) yönetilir. `get_user_notification_settings` kombine alanları okur,
+    PUT yazabilir ve döngü `combined_rising_settings()` ile okur."""
+    import inspect
+    from app.routers import monitoring
+    get_src = inspect.getsource(monitoring.get_user_notification_settings)
+    put_src = inspect.getsource(monitoring.update_monitoring_settings)
+    for key in ("combined_rising_enabled", "combined_rising_top_n",
+                "combined_rising_min_score", "combined_rising_start_hour",
+                "combined_rising_end_hour", "combined_rising_list_min",
+                "combined_rising_track_min"):
+        assert key in get_src, f"okuma alanı eksik: {key}"
+        assert key in put_src, f"yazma alanı eksik: {key}"
+    assert hasattr(monitoring, "combined_rising_settings")
+    loop_src = inspect.getsource(monitoring.daily_rising_combined_loop)
+    assert "combined_rising_settings" in loop_src
+    assert "config.COMBINED_RISING" not in loop_src  # env değil, ayar okunur
+
+
+def test_combined_settings_read_floats_validate():
+    """YAZMA yolu geçersiz girdi → 422; OKUMA yolu bozuk değeri kırpar (fırlatmaz)."""
+    from app.routers import monitoring
+    assert monitoring._clamp_int("abc", 1, 10) == 1
+    assert monitoring._clamp_int(99, 1, 10) == 10
+    assert monitoring._clamp_float("x", 0.0, 100.0) == 0.0
+    assert monitoring._coerce_setting_bool("acik") is True
+    assert monitoring._coerce_setting_bool("kapali") is False
+
+
 def test_report_db_helpers_exist():
     for name in ("save_daily_rising_report", "list_daily_rising_reports",
                  "last_daily_rising_report", "evaluate_daily_rising_report"):
@@ -103,8 +133,8 @@ def test_send_combined_list_quality_gate():
     import inspect
     from app.routers import monitoring as mo
     src = inspect.getsource(mo._send_combined_list)
-    assert "COMBINED_RISING_MIN_SCORE" in src
-    assert "COMBINED_RISING_TOP_N" in src
+    assert 'cfg.get("min_score"' in src
+    assert 'cfg.get("top_n"' in src
     assert "format_combined_list" in src
     assert "save_daily_rising_report" in src
 

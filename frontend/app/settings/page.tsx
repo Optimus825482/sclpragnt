@@ -1148,6 +1148,13 @@ function RadarSettingsPanel() {
   const [quietStart, setQuietStart] = useState("");
   const [quietEnd, setQuietEnd] = useState("");
   const [confluenceInput, setConfluenceInput] = useState<string>("");
+  // KOMBİNE YÜKSELİŞ (2026-10-11): tek WhatsApp kanalı ayarları (env DEĞİL, panel).
+  const [combinedTopN, setCombinedTopN] = useState<string>("");
+  const [combinedMinScore, setCombinedMinScore] = useState<string>("");
+  const [combinedStart, setCombinedStart] = useState<string>("");
+  const [combinedEnd, setCombinedEnd] = useState<string>("");
+  const [combinedListMin, setCombinedListMin] = useState<string>("");
+  const [combinedTrackMin, setCombinedTrackMin] = useState<string>("");
 
   const load = async () => {
     try {
@@ -1160,6 +1167,12 @@ function RadarSettingsPanel() {
       if (data?.quiet_hours_start) setQuietStart(String(data.quiet_hours_start));
       if (data?.quiet_hours_end) setQuietEnd(String(data.quiet_hours_end));
       if (data?.radar_confluence_window_sec != null) setConfluenceInput(String(data.radar_confluence_window_sec));
+      if (data?.combined_rising_top_n != null) setCombinedTopN(String(data.combined_rising_top_n));
+      if (data?.combined_rising_min_score != null) setCombinedMinScore(String(data.combined_rising_min_score));
+      if (data?.combined_rising_start_hour != null) setCombinedStart(String(data.combined_rising_start_hour));
+      if (data?.combined_rising_end_hour != null) setCombinedEnd(String(data.combined_rising_end_hour));
+      if (data?.combined_rising_list_min != null) setCombinedListMin(String(data.combined_rising_list_min));
+      if (data?.combined_rising_track_min != null) setCombinedTrackMin(String(data.combined_rising_track_min));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Radar ayarları okunamadı");
@@ -1219,6 +1232,33 @@ function RadarSettingsPanel() {
     const val = Number(confluenceInput);
     if (!Number.isFinite(val) || val < 60 || val > 21600) { setError("Çakışma penceresi 60-21600 sn arasında olmalı."); return; }
     await put({ radar_confluence_window_sec: Math.round(val) }, "Çakışma penceresi kaydedildi.");
+  };
+
+  // KOMBİNE YÜKSELİŞ: tüm kombine ayarları TEK istekte kaydet (doğrulama sunucuda).
+  const saveCombined = async () => {
+    const topN = Number(combinedTopN);
+    const minScore = Number(combinedMinScore);
+    const start = Number(combinedStart);
+    const end = Number(combinedEnd);
+    const listMin = Number(combinedListMin);
+    const trackMin = Number(combinedTrackMin);
+    if (![topN, minScore, start, end, listMin, trackMin].every(Number.isFinite)) {
+      setError("Kombine ayarlar sayısal olmalı."); return;
+    }
+    if (topN < 1 || topN > 10) { setError("Liste adedi (TOP N) 1-10 arasında olmalı."); return; }
+    if (minScore < 0 || minScore > 100) { setError("Min puan 0-100 arasında olmalı."); return; }
+    if (start < 0 || start > 23 || end < 0 || end > 23) { setError("Saatler 0-23 arasında olmalı."); return; }
+    if (start > end) { setError("Başlangıç saati bitişten büyük olamaz."); return; }
+    if (listMin < 5 || listMin > 120) { setError("Liste periyodu 5-120 dk arasında olmalı."); return; }
+    if (trackMin < 1 || trackMin > 60) { setError("Durum periyodu 1-60 dk arasında olmalı."); return; }
+    await put({
+      combined_rising_top_n: Math.round(topN),
+      combined_rising_min_score: minScore,
+      combined_rising_start_hour: Math.round(start),
+      combined_rising_end_hour: Math.round(end),
+      combined_rising_list_min: Math.round(listMin),
+      combined_rising_track_min: Math.round(trackMin),
+    }, "Kombine yükseliş ayarları kaydedildi.");
   };
 
   const toggle = (key: string, current: boolean | null, onText: string, offText: string) => (
@@ -1314,6 +1354,60 @@ function RadarSettingsPanel() {
                   className={numInputCls} />
               </div>
               <button type="button" onClick={saveConfluence} disabled={saving}
+                className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
+            </div>
+          </div>
+
+          {/* KOMBİNE YÜKSELİŞ (2026-10-11) — TEK WhatsApp kanalı */}
+          <div className="border-t border-bunker-800 pt-4">
+            <p className="eyebrow text-amber-300">🌅 KOMBİNE YÜKSELİŞ · WHATSAPP GRUP GÖNDERİMİ</p>
+            <p className="text-xs text-bunker-muted mt-1">
+              Radar döngülerindeki TÜM stratejiler (hız · günlük momentum · short-squeeze · MACD
+              sıçrama/erken · yükseliş eğilimi · Master Surge · mikro yapı) TEK taramada birleşir.
+              En yüksek birleşik puanlı <span className="text-white font-mono">TOP-N</span> aday gruba gider;
+              arada <span className="text-white font-mono">durum periyodu</span> dakikada bu adayların bildirim anına
+              göre değişim farkı + ortalaması gönderilir. Aşağıdaki değerler <span className="text-white">anında</span> etkilidir (env gerekmez).
+            </p>
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              <div>
+                <p className="eyebrow text-bunker-muted">KOMBİNE DÖNGÜ</p>
+                {toggle("combined_rising_enabled", settings.combined_rising_enabled, "Kombine döngü açıldı", "Kombine döngü kapatıldı")}
+              </div>
+              <div>
+                <p className="eyebrow text-bunker-muted">LİSTE ADEDİ (TOP N)</p>
+                <input type="number" min={1} max={10} step={1} value={combinedTopN}
+                  onChange={(e) => setCombinedTopN(e.target.value)} placeholder="3" className={numInputCls} />
+                <p className="text-[11px] text-bunker-muted mt-1">1-10 (varsayılan 3)</p>
+              </div>
+              <div>
+                <p className="eyebrow text-bunker-muted">MIN TARAMA PUANI</p>
+                <input type="number" min={0} max={100} step={1} value={combinedMinScore}
+                  onChange={(e) => setCombinedMinScore(e.target.value)} placeholder="10" className={numInputCls} />
+                <p className="text-[11px] text-bunker-muted mt-1">En iyi aday bile altındaysa gönderilmez</p>
+              </div>
+              <div>
+                <p className="eyebrow text-bunker-muted">LİSTE PERİYODU (DK)</p>
+                <input type="number" min={5} max={120} step={5} value={combinedListMin}
+                  onChange={(e) => setCombinedListMin(e.target.value)} placeholder="30" className={numInputCls} />
+                <p className="text-[11px] text-bunker-muted mt-1">Kaç dk'da bir yeni liste</p>
+              </div>
+              <div>
+                <p className="eyebrow text-bunker-muted">DURUM PERİYODU (DK)</p>
+                <input type="number" min={1} max={60} step={1} value={combinedTrackMin}
+                  onChange={(e) => setCombinedTrackMin(e.target.value)} placeholder="10" className={numInputCls} />
+                <p className="text-[11px] text-bunker-muted mt-1">Arada kaç dk'da bir fark</p>
+              </div>
+              <div>
+                <p className="eyebrow text-bunker-muted">SAAT ARALIĞI (TR)</p>
+                <div className="mt-1 flex items-center gap-1.5">
+                  <input type="number" min={0} max={23} value={combinedStart}
+                    onChange={(e) => setCombinedStart(e.target.value)} placeholder="9" className={timeInputCls} />
+                  <span className="font-mono text-xs text-bunker-muted">→</span>
+                  <input type="number" min={0} max={23} value={combinedEnd}
+                    onChange={(e) => setCombinedEnd(e.target.value)} placeholder="23" className={timeInputCls} />
+                </div>
+              </div>
+              <button type="button" onClick={saveCombined} disabled={saving}
                 className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
             </div>
           </div>

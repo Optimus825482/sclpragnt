@@ -552,6 +552,23 @@ async def get_user_notification_settings() -> dict:
             "radar_confluence_window_sec": _clamp_confluence_window(settings.get(
                 "radar_confluence_window_sec",
                 getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))),
+            # KOMBİNE YÜKSELİŞ (2026-10-11): tek WhatsApp kanalının ayarları.
+            # Ayar deposu `monitoring_notification_settings`; verilmezse config
+            # varsayılanı. Döngü ve elle-gönderim bunları buradan okur.
+            "combined_rising_enabled": _coerce_setting_bool(settings.get(
+                "combined_rising_enabled", getattr(config, "COMBINED_RISING_ENABLED", True))),
+            "combined_rising_top_n": _clamp_int(settings.get(
+                "combined_rising_top_n", getattr(config, "COMBINED_RISING_TOP_N", 3)), 1, 10),
+            "combined_rising_min_score": _clamp_float(settings.get(
+                "combined_rising_min_score", getattr(config, "COMBINED_RISING_MIN_SCORE", 10.0)), 0.0, 100.0),
+            "combined_rising_start_hour": _clamp_int(settings.get(
+                "combined_rising_start_hour", getattr(config, "COMBINED_RISING_START_HOUR", 9)), 0, 23),
+            "combined_rising_end_hour": _clamp_int(settings.get(
+                "combined_rising_end_hour", getattr(config, "COMBINED_RISING_END_HOUR", 23)), 0, 23),
+            "combined_rising_list_min": _clamp_int(settings.get(
+                "combined_rising_list_min", getattr(config, "COMBINED_RISING_LIST_MIN", 30)), 5, 120),
+            "combined_rising_track_min": _clamp_int(settings.get(
+                "combined_rising_track_min", getattr(config, "COMBINED_RISING_TRACK_MIN", 10)), 1, 60),
         }
     except Exception:
         return {"enabled": True, "min_score": config.MONITORING_MIN_SCORE_DEFAULT,
@@ -566,7 +583,59 @@ async def get_user_notification_settings() -> dict:
                 "radar_route_velocity_auto_through_auto_paper": bool(
                     getattr(config, "RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER", False)),
                 "radar_confluence_window_sec": int(
-                    getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))}
+                    getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800)),
+                "combined_rising_enabled": bool(getattr(config, "COMBINED_RISING_ENABLED", True)),
+                "combined_rising_top_n": int(getattr(config, "COMBINED_RISING_TOP_N", 3)),
+                "combined_rising_min_score": float(getattr(config, "COMBINED_RISING_MIN_SCORE", 10.0)),
+                "combined_rising_start_hour": int(getattr(config, "COMBINED_RISING_START_HOUR", 9)),
+                "combined_rising_end_hour": int(getattr(config, "COMBINED_RISING_END_HOUR", 23)),
+                "combined_rising_list_min": int(getattr(config, "COMBINED_RISING_LIST_MIN", 30)),
+                "combined_rising_track_min": int(getattr(config, "COMBINED_RISING_TRACK_MIN", 10))}
+
+
+def _coerce_setting_bool(value) -> bool:
+    """OKUMA yolu: bool'a esnek çevir, ASLA fırlatmaz (bozuksa varsayılana düşer)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on", "acik", "açık")
+    return False
+
+
+def _clamp_int(value, lo: int, hi: int) -> int:
+    """OKUMA yolu: int'e çevir, aralığa kırp; bozuksa sınır döner."""
+    try:
+        return max(lo, min(hi, int(float(value))))
+    except (TypeError, ValueError):
+        return lo
+
+
+def _clamp_float(value, lo: float, hi: float) -> float:
+    """OKUMA yolu: float'a çevir, aralığa kırp; bozuksa sınır döner."""
+    try:
+        return max(lo, min(hi, float(value)))
+    except (TypeError, ValueError):
+        return lo
+
+
+async def combined_rising_settings() -> dict:
+    """Kombine yükseliş döngüsü ayarları (DB settings → config varsayılanı).
+
+    Tek doğruluk kaynağı: Ayarlar sayfası. Döngü ve elle-gönderim uçları BUNU
+    çağırır → env değişikliği gerekmeden arayüzden yönetilir.
+    """
+    s = await get_user_notification_settings()
+    return {
+        "enabled": bool(s.get("combined_rising_enabled", True)),
+        "top_n": int(s.get("combined_rising_top_n", 3)),
+        "min_score": float(s.get("combined_rising_min_score", 10.0)),
+        "start_hour": int(s.get("combined_rising_start_hour", 9)),
+        "end_hour": int(s.get("combined_rising_end_hour", 23)),
+        "list_min": int(s.get("combined_rising_list_min", 30)),
+        "track_min": int(s.get("combined_rising_track_min", 10)),
+    }
 
 
 @router.get("/api/monitoring/settings")
@@ -673,7 +742,12 @@ async def update_monitoring_settings(payload: dict, request: Request):
                 "quiet_hours_start", "quiet_hours_end", "macd_refire_gate",
                 # BİRLEŞİK RADAR (2026-09-16): aynı ayar deposu, aynı merge semantiği.
                 "radar_combined_enabled", "radar_confluence_window_sec",
-                "radar_unified_notify", "radar_route_velocity_auto_through_auto_paper")
+                "radar_unified_notify", "radar_route_velocity_auto_through_auto_paper",
+                # KOMBİNE YÜKSELİŞ (2026-10-11): tek WhatsApp kanalı ayarları.
+                "combined_rising_enabled", "combined_rising_top_n",
+                "combined_rising_min_score", "combined_rising_start_hour",
+                "combined_rising_end_hour", "combined_rising_list_min",
+                "combined_rising_track_min")
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
 
     # --- Doğrulama (geçersiz girdi → 422, state BOZULMAZ) ---
@@ -709,6 +783,44 @@ async def update_monitoring_settings(payload: dict, request: Request):
     else:
         quiet_end = None
 
+    # KOMBİNE YÜKSELİŞ doğrulaması: geçersiz girdi → 422 (state bozulmaz).
+    try:
+        combined_top_n = int(float(merged.get(
+            "combined_rising_top_n", getattr(config, "COMBINED_RISING_TOP_N", 3))))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="combined_rising_top_n sayısal olmalı")
+    if not (1 <= combined_top_n <= 10):
+        raise HTTPException(status_code=422, detail="combined_rising_top_n 1-10 aralığında olmalı")
+    try:
+        combined_min_score = float(merged.get(
+            "combined_rising_min_score", getattr(config, "COMBINED_RISING_MIN_SCORE", 10.0)))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="combined_rising_min_score sayısal olmalı")
+    if not (0.0 <= combined_min_score <= 100.0):
+        raise HTTPException(status_code=422, detail="combined_rising_min_score 0-100 aralığında olmalı")
+    try:
+        combined_start = int(float(merged.get(
+            "combined_rising_start_hour", getattr(config, "COMBINED_RISING_START_HOUR", 9))))
+        combined_end = int(float(merged.get(
+            "combined_rising_end_hour", getattr(config, "COMBINED_RISING_END_HOUR", 23))))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="combined_rising saatleri sayısal olmalı (0-23)")
+    if not (0 <= combined_start <= 23 and 0 <= combined_end <= 23):
+        raise HTTPException(status_code=422, detail="combined_rising saatleri 0-23 aralığında olmalı")
+    if combined_start > combined_end:
+        raise HTTPException(status_code=422, detail="combined_rising başlangıç saati bitişten büyük olamaz")
+    try:
+        combined_list_min = int(float(merged.get(
+            "combined_rising_list_min", getattr(config, "COMBINED_RISING_LIST_MIN", 30))))
+        combined_track_min = int(float(merged.get(
+            "combined_rising_track_min", getattr(config, "COMBINED_RISING_TRACK_MIN", 10))))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="combined_rising periyotları sayısal olmalı (dk)")
+    if not (5 <= combined_list_min <= 120):
+        raise HTTPException(status_code=422, detail="combined_rising_list_min 5-120 dk aralığında olmalı")
+    if not (1 <= combined_track_min <= 60):
+        raise HTTPException(status_code=422, detail="combined_rising_track_min 1-60 dk aralığında olmalı")
+
     settings = {
         "enabled": enabled,
         # B6: None saklanabilir → ham eşik varsayılanına dönüş (tek yönlü
@@ -734,6 +846,15 @@ async def update_monitoring_settings(payload: dict, request: Request):
         "radar_confluence_window_sec": _radar_confluence_window(
             merged.get("radar_confluence_window_sec",
                        getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))),
+        # KOMBİNE YÜKSELİŞ (2026-10-11): tek WhatsApp kanalı ayarları.
+        "combined_rising_enabled": _coerce_bool(merged.get(
+            "combined_rising_enabled", getattr(config, "COMBINED_RISING_ENABLED", True))),
+        "combined_rising_top_n": combined_top_n,
+        "combined_rising_min_score": round(combined_min_score, 4),
+        "combined_rising_start_hour": combined_start,
+        "combined_rising_end_hour": combined_end,
+        "combined_rising_list_min": combined_list_min,
+        "combined_rising_track_min": combined_track_min,
     }
     await database.set_llm_setting("monitoring_notification_settings", json.dumps(settings))
     # PERFORMANS (2026-09-26): /state settings önbelleğini tazele — aksi halde
@@ -3013,24 +3134,27 @@ async def _combined_scan_rows() -> list[dict]:
     return out
 
 
-async def _send_combined_list() -> bool:
-    """Kombine tarama → kalite eşiği → TOP N liste → WhatsApp + DB."""
+async def _send_combined_list(*, cfg: dict | None = None) -> bool:
+    """Kombine tarama → kalite eşiği → TOP N liste → WhatsApp + DB.
+
+    Ayarlar Ayarlar sayfasından (DB) gelir; `cfg` verilmezse okunur."""
     from app.whatsapp_notify import format_combined_list, send_whatsapp, whatsapp_enabled
     if not whatsapp_enabled():
         return False
+    cfg = cfg or await combined_rising_settings()
     try:
         cands = await _combined_scan_rows()
     except Exception as exc:
         logger.warning("kombine tarama başarısız: %s", exc)
         return False
-    n = int(getattr(config, "COMBINED_RISING_TOP_N", 3) or 3)
+    n = int(cfg.get("top_n", 3) or 3)
     top = cands[:n]
     if not top:
         return False
     best = float(top[0].get("scan_score") or 0)
-    if best < float(config.COMBINED_RISING_MIN_SCORE):
+    if best < float(cfg.get("min_score", 10.0)):
         logger.info("kombine liste atlandı: en iyi puan %.2f < eşik %.2f",
-                    best, config.COMBINED_RISING_MIN_SCORE)
+                    best, cfg.get("min_score", 10.0))
         return False
     sent_at = time.time()
     try:
@@ -3101,36 +3225,41 @@ async def _send_combined_status() -> bool:
 
 
 async def daily_rising_combined_loop():
-    """TEK WhatsApp kanalı: 30 dk'da bir TOP-3 liste, 10 dk'da bir durum takibi."""
+    """TEK WhatsApp kanalı: `list_min` dk'da bir TOP-N liste, `track_min` dk'da
+    bir durum takibi. Ayarlar Ayarlar sayfasından (DB) okunur → env gerekmez."""
     poll_sec = 30.0
-    logger.info("kombine yükseliş döngüsü başladı (enabled=%s, min_score=%.1f, top_n=%d)",
-                config.COMBINED_RISING_ENABLED, config.COMBINED_RISING_MIN_SCORE,
-                config.COMBINED_RISING_TOP_N)
     try:
         from zoneinfo import ZoneInfo
         _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
     except Exception:
         _tz = None
+    logger.info("kombine yükseliş döngüsü başladı (ayarlar Ayarlar sayfasından okunur)")
     await asyncio.sleep(90)
     while True:
         try:
-            if config.COMBINED_RISING_ENABLED:
+            # AYARLAR: Ayarlar sayfası (DB) → config varsayılanı. Her turda okunur
+            # ki panelden yapılan değişiklik ANINDA etkili olsun.
+            cfg = await combined_rising_settings()
+            if cfg.get("enabled"):
                 from app.whatsapp_notify import whatsapp_enabled
                 if whatsapp_enabled():
                     lt = datetime.now(_tz) if _tz else datetime.now()
-                    in_window = (config.COMBINED_RISING_START_HOUR <= lt.hour
-                                 <= config.COMBINED_RISING_END_HOUR)
+                    list_min = max(1, int(cfg.get("list_min", 30)))
+                    track_min = max(1, int(cfg.get("track_min", 10)))
+                    in_window = (int(cfg.get("start_hour", 9)) <= lt.hour
+                                 <= int(cfg.get("end_hour", 23)))
                     minute = lt.minute
                     if in_window:
-                        list_due = minute % 30 < (poll_sec / 60.0) + 0.01
-                        status_due = (minute % 10 < (poll_sec / 60.0) + 0.01) and not list_due
+                        window = (poll_sec / 60.0) + 0.01
+                        list_due = (minute % list_min) < window
+                        status_due = (minute % track_min) < window and not list_due
                         if list_due:
-                            key = f"{lt.strftime('%Y-%m-%d %H')}:{minute - minute % 30:02d}:list"
+                            key = f"{lt.strftime('%Y-%m-%d %H')}:{minute - minute % list_min:02d}:list"
                             if _monitoring_state.get("combined_list_last") != key:
                                 _monitoring_state["combined_list_last"] = key
-                                await _send_combined_list()
+                                await _send_combined_list(cfg=cfg)
                         elif status_due:
-                            key = f"{lt.strftime('%Y-%m-%d %H')}:{minute - minute % 10:02d}:status"
+                            key = f"{lt.strftime('%Y-%m-%d %H')}:{minute - minute % track_min:02d}:status"
                             if _monitoring_state.get("combined_status_last") != key:
                                 _monitoring_state["combined_status_last"] = key
                                 await _send_combined_status()
@@ -3372,55 +3501,87 @@ async def daily_rising_evaluate_last(request: Request = None, kind: str = COMBIN
 
 @router.get("/api/daily-rising/state")
 async def daily_rising_state(request: Request = None):
-    """Günlük yükseliş adayları — WhatsApp raporuyla AYNI ilk 5 (salt okunur).
+    """Günlük yükseliş "Sistem Adayları" — SON GÖNDERİLEN kombine listenin ilk 3'ü.
 
-    Kullanıcı kararı (2026-10-10): sayfadaki "Sistem Adayları" listesi, WhatsApp
-    grubuna gönderilen lista ile birebir aynı olmalı. Bu yüzden yalnız BUGÜN
-    (DAILY_MOMENTUM_TZ takvim günü) kaydedilen adaylar alınır ve raporla aynı
-    `select_top` ölçütüyle (momentum+squeeze onaylı önce, sonra ihtimal×potansiyel)
-    ilk 5'e indirilir. 7 günlük özet istatistikler ayrı kartlarda kalır.
+    Kullanıcı kararı (2026-10-11): sayfadaki "Sistem Adayları" listesi artık
+    11:30 taramasının ilk 5'i DEĞİL; WhatsApp grubuna en son gönderilen kombine
+    listenin (TOP-N, varsayılan 3) adaylarıdır — gönderim anındaki fiyat ile
+    anlık fiyat karşılaştırmalı. Gönderilmiş liste yoksa anlık kombine taramaya
+    (ilk TOP-N) düşer. 7 günlük özet istatistikler ayrı kartlarda kalır.
     """
-    from app.whatsapp_notify import select_top as _select_top
     stats = await database.get_daily_rising_stats(days=7.0)
-    rows = await _today_rising_rows(limit=100)
-    _px = await _batch_prices([str(r.get("symbol") or "").upper() for r in rows])
-    built = []
-    for r in rows:
-        sym = str(r.get("symbol") or "").upper()
-        entry = r.get("price")
-        cur = _px.get(sym)
-        chg = None
+    try:
+        cfg = await combined_rising_settings()
+        top_n = int(cfg.get("top_n", 3))
+    except Exception:
+        top_n = 3
+    # 1) En son gönderilen kombine liste (bildirim anındaki fiyat = notify_price).
+    rep = await database.last_daily_rising_report(COMBINED_LIST_KIND)
+    sent_rows = []
+    if rep:
+        c = rep.get("candidates") or []
         try:
-            if entry and cur:
-                chg = round((float(cur) / float(entry) - 1) * 100, 2)
+            c = json.loads(c) if isinstance(c, str) else list(c)
         except (TypeError, ValueError):
-            chg = None
-        built.append({
-            "symbol": sym,
-            "created_at": r.get("created_at"),
-            "entry_price": entry,
-            "current_price": cur,
-            "change_pct": chg,
-            "target_pct": r.get("target_pct"),
+            c = []
+        sent_rows = [x for x in c if isinstance(x, dict)][:top_n]
+    generated_at = time.time()
+    if sent_rows:
+        syms = [str(r.get("symbol") or "").upper() for r in sent_rows]
+        _px = await _batch_prices(syms)
+        out = []
+        for r in sent_rows:
+            sym = str(r.get("symbol") or "").upper()
+            entry = r.get("notify_price") or r.get("price")
+            cur = _px.get(sym)
+            try:
+                e = float(entry) if entry else None
+                c_ = float(cur) if cur else None
+            except (TypeError, ValueError):
+                e = c_ = None
+            out.append({
+                "symbol": sym,
+                "created_at": r.get("notified_at") or rep.get("sent_at"),
+                "entry_price": e,
+                "current_price": c_,
+                "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
+                "ceiling_pct": r.get("ceiling_pct"),
+                "ceiling_price": r.get("ceiling_price"),
+                "potential_pct": r.get("potential_pct"),
+                "potential_price": r.get("potential_price"),
+                "scan_score": r.get("scan_score"),
+                "target_probability": r.get("target_probability"),
+                "strategy": r.get("strategy"),
+                "status": "sent",
+            })
+        return {"paper_only": True, "generated_at": generated_at,
+                "source": "last_sent", "sent_at": rep.get("sent_at"),
+                "stats": stats, "candidates": out}
+    # 2) Gönderilmiş liste yok → anlık kombine tarama (ilk TOP-N).
+    try:
+        cands = (await _combined_scan_rows())[:top_n]
+    except Exception as exc:
+        logger.debug("state anlık kombine tarama: %s", exc)
+        cands = []
+    out = []
+    for r in cands:
+        out.append({
+            "symbol": str(r.get("symbol") or "").upper(),
+            "created_at": generated_at,
+            "entry_price": r.get("price"),
+            "current_price": r.get("price"),
+            "change_pct": 0.0 if r.get("price") else None,
             "ceiling_pct": r.get("ceiling_pct"),
             "ceiling_price": r.get("ceiling_price"),
-            "velocity_score": r.get("velocity_score"),
-            "ret_8h": r.get("ret_8h"), "adx": r.get("adx"),
-            "atr_pct": r.get("atr_pct"), "slope": r.get("slope"),
-            "spread_pct": r.get("spread_pct"),
-            "mfe_pct": r.get("mfe_pct"), "mae_pct": r.get("mae_pct"),
-            "status": r.get("status"),
-            "notified": r.get("notified"),
-            "strategy": r.get("strategy"),
             "potential_pct": r.get("potential_pct"),
-            "potential_price": (
-                round(float(entry) * (1 + float(r["potential_pct"]) / 100.0), 8)
-                if (entry and r.get("potential_pct") is not None) else None),
-            "target_probability": touch_probability(r.get("ceiling_pct"), r.get("atr_pct")),
+            "potential_price": r.get("potential_price"),
+            "scan_score": r.get("scan_score"),
+            "target_probability": r.get("target_probability"),
+            "strategy": r.get("strategy"),
+            "status": "live",
         })
-    # WhatsApp raporuyla aynı ilk 5 (aynı sıralama ölçütü → aynı semboller).
-    out = _select_top(built, 5)
-    return {"paper_only": True, "generated_at": time.time(),
+    return {"paper_only": True, "generated_at": generated_at,
+            "source": "live_scan", "sent_at": None,
             "stats": stats, "candidates": out}
 
 
@@ -3505,12 +3666,18 @@ async def daily_rising_whatsapp_status(request: Request = None):
     from app.config import config as _cfg
     from app.whatsapp_notify import whatsapp_enabled
     import urllib.request as _urlreq
+    cfg = await combined_rising_settings()
     out = {
         "enabled": whatsapp_enabled(),
         "notify_enabled": bool(getattr(_cfg, "WHATSAPP_NOTIFY_ENABLED", False)),
-        "hourly_enabled": bool(getattr(_cfg, "WHATSAPP_HOURLY_ENABLED", False)),
-        "combined_enabled": bool(getattr(_cfg, "COMBINED_RISING_ENABLED", True)),
-        "combined_top_n": int(getattr(_cfg, "COMBINED_RISING_TOP_N", 3) or 3),
+        # Kombine ayarları Ayarlar sayfasından (DB) gelir — env değil.
+        "combined_enabled": bool(cfg.get("enabled", True)),
+        "combined_top_n": int(cfg.get("top_n", 3)),
+        "combined_min_score": float(cfg.get("min_score", 10.0)),
+        "combined_start_hour": int(cfg.get("start_hour", 9)),
+        "combined_end_hour": int(cfg.get("end_hour", 23)),
+        "combined_list_min": int(cfg.get("list_min", 30)),
+        "combined_track_min": int(cfg.get("track_min", 10)),
         "bridge_url": getattr(_cfg, "WHATSAPP_BRIDGE_URL", ""),
         "group_id": getattr(_cfg, "WHATSAPP_GROUP_ID", ""),
         "connected": None,
