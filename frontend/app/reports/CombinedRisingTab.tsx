@@ -27,6 +27,9 @@ type Candidate = {
   potential_pct?: number;
   target_probability?: number;
   scan_score?: number;
+  quality_score?: number;
+  confirm_sources?: number;
+  confirm_layers?: number;
   strategy?: string;
 };
 
@@ -369,7 +372,8 @@ export default function CombinedRisingTab() {
                               {(r.kind === "combined_list" || r.kind === "slot") && <th className="text-right">İhtimal</th>}
                               {(r.kind === "combined_list" || r.kind === "slot") && <th className="text-right">Miktar</th>}
                               {(r.kind === "combined_list" || r.kind === "slot") && <th className="text-right">Potansiyel</th>}
-                              {(r.kind === "combined_list" || r.kind === "slot") && <th className="text-right">Puan</th>}
+                              {(r.kind === "combined_list" || r.kind === "slot") && <th className="text-right" title="Kaç sinyal motoru + kaç Master Surge katmanı hemfikir">Teyit</th>}
+                              {(r.kind === "combined_list" || r.kind === "slot") && <th className="text-right" title="Sinyal gücü endeksi (0-99) — olasılık DEĞİL">Puan</th>}
                               {(r.kind === "combined_status" || r.kind === "delta") && <th className="text-right">Bildirim</th>}
                               {(r.kind === "combined_status" || r.kind === "delta") && <th className="text-right">Anlık</th>}
                               {(r.kind === "combined_status" || r.kind === "delta") && <th className="text-right">Değişim</th>}
@@ -386,7 +390,8 @@ export default function CombinedRisingTab() {
                                     <td className="text-right font-mono text-xs text-sky-300">{c.target_probability != null ? `%${Math.round(Number(c.target_probability))}` : "—"}</td>
                                     <td className="text-right font-mono text-xs text-neon-green">{c.ceiling_pct != null ? `+%${Math.round(Number(c.ceiling_pct))}` : "—"}</td>
                                     <td className="text-right font-mono text-xs text-amber-300">{c.potential_pct != null ? `+%${Math.round(Number(c.potential_pct))}` : "—"}</td>
-                                    <td className="text-right font-mono text-xs font-bold text-white">{c.scan_score != null ? Math.round(Number(c.scan_score)) : "—"}</td>
+                                    <td className="text-right font-mono text-xs text-bunker-muted">{(c.confirm_sources != null || c.confirm_layers != null) ? `${c.confirm_sources ?? 0}+${c.confirm_layers ?? 0}` : "—"}</td>
+                                    <td className="text-right font-mono text-xs font-bold text-white">{(c.quality_score ?? c.scan_score) != null ? Math.round(Number(c.quality_score ?? c.scan_score)) : "—"}</td>
                                   </>
                                 )}
                                 {(r.kind === "combined_status" || r.kind === "delta") && (

@@ -2955,16 +2955,29 @@ def _is_both(c: dict) -> int:
     return 1 if str(c.get("strategy") or "") == "both" else 0
 
 
-def _combined_scan_score(c: dict) -> float:
-    """Kombine tarama puanı: birleşik füzyon skoru (yoksa panel/velocity)."""
-    for key in ("scan_score", "unified_score"):
-        v = c.get(key)
-        if v is not None:
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                continue
-    return normalize_score(c.get("velocity_score", 0))
+def _combined_quality_score(c: dict) -> tuple[float, int, int]:
+    """Kombine KALİTE PUANI (0-99, doygunluğa GİRMEZ) + (teyit_motor, surge_katman).
+
+    Kullanıcı geri bildirimi (2026-10-11): mesajda güçlü adayların HEPSİ 100
+    puan görünüyordu → ayırt edicilik yok ve "100 = kesin" yanılgısı oluşuyordu.
+    Neden: hem füzyon skoru (2+ kaynakta ×1.15) hem Master Surge kompozit
+    indeksi `min(100, …)` ile tavana yapışıyordu.
+
+    Bu puan bir OLASILIK DEĞİL; sinyal GÜCÜ/kalite endeksidir ve üç bileşenden
+    kademeli üretilir (tek sayıya yapışmasın diye):
+      * velocity panel skoru (ham velocity → 0-100)     : ağırlık %60
+      * çok-kaynak teyidi (kaç motor hemfikir, 0..3)    : her kaynak +8 (max +24)
+      * Master Surge katman sayısı (0..4)               : her katman +4 (max +16)
+    ÜST SINIR 99 → "100 = kesin garanti" yanlış algısı oluşmaz; en iyi aday 99 alır.
+
+    Döner: (puan, teyit_motor_sayısı, surge_katman_sayısı).
+    """
+    panel = normalize_score(c.get("velocity_score", 0))
+    sources = len([s for s in (c.get("unified_sources") or []) if s])
+    ms = c.get("master_surge") if isinstance(c.get("master_surge"), dict) else {}
+    layers = int(ms.get("confluence_count") or 0)
+    score = panel * 0.6 + min(3, sources) * 8 + min(4, layers) * 4
+    return round(min(99.0, max(0.0, score)), 1), sources, layers
 
 
 async def _combined_scan_rows() -> list[dict]:
@@ -3084,8 +3097,9 @@ async def _combined_scan_rows() -> list[dict]:
                 hit = True
         except (TypeError, ValueError):
             hit = False
-        # Scan puanı: füzyon/Master Surge birleşik indeks öncelikli.
-        scan_score = _combined_scan_score(c)
+        # KALİTE PUANI (0-99): velocity paneli + çok-kaynak teyidi + Master
+        # Surge katman sayısı. Doygunluğa girmez; 100 "kesin" algısı oluşmaz.
+        quality, tc_sources, tc_layers = _combined_quality_score(c)
         row = {
             "symbol": sym, "price": price,
             "ceiling_pct": ceil_pct,
@@ -3094,7 +3108,10 @@ async def _combined_scan_rows() -> list[dict]:
             "potential_pct": c.get("potential_pct"),
             "potential_price": c.get("potential_price"),
             "target_probability": prob,
-            "scan_score": round(scan_score, 1),
+            "scan_score": quality,          # geriye dönük uyumluluk (aynı alan adı)
+            "quality_score": quality,
+            "confirm_sources": tc_sources,
+            "confirm_layers": tc_layers,
             "unified_score": c.get("unified_score"),
             "unified_sources": c.get("unified_sources"),
             "strategy": c.get("strategy") or "combined",
@@ -3123,7 +3140,9 @@ async def _combined_scan_rows() -> list[dict]:
                     "horizon_minutes": c.get("horizon_minutes"),
                     "notified": False, "strategy": row["strategy"],
                     "potential_pct": row["potential_pct"],
-                    "details": {"scan_score": row["scan_score"],
+                    "details": {"quality_score": row["quality_score"],
+                                "confirm_sources": row["confirm_sources"],
+                                "confirm_layers": row["confirm_layers"],
                                 "unified_sources": row["unified_sources"],
                                 "source": "combined_scan"},
                 })
@@ -3568,6 +3587,9 @@ async def daily_rising_state(request: Request = None):
                 "potential_pct": r.get("potential_pct"),
                 "potential_price": r.get("potential_price"),
                 "scan_score": r.get("scan_score"),
+                "quality_score": r.get("quality_score", r.get("scan_score")),
+                "confirm_sources": r.get("confirm_sources"),
+                "confirm_layers": r.get("confirm_layers"),
                 "target_probability": r.get("target_probability"),
                 "strategy": r.get("strategy"),
                 "status": "sent",
@@ -3594,6 +3616,9 @@ async def daily_rising_state(request: Request = None):
             "potential_pct": r.get("potential_pct"),
             "potential_price": r.get("potential_price"),
             "scan_score": r.get("scan_score"),
+            "quality_score": r.get("quality_score", r.get("scan_score")),
+            "confirm_sources": r.get("confirm_sources"),
+            "confirm_layers": r.get("confirm_layers"),
             "target_probability": r.get("target_probability"),
             "strategy": r.get("strategy"),
             "status": "live",

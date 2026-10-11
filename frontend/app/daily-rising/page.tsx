@@ -84,6 +84,9 @@ type Row = {
   potential_pct?: number | null;
   potential_price?: number | null;
   scan_score?: number | null;
+  quality_score?: number | null;
+  confirm_sources?: number | null;
+  confirm_layers?: number | null;
   target_probability?: number | null;
 };
 
@@ -616,7 +619,8 @@ export default function DailyRisingPage() {
                   <th className="p-2 text-right">Anlık</th>
                   <th className="p-2 text-right">Değişim</th>
                   <th className="p-2 text-right">İhtimal</th>
-                  <th className="p-2 text-right">Puan</th>
+                  <th className="p-2 text-right" title="Kaç sinyal motoru + kaç Master Surge katmanı hemfikir">Teyit</th>
+                  <th className="p-2 text-right" title="Sinyal gücü endeksi (0-99) — olasılık DEĞİL">Puan</th>
                 </tr>
               </thead>
               <tbody>
@@ -638,7 +642,8 @@ export default function DailyRisingPage() {
                     <td className="p-2 text-right">{r.current_price != null ? formatPrice(r.current_price) : "—"}</td>
                     <td className={`p-2 text-right font-semibold ${pctTone(r.change_pct)}`}>{fmtPct(r.change_pct)}</td>
                     <td className="p-2 text-right text-sky-300">{r.target_probability != null ? `%${Math.round(r.target_probability)}` : "—"}</td>
-                    <td className="p-2 text-right font-bold text-white">{r.scan_score != null ? Math.round(r.scan_score) : "—"}</td>
+                    <td className="p-2 text-right text-bunker-muted">{(r.confirm_sources != null || r.confirm_layers != null) ? `${r.confirm_sources ?? 0}+${r.confirm_layers ?? 0}` : "—"}</td>
+                    <td className="p-2 text-right font-bold text-white">{(r.quality_score ?? r.scan_score) != null ? Math.round(Number(r.quality_score ?? r.scan_score)) : "—"}</td>
                   </tr>
                 ))}
               </tbody>

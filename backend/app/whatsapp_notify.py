@@ -139,22 +139,30 @@ def format_combined_list(candidates: list[dict], *, n: int = 3,
 
     Radar döngülerindeki TÜM stratejiler (hız/günlük momentum/short-squeeze/MACD
     jump+erken/yükseliş eğilimi/Master Surge 4 katman/MACD MTF/mikro yapı) TEK
-    taramada birleşir; sıralama TEK birleşik tarama puanına göre yapılır. Her
+    taramada birleşir; sıralama TEK **kalite puanına** (0-99) göre yapılır. Her
     satırda: coin · o anki fiyat · yükselme ihtimali · yükselme miktarı(%) ·
-    potansiyel(%) · tarama puanı.
+    potansiyel(%) · teyit (kaç motor + kaç katman) · puan.
+
+    PUAN bir OLASILIK DEĞİL; sinyal gücü/kalite endeksidir (100 = garanti değil).
+    En iyi aday 99'a kadar çıkabilir; farklı adaylar farklı puan alır.
     """
     if not candidates:
         return f"{title}\n\nBugün koşulları geçen aday bulunamadı."
     shown = candidates[:max(1, int(n))]
-    legend = "🪙 coin  💵 fiyat  🎲 ihtimal  📈 miktar  🚀 potansiyel  ⭐ puan"
-    header = f"{'COIN':<8}{'FİYAT':>9}{'İHTİMAL':>8}{'MİKTAR':>8}{'POTANSİYEL':>12}{'PUAN':>7}"
+    legend = "🪙 coin  💵 fiyat  🎲 ihtimal  📈 miktar  🚀 potansiyel  🧩 teyit  ⭐ puan"
+    header = (f"{'COIN':<8}{'FİYAT':>9}{'İHTİMAL':>8}{'MİKTAR':>8}"
+              f"{'POTANSİYEL':>12}{'TEYİT':>7}{'PUAN':>6}")
     sep = "─" * len(header)
     body = [legend, header, sep]
     for c in shown:
         prob = c.get("target_probability")
         miktar = c.get("ceiling_pct")
         pot = c.get("potential_pct")
-        puan = c.get("scan_score")
+        puan = c.get("quality_score", c.get("scan_score"))
+        # TEYİT: kaç sinyal motoru + kaç Master Surge katmanı hemfikir (maks 3+4).
+        src_n = int(c.get("confirm_sources") or 0)
+        lyr_n = int(c.get("confirm_layers") or 0)
+        teyit_s = f"{src_n}+{lyr_n}"
         prob_s = f"%{prob:.0f}" if prob is not None else "—"
         mik_s = f"+%{round(float(miktar))}" if miktar is not None else "—"
         pot_s = f"+%{round(float(pot))}" if pot is not None else "—"
@@ -165,9 +173,13 @@ def format_combined_list(candidates: list[dict], *, n: int = 3,
             f"{prob_s:>8}"
             f"{mik_s:>8}"
             f"{pot_s:>12}"
-            f"{puan_s:>7}"
+            f"{teyit_s:>7}"
+            f"{puan_s:>6}"
         )
-    return f"{title}\n\n```\n" + "\n".join(body) + "\n```"
+    # Puanın ne olduğunu açıkla (100 = kesin DEĞİL).
+    footer = ("⭐ Puan = sinyal gücü (0-99), olasılık DEĞİL. "
+              "🧩 Teyit = motor+katman sayısı.")
+    return f"{title}\n\n```\n" + "\n".join(body) + "\n```\n" + footer
 
 
 def format_combined_status(rows: list[dict], *, title: str,

@@ -123,10 +123,37 @@ def test_combined_scan_merges_all_strategies():
     assert "calculate_adaptive_targets" in src  # hedef/miktar
 
 
-def test_combined_scan_score_prefers_unified():
+def test_combined_quality_score_no_saturation():
+    """Kullanıcı geri bildirimi (2026-10-11): güçlü adayların HEPSİ 100 puan
+    görünüyordu. Yeni kalite puanı doygunluğa GİRMEZ (üst sınır 99) ve çok-kaynak
+    teyidi + Master Surge katman sayısı ile AYRIŞIR."""
     from app.routers import monitoring as mo
-    assert mo._combined_scan_score({"scan_score": 71.2}) == 71.2
-    assert mo._combined_scan_score({"unified_score": 55.0}) == 55.0
+    # Aynı velocity paneli, farklı teyit → farklı puan (ayırt edici).
+    weak = {"velocity_score": 2000}
+    strong = {"velocity_score": 2000,
+              "unified_sources": ["velocity", "jump", "rising"],
+              "master_surge": {"confluence_count": 4}}
+    w_score, w_src, w_lyr = mo._combined_quality_score(weak)
+    s_score, s_src, s_lyr = mo._combined_quality_score(strong)
+    assert s_score > w_score
+    assert w_src == 0 and w_lyr == 0
+    assert s_src == 3 and s_lyr == 4
+    # Tavan 99 — asla 100 değil (100 = "kesin" yanılgısı yok).
+    extreme = {"velocity_score": 10_000_000,
+               "unified_sources": ["velocity", "jump", "rising", "early"],
+               "master_surge": {"confluence_count": 4}}
+    assert mo._combined_quality_score(extreme)[0] <= 99.0
+    assert mo._combined_quality_score(extreme)[0] != 100.0
+
+
+def test_combined_quality_score_monotonic_in_confirmations():
+    """Teyit arttıkça puan ARTAR (monoton) — sıralama bilgisi korunur."""
+    from app.routers import monitoring as mo
+    base = {"velocity_score": 5000}
+    p0 = mo._combined_quality_score({**base})[0]
+    p1 = mo._combined_quality_score({**base, "unified_sources": ["velocity"]})[0]
+    p2 = mo._combined_quality_score({**base, "unified_sources": ["velocity", "jump"]})[0]
+    assert p0 < p1 < p2
 
 
 def test_send_combined_list_quality_gate():
