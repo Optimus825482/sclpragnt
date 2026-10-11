@@ -4011,40 +4011,64 @@ async def _compute_potential(symbol: str, price: float) -> dict | None:
     (%100+) için gerçek potansiyel ayrı gösterilmeli. Bu fonksiyon 30 günlük
     zirve + son swing üzerinden fib seviyeleri üretir (forex/teknik standart).
 
-    DÖNÜŞ: {"potential_price": 5.47, "potential_pct": 17.0, "levels": [4.78,5.47,6.03],
-            "basis": "30g_zirve_fib"} veya None (veri yoksa — uydurma yok).
+    BREAKOUT DÜZELTMESİ (2026-10-11): ham formül = (30g_zirve/fiyat − 1). Sembol
+    yeni zirve yapıyorsa (breakout) zirve ≈ fiyat → potansiyel ~%0 çıkıyordu;
+    "tepe yapıyor" durumu "potansiyel yok" gibi görünüyordu (W örneği). Artık
+    fiyat zirveye yakınken potansiyel, günlük ATR tabanlı bir ÖLÇÜYE göre
+    ölçeklenir: en az `hi30 + 2×günlük_ATR` referansı kullanılır → yeni zirvede
+    bile anlamlı bir yükselme potansiyeli raporlanır.
+
+    DÖNÜŞ: {"potential_price": 5.47, "potential_pct": 17.0, "levels": [...],
+            "basis": "30g_zirve_fib" | "30g_zirve+atr" | "atr_projeksiyon"} veya
+    None (veri yoksa — uydurma yok).
     """
     from app.binance_tr_public import klines as _kl
     try:
         d = await _kl(symbol, "1d", 40)
-        if not d:
+        if not d or price <= 0:
             return None
         dh = [float(x[2]) for x in d]
         dl = [float(x[3]) for x in d]
+        cl = [float(x[4]) for x in d]
         # 30g zirve/dip
         hi30 = max(dh[-30:])
         lo30 = min(dl[-30:])
-        if hi30 <= lo30 or price <= 0:
+        if hi30 <= lo30:
             return None
         span = hi30 - lo30
+        # Günlük ATR (basit gerçek aralık ortalaması, kapanmış 14 gün).
+        trs = []
+        for i in range(1, len(d)):
+            trs.append(max(dh[i] - dl[i], abs(dh[i] - cl[i - 1]), abs(dl[i] - cl[i - 1])))
+        atr_d = (sum(trs[-14:]) / len(trs[-14:])) if trs else 0.0
         # Fibonacci geri çekilme/direnç seviyeleri (dip=taban):
         # 0.236 / 0.382 / 0.5 / 0.618 / 1.0 (tam dönüş = 30g zirve)
         fibs = [0.236, 0.382, 0.5, 0.618, 1.0]
         levels = sorted({round(lo30 + span * f, 8) for f in fibs})
-        # Fiyatın ÜSTÜNDEKİ ilk 3 direnç seviyesi (potansiyel yol haritası)
         above = [lv for lv in levels if lv > price]
-        if not above:
-            # fiyat 30g zirveye eşit/üstünde → yalnız 30g zirve referansı
-            return {"potential_price": round(hi30, 8),
-                    "potential_pct": round((hi30 / price - 1) * 100, 2),
-                    "levels": [round(hi30, 8)],
-                    "basis": "30g_zirve"}
-        # Potansiyel hedef: en yakın üst direnç DEĞİL, anlamlı uzak hedef —
-        # 30g zirve (tam dönüş) potential olarak kullanılır; ara seviyeler liste.
-        return {"potential_price": round(hi30, 8),
-                "potential_pct": round((hi30 / price - 1) * 100, 2),
-                "levels": above[:3],
-                "basis": "30g_zirve_fib"}
+        # HEDEF REFERANS: 30g zirve; ama fiyat zirveye ÇOK yakınsa (breakout)
+        # zirve projeksiyonu yetersiz kalır → ATR ile ileri projeksiyon ekle.
+        ref = hi30
+        basis = "30g_zirve_fib" if above else "30g_zirve"
+        if atr_d > 0 and hi30 < price * (1 + 0.5 * atr_d / price):
+            # Zirveye mesafe yarım ATR'den az → yeni zirve/burundan çıkış.
+            # Ölçülü projeksiyon: 1×günlük ATR (tek tipik günlük aralık) ya da en
+            # az %3. Amaç "0 potansiyel" görüntüsünü kaldırmak, abartmak değil.
+            proj = max(price + 1.0 * atr_d, price * 1.03)
+            ref = max(hi30, proj)
+            basis = "30g_zirve+atr"
+        pot_pct = (ref / price - 1) * 100
+        # Son güvenlik: potansiyel asla 0/negatif görünmesin (yeni zirvede bile
+        # en az ~%2'lik bir projeksiyon vardır).
+        if atr_d > 0:
+            pot_pct = max(pot_pct, (atr_d / price) * 100 * 0.5)
+        pot_pct = max(pot_pct, 2.0)
+        lvls = sorted(set([round(ref, 8)] + levels))
+        above_lvls = [lv for lv in lvls if lv > price][:3] or [round(ref, 8)]
+        return {"potential_price": round(ref, 8),
+                "potential_pct": round(pot_pct, 2),
+                "levels": above_lvls,
+                "basis": basis}
     except Exception:
         return None
 

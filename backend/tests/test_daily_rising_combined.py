@@ -169,6 +169,31 @@ def test_send_combined_list_quality_gate():
     assert "save_daily_rising_report" in src
 
 
+def test_compute_potential_breakout_not_zero(monkeypatch):
+    """Kullanıcı geri bildirimi (2026-10-11): W yeni zirve yapmışken 'potansiyel
+    %0' görünüyordu — çünkü ham formül (30g_zirve/fiyat − 1) breakout'ta ~0 eder.
+    Fix: fiyat zirveye yakınsa ATR tabanlı projeksiyon + en az %2 taban uygulanır
+    → potansiyel ASLA 0/negatif görünmez."""
+    import asyncio
+    from app.routers import monitoring as mo
+
+    # 40 günlük sahte 1d mum: fiyat tam 30g zirvesinde (breakout), ATR belirgin.
+    days = []
+    for i in range(40):
+        hi = 100.0 - i * 0.5
+        days.append([i, "0", str(hi), str(hi - 3.0), str(hi - 1.0)])
+    days[-1] = [39, "0", "100.0", "97.0", "100.0"]   # son kapanış = zirve
+
+    async def _klines(*_a, **_k):
+        return days
+
+    import app.binance_tr_public as bp
+    monkeypatch.setattr(bp, "klines", _klines)
+    p = asyncio.run(mo._compute_potential("WTEST", 100.0))
+    assert p is not None
+    assert p["potential_pct"] > 0.0, "breakout'ta potansiyel 0 olmamalı"
+
+
 def test_send_combined_status_uses_notify_price():
     import inspect
     from app.routers import monitoring as mo
