@@ -480,8 +480,11 @@ class Config:
     COMBINED_PAPER_POSITION_PCT = float(os.getenv("COMBINED_PAPER_POSITION_PCT", "10.0"))  # serbest bakiyenin %'si
     COMBINED_PAPER_MAX_OPEN = max(0, int(os.getenv("COMBINED_PAPER_MAX_OPEN", "5")))       # 0 = sınırsız
     # Trailing: kâr bu eşiği geçince kâr kilidi + trailing devreye girer.
-    COMBINED_PAPER_TRAIL_TRIGGER_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_TRIGGER_PCT", "1.0"))
-    COMBINED_PAPER_TRAIL_GAP_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_GAP_PCT", "0.4"))
+    # 2026-10-11: veri (70 kapanan otonom işlem) erken kâr kilidinin belirleyici
+    # olduğunu gösterdi — trigger %0.3-0.5 ortalamayı negatiften pozitife çevirip
+    # kazanmayı %36→%63 yaptı. Bu yüzden DEFAULT %0.4 (erken).
+    COMBINED_PAPER_TRAIL_TRIGGER_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_TRIGGER_PCT", "0.4"))
+    COMBINED_PAPER_TRAIL_GAP_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_GAP_PCT", "0.3"))
     COMBINED_PAPER_MAX_HOLD_MIN = float(os.getenv("COMBINED_PAPER_MAX_HOLD_MIN", "120"))
     # İlk koruma stop'u (kâr kilidi öncesi zarar sınırı) — potansiyel ile ölçeklenir,
     # ama en az bu taban uygulanır.

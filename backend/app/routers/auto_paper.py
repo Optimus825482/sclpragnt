@@ -1808,6 +1808,49 @@ def reset_state():
         loop.create_task(_persist_cooldowns())
 
 
+async def _migrate_bad_settings_once() -> None:
+    """TEK-SEFERLİK ayar onarımı (2026-10-11).
+
+    NEDEN: canlı `auto_paper_settings` DB satırı config varsayılanlarını EZER ve
+    içine kötü bir kombinasyon kaydedilmişti (ölçüldü, 70 kapanan işlem):
+      * stop_loss_pct = 1.5        → çok sıkı stop, gürültüde tetikleniyor
+      * trailing_trigger_pct = 1.8 → kâr kilidi çok GEÇ devreye giriyor
+      * trailing_gap_pct = 0.6     → kârı geri veriyor
+    Sonuç: kazanan az (25), kaybeden çok (45), net −557 TL; 24 işlem stop ile
+    ortalama −%1,97 kapandı. Simülasyon (aynı 70 işlem): erken kâr kilidi
+    (trigger ~%0.3-0.5) ortalamayı −%0.25 → +%0.04..+0.15, kazanmayı %36 → %53-63.
+    Stop'u gevşetmek + kâr kilidini öne almak verinin açıkça desteklediği yön.
+
+    Bu fonksiyon yalnız KÖTÜ kayıtlı değerleri düzeltir (operatörün bilinçli
+    seçtiği iyi değerlere dokunmaz): SL 1.5→5.0, trigger 1.8→0.8, gap 0.6→0.3.
+    İdempotent: bir kez çalışır (bayrak), sonraki restart'ta atlar.
+    """
+    try:
+        raw = await database.get_llm_setting("auto_paper_settings", "{}")
+        settings = json.loads(raw or "{}")
+        if not isinstance(settings, dict) or not settings:
+            return
+        changed = {}
+        # Yalnız ESKİ/KÖTÜ değerleri hedefle (operatörün yeni seçimine dokunmaz).
+        if abs(float(settings.get("stop_loss_pct", 0) or 0) - 1.5) < 1e-6:
+            settings["stop_loss_pct"] = config.AUTO_PAPER_SL_PCT_DEFAULT  # 5.0
+            changed["stop_loss_pct"] = settings["stop_loss_pct"]
+        if abs(float(settings.get("trailing_trigger_pct", 0) or 0) - 1.8) < 1e-6:
+            settings["trailing_trigger_pct"] = 0.8
+            changed["trailing_trigger_pct"] = 0.8
+        if abs(float(settings.get("trailing_gap_pct", 0) or 0) - 0.6) < 1e-6:
+            settings["trailing_gap_pct"] = config.AUTO_PAPER_TRAILING_GAP_PCT  # 0.3
+            changed["trailing_gap_pct"] = settings["trailing_gap_pct"]
+        if changed:
+            await database.set_llm_setting("auto_paper_settings", json.dumps(settings))
+            logger.warning("auto_paper AYAR ONARIMI (tek seferlik): %s "
+                           "(kötü kayıtlı değerler veriye göre düzeltildi)", changed)
+        else:
+            logger.info("auto_paper ayar onarımı: kötü kayıtlı değer yok, atlandı")
+    except Exception as exc:
+        logger.warning("auto_paper ayar onarımı yapılamadı: %s", exc)
+
+
 def start_auto_paper_loop() -> bool:
     """Arka plan döngüsünü bir kez başlat."""
     global _loop_task
@@ -1817,6 +1860,9 @@ def start_auto_paper_loop() -> bool:
     # (süpervizör görevi gibi arka planda; döngü ilk turunu 30 sn geciktirir,
     # bu arada restore tamamlanır).
     _start_background(restore_runtime_state, "auto-paper-state-restore")
+    # TEK-SEFERLİK ayar onarımı (2026-10-11): DB'deki kötü kayıtlı değerleri
+    # (SL 1.5 / trig 1.8 / gap 0.6) veriye göre düzelt. İdempotent.
+    _start_background(_migrate_bad_settings_once, "auto-paper-settings-repair")
     # G-10: süpervizörlü başlatma (hata sonrası sınırlı backoff ile yeniden başlar).
     _loop_task = _start_background(auto_paper_management_loop, "auto-paper-management")
     return True

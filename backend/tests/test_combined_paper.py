@@ -67,6 +67,28 @@ def test_combined_paper_endpoints_registered():
     assert "/api/combined-paper/close/{trade_id}" in paths
 
 
+def test_combined_paper_early_trail_trigger():
+    """Veri (70 kapanan işlem): erken kâr kilidi trigger %0.3-0.5 belirleyici.
+    Kombine paper varsayılanı ERKEN olmalı (>=%1 değil)."""
+    c = config.config
+    assert c.COMBINED_PAPER_TRAIL_TRIGGER_PCT <= 0.5
+    assert c.COMBINED_PAPER_TRAIL_GAP_PCT <= 0.4
+
+
+def test_auto_paper_settings_repair_targets_bad_values():
+    """Kök neden düzeltmesi: DB'de kayıtlı kötü kombinasyon (SL 1.5 / trig 1.8 /
+    gap 0.6) tek-seferlik onarımla düzeltilir; iyi değerlere DOKUNULMAZ."""
+    import inspect
+    from app.routers import auto_paper as ap
+    src = inspect.getsource(ap._migrate_bad_settings_once)
+    # Yalnız eski/kötü değerler hedeflenir.
+    assert "1.5" in src and "1.8" in src and "0.6" in src
+    assert "stop_loss_pct" in src and "trailing_trigger_pct" in src and "trailing_gap_pct" in src
+    # Başlangıçta çağrılıyor.
+    start_src = inspect.getsource(ap.start_auto_paper_loop)
+    assert "_migrate_bad_settings_once" in start_src
+
+
 def test_combined_list_send_triggers_autopaper():
     """Kombine liste gönderildiğinde ayrı portföyde otonom açılış TETİKLENİR."""
     import inspect

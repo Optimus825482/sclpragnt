@@ -129,6 +129,16 @@ function ListDetailModal({ row, onClose }: { row: SummaryRow; onClose: () => voi
     return { symbol: String(c.symbol || ""), anchor, now, total, peak };
   });
   const maxAbs = Math.max(1, ...items.map((i) => Math.abs(i.total ?? 0)));
+  // ORTALAMALAR (kullanıcı isteği 2026-10-11): hedeflenen (tavan) + gerçekleşen
+  // (toplam artış ve zirve) ortalamaları pencerede gösterilir.
+  const withTotal = items.filter((i) => i.total != null);
+  const tgtVals = cands.map((c) => (c.ceiling_pct != null ? Number(c.ceiling_pct) : null))
+    .filter((v): v is number => v != null);
+  const peakVals = items.map((i) => i.peak).filter((v): v is number => v != null);
+  const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+  const avgTarget = avg(tgtVals);
+  const avgTotal = avg(withTotal.map((i) => i.total as number));
+  const avgPeak = avg(peakVals);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
          onClick={onClose}>
@@ -148,6 +158,21 @@ function ListDetailModal({ row, onClose }: { row: SummaryRow; onClose: () => voi
             className="rounded-lg border border-bunker-700 bg-bunker-900 px-2.5 py-1 font-mono text-xs text-bunker-muted hover:text-white">
             ✕ Kapat
           </button>
+        </div>
+        {/* ORTALAMA ÖZETİ */}
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          <div className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-2.5">
+            <p className="font-mono text-[10px] text-bunker-muted">ORT. HEDEFLENEN</p>
+            <p className="font-mono text-lg font-black text-amber-300">{avgTarget != null ? `+${avgTarget.toFixed(2)}%` : "—"}</p>
+          </div>
+          <div className="rounded-lg border border-neon-green/30 bg-neon-green/5 p-2.5">
+            <p className="font-mono text-[10px] text-bunker-muted">ORT. GERÇEKLEŞEN</p>
+            <p className={`font-mono text-lg font-black ${(avgTotal ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{avgTotal != null ? `${avgTotal >= 0 ? "+" : ""}${avgTotal.toFixed(2)}%` : "—"}</p>
+          </div>
+          <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-2.5">
+            <p className="font-mono text-[10px] text-bunker-muted">ORT. ZİRVE (MFE)</p>
+            <p className="font-mono text-lg font-black text-sky-300">{avgPeak != null ? `+${avgPeak.toFixed(2)}%` : "—"}</p>
+          </div>
         </div>
         <div className="mt-4 space-y-3">
           {items.length === 0 ? (
@@ -410,18 +435,37 @@ export default function CombinedRisingTab() {
                   <th>Gönderim</th><th className="text-right">Aday</th>
                   <th className="text-right" title="Listedeki adayların hedef (tavan) ortalaması">Hedeflenen %</th>
                   <th className="text-right" title="Seçildiği andan itibaren ulaşılan en yüksek yükselme ortalaması">Gerçekleşen %</th>
+                  <th title="Gerçekleşen / Hedeflenen oranı">Gerçekleşme</th>
                   <th>Durum</th>
                 </tr>
               </thead>
               <tbody>
-                {summary.reports.map((r) => (
+                {summary.reports.map((r) => {
+                  const tgt = r.avg_target_pct ?? 0;
+                  const mfe = r.avg_mfe_pct ?? 0;
+                  // Hedefe ulaşma oranı (0-100+); bar genişliği %100'e kırpılır.
+                  const ratio = tgt > 0 ? (mfe / tgt) * 100 : null;
+                  const barW = ratio == null ? 0 : Math.max(0, Math.min(100, ratio));
+                  const tone = ratio == null ? "bg-bunker-600"
+                    : ratio >= 75 ? "bg-neon-green" : ratio >= 40 ? "bg-yellow-400" : "bg-neon-red";
+                  return (
                   <tr key={r.id} className="cursor-pointer hover:bg-bunker-800/40"
                       onClick={() => setDetail(r)}
                       title="Tıklayın: adayların toplam artış detayı (grafik)">
                     <td className="font-mono text-xs text-bunker-muted whitespace-nowrap">{fmtDateTime(r.sent_at * 1000)}</td>
                     <td className="text-right font-mono text-xs text-white">{r.count}</td>
                     <td className="text-right font-mono text-xs text-amber-300">{r.avg_target_pct != null ? `+${Number(r.avg_target_pct).toFixed(2)}%` : "—"}</td>
-                    <td className={`text-right font-mono text-sm font-bold ${(r.avg_mfe_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{r.avg_mfe_pct != null ? pct(r.avg_mfe_pct) : "—"}</td>
+                    <td className={`text-right font-mono text-sm font-bold ${mfe >= 0 ? "text-neon-green" : "text-neon-red"}`}>{r.avg_mfe_pct != null ? pct(r.avg_mfe_pct) : "—"}</td>
+                    <td className="min-w-[120px]">
+                      {ratio == null ? <span className="font-mono text-[10px] text-bunker-muted">—</span> : (
+                        <div className="flex items-center gap-2">
+                          <div className="h-2.5 flex-1 rounded bg-bunker-800 overflow-hidden">
+                            <div className={`h-full rounded ${tone}`} style={{ width: `${barW}%` }} />
+                          </div>
+                          <span className="font-mono text-[10px] text-bunker-muted w-10 text-right">{Math.round(ratio)}%</span>
+                        </div>
+                      )}
+                    </td>
                     <td>
                       {r.pending
                         ? <span className="inline-flex items-center rounded border border-yellow-400/40 bg-yellow-400/10 px-2 py-0.5 font-mono text-[10px] font-bold text-yellow-300">⏳ SÜRÜYOR</span>
@@ -429,7 +473,8 @@ export default function CombinedRisingTab() {
                       <span className="ml-2 font-mono text-[10px] text-bunker-muted underline">detay</span>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
