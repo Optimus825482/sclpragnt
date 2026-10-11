@@ -42,6 +42,7 @@ type SummaryRow = {
   ceiling_hits: number;
   hit_rate: number | null;
   avg_mfe_pct: number | null;
+  avg_target_pct?: number | null;
   pending: boolean;
   rows: Candidate[];
 };
@@ -58,6 +59,8 @@ type Summary = {
   avg_sent_gain_today_pct?: number | null;
   avg_sent_gain_all_n?: number;
   avg_sent_gain_today_n?: number;
+  avg_target_all_pct?: number | null;
+  avg_target_today_pct?: number | null;
   pending: number;
   reports: SummaryRow[];
   by_source?: Record<string, { measured: number; ceiling_hits: number; hit_rate: number | null; avg_mfe_pct: number | null }>;
@@ -182,22 +185,44 @@ export default function CombinedRisingTab() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="rounded-xl border border-neon-green/30 bg-bunker-900/60 p-4">
-              <p className="text-[11px] text-bunker-muted font-mono">ORTALAMA GÖNDERİLEN YÜKSELME — TÜM ZAMANLAR</p>
-              <p className={`font-mono text-3xl font-black ${(summary.avg_sent_gain_all_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                {summary.avg_sent_gain_all_pct != null
-                  ? `${summary.avg_sent_gain_all_pct >= 0 ? "+" : ""}${summary.avg_sent_gain_all_pct.toFixed(2)}%`
-                  : "—"}
-              </p>
-              <p className="text-[10px] text-bunker-muted font-mono">{summary.avg_sent_gain_all_n ?? 0} gönderilen adayın ort. en yüksek yükselmesi</p>
+              <p className="text-[11px] text-bunker-muted font-mono">ORTALAMA YÜKSELME — TÜM ZAMANLAR</p>
+              <div className="mt-1 flex items-baseline gap-4 flex-wrap">
+                <div>
+                  <span className="text-[10px] text-bunker-muted font-mono block">Gerçekleşen</span>
+                  <span className={`font-mono text-3xl font-black ${(summary.avg_sent_gain_all_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                    {summary.avg_sent_gain_all_pct != null
+                      ? `${summary.avg_sent_gain_all_pct >= 0 ? "+" : ""}${summary.avg_sent_gain_all_pct.toFixed(2)}%`
+                      : "—"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-bunker-muted font-mono block">Hedeflenen</span>
+                  <span className="font-mono text-3xl font-black text-amber-300">
+                    {summary.avg_target_all_pct != null ? `+${summary.avg_target_all_pct.toFixed(2)}%` : "—"}
+                  </span>
+                </div>
+              </div>
+              <p className="text-[10px] text-bunker-muted font-mono mt-1">{summary.avg_sent_gain_all_n ?? 0} gönderilen adayın ortalaması</p>
             </div>
             <div className="rounded-xl border border-sky-400/30 bg-bunker-900/60 p-4">
-              <p className="text-[11px] text-bunker-muted font-mono">ORTALAMA GÖNDERİLEN YÜKSELME — BUGÜN</p>
-              <p className={`font-mono text-3xl font-black ${(summary.avg_sent_gain_today_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                {summary.avg_sent_gain_today_pct != null
-                  ? `${summary.avg_sent_gain_today_pct >= 0 ? "+" : ""}${summary.avg_sent_gain_today_pct.toFixed(2)}%`
-                  : "—"}
-              </p>
-              <p className="text-[10px] text-bunker-muted font-mono">{summary.avg_sent_gain_today_n ?? 0} bugünkü adayın ort. en yüksek yükselmesi</p>
+              <p className="text-[11px] text-bunker-muted font-mono">ORTALAMA YÜKSELME — BUGÜN</p>
+              <div className="mt-1 flex items-baseline gap-4 flex-wrap">
+                <div>
+                  <span className="text-[10px] text-bunker-muted font-mono block">Gerçekleşen</span>
+                  <span className={`font-mono text-3xl font-black ${(summary.avg_sent_gain_today_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                    {summary.avg_sent_gain_today_pct != null
+                      ? `${summary.avg_sent_gain_today_pct >= 0 ? "+" : ""}${summary.avg_sent_gain_today_pct.toFixed(2)}%`
+                      : "—"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-bunker-muted font-mono block">Hedeflenen</span>
+                  <span className="font-mono text-3xl font-black text-amber-300">
+                    {summary.avg_target_today_pct != null ? `+${summary.avg_target_today_pct.toFixed(2)}%` : "—"}
+                  </span>
+                </div>
+              </div>
+              <p className="text-[10px] text-bunker-muted font-mono mt-1">{summary.avg_sent_gain_today_n ?? 0} bugünkü adayın ortalaması</p>
             </div>
           </div>
 
@@ -305,7 +330,9 @@ export default function CombinedRisingTab() {
               <thead>
                 <tr>
                   <th>Gönderim</th><th className="text-right">Aday</th>
-                  <th className="text-right">Ort. Yükselme %</th><th>Durum</th>
+                  <th className="text-right" title="Listedeki adayların hedef (tavan) ortalaması">Hedeflenen %</th>
+                  <th className="text-right" title="Seçildiği andan itibaren ulaşılan en yüksek yükselme ortalaması">Gerçekleşen %</th>
+                  <th>Durum</th>
                 </tr>
               </thead>
               <tbody>
@@ -313,6 +340,7 @@ export default function CombinedRisingTab() {
                   <tr key={r.id}>
                     <td className="font-mono text-xs text-bunker-muted whitespace-nowrap">{fmtDateTime(r.sent_at * 1000)}</td>
                     <td className="text-right font-mono text-xs text-white">{r.count}</td>
+                    <td className="text-right font-mono text-xs text-amber-300">{r.avg_target_pct != null ? `+${Number(r.avg_target_pct).toFixed(2)}%` : "—"}</td>
                     <td className={`text-right font-mono text-sm font-bold ${(r.avg_mfe_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{r.avg_mfe_pct != null ? pct(r.avg_mfe_pct) : "—"}</td>
                     <td>
                       {r.pending

@@ -3493,7 +3493,8 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
                 "measured": 0, "ceiling_hits": 0, "hit_rate": None,
                 "avg_mfe_pct": None, "pending": 0, "reports": [], "by_source": {},
                 "avg_sent_gain_all_pct": None, "avg_sent_gain_today_pct": None,
-                "avg_sent_gain_all_n": 0, "avg_sent_gain_today_n": 0}
+                "avg_sent_gain_all_n": 0, "avg_sent_gain_today_n": 0,
+                "avg_target_all_pct": None, "avg_target_today_pct": None}
 
     # Her listenin ÖMRÜ = bir sonraki listenin zamanı (en yeni liste hâlâ sürüyor).
     # sent_at artan sıralı zaman çizgisi kurulur.
@@ -3539,6 +3540,10 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
     all_mfe_n = 0
     today_mfe_sum = 0.0
     today_mfe_n = 0
+    all_tgt_sum = 0.0
+    all_tgt_n = 0
+    today_tgt_sum = 0.0
+    today_tgt_n = 0
     for rep, c in parsed:
         rid = int(rep.get("id") or 0)
         sent_at = float(rep.get("sent_at") or 0)
@@ -3555,12 +3560,21 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         hits = sum(1 for r in rows if r.get("hit_ceiling") is True)
         measured = len(mfes)
         avg_mfe = round(sum(mfes) / len(mfes), 2) if mfes else None
-        # Bugün mü? (listenin gönderim günü)
+        # Bugün mü? (listenin gönderim günü) — tüm toplamlardan ÖNCE belirlenir.
         try:
             _rdt = datetime.fromtimestamp(sent_at, _tz) if _tz else datetime.fromtimestamp(sent_at)
             is_today = _rdt.strftime("%Y-%m-%d") == _today_label
         except (TypeError, ValueError, OSError):
             is_today = False
+        # HEDEFLENEN ort. yükselme (miktar=ceiling_pct) — "gerçekleşen" ile yan yana
+        # gösterilir (kullanıcı isteği 2026-10-11).
+        tgts = [float(r["ceiling_pct"]) for r in rows if r.get("ceiling_pct") is not None]
+        avg_target = round(sum(tgts) / len(tgts), 2) if tgts else None
+        all_tgt_sum += sum(tgts)
+        all_tgt_n += len(tgts)
+        if is_today:
+            today_tgt_sum += sum(tgts)
+            today_tgt_n += len(tgts)
         for m in mfes:
             all_mfe_sum += m
             all_mfe_n += 1
@@ -3584,6 +3598,7 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
             "ceiling_hits": hits,
             "hit_rate": round(100.0 * hits / measured, 1) if measured else None,
             "avg_mfe_pct": avg_mfe,
+            "avg_target_pct": avg_target,
             "pending": bool(is_pending),
             "rows": rows,
         })
@@ -3618,6 +3633,9 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         "avg_sent_gain_today_pct": round(today_mfe_sum / today_mfe_n, 2) if today_mfe_n else None,
         "avg_sent_gain_all_n": all_mfe_n,
         "avg_sent_gain_today_n": today_mfe_n,
+        # HEDEFLENEN ort. yükselme (miktar=ceiling_pct) — gerçekleşenle yan yana.
+        "avg_target_all_pct": round(all_tgt_sum / all_tgt_n, 2) if all_tgt_n else None,
+        "avg_target_today_pct": round(today_tgt_sum / today_tgt_n, 2) if today_tgt_n else None,
         "pending": tot_pending,
         "reports": per_report,
         "by_source": by_source,
