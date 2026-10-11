@@ -148,7 +148,15 @@ def format_combined_list(candidates: list[dict], *, n: int = 3,
     """
     if not candidates:
         return f"{title}\n\nBugün koşulları geçen aday bulunamadı."
-    shown = candidates[:max(1, int(n))]
+    # PUANA GÖRE SIRALA (kullanıcı isteği 2026-10-11): en yüksek puan en üstte.
+    # Çağıranın sırasına GÜVENİLMEZ — formatlayıcı kendi garanti eder.
+    def _puan(x: dict) -> float:
+        try:
+            return float(x.get("quality_score", x.get("scan_score")) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    ordered = sorted(candidates, key=_puan, reverse=True)
+    shown = ordered[:max(1, int(n))]
     legend = "🪙 coin  💵 fiyat  🎲 ihtimal  📈 miktar  🚀 potansiyel  🧩 teyit  ⭐ puan"
     header = (f"{'COIN':<8}{'FİYAT':>9}{'İHTİMAL':>8}{'MİKTAR':>8}"
               f"{'POTANSİYEL':>12}{'TEYİT':>7}{'PUAN':>6}")

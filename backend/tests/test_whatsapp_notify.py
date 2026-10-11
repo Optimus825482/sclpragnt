@@ -46,9 +46,24 @@ def test_combined_list_empty_and_fields():
 
 
 def test_combined_list_limits_top_n():
+    """n=3 → en yüksek puanlı 3 aday seçilir (sıralama puana göre)."""
     rows = [{"symbol": f"S{i}TRY", "price": i + 1, "scan_score": 50 - i} for i in range(6)]
     out = wn.format_combined_list(rows, n=3)
-    assert "S0" in out and "S2" in out and "S3" not in out
+    # Puanlar 50,49,48,47,46,45 → en yüksek 3: S0,S1,S2.
+    assert "S0" in out and "S1" in out and "S2" in out
+    assert "S3" not in out
+
+
+def test_combined_list_sorts_by_score_desc():
+    """Kullanıcı isteği (2026-10-11): liste PUANA GÖRE sıralı — en yüksek üstte.
+    Girdi KARIŞIK sırada verilse bile çıktı puana göre azalan olmalı."""
+    rows = [
+        {"symbol": "LOWTRY", "price": 1.0, "scan_score": 20},
+        {"symbol": "HIGHTRY", "price": 1.0, "scan_score": 90},
+        {"symbol": "MIDTRY", "price": 1.0, "scan_score": 55},
+    ]
+    out = wn.format_combined_list(rows, n=3)
+    assert out.index("HIGH") < out.index("MID") < out.index("LOW")
 
 
 def test_combined_status_avg_line():
