@@ -3491,7 +3491,9 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
     if not reps:
         return {"ok": True, "report_count": 0, "total_candidates": 0,
                 "measured": 0, "ceiling_hits": 0, "hit_rate": None,
-                "avg_mfe_pct": None, "pending": 0, "reports": [], "by_source": {}}
+                "avg_mfe_pct": None, "pending": 0, "reports": [], "by_source": {},
+                "avg_sent_gain_all_pct": None, "avg_sent_gain_today_pct": None,
+                "avg_sent_gain_all_n": 0, "avg_sent_gain_today_n": 0}
 
     # Her listenin ÖMRÜ = bir sonraki listenin zamanı (en yeni liste hâlâ sürüyor).
     # sent_at artan sıralı zaman çizgisi kurulur.
@@ -3516,6 +3518,13 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
     _px = await _batch_prices([s for s in all_syms if s])
 
     now = time.time()
+    # BUGÜN sınırı (DAILY_MOMENTUM_TZ takvim günü) — "bugünkü ortalama" için.
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
+    except Exception:
+        _tz = None
+    _today_label = (datetime.now(_tz) if _tz else datetime.now()).strftime("%Y-%m-%d")
     per_report: list[dict] = []
     # KAYNAK (strateji) bazında kırılım: hangi motorun isabetli olduğu ölçülür.
     src_meas: Counter = Counter()
@@ -3523,6 +3532,13 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
     src_mfe_sum: Counter = Counter()
     tot_measured = tot_hits = tot_mfe_n = tot_pending = 0
     tot_mfe_sum = 0.0
+    # ORTALAMA GERÇEKLEŞEN YÜKSELME (kullanıcı isteği 2026-10-11): her gönderilen
+    # listenin adaylarının seçildiği andan itibaren ulaştığı EN YÜKSEK yükselme
+    # (MFE) ortalaması. Tüm zamanlar + bugün ayrı toplanır.
+    all_mfe_sum = 0.0
+    all_mfe_n = 0
+    today_mfe_sum = 0.0
+    today_mfe_n = 0
     for rep, c in parsed:
         rid = int(rep.get("id") or 0)
         sent_at = float(rep.get("sent_at") or 0)
@@ -3539,6 +3555,18 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         hits = sum(1 for r in rows if r.get("hit_ceiling") is True)
         measured = len(mfes)
         avg_mfe = round(sum(mfes) / len(mfes), 2) if mfes else None
+        # Bugün mü? (listenin gönderim günü)
+        try:
+            _rdt = datetime.fromtimestamp(sent_at, _tz) if _tz else datetime.fromtimestamp(sent_at)
+            is_today = _rdt.strftime("%Y-%m-%d") == _today_label
+        except (TypeError, ValueError, OSError):
+            is_today = False
+        for m in mfes:
+            all_mfe_sum += m
+            all_mfe_n += 1
+            if is_today:
+                today_mfe_sum += m
+                today_mfe_n += 1
         for r in rows:
             src = str((by_symbol.get(str(r.get("symbol") or "").upper()) or {}).get("strategy") or "combined")
             if r.get("mfe_pct") is not None:
@@ -3583,6 +3611,13 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         "ceiling_hits": tot_hits,
         "hit_rate": round(100.0 * tot_hits / tot_measured, 1) if tot_measured else None,
         "avg_mfe_pct": round(tot_mfe_sum / tot_mfe_n, 2) if tot_mfe_n else None,
+        # Kullanıcı isteği: yalnız "ortalama gönderilen yükselme %si" (tüm zamanlar
+        # + bugün) yeterli. avg_sent_gain_* = adayların ulaştığı en yüksek
+        # yükselmenin (MFE) ortalaması, seçildiği andan itibaren.
+        "avg_sent_gain_all_pct": round(all_mfe_sum / all_mfe_n, 2) if all_mfe_n else None,
+        "avg_sent_gain_today_pct": round(today_mfe_sum / today_mfe_n, 2) if today_mfe_n else None,
+        "avg_sent_gain_all_n": all_mfe_n,
+        "avg_sent_gain_today_n": today_mfe_n,
         "pending": tot_pending,
         "reports": per_report,
         "by_source": by_source,

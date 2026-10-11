@@ -54,6 +54,10 @@ type Summary = {
   ceiling_hits: number;
   hit_rate: number | null;
   avg_mfe_pct: number | null;
+  avg_sent_gain_all_pct?: number | null;
+  avg_sent_gain_today_pct?: number | null;
+  avg_sent_gain_all_n?: number;
+  avg_sent_gain_today_n?: number;
   pending: number;
   reports: SummaryRow[];
   by_source?: Record<string, { measured: number; ceiling_hits: number; hit_rate: number | null; avg_mfe_pct: number | null }>;
@@ -176,30 +180,24 @@ export default function CombinedRisingTab() {
             </span>
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="rounded-xl border border-bunker-800 bg-bunker-900/60 p-3">
-              <p className="text-[10px] text-bunker-muted font-mono">BAŞARI ORANI (tavana ulaşan)</p>
-              <p className={`font-mono text-2xl font-black ${hitTone(summary.hit_rate)}`}>
-                {summary.hit_rate != null ? `%${summary.hit_rate.toFixed(1)}` : "—"}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="rounded-xl border border-neon-green/30 bg-bunker-900/60 p-4">
+              <p className="text-[11px] text-bunker-muted font-mono">ORTALAMA GÖNDERİLEN YÜKSELME — TÜM ZAMANLAR</p>
+              <p className={`font-mono text-3xl font-black ${(summary.avg_sent_gain_all_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                {summary.avg_sent_gain_all_pct != null
+                  ? `${summary.avg_sent_gain_all_pct >= 0 ? "+" : ""}${summary.avg_sent_gain_all_pct.toFixed(2)}%`
+                  : "—"}
               </p>
-              <p className="text-[10px] text-bunker-muted font-mono">{summary.ceiling_hits}/{summary.measured} ölçülen</p>
+              <p className="text-[10px] text-bunker-muted font-mono">{summary.avg_sent_gain_all_n ?? 0} gönderilen adayın ort. en yüksek yükselmesi</p>
             </div>
-            <div className="rounded-xl border border-bunker-800 bg-bunker-900/60 p-3">
-              <p className="text-[10px] text-bunker-muted font-mono">TAVANA ULAŞAN</p>
-              <p className="font-mono text-2xl font-black text-neon-green">{summary.ceiling_hits}</p>
-              <p className="text-[10px] text-bunker-muted font-mono">toplam aday {summary.total_candidates}</p>
-            </div>
-            <div className="rounded-xl border border-bunker-800 bg-bunker-900/60 p-3">
-              <p className="text-[10px] text-bunker-muted font-mono">ORT. GERÇEKLEŞEN MAX</p>
-              <p className={`font-mono text-2xl font-black ${(summary.avg_mfe_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                {summary.avg_mfe_pct != null ? `${summary.avg_mfe_pct >= 0 ? "+" : ""}${summary.avg_mfe_pct.toFixed(2)}%` : "—"}
+            <div className="rounded-xl border border-sky-400/30 bg-bunker-900/60 p-4">
+              <p className="text-[11px] text-bunker-muted font-mono">ORTALAMA GÖNDERİLEN YÜKSELME — BUGÜN</p>
+              <p className={`font-mono text-3xl font-black ${(summary.avg_sent_gain_today_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                {summary.avg_sent_gain_today_pct != null
+                  ? `${summary.avg_sent_gain_today_pct >= 0 ? "+" : ""}${summary.avg_sent_gain_today_pct.toFixed(2)}%`
+                  : "—"}
               </p>
-              <p className="text-[10px] text-bunker-muted font-mono">bildirim fiyatına göre</p>
-            </div>
-            <div className="rounded-xl border border-bunker-800 bg-bunker-900/60 p-3">
-              <p className="text-[10px] text-bunker-muted font-mono">GÖNDERİLEN RAPOR</p>
-              <p className="font-mono text-2xl font-black text-sky-300">{summary.report_count}</p>
-              <p className="text-[10px] text-bunker-muted font-mono">son 7 gün</p>
+              <p className="text-[10px] text-bunker-muted font-mono">{summary.avg_sent_gain_today_n ?? 0} bugünkü adayın ort. en yüksek yükselmesi</p>
             </div>
           </div>
 
@@ -221,6 +219,8 @@ export default function CombinedRisingTab() {
               </div>
             </div>
           ) : null}
+
+
         </section>
       ) : null}
 
