@@ -187,6 +187,19 @@ def test_send_slot_endpoint_routes_to_combined_list():
     assert "_send_combined_status" in delta_src and "require_admin" in delta_src
 
 
+def test_combined_loop_sends_first_list_immediately():
+    """Kullanıcı isteği (2026-10-11): deploy sonrası döngü saat sınırını BEKLEMEDEN
+    ilk listeyi hemen gönderir; ardından takvim (saat başı/:30) düzenine döner."""
+    import inspect
+    from app.routers import monitoring as mo
+    src = inspect.getsource(mo.daily_rising_combined_loop)
+    assert "startup_list_done" in src
+    assert "startup" in src                       # ilk-tarama slot anahtarı
+    assert "_send_combined_list" in src
+    # İlk çalıştırmada `continue` ile takvim kontrolü atlanır (hemen gönderim).
+    assert "continue" in src
+
+
 def test_reports_summary_has_source_breakdown():
     import inspect
     from app.routers import monitoring as mo

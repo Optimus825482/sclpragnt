@@ -3226,15 +3226,24 @@ async def _send_combined_status() -> bool:
 
 async def daily_rising_combined_loop():
     """TEK WhatsApp kanalı: `list_min` dk'da bir TOP-N liste, `track_min` dk'da
-    bir durum takibi. Ayarlar Ayarlar sayfasından (DB) okunur → env gerekmez."""
+    bir durum takibi. Ayarlar Ayarlar sayfasından (DB) okunur → env gerekmez.
+
+    İLK ÇALIŞTIRMA (kullanıcı kararı 2026-10-11): deploy/kapanış sonrası döngü
+    başlar başlamaz — saat sınırını BEKLEMEDEN — İLK LİSTE taraması hemen yapılır
+    (piyasa verisi ısındıktan kısa bir süre sonra). Sonrasında normal takvime
+    döner: `list_min`'e hizalı saat başı/:30 (örn.) liste, `track_min`'de durum.
+    """
     poll_sec = 30.0
     try:
         from zoneinfo import ZoneInfo
         _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
     except Exception:
         _tz = None
-    logger.info("kombine yükseliş döngüsü başladı (ayarlar Ayarlar sayfasından okunur)")
-    await asyncio.sleep(90)
+    logger.info("kombine yükseliş döngüsü başladı (ilk tarama hemen, sonra takvim)")
+    # Piyasa verisinin (WS/ticker/kline) ısınması için kısa bekleme; ardından
+    # takvimi BEKLEMEDEN ilk liste hemen gönderilir.
+    await asyncio.sleep(60)
+    startup_list_done = False
     while True:
         try:
             # AYARLAR: Ayarlar sayfası (DB) → config varsayılanı. Her turda okunur
@@ -3248,9 +3257,18 @@ async def daily_rising_combined_loop():
                     track_min = max(1, int(cfg.get("track_min", 10)))
                     in_window = (int(cfg.get("start_hour", 9)) <= lt.hour
                                  <= int(cfg.get("end_hour", 23)))
-                    minute = lt.minute
                     if in_window:
+                        # İLK LİSTE: döngü ilk kez pencerede çalışıyorsa, saat
+                        # sınırını bekleme — hemen gönder. Aynı pencereyi tekrar
+                        # tetiklememek için slot anahtarını da yaz.
+                        if not startup_list_done:
+                            startup_list_done = True
+                            _monitoring_state["combined_list_last"] = (
+                                f"{lt.strftime('%Y-%m-%d %H')}:{lt.minute:02d}:startup")
+                            await _send_combined_list(cfg=cfg)
+                            continue
                         window = (poll_sec / 60.0) + 0.01
+                        minute = lt.minute
                         list_due = (minute % list_min) < window
                         status_due = (minute % track_min) < window and not list_due
                         if list_due:
