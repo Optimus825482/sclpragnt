@@ -47,6 +47,30 @@ def _ticker_price(symbol: str) -> float | None:
     return price
 
 
+async def _price(symbol: str) -> float | None:
+    """Anlık fiyat: önce WS ticker, yoksa REST yedeği.
+
+    NEDEN (kullanıcı geri bildirimi 2026-10-11): pasife alınan sembol WS akışında
+    DEĞİLDİR; WS-only fiyat okuma `None` döner ve pozisyon TP/trailing/süre
+    yönetiminden tamamen kopar (sonsuza dek "izleniyor" kalır). REST yedeğiyle
+    bu coinlerin de fiyatı gelir (kapanmasına GEREK YOK — pozisyon yönetilir).
+    """
+    p = _ticker_price(symbol)
+    if p:
+        return p
+    try:
+        from app.binance_tr_public import ticker_price as _tp
+        rows = await _tp([symbol])
+        for r in rows or []:
+            if str(r.get("symbol") or "").upper() == symbol.upper():
+                px = float(r.get("price") or 0)
+                if px > 0:
+                    return px
+    except Exception:
+        pass
+    return None
+
+
 def _plan_entry(candidate: dict, cash: float) -> dict | None:
     """Serbest bakiyenin %10'u kadar pozisyon planı üret (potansiyele göre TP).
 
@@ -120,7 +144,7 @@ async def _manage_single(trade: dict, now: float) -> None:
     entry = float(trade["entry_price"])
     qty = float(trade["quantity"])
     tp = float(trade["take_profit"]) if trade.get("take_profit") else None
-    price = _ticker_price(sym)
+    price = await _price(sym)
     if not price:
         return
     # Peak güncelle

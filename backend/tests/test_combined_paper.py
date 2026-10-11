@@ -92,6 +92,23 @@ def test_trailing_trigger_greater_than_gap_no_loss():
     assert stop > entry, "aktivasyonda stop girişin altında → kâr zarara döner"
 
 
+def test_price_has_rest_fallback_for_passive_symbols():
+    """Kullanıcı geri bildirimi (2026-10-11): pasife alınan sembol (WS akışında yok)
+    kombine paper'da fiyat "—" görünüyordu. `_price` WS yoksa REST yedeğine düşmeli
+    → pasif coinin de fiyatı gelir ve pozisyon yönetimi kopmaz. Ayrıca pasif sembol
+    KAPATILMAZ (symbol_deactivated yolu YOK)."""
+    import inspect
+    from app import combined_paper as cp
+    src = inspect.getsource(cp._price)
+    assert "ticker_price" in src, "REST yedeği eksik"
+    assert "_ticker_price" in src, "önce WS denenmeli"
+    # `_manage_single` yeni `_price`'ı kullanmalı.
+    msrc = inspect.getsource(cp._manage_single)
+    assert "await _price(" in msrc
+    # Pasif-kapatma yolu OLMAMALI (kullanıcı isteği: kapanmasına gerek yok).
+    assert "symbol_deactivated" not in inspect.getsource(cp)
+
+
 def test_autonomous_and_combined_trailing_equal():
     """Kullanıcı isteği (2026-10-11): "bu trailing ayarlarını NORMAL paper trade'de
     de aynı şekilde yapalım." Otonom paper ve kombine paper trailing tetik/boşluğu

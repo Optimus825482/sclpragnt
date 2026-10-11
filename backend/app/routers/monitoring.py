@@ -3969,10 +3969,15 @@ async def combined_paper_state(request: Request = None):
     # Açık pozisyonlara anlık fiyat + K/Z ekle. K/Z NET hesaplanır: gidiş-dönüş
     # komisyon (Binance TR %0,15/bacak) düşülür — gerçekten ele geçecek tutar.
     commission_pct = float(getattr(config, "COMMISSION_PCT", 0.0015))
+    # FİYAT KAYNAĞI: `_batch_prices` WS ticker'a bakar, WS'te OLMAYAN semboller
+    # (pasife alınmış coinler dahil) için REST'e düşer → bu coinlerin fiyatı da
+    # gelir (kullanıcı geri bildirimi 2026-10-11: XAITRY pasif olduğu için fiyat
+    # "—" görünüyordu). Eskiden yalnız `_ticker_price` (WS) kullanılıyordu.
+    _px = await _batch_prices([str(t.get("symbol") or "").upper() for t in open_trades])
     live = []
     for t in open_trades:
         sym = str(t.get("symbol") or "").upper()
-        cur = _ticker_price(sym)
+        cur = _px.get(sym)
         entry = float(t.get("entry_price") or 0)
         qty = float(t.get("quantity") or 0)
         # BRÜT (komisyonsuz) ile NET (gidiş-dönüş komisyon düşülmüş) birlikte.
