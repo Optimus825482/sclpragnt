@@ -590,8 +590,13 @@ export default function PortfolioPage() {
                     </div>
                     <div className={`mt-1 font-mono text-lg font-bold ${tone(pnl)}`}>{signedMoney(pnl)}</div>
                     <div className="mt-0.5 flex items-center justify-between">
-                      <span className="font-mono text-[10px] text-bunker-muted">{REASON_LABEL[t.exit_reason || ""] || t.exit_reason || "—"}</span>
-                      <span className={`font-mono text-[10px] ${tone(pnlPct)}`}>{pctText(pnlPct)}</span>
+                      <span className={`font-mono text-[10px] font-bold ${
+                        (t.exit_reason || "") === "take_profit" ? "text-neon-green"
+                        : (t.exit_reason || "") === "trailing_stop" ? "text-sky-300"
+                        : (t.exit_reason || "") === "stop_loss" ? "text-neon-red" : "text-bunker-muted"}`}>
+                        {REASON_LABEL[t.exit_reason || ""] || t.exit_reason || "—"}
+                      </span>
+                      <span className={`font-mono text-[10px] font-bold ${tone(pnlPct)}`}>{pctText(pnlPct)}</span>
                     </div>
                   </div>
                 );
@@ -744,15 +749,28 @@ export default function PortfolioPage() {
                   const pnl = closedPnlTry(t.pnl);
                   const pnlPct = closedPnlTry(t.pnl_pct);
                   const holdMin = t.entry_time && t.exit_time ? Math.max(0, Math.round((Number(t.exit_time) - Number(t.entry_time)) / 60)) : null;
+                  const win = (pnl ?? 0) >= 0;
+                  const reason = t.exit_reason || "";
+                  const reasonCls = reason === "take_profit"
+                    ? "border-neon-green/50 bg-neon-green/15 text-neon-green"
+                    : reason === "trailing_stop"
+                      ? "border-sky-400/50 bg-sky-400/15 text-sky-300"
+                      : (reason === "stop_loss" || reason === "max_duration")
+                        ? "border-neon-red/40 bg-neon-red/10 text-neon-red"
+                        : "border-bunker-700 bg-bunker-800 text-bunker-muted";
                   return (
-                    <tr key={t.id}>
+                    <tr key={t.id} className={win ? "bg-neon-green/[0.04]" : "bg-neon-red/[0.04]"}>
                       <td><SymbolLink symbol={t.symbol} className="font-bold text-white hover:text-neon-green" /></td>
                       <td className="font-mono text-xs text-bunker-muted">{fmtDay(t.entry_time)}</td>
                       <td className="font-mono text-xs text-right tabular-nums">{formatPrice(Number(t.entry_price || 0))}</td>
                       <td className="font-mono text-xs text-right tabular-nums">{formatPrice(Number(t.exit_price || 0))}</td>
                       <td className={`font-mono text-xs text-right tabular-nums font-bold ${tone(pnl)}`}>{signedMoney(pnl)}</td>
-                      <td className={`font-mono text-xs text-right tabular-nums ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
-                      <td className="text-xs">{REASON_LABEL[t.exit_reason || ""] || t.exit_reason || "—"}</td>
+                      <td className={`font-mono text-xs text-right tabular-nums font-bold ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
+                      <td>
+                        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold ${reasonCls}`}>
+                          {REASON_LABEL[reason] || reason || "—"}
+                        </span>
+                      </td>
                       <td className="font-mono text-xs text-right tabular-nums text-bunker-muted">{holdMin != null ? `${holdMin} dk` : "—"}</td>
                     </tr>
                   );

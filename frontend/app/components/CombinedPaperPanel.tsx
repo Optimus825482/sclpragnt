@@ -243,18 +243,34 @@ export default function CombinedPaperPanel() {
                 </tr>
               </thead>
               <tbody>
-                {closed.map((t) => (
-                  <tr key={t.id}>
+                {closed.map((t) => {
+                  const win = (t.pnl ?? 0) >= 0;
+                  const reason = t.exit_reason || "";
+                  // Çıkış nedeni rozeti: stop/süre = kırmızı, trailing/TP = yeşil.
+                  const reasonCls = reason === "take_profit"
+                    ? "border-neon-green/50 bg-neon-green/15 text-neon-green"
+                    : reason === "trailing_stop"
+                      ? "border-sky-400/50 bg-sky-400/15 text-sky-300"
+                      : (reason === "stop_loss" || reason === "max_duration")
+                        ? "border-neon-red/40 bg-neon-red/10 text-neon-red"
+                        : "border-bunker-700 bg-bunker-800 text-bunker-muted";
+                  return (
+                  <tr key={t.id} className={win ? "bg-neon-green/[0.04]" : "bg-neon-red/[0.04]"}>
                     <td className="font-mono text-xs text-bunker-muted whitespace-nowrap">{t.exit_time ? fmtDateTime(t.exit_time * 1000) : "—"}</td>
                     <td><SymbolLink symbol={t.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                     <td className="text-right font-mono text-xs text-white">{price(t.entry_price)}</td>
                     <td className="text-right font-mono text-xs text-white">{price(t.exit_price)}</td>
                     <td className="text-right font-mono text-xs text-bunker-muted">{formatSignedTL(t.order_value_try)}</td>
-                    <td className="font-mono text-[11px] text-bunker-muted">{reasonLabel[t.exit_reason || ""] || t.exit_reason || "—"}</td>
-                    <td className={`text-right font-mono text-xs font-bold ${(t.pnl ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{formatSignedTL(t.pnl)}</td>
-                    <td className={`text-right font-mono text-xs font-bold ${(t.pnl_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{pct(t.pnl_pct)}</td>
+                    <td>
+                      <span className={`inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold ${reasonCls}`}>
+                        {reasonLabel[reason] || reason || "—"}
+                      </span>
+                    </td>
+                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${win ? "text-neon-green" : "text-neon-red"}`}>{formatSignedTL(t.pnl)}</td>
+                    <td className={`text-right font-mono text-sm font-bold tabular-nums ${win ? "text-neon-green" : "text-neon-red"}`}>{pct(t.pnl_pct)}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
