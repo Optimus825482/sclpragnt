@@ -214,17 +214,58 @@ def test_send_slot_endpoint_routes_to_combined_list():
     assert "_send_combined_status" in delta_src and "require_admin" in delta_src
 
 
-def test_combined_loop_sends_first_list_immediately():
-    """Kullanıcı isteği (2026-10-11): deploy sonrası döngü saat sınırını BEKLEMEDEN
-    ilk listeyi hemen gönderir; ardından takvim (saat başı/:30) düzenine döner."""
+def test_combined_loop_first_attempt_db_cooldown_guarded():
+    """Kullanıcı geri bildirimi (2026-10-11): restart spam'i — her deploy döngüyü
+    'ilk çalıştırma' sanıp gruba liste atıyordu. Düzeltme: 'hemen ilk tarama'
+    kararı BELLEĞE değil VERİTABANINA (son gönderim yaşı) dayanır. Döngü bir kez
+    taze liste dener; gönderip göndermemeye `_send_combined_list` içindeki
+    DB-cooldown karar verir (restart'ta zaten gönderilmişse atlar)."""
     import inspect
     from app.routers import monitoring as mo
-    src = inspect.getsource(mo.daily_rising_combined_loop)
-    assert "startup_list_done" in src
-    assert "startup" in src                       # ilk-tarama slot anahtarı
-    assert "_send_combined_list" in src
-    # İlk çalıştırmada `continue` ile takvim kontrolü atlanır (hemen gönderim).
-    assert "continue" in src
+    loop_src = inspect.getsource(mo.daily_rising_combined_loop)
+    assert "startup_attempted" in loop_src
+    assert "_send_combined_list" in loop_src
+    send_src = inspect.getsource(mo._send_combined_list)
+    # DB-temelli koruma: son gönderim yaşı periyotla karşılaştırılır.
+    assert "last_daily_rising_report" in send_src
+    assert "force" in send_src        # elle gönderim korumayı atlar
+    assert "sent_at" in send_src
+
+
+def test_status_send_has_restart_guard():
+    """Durum takibi de DB-yaş kontrollü (restart'ta tekrar tekrar göndermez)."""
+    import inspect
+    from app.routers import monitoring as mo
+    src = inspect.getsource(mo._send_combined_status)
+    assert "last_daily_rising_report" in src
+    assert "COMBINED_STATUS_KIND" in src
+
+
+def test_send_combined_list_skips_when_recent(monkeypatch):
+    """GERÇEK davranış: son liste gönderimi tazeyse `_send_combined_list`
+    tarama bile yapmadan False döner (restart spam'i ölür). force=True atlar."""
+    import asyncio
+    import time
+    from app.routers import monitoring as mo
+
+    async def _fresh(kind=mo.COMBINED_LIST_KIND):
+        return {"id": 1, "kind": kind, "sent": True, "sent_at": time.time() - 30}
+
+    monkeypatch.setattr(mo.database, "last_daily_rising_report", _fresh)
+    # whatsapp_enabled True dönsün (köprü var sayılır).
+    monkeypatch.setattr("app.whatsapp_notify.whatsapp_enabled", lambda: True)
+    # Tarama çağrılırsa test patlar (erişilmemeli).
+    async def _boom():
+        raise AssertionError("tarama yapılmamalı — koruma önce devrede olmalı")
+    monkeypatch.setattr(mo, "_combined_scan_rows", _boom)
+
+    async def _cfg():
+        return {"enabled": True, "top_n": 3, "min_score": 0.0, "list_min": 30,
+                "track_min": 10, "start_hour": 0, "end_hour": 23}
+    monkeypatch.setattr(mo, "combined_rising_settings", _cfg)
+
+    # list_min=30 → eşik 30*60-60=1740 sn; 30 sn önce gönderim → ATLA.
+    assert asyncio.run(mo._send_combined_list()) is False
 
 
 def test_reports_summary_has_source_breakdown():

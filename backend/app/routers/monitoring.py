@@ -3153,14 +3153,34 @@ async def _combined_scan_rows() -> list[dict]:
     return out
 
 
-async def _send_combined_list(*, cfg: dict | None = None) -> bool:
+async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -> bool:
     """Kombine tarama → kalite eşiği → TOP N liste → WhatsApp + DB.
 
-    Ayarlar Ayarlar sayfasından (DB) gelir; `cfg` verilmezse okunur."""
+    Ayarlar Ayarlar sayfasından (DB) gelir; `cfg` verilmezse okunur.
+    GÖNDERİM ARALIĞI KORUMASI (2026-10-11): son BAŞARILI liste gönderiminden bu
+    yana periyottan (60 sn tolerans) az geçtiyse tekrar gönderilmez — restart /
+    çift tetikleme / ilk-tarama bayrağı sıfırlanması artık spam üretemez.
+    `force=True` (elle gönderim) bu korumayı atlar.
+    """
     from app.whatsapp_notify import format_combined_list, send_whatsapp, whatsapp_enabled
     if not whatsapp_enabled():
         return False
     cfg = cfg or await combined_rising_settings()
+    list_min = max(1, int(cfg.get("list_min", 30) or 30))
+    # KORUMA: son gönderilen liste DB'de; tam periyottan (60 sn tolerans) yeni
+    # ise atla. Restart, normal periyottan önce İKİNCİ liste gönderemez; uzun
+    # kesintiden sonra ise hemen gönderilir (gerçek "ilk tarama" davranışı).
+    if not force:
+        try:
+            last = await database.last_daily_rising_report(COMBINED_LIST_KIND)
+            if last and last.get("sent"):
+                age = time.time() - float(last.get("sent_at") or 0)
+                if age < (list_min * 60.0 - 60.0):
+                    logger.info("kombine liste atlandı: son gönderim %d sn önce (< periyot)",
+                                int(age))
+                    return False
+        except Exception:
+            pass
     try:
         cands = await _combined_scan_rows()
     except Exception as exc:
@@ -3195,10 +3215,25 @@ async def _send_combined_list(*, cfg: dict | None = None) -> bool:
 
 
 async def _send_combined_status() -> bool:
-    """Son kombine listenin 3 adayının bildirim anına göre anlık durumu + ortalama."""
+    """Son kombine listenin 3 adayının bildirim anına göre anlık durumu + ortalama.
+
+    RESTART KORUMASI: durum takibi de DB-yaş kontrollü — son durum gönderiminden
+    `track_min`'den az süre geçtiyse atlanır (restart spam'ini önler).
+    """
     from app.whatsapp_notify import format_combined_status, send_whatsapp, whatsapp_enabled
     if not whatsapp_enabled():
         return False
+    try:
+        cfg = await combined_rising_settings()
+        track_min = max(1, int(cfg.get("track_min", 10) or 10))
+        last_status = await database.last_daily_rising_report(COMBINED_STATUS_KIND)
+        if last_status and last_status.get("sent"):
+            age = time.time() - float(last_status.get("sent_at") or 0)
+            if age < (track_min * 60.0 - 60.0):
+                logger.info("kombine durum atlandı: son gönderim %d sn önce", int(age))
+                return False
+    except Exception:
+        pass
     prev = await database.last_daily_rising_report(COMBINED_LIST_KIND)
     if not prev:
         return False
@@ -3247,10 +3282,14 @@ async def daily_rising_combined_loop():
     """TEK WhatsApp kanalı: `list_min` dk'da bir TOP-N liste, `track_min` dk'da
     bir durum takibi. Ayarlar Ayarlar sayfasından (DB) okunur → env gerekmez.
 
-    İLK ÇALIŞTIRMA (kullanıcı kararı 2026-10-11): deploy/kapanış sonrası döngü
-    başlar başlamaz — saat sınırını BEKLEMEDEN — İLK LİSTE taraması hemen yapılır
-    (piyasa verisi ısındıktan kısa bir süre sonra). Sonrasında normal takvime
-    döner: `list_min`'e hizalı saat başı/:30 (örn.) liste, `track_min`'de durum.
+    RESTART DAYANIKLILIĞI (2026-10-11 düzeltmesi): "ilk tarama hemen" kararı
+    ARTIK BELLEĞE DEĞİL VERİTABANINA dayanır. Eskiden bellek-içi bir bayrak
+    (`startup_list_done`) restart'ta sıfırlanıyordu → her yeniden deploy döngüyü
+    "ilk çalıştırma" sanıp gruba tekrar liste atıyordu (17:49/17:59/18:02/18:03
+    spam'i). Şimdi: döngü başlar başlamaz BİR kez taze liste dener; ama
+    `_send_combined_list` içindeki DB-cooldown son gönderim `list_min`'in
+    yarısından yeniyse göndermez → restart spam'i imkânsız. Sonrasında normal
+    takvim: `list_min`'e hizalı liste dakikaları, `track_min`'de durum.
     """
     poll_sec = 30.0
     try:
@@ -3258,11 +3297,12 @@ async def daily_rising_combined_loop():
         _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)
     except Exception:
         _tz = None
-    logger.info("kombine yükseliş döngüsü başladı (ilk tarama hemen, sonra takvim)")
+    logger.info("kombine yükseliş döngüsü başladı (DB-cooldown korumalı)")
     # Piyasa verisinin (WS/ticker/kline) ısınması için kısa bekleme; ardından
-    # takvimi BEKLEMEDEN ilk liste hemen gönderilir.
+    # BİR kez taze liste denenir (DB-cooldown gerçekten gerekip gerekmediğine
+    # karar verir — restart'ta zaten gönderilmişse atlar).
     await asyncio.sleep(60)
-    startup_list_done = False
+    startup_attempted = False
     while True:
         try:
             # AYARLAR: Ayarlar sayfası (DB) → config varsayılanı. Her turda okunur
@@ -3277,13 +3317,9 @@ async def daily_rising_combined_loop():
                     in_window = (int(cfg.get("start_hour", 9)) <= lt.hour
                                  <= int(cfg.get("end_hour", 23)))
                     if in_window:
-                        # İLK LİSTE: döngü ilk kez pencerede çalışıyorsa, saat
-                        # sınırını bekleme — hemen gönder. Aynı pencereyi tekrar
-                        # tetiklememek için slot anahtarını da yaz.
-                        if not startup_list_done:
-                            startup_list_done = True
-                            _monitoring_state["combined_list_last"] = (
-                                f"{lt.strftime('%Y-%m-%d %H')}:{lt.minute:02d}:startup")
+                        if not startup_attempted:
+                            # TEK deneme; gönderip göndermemeye DB-cooldown karar verir.
+                            startup_attempted = True
                             await _send_combined_list(cfg=cfg)
                             continue
                         window = (poll_sec / 60.0) + 0.01
@@ -3472,7 +3508,7 @@ async def daily_rising_send_slot_report(request: Request = None):
     tüm radar stratejilerinin birleştiği TOP-N listeyi gruba atar."""
     from app.api_common import require_admin as _require_admin
     _require_admin(request)
-    sent = await _send_combined_list()
+    sent = await _send_combined_list(force=True)
     return {"ok": sent}
 
 
