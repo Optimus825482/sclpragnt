@@ -3531,7 +3531,9 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
                 "avg_mfe_pct": None, "pending": 0, "reports": [], "by_source": {},
                 "avg_sent_gain_all_pct": None, "avg_sent_gain_today_pct": None,
                 "avg_sent_gain_all_n": 0, "avg_sent_gain_today_n": 0,
-                "avg_target_all_pct": None, "avg_target_today_pct": None}
+                "avg_target_all_pct": None, "avg_target_today_pct": None,
+                "avg_sim_all_pct": None, "avg_sim_today_pct": None,
+                "avg_sim_all_n": 0, "avg_sim_today_n": 0}
 
     # Her listenin ÖMRÜ = bir sonraki listenin zamanı (en yeni liste hâlâ sürüyor).
     # sent_at artan sıralı zaman çizgisi kurulur.
@@ -3581,6 +3583,12 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
     all_tgt_n = 0
     today_tgt_sum = 0.0
     today_tgt_n = 0
+    # GERÇEKLEŞEBİLİR % (2026-10-12): adayların otonom paper kurallarıyla net
+    # getirisi (MFE'nin aksine realize edilebilir taban). Yan yana gösterilir.
+    all_sim_sum = 0.0
+    all_sim_n = 0
+    today_sim_sum = 0.0
+    today_sim_n = 0
     for rep, c in parsed:
         rid = int(rep.get("id") or 0)
         sent_at = float(rep.get("sent_at") or 0)
@@ -3628,6 +3636,16 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
             if is_today:
                 today_mfe_sum += m
                 today_mfe_n += 1
+        # GERÇEKLEŞEBİLİR: sim_pct (otonom paper kurallarıyla net%). MFE'nin
+        # yanına konur → "iyimser zirve" vs "gerçekleşebilir" farkı görünür.
+        sims = [float(r["sim_pct"]) for r in rows if r.get("sim_pct") is not None]
+        avg_sim = round(sum(sims) / len(sims), 2) if sims else None
+        for s in sims:
+            all_sim_sum += s
+            all_sim_n += 1
+            if is_today:
+                today_sim_sum += s
+                today_sim_n += 1
         for r in rows:
             src = str((by_symbol.get(str(r.get("symbol") or "").upper()) or {}).get("strategy") or "combined")
             if r.get("mfe_pct") is not None:
@@ -3646,6 +3664,8 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
             "hit_rate": round(100.0 * hits / measured, 1) if measured else None,
             "avg_mfe_pct": avg_mfe,
             "avg_target_pct": avg_target,
+            "avg_sim_pct": avg_sim,
+            "sim_measured": len(sims),
             "pending": bool(is_pending),
             "rows": rows,
         })
@@ -3683,6 +3703,12 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         # HEDEFLENEN ort. yükselme (miktar=ceiling_pct) — gerçekleşenle yan yana.
         "avg_target_all_pct": round(all_tgt_sum / all_tgt_n, 2) if all_tgt_n else None,
         "avg_target_today_pct": round(today_tgt_sum / today_tgt_n, 2) if today_tgt_n else None,
+        # GERÇEKLEŞEBİLİR ort. net % (otonom paper kurallarıyla) — MFE'nin
+        # yanındaki dürüst sayı; "portföy neden ekside" sorusunun cevabı.
+        "avg_sim_all_pct": round(all_sim_sum / all_sim_n, 2) if all_sim_n else None,
+        "avg_sim_today_pct": round(today_sim_sum / today_sim_n, 2) if today_sim_n else None,
+        "avg_sim_all_n": all_sim_n,
+        "avg_sim_today_n": today_sim_n,
         "pending": tot_pending,
         "reports": per_report,
         "by_source": by_source,

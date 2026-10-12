@@ -2026,6 +2026,12 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
     GERÇEKLEŞEN MAX (MFE, kapanmış 5m mumlardan + canlı fiyat) ve tavan
     hedefine ulaşıp ulaşmadığı. Uydurma yok: mum arşivi yoksa ve canlı fiyat
     da yoksa o aday 'ölçülemedi' kalır.
+
+    AYRICA `sim_pct` (2026-10-12): adayın OTONOM PAPER'ın GERÇEK çıkış
+    kurallarıyla (stop / kâr kilidi-trailing / trailing'de TP iptali /
+    kârsız-süre / maks-tutma + komisyon&kayma) yeniden oynatılmış net yüzdesi.
+    MFE iyimserdir ("tepeyi sat"); `sim_pct` gerçekleşebilir tabandır → liste
+    "+%30" derken portföy neden ekside sorusunun yanıtı bu sütundadır.
     """
     if not candidates:
         return []
@@ -2033,6 +2039,12 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
         now = time.time()
         window_end_s = min(now, float(since_ts) + max(0.0, float(max_sec)))
         window_end_ms = window_end_s * 1000.0
+        # Simülasyon ufku: otonom paper'ın gerçek maks tutma süresi (liste ömründen
+        # bağımsız) — portföy 120 dk tutar, sim de o kadar tutar.
+        _max_hold_min = float(getattr(config, "COMBINED_PAPER_MAX_HOLD_MIN", 120.0))
+        sim_end_s = min(now, float(since_ts) + max(60.0, _max_hold_min * 60.0))
+        sim_end_ms = sim_end_s * 1000.0
+        fetch_end_ms = max(window_end_ms, sim_end_ms)
         out: list[dict] = []
         for c in candidates:
             sym = str(c.get("symbol") or "").upper()
@@ -2051,20 +2063,27 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
                     lp = None
             highs: list[float] = []
             lows: list[float] = []
+            sim_bars: list[dict] = []
             try:
                 candles = conn.execute(
-                    "SELECT open_time, high, low FROM historical_candles "
+                    "SELECT open_time, high, low, close FROM historical_candles "
                     "WHERE symbol=? AND timeframe='5m' AND open_time > ? AND open_time <= ? "
                     "ORDER BY open_time",
-                    (sym, float(since_ts) * 1000.0, window_end_ms)).fetchall()
+                    (sym, float(since_ts) * 1000.0, fetch_end_ms)).fetchall()
                 for row in candles:
                     d = dict(row)
+                    ot_ms = float(d.get("open_time") or 0)
                     h = float(d.get("high") or 0)
                     lo = float(d.get("low") or 0)
-                    if h > 0:
-                        highs.append(h)
-                    if lo > 0:
-                        lows.append(lo)
+                    # MFE penceresi = liste ömrü; sim penceresi daha uzun olabilir.
+                    if ot_ms <= window_end_ms:
+                        if h > 0:
+                            highs.append(h)
+                        if lo > 0:
+                            lows.append(lo)
+                    if ot_ms <= sim_end_ms and h > 0:
+                        sim_bars.append({"open_time": ot_ms / 1000.0, "high": h, "low": lo,
+                                         "close": float(d.get("close") or 0)})
             except Exception:
                 pass
             if lp and lp > 0:
@@ -2082,6 +2101,28 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
                     hit = bool(float(mfe) >= float(ceil_pct))
             except (TypeError, ValueError):
                 hit = None
+            # GERÇEKLEŞEBİLİR %: giriş = bu listenin fiyatı (anchor DEĞİL — paper
+            # daha eski bir referansa değil, o anki fiyata girer).
+            sim_pct = sim_reason = None
+            try:
+                sim_entry = float(c.get("notify_price") or c.get("price") or 0) or None
+            except (TypeError, ValueError):
+                sim_entry = None
+            if sim_entry and sim_entry > 0 and sim_bars:
+                from app.paper_sim import simulate_exit, tp_pct_for
+                sim = simulate_exit(
+                    sim_bars, sim_entry, entry_time=float(since_ts),
+                    tp_pct=tp_pct_for(c.get("potential_pct"), 3.0),
+                    sl_pct=float(getattr(config, "COMBINED_PAPER_SL_PCT", 3.0)),
+                    trail_trigger_pct=float(getattr(config, "COMBINED_PAPER_TRAIL_TRIGGER_PCT", 2.0)),
+                    trail_gap_pct=float(getattr(config, "COMBINED_PAPER_TRAIL_GAP_PCT", 1.0)),
+                    cancel_tp_on_trail=bool(getattr(config, "COMBINED_PAPER_TP_CANCEL_ON_TRAIL", True)),
+                    no_profit_min=float(getattr(config, "COMBINED_PAPER_NO_PROFIT_MIN", 30.0)),
+                    max_hold_min=_max_hold_min,
+                    commission_pct=float(getattr(config, "COMMISSION_PCT", 0.0015)),
+                    slippage_pct=float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0),
+                )
+                sim_pct, sim_reason = sim.get("sim_pct"), sim.get("reason")
             out.append({
                 "symbol": sym, "entry_price": base, "current_price": lp,
                 "change_pct": chg, "mfe_pct": mfe, "mae_pct": mae,
@@ -2090,6 +2131,7 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
                 "target_probability": c.get("target_probability"),
                 "strategy": c.get("strategy"),
                 "hit_ceiling": hit,
+                "sim_pct": sim_pct, "sim_reason": sim_reason,
             })
         return out
 

@@ -358,6 +358,36 @@ def test_reports_summary_has_source_breakdown():
     assert "evaluate_daily_rising_report" in src
 
 
+def test_reports_summary_has_realizable_sim_fields():
+    """GERÇEKLEŞEBİLİR % (2026-10-12): özet, MFE'nin yanına otonom paper
+    geometrisiyle simüle edilmiş net% ortalamasını koyar. Bu alanlar
+    paneldeki 'Gerçekleşebilir %' sütununu besler; sessizce kaybolmamalı."""
+    import inspect
+    from app.routers import monitoring as mo
+    from app import database as db
+    summary_src = inspect.getsource(mo.daily_rising_reports_summary)
+    for key in ("avg_sim_pct", "avg_sim_all_pct", "avg_sim_today_pct",
+                "avg_sim_all_n", "avg_sim_today_n", "sim_measured"):
+        assert key in summary_src, f"özet sim alanı eksik: {key}"
+    # Ölçüm fonksiyonu sim_pct + sim_reason üretmeli ve simülasyonu çağırmalı.
+    eval_src = inspect.getsource(db.evaluate_daily_rising_report)
+    assert "simulate_exit" in eval_src
+    assert "sim_pct" in eval_src
+    assert "tp_pct_for" in eval_src
+
+
+def test_paper_sim_tp_matches_combined_paper_plan_entry():
+    """Simülasyon ile canlı paper TP geometrisi AYRIŞAMAZ (tek kaynak)."""
+    from app import combined_paper, paper_sim
+    import inspect
+    src = inspect.getsource(combined_paper._plan_entry)
+    assert "tp_pct_for" in src, "_plan_entry artık paper_sim.tp_pct_for kullanmalı"
+    for pot in (None, 5.0, 6.0, 10.0, 25.0):
+        plan = combined_paper._plan_entry({"symbol": "XTRY", "price": 10.0,
+                                           "potential_pct": pot}, 1000.0)
+        assert plan["tp_pct"] == paper_sim.tp_pct_for(pot, 3.0)
+
+
 def test_report_window_is_list_lifetime_not_24h():
     """Kullanıcı düzeltmesi (2026-10-11): bir listenin ömrü BİR SONRAKİ liste
     gelene kadar (20 dk); 24 saat beklemek yanlıştı. Özet artık pencereyi

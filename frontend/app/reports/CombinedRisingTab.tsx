@@ -32,6 +32,8 @@ type Candidate = {
   confirm_layers?: number;
   mfe_pct?: number | null;
   mae_pct?: number | null;
+  sim_pct?: number | null;   // otonom paper kurallarıyla gerçekleşebilir net %
+  sim_reason?: string | null;
   carried?: boolean;
   strategy?: string;
 };
@@ -46,6 +48,8 @@ type SummaryRow = {
   hit_rate: number | null;
   avg_mfe_pct: number | null;
   avg_target_pct?: number | null;
+  avg_sim_pct?: number | null;
+  sim_measured?: number;
   pending: boolean;
   rows: Candidate[];
 };
@@ -64,6 +68,10 @@ type Summary = {
   avg_sent_gain_today_n?: number;
   avg_target_all_pct?: number | null;
   avg_target_today_pct?: number | null;
+  avg_sim_all_pct?: number | null;
+  avg_sim_today_pct?: number | null;
+  avg_sim_all_n?: number;
+  avg_sim_today_n?: number;
   pending: number;
   reports: SummaryRow[];
   by_source?: Record<string, { measured: number; ceiling_hits: number; hit_rate: number | null; avg_mfe_pct: number | null }>;
@@ -126,7 +134,8 @@ function ListDetailModal({ row, onClose }: { row: SummaryRow; onClose: () => voi
     } catch { total = null; }
     if (total == null && c.change_pct != null) total = Number(c.change_pct);
     const peak = c.mfe_pct != null ? Number(c.mfe_pct) : null;
-    return { symbol: String(c.symbol || ""), anchor, now, total, peak };
+    const sim = c.sim_pct != null ? Number(c.sim_pct) : null;
+    return { symbol: String(c.symbol || ""), anchor, now, total, peak, sim };
   });
   const maxAbs = Math.max(1, ...items.map((i) => Math.abs(i.total ?? 0)));
   // ORTALAMALAR (kullanıcı isteği 2026-10-11): hedeflenen (tavan) + gerçekleşen
@@ -135,10 +144,12 @@ function ListDetailModal({ row, onClose }: { row: SummaryRow; onClose: () => voi
   const tgtVals = cands.map((c) => (c.ceiling_pct != null ? Number(c.ceiling_pct) : null))
     .filter((v): v is number => v != null);
   const peakVals = items.map((i) => i.peak).filter((v): v is number => v != null);
+  const simVals = items.map((i) => i.sim).filter((v): v is number => v != null);
   const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
   const avgTarget = avg(tgtVals);
   const avgTotal = avg(withTotal.map((i) => i.total as number));
   const avgPeak = avg(peakVals);
+  const avgSim = avg(simVals);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
          onClick={onClose}>
@@ -160,7 +171,7 @@ function ListDetailModal({ row, onClose }: { row: SummaryRow; onClose: () => voi
           </button>
         </div>
         {/* ORTALAMA ÖZETİ */}
-        <div className="mt-3 grid grid-cols-3 gap-2">
+        <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-2.5">
             <p className="font-mono text-[10px] text-bunker-muted">ORT. HEDEFLENEN</p>
             <p className="font-mono text-lg font-black text-amber-300">{avgTarget != null ? `+${avgTarget.toFixed(2)}%` : "—"}</p>
@@ -172,6 +183,10 @@ function ListDetailModal({ row, onClose }: { row: SummaryRow; onClose: () => voi
           <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-2.5">
             <p className="font-mono text-[10px] text-bunker-muted">ORT. ZİRVE (MFE)</p>
             <p className="font-mono text-lg font-black text-sky-300">{avgPeak != null ? `+${avgPeak.toFixed(2)}%` : "—"}</p>
+          </div>
+          <div className="rounded-lg border border-purple-400/30 bg-purple-400/5 p-2.5" title="Otonom paper'ın gerçek çıkış kurallarıyla gerçekleşebilir net %">
+            <p className="font-mono text-[10px] text-bunker-muted">ORT. GERÇEKLEŞEBİLİR</p>
+            <p className={`font-mono text-lg font-black ${(avgSim ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{avgSim != null ? `${avgSim >= 0 ? "+" : ""}${avgSim.toFixed(2)}%` : "—"}</p>
           </div>
         </div>
         <div className="mt-4 space-y-3">
@@ -304,8 +319,16 @@ export default function CombinedRisingTab() {
                     {summary.avg_target_all_pct != null ? `+${summary.avg_target_all_pct.toFixed(2)}%` : "—"}
                   </span>
                 </div>
+                <div>
+                  <span className="text-[10px] text-bunker-muted font-mono block" title="Otonom paper'ın gerçek çıkış kurallarıyla (stop/trailing/süre + komisyon) gerçekleşebilir net %">Gerçekleşebilir</span>
+                  <span className={`font-mono text-3xl font-black ${(summary.avg_sim_all_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                    {summary.avg_sim_all_pct != null
+                      ? `${summary.avg_sim_all_pct >= 0 ? "+" : ""}${summary.avg_sim_all_pct.toFixed(2)}%`
+                      : "—"}
+                  </span>
+                </div>
               </div>
-              <p className="text-[10px] text-bunker-muted font-mono mt-1">{summary.avg_sent_gain_all_n ?? 0} gönderilen adayın ortalaması</p>
+              <p className="text-[10px] text-bunker-muted font-mono mt-1">{summary.avg_sent_gain_all_n ?? 0} gönderilen adayın ortalaması{summary.avg_sim_all_n ? ` · ${summary.avg_sim_all_n} simüle` : ""}</p>
             </div>
             <div className="rounded-xl border border-sky-400/30 bg-bunker-900/60 p-4">
               <p className="text-[11px] text-bunker-muted font-mono">ORTALAMA YÜKSELME — BUGÜN</p>
@@ -324,8 +347,16 @@ export default function CombinedRisingTab() {
                     {summary.avg_target_today_pct != null ? `+${summary.avg_target_today_pct.toFixed(2)}%` : "—"}
                   </span>
                 </div>
+                <div>
+                  <span className="text-[10px] text-bunker-muted font-mono block" title="Otonom paper'ın gerçek çıkış kurallarıyla (stop/trailing/süre + komisyon) gerçekleşebilir net %">Gerçekleşebilir</span>
+                  <span className={`font-mono text-3xl font-black ${(summary.avg_sim_today_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                    {summary.avg_sim_today_pct != null
+                      ? `${summary.avg_sim_today_pct >= 0 ? "+" : ""}${summary.avg_sim_today_pct.toFixed(2)}%`
+                      : "—"}
+                  </span>
+                </div>
               </div>
-              <p className="text-[10px] text-bunker-muted font-mono mt-1">{summary.avg_sent_gain_today_n ?? 0} bugünkü adayın ortalaması</p>
+              <p className="text-[10px] text-bunker-muted font-mono mt-1">{summary.avg_sent_gain_today_n ?? 0} bugünkü adayın ortalaması{summary.avg_sim_today_n ? ` · ${summary.avg_sim_today_n} simüle` : ""}</p>
             </div>
           </div>
 
@@ -375,6 +406,7 @@ export default function CombinedRisingTab() {
                   <th className="text-right">Anlık</th>
                   <th className="text-right">Değişim</th>
                   <th className="text-right">Gerçekleşen Max</th>
+                  <th className="text-right" title="Otonom paper kurallarıyla gerçekleşebilir net %">Gerçekleşebilir</th>
                   <th className="text-right">Tavan</th>
                   <th className="text-center">Tavan?</th>
                 </tr>
@@ -388,6 +420,7 @@ export default function CombinedRisingTab() {
                     <td className="text-right font-mono text-xs text-white">{price(r.current_price)}</td>
                     <td className={`text-right font-mono text-xs font-bold ${(r.change_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{pct(r.change_pct)}</td>
                     <td className={`text-right font-mono text-xs ${(r.mfe_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{r.mfe_pct != null ? pct(r.mfe_pct) : "—"}</td>
+                    <td className={`text-right font-mono text-xs ${(r.sim_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{r.sim_pct != null ? pct(r.sim_pct) : "—"}</td>
                     <td className="text-right font-mono text-xs text-neon-yellow">{r.ceiling_pct != null ? `+%${Math.round(r.ceiling_pct)}` : "—"}</td>
                     <td className="text-center">
                       {r.hit_ceiling === true ? <span className="font-mono text-[10px] font-bold text-neon-green">✓ Ulaştı</span>
@@ -434,7 +467,8 @@ export default function CombinedRisingTab() {
                 <tr>
                   <th>Gönderim</th><th className="text-right">Aday</th>
                   <th className="text-right" title="Listedeki adayların hedef (tavan) ortalaması">Hedeflenen %</th>
-                  <th className="text-right" title="Seçildiği andan itibaren ulaşılan en yüksek yükselme ortalaması">Gerçekleşen %</th>
+                  <th className="text-right" title="Seçildiği andan itibaren ulaşılan en yüksek yükselme ortalaması (MFE — iyimser üst sınır)">Gerçekleşen %</th>
+                  <th className="text-right" title="Otonom paper'ın gerçek çıkış kurallarıyla (stop/trailing/süre + komisyon&kayma) gerçekleşebilir net ortalaması">Gerçekleşebilir %</th>
                   <th title="Gerçekleşen / Hedeflenen oranı">Gerçekleşme</th>
                   <th>Durum</th>
                 </tr>
@@ -456,6 +490,7 @@ export default function CombinedRisingTab() {
                     <td className="text-right font-mono text-xs text-white">{r.count}</td>
                     <td className="text-right font-mono text-xs text-amber-300">{r.avg_target_pct != null ? `+${Number(r.avg_target_pct).toFixed(2)}%` : "—"}</td>
                     <td className={`text-right font-mono text-sm font-bold ${mfe >= 0 ? "text-neon-green" : "text-neon-red"}`}>{r.avg_mfe_pct != null ? pct(r.avg_mfe_pct) : "—"}</td>
+                    <td className={`text-right font-mono text-sm font-bold ${(r.avg_sim_pct ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{r.avg_sim_pct != null ? pct(r.avg_sim_pct) : "—"}</td>
                     <td className="min-w-[120px]">
                       {ratio == null ? <span className="font-mono text-[10px] text-bunker-muted">—</span> : (
                         <div className="flex items-center gap-2">

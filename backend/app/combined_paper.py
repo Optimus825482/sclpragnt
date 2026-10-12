@@ -92,11 +92,10 @@ def _plan_entry(candidate: dict, cash: float) -> dict | None:
         pot = float(potential) if potential is not None else None
     except (TypeError, ValueError):
         pot = None
-    # TP: potansiyelin yarısı, taban %3.0, tavan potansiyelin kendisi.
-    tp_pct = 3.0
-    if pot and pot > 0:
-        tp_pct = max(3.0, min(pot, pot * 0.5 if pot >= 6.0 else pot * 0.8))
-        tp_pct = round(tp_pct, 2)
+    # TP geometrisi TEK KAYNAK: `paper_sim.tp_pct_for` (aynı formül rapordaki
+    # "gerçekleşebilir %" simülasyonunda da kullanılır → canlı ile AYRIŞAMAZ).
+    from app.paper_sim import tp_pct_for
+    tp_pct = tp_pct_for(pot, 3.0)
     sl_pct = float(getattr(config, "COMBINED_PAPER_SL_PCT", 3.0))
     return {
         "symbol": sym, "entry_price": price, "quantity": qty,
