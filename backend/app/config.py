@@ -261,6 +261,19 @@ class Config:
     VELOCITY_TRAIL_INTRABAR = os.getenv("VELOCITY_TRAIL_INTRABAR", "true").lower() == "true"
     # Maksimum tutma süresi (dk): 30dk sonra kapanıştan çık — kâr erimesini önler.
     VELOCITY_MAX_HOLD_MIN = int(os.getenv("VELOCITY_MAX_HOLD_MIN", "30"))
+    # UZUN UFUK (2026-10-13): 30dk/60dk profilleri. Ufuk büyüdükçe tutma süresi
+    # de uzamalı (yoksa 60dk hedefi 30dk'da kesilir). Bayrak kapalıysa yalnız
+    # 5dk/15dk taranır — davranış öncekiyle BİREBİR aynı.
+    VELOCITY_EXTRA_HORIZONS_ENABLED = os.getenv(
+        "VELOCITY_EXTRA_HORIZONS_ENABLED", "true").lower() == "true"
+    # Ufuk → maksimum tutma (dk). Ufuk sonundaki getiri NEGATİF olduğu için
+    # (pump-and-fade) çıkış peak-capture'a (TP/trailing) dayanır; bu süre üst sınır.
+    VELOCITY_MAX_HOLD_BY_HORIZON = {
+        5: VELOCITY_MAX_HOLD_MIN,
+        15: VELOCITY_MAX_HOLD_MIN,
+        30: int(os.getenv("VELOCITY_MAX_HOLD_30M_MIN", "30")),
+        60: int(os.getenv("VELOCITY_MAX_HOLD_60M_MIN", "60")),
+    }
     # Kâr kilidi tetiklenmeden ÖNCE güvenlik stopu: fiyat +%0.5'i hiç görmeden
     # bu kadar düşerse kapat. Stopsuz açılış, fiyat hiç yükselmezse sınırsız
     # zarar demek (canlıda -%7.5 görüldü); -%3 stop EV'yi korur, max kaybı

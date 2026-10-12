@@ -2995,15 +2995,20 @@ async def _combined_scan_rows() -> list[dict]:
         tr_syms = [s for s in await _trading_syms("TRY")]
     except Exception:
         tr_syms = []
-    scan5, scan15, squeeze = await asyncio.gather(
+    # Ufuklar: 5/15 + (bayrak açıksa) 30/60. 30/60 için ayrı gather (sayı esnek).
+    from app.routers.velocity import _active_horizons as _act_h2
+    _extra_h = [h for h in _act_h2() if h not in (5, 15)]
+    _gather = [
         detect_velocity_candidates({}, horizon_minutes=5),
         detect_velocity_candidates({}, horizon_minutes=15),
         _short_squeeze_candidates(tr_syms),
-        return_exceptions=True,
-    )
-    scan5 = scan5 if isinstance(scan5, dict) else {}
-    scan15 = scan15 if isinstance(scan15, dict) else {}
-    squeeze = squeeze if isinstance(squeeze, list) else []
+    ] + [detect_velocity_candidates({}, horizon_minutes=h) for h in _extra_h]
+    _res = await asyncio.gather(*_gather, return_exceptions=True)
+    scan5 = _res[0] if isinstance(_res[0], dict) else {}
+    scan15 = _res[1] if isinstance(_res[1], dict) else {}
+    squeeze = _res[2] if isinstance(_res[2], list) else []
+    extra_scans = {h: (_res[3 + i] if isinstance(_res[3 + i], dict) else {})
+                   for i, h in enumerate(_extra_h)}
     mom = await _daily_momentum_candidates(scan5, scan15)
 
     # YÜKSELİŞ ADAYLARI (2026-10-12): MACD snapshot'ından yükseliş/erken adaylarını
@@ -3031,9 +3036,9 @@ async def _combined_scan_rows() -> list[dict]:
     except Exception as exc:
         logger.debug("kombine: yükseliş adayları alınamadı: %s", exc)
 
-    # Havuz: velocity adayları + izleme listesi + momentum + squeeze + yükseliş.
+    # Havuz: velocity adayları (tüm ufuklar) + izleme listesi + momentum + squeeze + yükseliş.
     pool: list[dict] = []
-    for src in (scan5, scan15):
+    for src in [scan5, scan15, *extra_scans.values()]:
         pool.extend(src.get("candidates") or [])
         pool.extend(src.get("watchlist") or [])
     pool.extend(mom)
@@ -4768,12 +4773,20 @@ async def _run_scan() -> dict:
     # İkinci profil yalnızca önbellekten okur (ağ beklemez).
     _kline_cache: dict = {}
     try:
-        scan5 = await detect_velocity_candidates({"limit": 10}, horizon_minutes=5,
-                                                 extra_symbols=watch_symbols,
-                                                 kline_cache=_kline_cache)
-        scan15 = await detect_velocity_candidates({"limit": 10}, horizon_minutes=15,
-                                                  extra_symbols=watch_symbols,
-                                                  kline_cache=_kline_cache)
+        # Ufuklar: 5/15 + (bayrak açıksa) 30/60. `_active_horizons` tek kaynak.
+        from app.routers.velocity import _active_horizons as _act_h
+        scans: dict[int, dict] = {}
+        for _h in _act_h():
+            try:
+                scans[_h] = await detect_velocity_candidates(
+                    {"limit": 10}, horizon_minutes=_h,
+                    extra_symbols=watch_symbols, kline_cache=_kline_cache)
+            except Exception:
+                # Ek ufuk (30/60) patlarsa turu DÜŞÜRME — 5/15 korunur.
+                if _h in (5, 15):
+                    raise
+                logger.debug("ek ufuk taraması atlandı (%sm)", _h)
+                scans[_h] = {}
     except Exception:
         # Detect patlarsa mevcut hata davranışı korunur (istisna aynen yukarı
         # çıkar); yalnızca warm listesi boşaltılır — bayat "ısınıyor" rozeti
@@ -4781,10 +4794,14 @@ async def _run_scan() -> dict:
         _monitoring_state["warm"] = []
         raise
 
-    candidates5 = scan5.get("candidates", [])
-    candidates15 = scan15.get("candidates", [])
-    watchlist5 = scan5.get("watchlist", [])
-    watchlist15 = scan15.get("watchlist", [])
+    scan5 = scans.get(5) or {}
+    scan15 = scans.get(15) or {}
+
+    # Ufuk → aday/izleme listeleri (5/15 ana; 30/60 varsa eklenir).
+    candidates_by_h: dict[int, list] = {h: (s.get("candidates", []) or []) for h, s in scans.items()}
+    watchlist_by_h: dict[int, list] = {h: (s.get("watchlist", []) or []) for h, s in scans.items()}
+    candidates5 = candidates_by_h.get(5, [])
+    candidates15 = candidates_by_h.get(15, [])
 
     # Warm listesi toplama (2026-09-26): velocity taraması dönüşünde artık
     # "warm" (eşik altı ama yakın) adayları da var. İki profilin warm havuzu
@@ -4793,7 +4810,7 @@ async def _run_scan() -> dict:
     # state'e taşınır. Aday sözlüğünde olmayan alanlar `.get()` ile alınır
     # (None kalabilir). Detect çağrısı patlamadıysa her tur tazelenir.
     merged_warm: list[dict] = []
-    for _profile_tag, _scan in (("5m", scan5), ("15m", scan15)):
+    for _profile_tag, _scan in ((f"{h}m", s) for h, s in scans.items()):
         for _w in (_scan.get("warm") or []):
             if not isinstance(_w, dict):
                 continue
@@ -4834,12 +4851,11 @@ async def _run_scan() -> dict:
     # mikro-yapı çarpanı satırların içinde hazır: upside_rank_score hesaplar).
     touch_rates = await _journal_touch_rates()
 
-    # Çift profil: sembol -> {"5": satır, "15": satır} (aday + izleme havuzundan)
+    # Profil haritası: sembol -> {ufuk: satır} (aday + izleme havuzu, tüm ufuklar)
     profiles_by_symbol: dict[str, dict[int, dict]] = {}
-    for row in candidates5 + watchlist5:
-        profiles_by_symbol.setdefault(str(row.get("symbol") or "").upper(), {})[5] = row
-    for row in candidates15 + watchlist15:
-        profiles_by_symbol.setdefault(str(row.get("symbol") or "").upper(), {})[15] = row
+    for _h in scans:
+        for row in (candidates_by_h.get(_h, []) + watchlist_by_h.get(_h, [])):
+            profiles_by_symbol.setdefault(str(row.get("symbol") or "").upper(), {})[_h] = row
 
     def _with_profiles(row: dict) -> dict:
         sym = str(row.get("symbol") or "").upper()
@@ -4861,9 +4877,11 @@ async def _run_scan() -> dict:
         row["panel_score"] = normalize_score(row.get("velocity_score", 0))
         return row
 
-    # Birleştir: sembol başına en yüksek upside_rank'li kayıt kalır
+    # Birleştir: sembol başına en yüksek upside_rank'li kayıt kalır (tüm ufuklar)
+    _all_candidates_rows = [c for _h in scans for c in candidates_by_h.get(_h, [])]
+    _all_watchlist_rows = [w for _h in scans for w in watchlist_by_h.get(_h, [])]
     all_candidates = {}
-    for c in candidates5 + candidates15:
+    for c in _all_candidates_rows:
         sym = str(c.get("symbol") or "").upper()
         if not sym:
             continue
@@ -4872,7 +4890,7 @@ async def _run_scan() -> dict:
             all_candidates[sym] = c
 
     all_watchlist = {}
-    for w in watchlist5 + watchlist15:
+    for w in _all_watchlist_rows:
         sym = str(w.get("symbol") or "").upper()
         if not sym:
             continue

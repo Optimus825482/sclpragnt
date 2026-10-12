@@ -4600,11 +4600,14 @@ async def list_velocity_candidates_since(since_epoch, until_epoch=None, limit: i
 async def get_velocity_calibration_stats(profile: str | None = None):
     """Koşullu dokunuş oranı + bileşen bazlı istatistik; eşik otomatik kalibrasyonu bununla yapılır.
 
-    profile: None (tümü), "5m" (vel-5dk-... journal'ları) veya "15m" (vel-15dk-...).
+    profile: None (tümü), "5m" (vel-5dk-...), "15m" (vel-15dk-...),
+             "30m" (vel-30dk-...), "60m" (vel-60dk-...).
     5dk-%2 ve 15dk-%3 profillerinin hit oranları çok farklı; harmanlanmış tek
     havuz otomatik kalibrasyonu yanlış yönlendiriyordu — profil ayrımı eklendi.
+    (2026-10-13: 30m/60m uzun-ufuk profilleri eklendi.)
     """
-    prefix = {"5m": "vel-5dk-%", "15m": "vel-15dk-%"}.get(profile)
+    prefix = {"5m": "vel-5dk-%", "15m": "vel-15dk-%",
+              "30m": "vel-30dk-%", "60m": "vel-60dk-%"}.get(profile)
     def op(conn):
         where = " WHERE candidate_id LIKE ?" if prefix else ""
         params = (prefix,) if prefix else ()

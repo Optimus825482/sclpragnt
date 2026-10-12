@@ -649,7 +649,11 @@ class WarmListStateWiringTests(unittest.IsolatedAsyncioTestCase):
         async def fake_detect(_filters, horizon_minutes=5, extra_symbols=None, kline_cache=None):
             if horizon_minutes == 5:
                 return self._scan(5, warm5)
-            return self._scan(15, warm15)
+            if horizon_minutes == 15:
+                return self._scan(15, warm15)
+            # 2026-10-13: ufuklar 5/15 + (bayrak açıksa) 30/60. Bu test yalnız
+            # 5/15 warm akışını doğrular; ek ufuklar BOŞ döner.
+            return self._scan(horizon_minutes, [])
 
         settings = {"enabled": False, "min_score": 70.0,
                     "min_score_explicit": False, "min_target_pct": 0.0}

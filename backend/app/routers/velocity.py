@@ -226,15 +226,39 @@ def _velocity_ml_feature_dict(closes, highs, lows, vols):
 
 
 def _velocity_horizon_from_candidate_id(candidate_id: str) -> int:
-    """'vel-5dk-%2-...' / 'vel-15dk-%3-...' adından ufuk dakikasını çıkarır."""
-    return 15 if str(candidate_id or "").startswith("vel-15dk") else 5
+    """'vel-5dk-%2-...' / 'vel-15dk-%3-...' / 'vel-30dk-%1-...' adından ufuk dakikasını çıkarır."""
+    cid = str(candidate_id or "")
+    for h, prof in VELOCITY_PROFILES.items():
+        if cid.startswith(f"vel-{prof['label']}"):
+            return int(h)
+    return 5
 
 
 VELOCITY_PROFILES = {
     # horizon_minutes: {target_pct, ölçüm penceresi, journal profile etiketi}
     5: {"target_pct": 2.0, "label": "5dk-%2"},
     15: {"target_pct": 3.0, "label": "15dk-%3"},
+    # UZUN UFUK (2026-10-13): 30dk/60dk eklendi. ÖLÇÜM (5909 gerçek aday, 15 gün):
+    # adayların ulaştığı EN YÜKSEK yükselme (MFE) ufuk uzadıkça büyür (medyan MFE
+    # 15m +0.18% → 30m +0.53% → 60m +1.04%) AMA ufuk SONUNDAKİ getiri NEGATİF
+    # (30m -0.31%, 60m -0.56%) ve MAE>MFE → pump-and-fade. Bu yüzden hedefler
+    # DÜŞÜK tutulur (ufuk sonunda değil, zirvede çıkış varsayımıyla) ve yalnızca
+    # peak-capture çıkış (TP/trailing) ile anlamlıdır; sabit tutma zarar eder.
+    30: {"target_pct": 1.0, "label": "30dk-%1"},
+    60: {"target_pct": 1.5, "label": "60dk-%1.5"},
 }
+
+# Ek ufukların (30/60) tarama yükü: her tur ek REST çağrısı demek. Bayrakla
+# kapatılabilir; kapalıyken davranış önceki (yalnız 5dk/15dk) ile BİREBİR aynı.
+VELOCITY_EXTENDED_HORIZONS = (30, 60)
+
+
+def _active_horizons() -> tuple[int, ...]:
+    """Bu turda taranacak ufuklar. Ek ufuklar bayrak/env ile kapatılabilir."""
+    base = (5, 15)
+    if bool(getattr(config, "VELOCITY_EXTRA_HORIZONS_ENABLED", True)):
+        return base + tuple(h for h in VELOCITY_EXTENDED_HORIZONS if h in VELOCITY_PROFILES)
+    return base
 
 
 def _panel_score(raw_score: float) -> float:
@@ -636,7 +660,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 exhausted = f"rsi_asiri_alim:{rsi:.0f}"
             # Profil bazlı ATR eşiği: kalibrasyon 5dk/15dk için ayrı kaydeder;
             # yoksa global varsayılan kullanılır.
-            prof_key = "5m" if horizon_minutes == 5 else "15m"
+            prof_key = f"{horizon_minutes}m"
             prof_atr = _velocity_profile_atr.get(prof_key) or VELOCITY_MIN_ATR_PCT
             # Üst fitil (Rejection Wick / Boğa Tuzağı) kontrolü (2026-09-19):
             # Satıcıların tepeye yığılıp sert bastığı (shooting star/pin bar) barlarda
@@ -1262,8 +1286,14 @@ VELOCITY_PROFILE_CALIB = {
            "min_atr": 0.10, "max_atr": 0.50, "min_samples": 30},
     "15m": {"target_low": 0.15, "target_high": 0.38, "step": 0.05,
             "min_atr": 0.10, "max_atr": 0.55, "min_samples": 30},
+    # Uzun ufuklar (2026-10-13): hedefleri düşük (30m %1, 60m %1.5) → daha geniş
+    # ATR aralığı ve biraz daha yüksek dokunuş hedefi; kendi eşiğini öğrenir.
+    "30m": {"target_low": 0.20, "target_high": 0.45, "step": 0.05,
+            "min_atr": 0.10, "max_atr": 0.60, "min_samples": 30},
+    "60m": {"target_low": 0.25, "target_high": 0.50, "step": 0.05,
+            "min_atr": 0.10, "max_atr": 0.65, "min_samples": 30},
 }
-_velocity_profile_atr = {"5m": None, "15m": None}  # lazy-loaded per-profile thresholds
+_velocity_profile_atr = {"5m": None, "15m": None, "30m": None, "60m": None}  # lazy-loaded per-profile thresholds
 
 
 async def velocity_calibrate():
@@ -1337,7 +1367,7 @@ async def load_velocity_atr_profiles():
         saved = await database.get_llm_setting("velocity_min_atr_pct", None)
         if saved:
             VELOCITY_MIN_ATR_PCT = round(float(saved), 2)
-        for profile in ("5m", "15m"):
+        for profile in VELOCITY_PROFILE_CALIB:      # 4 profil (5m/15m/30m/60m)
             key = f"velocity_min_atr_pct_{profile}"
             val = await database.get_llm_setting(key, None)
             if val:
@@ -1364,7 +1394,7 @@ async def velocity_learning_loop():
         saved = await database.get_llm_setting("velocity_min_atr_pct", None)
         if saved:
             VELOCITY_MIN_ATR_PCT = round(float(saved), 2)
-        for profile in ("5m", "15m"):
+        for profile in VELOCITY_PROFILE_CALIB:      # 4 profil (5m/15m/30m/60m)
             key = f"velocity_min_atr_pct_{profile}"
             val = await database.get_llm_setting(key, None)
             if val:

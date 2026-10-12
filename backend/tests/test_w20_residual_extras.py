@@ -49,9 +49,13 @@ class VelocityScanConcurrencyTests(unittest.TestCase):
     def test_run_scan_shares_kline_cache_across_horizons(self):
         module_source = inspect.getsource(monitoring)
         assert "_kline_cache: dict = {}" in module_source, "paylaşımlı kline önbelleği yok"
-        assert module_source.count("kline_cache=_kline_cache") >= 2, \
-            "iki profil de paylaşımlı önbelleğe bağlanmalı"
+        # 2026-10-13: ufuk döngüsü genelleşti (5/15 + opsiyonel 30/60) → tek
+        # `kline_cache=_kline_cache` çağrısı döngü içinde TÜM ufuklara geçer.
+        assert module_source.count("kline_cache=_kline_cache") >= 1, \
+            "paylaşımlı kline önbelleği tarama çağrısına bağlanmalı"
+        # Ana ufuklar (5/15) her durumda taranır (bayraktan bağımsız).
         assert "horizon_minutes=5" in module_source and "horizon_minutes=15" in module_source
+        assert "kline_cache=_kline_cache" in module_source
 
 
 class ConfigEnvRegimeDocTests(unittest.TestCase):
