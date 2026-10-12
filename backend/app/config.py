@@ -16,8 +16,8 @@ def _env_secret(name: str, default: str = "") -> str:
     """Secret oku: doğrudan env değeri, yoksa `<name>_FILE` dosyası (Docker secret).
 
     Docker/Coolify secret'ları dosya olarak bağlanır (ör. `/run/secrets/x`); bu
-    yardımcı `SCALPER_ADMIN_PASSWORD_FILE`, `SCALPER_SESSION_SECRET_FILE`,
-    `BINANCE_TR_BRIDGE_SECRET_FILE` gibi değişkenlerle içeriği okumamızı sağlar.
+    yardımcı `SCALPER_ADMIN_PASSWORD_FILE`, `SCALPER_SESSION_SECRET_FILE` gibi
+    değişkenlerle içeriği okumamızı sağlar.
     Öncelik: **boş olmayan env değeri kazanır**, yoksa dosya okunur. Dosya
     okunamazsa `default` döner — secret'ın yokluğu burada HATA değildir;
     fail-closed kararlar (boş/zayıf parola, boş session secret) çağıran tarafta
@@ -1083,18 +1083,11 @@ class Config:
     DISCOVERY_FAST_SCAN_MIN_GAP_SEC = max(10, int(os.getenv("DISCOVERY_FAST_SCAN_MIN_GAP_SEC", "15")))
     DISCOVERY_FAST_SCAN_ENABLED = os.getenv("DISCOVERY_FAST_SCAN_ENABLED", "true").lower() == "true"
 
-    # Binance Global -> Binance TR Lead-Lag Signal Bridge Alıcısı.
-    # GÜVENLİ VARSAYILAN (2026-10-07): alıcı HARİCİ bir sinyal kaynağının
-    # otomatik işlem tetiklemesine izin verir. Yalnızca placeholder bir secret
-    # varken enabled+AUTO_TRADE açık gelmek canlı-para ayağına kurşun sıkmaktır;
-    # bu yüzden VARSAYILAN KAPALI ("false"). Açmak için ortam değişkenleri
-    # AÇIKÇA verilmelidir. Boş/eksik secret zaten istek düzeyinde fail-closed
-    # (tr_bridge_receiver.verify_bridge_secret secret yoksa reddeder).
-    BINANCE_TR_BRIDGE_SECRET = _env_secret("BINANCE_TR_BRIDGE_SECRET", "")
-    BINANCE_TR_RECEIVER_ENABLED = os.getenv("BINANCE_TR_RECEIVER_ENABLED", "false").lower() == "true"
-    BINANCE_TR_BRIDGE_AUTO_TRADE = os.getenv("BINANCE_TR_BRIDGE_AUTO_TRADE", "false").lower() == "true"
-    BINANCE_TR_BRIDGE_MIN_SCORE = float(os.getenv("BINANCE_TR_BRIDGE_MIN_SCORE", "0.0"))
-    BINANCE_TR_BRIDGE_COOLDOWN_SEC = float(os.getenv("BINANCE_TR_BRIDGE_COOLDOWN_SEC", "60.0"))
+    # NOT (2026-10-12): Harici Binance Global→TR "lead-lag sinyal köprüsü"
+    # (`tr_bridge_receiver` + `/api/bridge/*`) KALDIRILDI. Karar: farklı bir
+    # uygulamadan sinyal almak yerine Global verisini v4 İÇİNDE işleyip sinyal
+    # üretmek (bkz. `global_radar.py` + `global_lead_lag.py`). Eski
+    # `BINANCE_TR_BRIDGE_*` ortam değişkenleri artık okunmaz.
 
     # Global erken-tespit katmanının TR sembol tipi kapısı. True iken Global'de
     # yakalanan bir hareket YALNIZCA Binance TR'de listeli baz varlığa sahipse
@@ -1130,8 +1123,8 @@ config = Config()
 # Güvenlik: placeholder session secret ile başlatmayı reddet. Placeholder
 # değer herkese açıktır; onunla imzalanan oturum çerezleri sahte üretilebilir.
 # Secret'lar `_env_secret` ile okunur → Docker/Coolify dosya-secret desteği:
-# `SCALPER_SESSION_SECRET_FILE`, `SCALPER_ADMIN_PASSWORD_FILE`,
-# `BINANCE_TR_BRIDGE_SECRET_FILE` (boş olmayan env değeri yine kazanır).
+# `SCALPER_SESSION_SECRET_FILE`, `SCALPER_ADMIN_PASSWORD_FILE` (boş olmayan env
+# değeri yine kazanır).
 _PLACEHOLDER_SECRETS = {
     "replace-with-at-least-32-random-bytes",
     "changeme",

@@ -3006,13 +3006,39 @@ async def _combined_scan_rows() -> list[dict]:
     squeeze = squeeze if isinstance(squeeze, list) else []
     mom = await _daily_momentum_candidates(scan5, scan15)
 
-    # Havuz: velocity adayları + izleme listesi + momentum + squeeze.
+    # YÜKSELİŞ ADAYLARI (2026-10-12): MACD snapshot'ından yükseliş/erken adaylarını
+    # doğrudan havuza kat. Önceden yükseliş yalnız `enrich_candidates` füzyonunda
+    # bir SKOR bileşeniydi; artık kendi başına da aday olabilir (velocity
+    # kapısını geçemeyen ama güçlü yükseliş eğilimi taşıyan semboller). SALT OKUNUR.
+    rising_rows: list[dict] = []
+    try:
+        from app import rising_signals as _rising
+        for rc in _rising.detect_rising_candidates():
+            sym = str(rc.get("symbol") or "").upper()
+            if not sym:
+                continue
+            rising_rows.append({
+                "symbol": sym,
+                "strategy": "rising",
+                "velocity_score": float(rc.get("score") or 0.0),
+                "panel_score": float(rc.get("score") or 0.0),
+                "target_pct": rc.get("target_pct"),
+                "rising_kind": rc.get("kind"),
+                "green": rc.get("green"),
+                "price": rc.get("price"),
+                "source_only": "rising",
+            })
+    except Exception as exc:
+        logger.debug("kombine: yükseliş adayları alınamadı: %s", exc)
+
+    # Havuz: velocity adayları + izleme listesi + momentum + squeeze + yükseliş.
     pool: list[dict] = []
     for src in (scan5, scan15):
         pool.extend(src.get("candidates") or [])
         pool.extend(src.get("watchlist") or [])
     pool.extend(mom)
     pool.extend(squeeze)
+    pool.extend(rising_rows)
 
     # Sembol bazında tekilleştir — en yüksek panel/velocity skoru kalan kayıt.
     by_sym: dict[str, dict] = {}

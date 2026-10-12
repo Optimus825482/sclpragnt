@@ -185,11 +185,9 @@ app.include_router(monitoring.router)
 
 from app.routers import auto_paper as auto_paper_routes
 from app.routers import macd_monitor as macd_monitor_routes
-from app.routers import bridge as bridge_routes
 from app.routers import snapback as snapback_routes
 app.include_router(auto_paper_routes.router)
 app.include_router(macd_monitor_routes.router)
-app.include_router(bridge_routes.router)
 app.include_router(snapback_routes.router)
 
 
@@ -250,10 +248,8 @@ async def edge_tts_audio(payload: dict, request: Request = None):
 
 @app.middleware("http")
 async def require_admin_session(request: Request, call_next):
-    public_paths = {"/health", "/api/auth/status", "/api/auth/login", "/api/bridge/global-signal"}
+    public_paths = {"/health", "/api/auth/status", "/api/auth/login"}
     if request.method == "OPTIONS" or request.url.path in public_paths:
-        return await call_next(request)
-    if request.url.path.startswith("/api/bridge/") and request.headers.get("X-Bridge-Secret"):
         return await call_next(request)
     if not security.auth_configured():
         return JSONResponse({"detail": "Yönetici kimlik doğrulaması yapılandırılmamış"}, status_code=503)
@@ -5005,13 +5001,8 @@ runtime_deps.bind(llm_chat_routes, "get_strategy_stats", get_strategy_stats)
 runtime_deps.bind(runtime_routes, "llm_open_paper_trade", llm_open_paper_trade)
 runtime_deps.bind(runtime_routes, "gainers_radar", gainers_radar)
 
-from app import tr_bridge_receiver
-tr_bridge_receiver.set_daily_loss_guard_fn(daily_loss_guard)
-tr_bridge_receiver.set_wallet_invalidator_fn(runtime_routes.invalidate_wallet_caches)
-
-# Global erken-tespit katmanı (2026-10-07): köprünün yerel karşılığı. Günlük
-# zarar kapısı AYNI fonksiyondur (Global tespiti de TR otonom işlemi açtığı
-# için aynı riske tabidir).
+# Global erken-tespit katmanı (2026-10-07): köprünün yerel karşılığı. Günlük zarar
+# kapısı AYNI fonksiyondur (Global tespiti de TR otonom işlemi açtığı için aynı
+# riske tabidir).
 from app import global_lead_lag
 global_lead_lag.set_daily_loss_guard_fn(daily_loss_guard)
-

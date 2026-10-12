@@ -35,9 +35,8 @@ from app.binance_tr_symbols import is_binance_tr_symbol, map_to_tr_symbol
 logger = logging.getLogger("scalper.global_lead_lag")
 
 # Günlük zarar kapısı `app/main.py`'de tanımlı; buradan import etmek döngüsel
-# import yaratır. Köprüyle (`tr_bridge_receiver.set_daily_loss_guard_fn`) AYNI
-# desen: fonksiyon açılışta enjekte edilir. Enjekte edilmezse kapı uygulanmaz
-# (yalnız paper işlem; gerçek emir yolu zaten yok).
+# import yaratır. Fonksiyon açılışta enjekte edilir. Enjekte edilmezse kapı
+# uygulanmaz (yalnız paper işlem; gerçek emir yolu zaten yok).
 _daily_loss_guard_fn: Callable[[], Any] | None = None
 
 
@@ -45,8 +44,7 @@ def set_daily_loss_guard_fn(fn: Callable[[], Any] | None) -> None:
     global _daily_loss_guard_fn
     _daily_loss_guard_fn = fn
 
-# Strateji etiketi mevcut köprüyle AYNI tutulur: eski köprü kayıtları ve yeni
-# yerel tarama aynı kalite/öğrenme raporunda toplanır.
+# Strateji etiketi: Global tespitleri aynı kalite/öğrenme raporunda toplanır.
 GLOBAL_SIGNAL_STRATEGY = "GLOBAL_LEAD_LAG"
 
 # (tr_symbol, signal_type) → son işlendiği epoch. Global taraması TR'nin kendi

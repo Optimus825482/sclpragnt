@@ -104,21 +104,16 @@ services:
       TOP_GAINERS_AUTO_ACTIVATE: ${TOP_GAINERS_AUTO_ACTIVATE:-true}
       TOP_GAINERS_LIMIT: ${TOP_GAINERS_LIMIT:-10}
       TOP_GAINERS_REFRESH_SEC: ${TOP_GAINERS_REFRESH_SEC:-600}
+      # Global erken-tespit katmanı (2026-10-12): v4 İÇİNDE Global USDT verisiyle
+      # residual lead-lag + velocity taraması. Harici köprü kaldırıldı; bu katman
+      # TR bildirimi + TR otonom paper üretir (Global venue/emir yolu YOK). CANLI AÇIK.
+      GLOBAL_SCAN_ENABLED: ${GLOBAL_SCAN_ENABLED:-true}
+      GLOBAL_SCAN_INTERVAL_SEC: ${GLOBAL_SCAN_INTERVAL_SEC:-30}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:alerts@example.com}
-      # 2026-10-07 (P1-11 #3): Köprü alıcısı GÜVENLİ VARSAYILANLARLA geçilir.
-      # `config.py:785-786` varsayılanları hâlâ `true/true` (alıcı açık +
-      # otomatik işlem açık) ve bu dosya onları EZMEZSE dağıtılan stack açık
-      # gelirdi. Burada alıcı KAPALI, otomatik işlem KAPALI verilir; operatör
-      # `.env`den bilinçli olarak açar. Secret varsayılanı BOŞ → alıcı açık
-      # olsa bile `verify_bridge_secret` boş secretla her isteği 401 reddeder
-      # (fail-closed). DB'de kayıtlı ayar (`bridge_receiver_enabled`) env'i
-      # ezebilir; o yüzden admin panelinden de kapalı doğrulayın.
-      BINANCE_TR_BRIDGE_SECRET: ${BINANCE_TR_BRIDGE_SECRET:-}
-      BINANCE_TR_RECEIVER_ENABLED: ${BINANCE_TR_RECEIVER_ENABLED:-0}
-      BINANCE_TR_BRIDGE_AUTO_TRADE: ${BINANCE_TR_BRIDGE_AUTO_TRADE:-0}
-      BINANCE_TR_BRIDGE_MIN_SCORE: ${BINANCE_TR_BRIDGE_MIN_SCORE:-0.0}
-      BINANCE_TR_BRIDGE_COOLDOWN_SEC: ${BINANCE_TR_BRIDGE_COOLDOWN_SEC:-60.0}
+      # NOT (2026-10-12): Harici Global→TR lead-lag sinyal köprüsü KALDIRILDI.
+      # `BINANCE_TR_BRIDGE_*` / `BINANCE_TR_RECEIVER_ENABLED` env'leri artık
+      # okunmaz; Global erken-tespit v4 içinde üretilir (`global_radar.py`).
       # WhatsApp grup bildirimi (Baileys köprüsü — ayrı konteyner).
       # Varsayılan KAPALI; operatör .env'den açar. URL iç ağ adıdır
       # (whatsapp-bridge:3001) — köprü dışarıya port AÇMAZ.
@@ -145,9 +140,9 @@ services:
     # değerler panelden "Environment Variables" olarak verilir.
     #
     # POSTGRES_PASSWORD, SCALPER_ADMIN_PASSWORD, SCALPER_SESSION_SECRET,
-    # LLM_ENCRYPTION_KEY, BINANCE_TR_BRIDGE_SECRET artık `.env` içinde
-    # yaşamalıdır; `.env` git-ignored'dır ve `docker inspect` yalnızca
-    # çalışma-anı çıktısını gösterir (kaynak repo temiz kalır).
+    # LLM_ENCRYPTION_KEY artık `.env` içinde yaşamalıdır; `.env` git-ignored'dır
+    # ve `docker inspect` yalnızca çalışma-anı çıktısını gösterir (kaynak repo
+    # temiz kalır).
     #
     # DAHA GÜÇLÜ SEÇENEK — dosya tabanlı secret (`*_FILE`) köprüsü:
     # Coolify "Secret Files" / Docker `secrets:` / `/run/secrets/*` dosyaları
@@ -157,8 +152,7 @@ services:
     #
     # NEDEN burada otomatik yapılmadı: `config.py` şu satırlarla DEĞERİ
     # `os.getenv("X")` ile doğrudan okur:
-    #     config.py:784  BINANCE_TR_BRIDGE_SECRET = os.getenv("BINANCE_TR_BRIDGE_SECRET", "")
-    #     config.py:818  _session_secret = os.getenv("SCALPER_SESSION_SECRET", "").strip()
+    #     config.py  _session_secret = os.getenv("SCALPER_SESSION_SECRET", "").strip()
     #     config.py:887  _admin_password = os.getenv("SCALPER_ADMIN_PASSWORD", "")
     # Değeri compose'da boş geçip yalnızca `X_FILE` vermek `:?` (fail-fast)
     # interpolasyonunu zayıflatır ve admin parola politikası boş parolada

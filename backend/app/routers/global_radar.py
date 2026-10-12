@@ -84,22 +84,39 @@ async def _scan_once() -> int:
     detections_seen: set[str] = set()
     processed = 0
     rows = list(scan5.get("candidates") or []) + list(scan15.get("candidates") or [])
+
+    # RESIDUAL LEAD-LAG (2026-10-12): düz momentum yerine Global'in TRY'nin henüz
+    # yansıtmadığı kısmını (residual) sinyal olarak EKLE. `signal_type="lead_lag"`
+    # → cooldown velocity'den AYRI tutulur (aynı sembol iki kaynaktan işlenebilir).
+    try:
+        from app import lead_lag_signal
+        ll = await lead_lag_signal.detect_leadlag_candidates(
+            adapter=global_adapter, symbols=config.GLOBAL_SYMBOLS, limit=5)
+        for c in ll:
+            rows.append({"symbol": c["symbol"], "signal_type": "lead_lag",
+                         "score": 60.0, "target_pct": 2.0, "horizon_minutes": 15,
+                         "_lead_lag": c})
+    except Exception as exc:
+        logger.debug("global_radar: lead-lag taraması atlandı: %s", exc)
+
     _status["last_candidates"] = len(rows)
     for cand in rows:
         symbol = str(cand.get("symbol") or "").upper()
         if not symbol or symbol in detections_seen:
             continue
         detections_seen.add(symbol)
+        stype = str(cand.get("signal_type") or "velocity")
         try:
             res = await global_lead_lag.handle_global_detection({
                 "global_symbol": symbol,
-                "signal_type": "velocity",
+                "signal_type": stype,
                 "score": cand.get("velocity_score") or cand.get("score") or 0.0,
                 "target_pct": cand.get("target_pct") or 2.0,
                 "horizon_minutes": int(cand.get("horizon_minutes") or 5),
                 "mode": cand.get("mode"),
                 "price": cand.get("price"),
                 "atr_pct": cand.get("atr_pct"),
+                "lead_lag": cand.get("_lead_lag"),
             })
             if res.get("status") == "processed":
                 processed += 1

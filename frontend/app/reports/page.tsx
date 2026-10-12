@@ -1751,7 +1751,7 @@ function SelfLearningTab() {
 export default function ReportsPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
-  const [tab, setTab] = useState<"overview" | "bridge" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "daily_rising" | "combined_paper" | "advanced">("overview");
+  const [tab, setTab] = useState<"overview" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "daily_rising" | "combined_paper" | "advanced">("overview");
   const [advancedSubTab, setAdvancedSubTab] = useState("velocity");
   // VARSAYILAN: "bu deploy" görünümü. `day=all` + arşiv kapalı = yalnız rapor
   // başlangıcı (2026-10-07 11:30) SONRASI veri. `selectedDay` bir güne
