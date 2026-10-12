@@ -81,10 +81,39 @@ ekseni — ama temel örüntü (brüt≈maliyet) yedi turda tutarlı olduğu iç
 | 5 | Rejim + 1 sa ufuk | NO_REGIME_EDGE |
 | 6 | Maker / maliyet mimarisi | NO_MAKER_EDGE |
 | 7 | **USD lead-lag (eşzamanlılık arındırılmış)** | **REAL_BUT_COST_BOUND** (ilk gerçek sinyal, edge≈maliyet) |
+| 7b | **+ Likidite ekseni (son deneme)** | **STABİL DEĞİL** (aşağıda) |
+
+## 7b) LİKİDİTE EKSENİ — son kalibrasyon denemesi (kullanıcı onayıyla)
+Hipotez: edge ≈ maliyet olduğundan, **yüksek likidite/düşük spread** semboller maliyeti düşürüp
+pozitife döndürebilir. Ölçüm (118 sembol, spread grupları):
+
+| Grup | n | Brüt | Taker (TR) | Global (%0.10) | Maker naif | Limit dolgu % | Limit net |
+|---|---|---|---|---|---|---|---|
+| Likit (spread<%0.10) | 1415 | +0.149% | −0.201% | **−0.051%** | +0.109% | 36.2% | **−0.74%** |
+| Orta (0.10–0.25) | 3977 | +0.179% | −0.171% | −0.021% | +0.139% | 29.4% | −0.74% |
+| İllikit (>0.25) | 3571 | +0.138% | −0.212% | −0.062% | +0.098% | 30.2% | −0.78% |
+
+**İlk kez bir hücre pozitife döndü:** likit + en güçlü sinyal (q95) + Global taker (%0.10) →
+**+0.024%**. Ama titiz doğrulama çökertti:
+- **3-fold:** fold1 **−0.147%** (negatif!), fold2 +0.049%, fold3 +0.085% → **KARARLI DEĞİL**
+- **Gün-gün:** 2/4 pozitif
+- **Limit dolgusu:** likiditede bile **−0.74%** (adverse selection; dolgu oranı yükselse de dolanlar kötü)
+
+Yani likidite filtresi marjinal iyileşme sağlıyor (Global ücretle taker neredeyse başabaş) ama
+**kararlı pozitif edge üretmiyor**; ilk fold negatif ve gerçek limit dolgusu yine çöküyor. Yedi
+turdur tekrarlanan örüntü burada da geçerli: **görünen pozitif → fold/gün testinde gürültü.**
+
+## Nihai karar (yedi tur + likidite ekseni)
+**`USD_LEADLAG_REAL_BUT_COST_BOUND` — KARARLI DEĞİL.**
+
+USD lead-lag gerçek bir öngörücüdür (residual +0.165); likidite filtresi maliyeti başabaşa kadar
+indirir, ancak (a) fold testinde kararsız, (b) gerçek limit dolgusunda adverse selection edge'i
+siliyor. **Bu sinyal ailesiyle kârlı, kararlı otonom işlem mevcut veri + maliyet yapısında mümkün
+görünmüyor.** Order-book/mikro-yapı yolu da (5–6. tur) aynı sonuca çıkıyor.
 
 ## Yeniden üretim
 ```
 python backend/scripts/research_usd_leadlag.py
 ```
 Rapor: `work/usd_leadlag_research.json` (gitignore).
-Kilitler: `tests/test_research_usd_leadlag.py` (look-ahead/parite/maliyet, mutasyonla doğrulandı).
+Kilitler: `tests/test_research_usd_leadlag.py` (look-ahead/parite/maliyet/likidite, mutasyonla).

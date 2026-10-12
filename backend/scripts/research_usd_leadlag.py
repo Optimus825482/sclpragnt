@@ -158,6 +158,67 @@ def analyze(rows: list[dict], comm_taker=0.0015, comm_maker=0.0002) -> dict:
     return out
 
 
+def analyze_liquidity(rows: list[dict], spread: dict, *, comm_global=0.0010,
+                      comm_maker=0.0002) -> dict:
+    """LİKİDİTE EKSENİ (2026-10-12): edge maliyete çok yakın olduğu için, yüksek
+    likidite/düşük spread semboller maliyeti düşürüp pozitife döndürür mü?
+
+    Hipotez: likit sembollerde (spread<%0.10) hem Global ücret (%0.10) hem daha iyi
+    limit dolgusu avantaj sağlar. Bulgu: marjinal iyileşme var ama KARARLI DEĞİL
+    (ilk fold negatif) ve limit dolgusu yine adverse selection ile çöküyor."""
+    n = len(rows); split = int(n * 0.6)
+    tr_rows, te_rows = rows[:split], rows[split:]
+    b, mg, mt = _beta(tr_rows)
+    for rs in (tr_rows, te_rows):
+        for r in rs:
+            r["res"] = r["g1"] - b * (r["t_same"] - mt)
+
+    def lik(s):
+        sp = spread.get(s)
+        return sp is not None and sp < 0.10
+
+    out = {"groups": {}}
+    for gname, pred in (("likit", lik),
+                        ("orta", lambda s: spread.get(s) is not None and 0.10 <= spread[s] < 0.25),
+                        ("illikit", lambda s: spread.get(s) is not None and spread[s] >= 0.25)):
+        thr = sorted(r["res"] for r in tr_rows)[int(len(tr_rows) * 0.85)]
+        sig = [r for r in te_rows if r["res"] >= thr and pred(r["s"]) and 3 in r["fwd"]]
+        seen = set(); u = []
+        for r in sig:
+            k = (r["s"], int(r["ts"] // 1800))
+            if k in seen:
+                continue
+            seen.add(k); u.append(r)
+        if not u:
+            continue
+        filled = [r for r in u if r["lo1"] is not None and r["lo3"] is not None
+                  and min(r["lo1"], r["lo3"]) <= r["c"] * 0.997]
+        out["groups"][gname] = {
+            "n": len(u),
+            "gross": round(statistics.mean([r["fwd"][3] for r in u]), 3),
+            "net_taker_tr": round(statistics.mean([r["fwd"][3] - 0.35 for r in u]), 3),
+            "net_global": round(statistics.mean([r["fwd"][3] - 2 * comm_global * 100 for r in u]), 3),
+            "net_maker_naive": round(statistics.mean([r["fwd"][3] - 2 * comm_maker * 100 for r in u]), 3),
+            "limit_fill_pct": round(100 * len(filled) / len(u), 1),
+            "net_maker_limit": round(statistics.mean([r["fwd"][3] - 0.3 - 2 * comm_maker * 100 for r in filled]), 3) if filled else None,
+        }
+
+    # likit + güçlü sinyal (q95) + Global ücret — 3-fold + gün-gün
+    folds = []
+    edges = [int(n * i / 4) for i in range(5)]
+    for k in range(1, 4):
+        trn = rows[:edges[k]]; tst = rows[edges[k]:edges[k + 1]]
+        bb, mgg, mtt = _beta(trn)
+        th = sorted(r["g1"] - bb * (r["t_same"] - mtt) for r in trn)[int(len(trn) * 0.95)]
+        sel = [r for r in tst if (r["g1"] - bb * (r["t_same"] - mtt)) >= th and lik(r["s"]) and 3 in r["fwd"]]
+        nets = [r["fwd"][3] - 2 * comm_global * 100 for r in sel]
+        folds.append({"fold": k, "n": len(nets),
+                      "net": round(statistics.mean(nets), 3) if nets else None})
+    out["folds_liquid_q95_global"] = folds
+    out["liquid_q95_global_stable"] = all((f["net"] or -1) > 0 for f in folds if f["n"] > 30)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="work/usd_leadlag_research.json")
@@ -178,6 +239,22 @@ def main() -> int:
               f"{str(v['net_maker_limit']):>12}{v['maker_win']:>11}")
     print(f"\n  gün-gün (taker, p85): {res['daily_taker']} → pozitif {res['daily_positive']}")
     print(f"  yoğunlaşma: {res['concentration']}")
+
+    # LİKİDİTE EKSENİ (spread dosyası varsa)
+    spread = {}
+    try:
+        spread = json.load(open(os.path.join(_WORK, "liquidity.json"), encoding="utf-8")).get("spread", {})
+    except Exception:
+        pass
+    if spread:
+        liq = analyze_liquidity(rows, spread)
+        res["liquidity"] = liq
+        print("\n  == LİKİDİTE EKSENİ (spread grupları, p85) ==")
+        print(f"  {'grup':8s}{'n':>6}{'brüt':>8}{'takerTR':>9}{'global':>9}{'makerNaif':>10}{'dolgu%':>8}{'limNet':>9}")
+        for g, v in liq["groups"].items():
+            print(f"  {g:8s}{v['n']:>6}{v['gross']:>8}{v['net_taker_tr']:>9}{v['net_global']:>9}"
+                  f"{v['net_maker_naive']:>10}{v['limit_fill_pct']:>8}{str(v['net_maker_limit']):>9}")
+        print(f"  likit+q95+Global 3-fold: {liq['folds_liquid_q95_global']} → KARARLI={liq['liquid_q95_global_stable']}")
     # verdict
     lim = res["scenarios"].get("p85", {}).get("net_maker_limit")
     verdict = ("USD_LEADLAG_REAL_BUT_COST_BOUND" if (res["residual_to_fwd"].get(3, 0) > 0.05)

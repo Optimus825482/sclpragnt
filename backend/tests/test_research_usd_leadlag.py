@@ -63,3 +63,34 @@ def test_limit_fill_requires_actual_touch():
     src = inspect.getsource(mod.analyze)
     assert "0.997" in src or "limit" in src, "limit fiyatı yok"
     assert "lo1" in src and "lo3" in src, "gerçek fiyat dokunuşu kontrolü yok"
+
+
+def test_liquidity_axis_uses_spread_groups():
+    """LİKİDİTE EKSENİ: `analyze_liquidity` spread gruplarını (likit/orta/illikit)
+    ayırmalı ve Global ücret + maker-limit adverse-selection senaryolarını İÇERMELİ."""
+    import importlib.util
+    import pathlib
+    import inspect
+    p = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "research_usd_leadlag.py"
+    spec = importlib.util.spec_from_file_location("usdll2", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert hasattr(mod, "analyze_liquidity")
+    src = inspect.getsource(mod.analyze_liquidity)
+    for key in ("likit", "illikit", "net_global", "net_maker_limit", "folds_liquid_q95_global"):
+        assert key in src, f"likidite ekseni bileşeni eksik: {key}"
+    assert "0.997" in src, "limit dolgu fiyatı yok"
+
+
+def test_liquidity_verdict_is_not_naive_maker():
+    """Kritik: likidite ekseni SONUCU naif maker'ı 'kararlı' saymamalı; adverse
+    selection (limit dolgu) ve fold stabilitesi kapıları olmalı."""
+    import importlib.util
+    import pathlib
+    import inspect
+    p = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "research_usd_leadlag.py"
+    spec = importlib.util.spec_from_file_location("usdll3", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    src = inspect.getsource(mod.analyze_liquidity)
+    assert "liquid_q95_global_stable" in src, "fold stabilite kapısı yok"
