@@ -329,6 +329,43 @@ class RegressionContracts(unittest.TestCase):
         source = (ROOT.parent / "docker-compose.yaml").read_text(encoding="utf-8")
         self.assertIn("DB_BACKEND: postgres", source)
 
+    def test_compose_yaml_valid_and_no_duplicate_keys(self):
+        """DEPLOY REGRESYONU (2026-10-12): `COMBINED_RISING_TOP_N` environment
+        bloğunda İKİ kez tanımlıydı → `docker compose up` "no service selected"
+        ile düştü. Compose geçerli YAML olmalı ve HİÇBİR blokta yinelenen anahtar
+        bulunmamalı (aksi halde Coolify deploy'u servis seçemez)."""
+        import yaml
+        path = ROOT.parent / "docker-compose.yaml"
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw)
+        # 1) Servisler tanınıyor mu?
+        self.assertIn("services", data)
+        self.assertIn("backend", data["services"])
+        self.assertIn("gateway", data["services"])
+        self.assertIn("postgres", data["services"])
+        # 2) Yinelenen anahtar taraması (indent bazlı; YAML aynı bloğu son kazanır
+        #    diye sessizce yutar — bu yüzden elle tararız).
+        import re
+        stack: list[tuple[int, dict]] = []
+        dups: list[str] = []
+        for i, ln in enumerate(raw.splitlines(), 1):
+            if not ln.strip() or ln.strip().startswith("#"):
+                continue
+            indent = len(ln) - len(ln.lstrip())
+            m = re.match(r"(\s*)([A-Za-z0-9_.-]+):", ln)
+            if not m:
+                continue
+            key = m.group(2)
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            if stack and stack[-1][0] < indent:
+                if key in stack[-1][1]:
+                    dups.append(f"{key} (satır {stack[-1][1][key]} ve {i})")
+                else:
+                    stack[-1][1][key] = i
+            stack.append((indent, {}))
+        self.assertEqual(dups, [], f"docker-compose.yaml'da yinelenen anahtar: {dups}")
+
     def test_compose_passes_runtime_strategy_and_llm_configuration(self):
         source = (ROOT.parent / "docker-compose.yaml").read_text(encoding="utf-8")
         self.assertIn("LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY:?", source)
