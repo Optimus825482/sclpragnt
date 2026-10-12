@@ -714,6 +714,19 @@ class Config:
     # radar listesine/bildirimine bu panel eşiğinden itibaren girer.
     UNIFIED_FUSION_MIN_SCORE = float(os.getenv("UNIFIED_FUSION_MIN_SCORE", "60"))
 
+    # BİRLEŞİK YÜKSELİŞ HAVUZU (2026-10-13) — rising_pool.py.
+    # Havuz tüm motorları tek aday listesinde birleştirir; "gerçekten yükselen"
+    # kapısı (is_genuinely_rising) üç koşulu ister: fiyat yukarı + ortak karar
+    # (master_surge composite) + motor mutabakatı (confluence). Aşama C'ye kadar
+    # canlıya BAĞLANMAZ — önce replay/backtest (Aşama B).
+    UNIFIED_POOL_ENABLED = os.getenv("UNIFIED_POOL_ENABLED", "false").lower() == "true"
+    # Ortak karar eşiği: master_surge composite_index (0-100). 60 = katmanların
+    # ağırlıklı ortalaması "orta-iyi" bandı; MASTER_SURGE_MIN_SCORE (70) sert kapı
+    # olarak master_surge içinde ayrıca uygulanır.
+    POOL_MIN_COMPOSITE = float(os.getenv("POOL_MIN_COMPOSITE", "60.0"))
+    # Motor mutabakatı: en az kaç katman teyit etmeli (4 katmandan). 2 = yarı.
+    POOL_MIN_CONFLUENCE = int(os.getenv("POOL_MIN_CONFLUENCE", "2"))
+
     # Net Kâr Hedefi & Maliyet Güvencesi (Kullanıcı Kuralı 2026-09-19):
     # %2.0 hedeflenen scalping işleminde komisyon + spread maliyetleri (~%1.0)
     # düşüldükten SONRA net %2.0 kâr kalacak şekilde brüt hedef (TP) hesaplanır.
