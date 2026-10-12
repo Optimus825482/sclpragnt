@@ -505,9 +505,25 @@ class Config:
     # geçmişse (peak >= giriş) bu kural UYGULANMAZ; o zaman normal TP/trailing/
     # max-hold işler. 0 = kapalı.
     COMBINED_PAPER_NO_PROFIT_MIN = float(os.getenv("COMBINED_PAPER_NO_PROFIT_MIN", "30"))
-    # İlk koruma stop'u (kâr kilidi öncesi zarar sınırı) — potansiyel ile ölçeklenir,
-    # ama en az bu taban uygulanır.
-    COMBINED_PAPER_SL_PCT = float(os.getenv("COMBINED_PAPER_SL_PCT", "3.0"))
+    # İlk koruma stop'u (kâr kilidi öncesi zarar sınırı).
+    #
+    # KALİBRASYON (2026-10-12, `scripts/calibrate_combined_paper.py`): %3.0 → %1.0.
+    # 5.909 GERÇEK velocity adayı (passes=true) + gerçek 5m/1m mumlar üzerinde
+    # walk-forward (ilk %60 eğitim / son %40 sınav) SL/trailing/no-profit grid'i
+    # tarandı. Bulgular:
+    #   * Hiçbir çıkış geometrisi POZİTİF EV üretmiyor → edge GİRİŞ sinyalinde
+    #     yok; bu ayar "kaybı azaltır", "kâra çevirmez" (dürüst çerçeve).
+    #   * Dar stop MONOTON ve tutarlı biçimde daha iyi: %3→%1.0 kaybı 5m'de
+    #     -0.83 → -0.42 puan/işlem, 1m'de -0.70 → -0.34'e indirir; eşleştirilmiş
+    #     fark testi t≈6.6–7.8 (ANLAMLI), her slippage seviyesinde (0.025→0.30%)
+    #     ve her iki zaman diliminde aynı yön.
+    #   * Kazanan kısıtlı grid: sl=1.0, mevcut trailing (trig 2.0 / gap 1.0)
+    #     KORUNUR — trail testleri ve kullanıcının "trailing çok sıkı olmasın"
+    #     kararı (2026-10-11) ile çakışmasın diye trailing'e dokunulmadı.
+    # NEDEN İŞE YARIYOR: kayıtlı medyan zirve (MFE) ~+%1.7 iken %3 stop, kazananın
+    # zirvesini geri verip -%3'te kapanmasına izin veriyordu; %1 taban kaybı erken
+    # kesiyor. `paper_sim.simulate_exit` aynı sabiti okur → sim ile canlı ayrışamaz.
+    COMBINED_PAPER_SL_PCT = float(os.getenv("COMBINED_PAPER_SL_PCT", "1.0"))
     DAILY_MOMENTUM_RET_8H_MIN = float(os.getenv("DAILY_MOMENTUM_RET_8H_MIN", "2.0"))
     DAILY_MOMENTUM_ATR_MIN = float(os.getenv("DAILY_MOMENTUM_ATR_MIN", "0.5"))
     DAILY_MOMENTUM_ADX_MIN = float(os.getenv("DAILY_MOMENTUM_ADX_MIN", "25.0"))

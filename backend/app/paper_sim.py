@@ -63,11 +63,13 @@ def simulate_exit(bars, entry: float, *, entry_time: float = 0.0,
                   trail_trigger_pct: float = 2.0, trail_gap_pct: float = 1.0,
                   cancel_tp_on_trail: bool = True, no_profit_min: float = 30.0,
                   max_hold_min: float = 120.0, commission_pct: float = 0.0015,
-                  slippage_pct: float = 0.0) -> dict:
+                  slippage_pct: float = 0.0, bar_seconds: float = _5M_SEC) -> dict:
     """Adayı otonom paper kurallarıyla mum-mum oynat; gerçekleşebilir net% ver.
 
     `bars`: ARTAN zaman sıralı, her biri {"open_time": sn, "high","low","close"}.
     `entry_time`: pozisyonun açıldığı epoch (sn) — süre kuralları buna göre.
+    `bar_seconds`: bir mumun süresi (sn) — tutma süresi bundan türetilir
+      (varsayılan 5m; kalibrasyon 1m ile koşarsa 60 verir).
     Dönen: {"sim_pct": float|None, "reason": str, "exit_price": float|None}.
     Çıkış olmazsa (pozisyon hâlâ açık) son kapanışa göre işaretlenir (`reason="open"`).
     """
@@ -99,8 +101,8 @@ def simulate_exit(bars, entry: float, *, entry_time: float = 0.0,
             continue
         last_close = close
         bar_open = float(b.get("open_time") or 0.0)
-        # Mum kapanış zamanı (5m) — süre kuralları için.
-        bar_close_t = bar_open + _5M_SEC if bar_open > 0 else 0.0
+        # Mum kapanış zamanı — süre kuralları için.
+        bar_close_t = bar_open + bar_seconds if bar_open > 0 else 0.0
         hold_min = ((bar_close_t - entry_time) / 60.0) if (entry_time > 0 and bar_close_t > 0) else 0.0
 
         # 1) Tepe + kâr kilidi/trailing (canlı mantığın aynısı).

@@ -259,3 +259,42 @@ def test_no_profit_timeout_skips_winner(monkeypatch):
              "trailing_activated": False, "entry_time": time.time() - 31 * 60}
     asyncio.run(cp._manage_single(trade, time.time()))
     assert "no_profit_timeout" not in closed
+
+
+def test_sl_pct_calibrated_to_one_percent():
+    """KALİBRASYON KİLİDİ (2026-10-12): SL tabanı %1.0.
+
+    `scripts/calibrate_combined_paper.py` 5.909 gerçek velocity adayı + gerçek
+    mumlar üzerinde walk-forward taradı: %3 stop kaybı -0.83 puan/işlem iken
+    %1 stop -0.42'ye indiriyor (eşleştirilmiş t≈7, 5m+1m, her slippage'da).
+    Bu test ayarın sessizce eski geniş değere dönmesini engeller."""
+    c = config.config
+    assert c.COMBINED_PAPER_SL_PCT == 1.0, \
+        "SL kalibrasyonla %1.0 seçildi; genişletmek veriyle gerekçelendirilmeli"
+
+
+def test_paper_sim_reads_same_sl_as_combined_paper():
+    """Simülasyon (raporlardaki 'gerçekleşebilir %') ve canlı paper AYNI SL
+    sabitini okumalı — yoksa sim ekranda yanıltıcı olur."""
+    import inspect
+    from app import database as db
+    src = inspect.getsource(db.evaluate_daily_rising_report)
+    assert "COMBINED_PAPER_SL_PCT" in src, "sim SL'i canlı sabitten okumalı"
+
+
+def test_calibration_grid_respects_deployable_constraints():
+    """Kalibrasyon grid'i YALNIZ uygulanabilir konfig üretmeli: gap>=0.8 ve
+    trigger>gap (trail testleriyle çakışmasın)."""
+    import importlib.util
+    import pathlib
+    p = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "calibrate_combined_paper.py"
+    spec = importlib.util.spec_from_file_location("calib", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    grid = mod._grid(mod.DEFAULT_CFG)
+    assert grid, "grid boş"
+    for cfg in grid:
+        assert cfg["trail_gap_pct"] >= 0.8, f"uygulanamaz dar gap: {cfg}"
+        assert cfg["trail_trigger_pct"] > cfg["trail_gap_pct"], f"trigger<=gap: {cfg}"
+    # Varsayılan taban kalibrasyonla hizalı olmalı.
+    assert mod.DEFAULT_CFG["sl_pct"] == 1.0
