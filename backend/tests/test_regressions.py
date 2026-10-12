@@ -366,6 +366,41 @@ class RegressionContracts(unittest.TestCase):
             stack.append((indent, {}))
         self.assertEqual(dups, [], f"docker-compose.yaml'da yinelenen anahtar: {dups}")
 
+    def test_compose_traefik_routing_targets_gateway_correctly(self):
+        """DEPLOY REGRESYONU (2026-10-12 #2): dışarıdan "no available server".
+
+        Gateway İKİ ağda (`default` + `coolify`). Traefik'e
+        `traefik.docker.network` verilmezse çok ağlı konteynerin IP'sini
+        RASTGELE bir ağdan seçer; `default` seçilirse Traefik o IP'ye ulaşamaz
+        → router var ama arkasında sağlıklı sunucu yok → "no available server".
+        Ayrıca `loadbalancer.server.port` olmadan Traefik servisin portunu
+        bilemez. İkisi birlikte gateway'in Traefik tanımını kurar."""
+        import yaml
+
+        data = yaml.safe_load((ROOT.parent / "docker-compose.yaml").read_text(encoding="utf-8"))
+        gw = data["services"]["gateway"]
+        labels = gw.get("labels", [])
+        # 1) Traefik'e açıkça bağlanmalı.
+        self.assertIn("traefik.enable=true", labels)
+        # 2) Çok ağlı servis için hedef ağ SABİTLENMELİ (yoksa rastgele IP →
+        #    "no available server"). Gateway hangi ağlardaysa o setin içinde
+        #    olmalı.
+        net_labels = [l for l in labels if l.startswith("traefik.docker.network=")]
+        self.assertEqual(
+            len(net_labels), 1,
+            "gateway çok ağlı; tam olarak bir traefik.docker.network etiketi olmalı",
+        )
+        target_net = net_labels[0].split("=", 1)[1]
+        self.assertIn(
+            target_net, gw.get("networks", []),
+            f"traefik.docker.network={target_net} gateway'in ağları arasında değil",
+        )
+        # 3) Traefik servisin portunu bilmeli (nginx 80 dinler).
+        self.assertIn(
+            "traefik.http.services.gateway.loadbalancer.server.port=80", labels,
+            "loadbalancer.server.port yoksa Traefik servisi tanımlayamaz",
+        )
+
     def test_compose_passes_runtime_strategy_and_llm_configuration(self):
         source = (ROOT.parent / "docker-compose.yaml").read_text(encoding="utf-8")
         self.assertIn("LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY:?", source)

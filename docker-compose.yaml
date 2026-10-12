@@ -286,6 +286,17 @@ services:
     # Bu etiketler Coolify'daki "No health check configured" uyarısını çözer.
     labels:
       - "traefik.enable=true"
+      # KRİTİK (2026-10-12 #2): Gateway İKİ ağda (default + coolify). Traefik'e
+      # `traefik.docker.network` verilmezse, çok ağlı konteynerin hangi ağdan IP
+      # alacağını RASTGELE seçer (docker ağları döndürdüğü sıraya göre). `default`
+      # ağını seçerse Traefik o IP'ye ulaşamaz → router var ama arkasında sağlıklı
+      # sunucu yok → "no available server". Coolify proxy'si `coolify` ağında
+      # olduğundan bu ağ SABİTLENMELİDİR.
+      - "traefik.docker.network=coolify"
+      # KRİTİK (2026-10-12): `loadbalancer.server.port` OLMADAN Traefik servisin
+      # portunu bilemez → router var ama "no available server" (arayüz açılmaz).
+      # Gateway nginx 80 dinler; Traefik buradan yönlendirir.
+      - "traefik.http.services.gateway.loadbalancer.server.port=80"
       - "traefik.http.services.gateway.loadbalancer.healthcheck.path=/gateway-health"
       - "traefik.http.services.gateway.loadbalancer.healthcheck.interval=10s"
       - "traefik.http.services.gateway.loadbalancer.healthcheck.timeout=3s"

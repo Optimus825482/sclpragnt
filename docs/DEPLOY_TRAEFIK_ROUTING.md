@@ -12,11 +12,27 @@ dönüyor.
 - Gateway = nginx; `/api`, `/health`, `/ws` → backend (`backend:8004`),
   geri kalan → frontend (`frontend:3004`).
 
-## Kök neden (big olasılık)
+## Kök neden (büyük olasılık)
 Coolify, docker-compose kaynaklarında domain etiketini **compose'daki ilk
 servise** (varsayılan: `postgres`) uygular. `postgres` `coolify` ağında
 olmadığından Traefik için "no available server" oluşur. Doğru hedef:
 `gateway:80`.
+
+## Kök neden #2 (2026-10-12) — çok ağlı gateway + eksik Traefik etiketleri
+Log'da gateway (nginx) sağlıklı çalışırken dışarıdan hâlâ "no available server"
+görüldü. Neden **gateway'in kendi Traefik tanımıydı**, frontend portu değil:
+
+1. **`traefik.docker.network` YOKTU.** Gateway hem `default` hem `coolify`
+   ağındadır. Traefik'e hedef ağ söylenmezse, çok ağlı konteynerin IP'sini
+   ağların dönüş sırasına göre **rastgele** seçer. `default` seçilirse proxy o
+   IP'ye ulaşamaz → router var ama arkasında sağlıklı sunucu yok.
+2. **`loadbalancer.server.port` YOKTU.** Traefik servisin portunu bilemezse
+   servisi oluşturamaz.
+
+İkisi birlikte `docker-compose.yaml` gateway etiketlerine eklendi:
+`traefik.docker.network=coolify` + `...loadbalancer.server.port=80`.
+Regresyon kilidi: `backend/tests/test_regressions.py::
+test_compose_traefik_routing_targets_gateway_correctly`.
 
 ## Doğrulama (sunucu)
 ```bash
