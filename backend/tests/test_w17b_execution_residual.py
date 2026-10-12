@@ -84,7 +84,7 @@ class ReopenChurnGuardTests(unittest.IsolatedAsyncioTestCase):
         cand = {"panel_score": 80.0, "price": 100.0, "target_pct": 2.0, "horizon_minutes": 5}
         with patch.object(auto_paper, "get_auto_paper_settings",
                           AsyncMock(return_value={"reopen_after_protect_close": True})), \
-             patch.object(auto_paper.database, "get_recent_auto_paper_trade_by_notification",
+             patch.object(auto_paper.database, "get_recent_auto_paper_trade_by_notification_key",
                           AsyncMock(return_value=None)), \
              patch("app.routers.monitoring.get_cached_radar_candidate", return_value=cand), \
              patch.object(auto_paper, "try_open_from_notification", fake_open):
@@ -105,7 +105,7 @@ class ReopenChurnGuardTests(unittest.IsolatedAsyncioTestCase):
         cand = {"panel_score": 80.0, "price": 100.0, "target_pct": 2.0}
         with patch.object(auto_paper, "get_auto_paper_settings",
                           AsyncMock(return_value={"reopen_after_protect_close": True})), \
-             patch.object(auto_paper.database, "get_recent_auto_paper_trade_by_notification",
+             patch.object(auto_paper.database, "get_recent_auto_paper_trade_by_notification_key",
                           AsyncMock(return_value=None)), \
              patch("app.routers.monitoring.get_cached_radar_candidate", return_value=cand), \
              patch.object(auto_paper, "try_open_from_notification", fake_open):
@@ -115,7 +115,7 @@ class ReopenChurnGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls["n"], 1, "saatte en fazla 1 yeniden açma denemesi olmalı")
 
     async def test_reopen_skips_when_db_already_traded_this_hour(self):
-        """DB churn kontrolü (notification_id) yeniden açmayı da kapsamalı."""
+        """DB churn kontrolü (notification_key) yeniden açmayı da kapsamalı."""
         calls = {"n": 0}
 
         async def fake_open(notif):
@@ -125,12 +125,55 @@ class ReopenChurnGuardTests(unittest.IsolatedAsyncioTestCase):
         cand = {"panel_score": 80.0, "price": 100.0, "target_pct": 2.0}
         with patch.object(auto_paper, "get_auto_paper_settings",
                           AsyncMock(return_value={"reopen_after_protect_close": True})), \
-             patch.object(auto_paper.database, "get_recent_auto_paper_trade_by_notification",
+             patch.object(auto_paper.database, "get_recent_auto_paper_trade_by_notification_key",
                           AsyncMock(return_value={"id": 1, "status": "open"})), \
              patch("app.routers.monitoring.get_cached_radar_candidate", return_value=cand), \
              patch.object(auto_paper, "try_open_from_notification", fake_open):
             await auto_paper._maybe_reopen_after_protect_close("APTEST", 1)
         self.assertEqual(calls["n"], 0, "aynı saat kovasında DB kaydı varsa açılmamalı")
+
+    async def test_reopen_dedup_uses_notification_key_not_bigint(self):
+        """R3-09 (2026-10-12): reopen ön-kontrolü, KARARLI string id'yi
+        (`reopen:{SYM}:{kova}`) bigint kolonlu `...by_notification`'a VERMEMELİ.
+
+        Eski kod string'i bigint'e veriyordu → PostgreSQL "invalid input syntax
+        for type bigint" fırlatıp `except` ile yutuluyordu: hem her saat sessiz
+        tip hatası loglanıyor hem dedup hiç çalışmıyordu (churn baypası).
+        Doğru kolon `notification_key` (TEXT)."""
+        calls: dict[str, object] = {}
+
+        async def fake_by_notification(nid):
+            calls["by_notification"] = nid
+            # Gerçek PostgreSQL: bigint kolonuna sayı olmayan string → hata.
+            if not isinstance(nid, int):
+                raise ValueError("invalid input syntax for type bigint")
+            return None
+
+        async def fake_by_key(key):
+            calls["by_key"] = key
+            return None  # ilk saat kovası: kayıt yok → devam
+
+        async def fake_open(notif):
+            calls["opened"] = notif
+            return {"status": "opened"}
+
+        cand = {"panel_score": 80.0, "price": 100.0, "target_pct": 2.0}
+        with patch.object(auto_paper, "get_auto_paper_settings",
+                          AsyncMock(return_value={"reopen_after_protect_close": True})), \
+             patch.object(auto_paper.database, "get_recent_auto_paper_trade_by_notification",
+                          fake_by_notification), \
+             patch.object(auto_paper.database, "get_recent_auto_paper_trade_by_notification_key",
+                          fake_by_key), \
+             patch("app.routers.monitoring.get_cached_radar_candidate", return_value=cand), \
+             patch.object(auto_paper, "try_open_from_notification", fake_open):
+            await auto_paper._maybe_reopen_after_protect_close("APTEST", 777)
+        # String reopen id key kolonuna gitmeli...
+        self.assertIn("by_key", calls, "reopen dedup'ı notification_key üzerinden sorgulamalı")
+        self.assertTrue(str(calls["by_key"]).startswith("reopen:APTEST:"))
+        # ...ve bigint fonksiyonu string ile ASLA çağrılmamalı.
+        self.assertNotIn("by_notification", calls,
+                         "string reopen id bigint kolonuna sorgulanmamalı (tip hatası)")
+        self.assertIn("opened", calls, "dedup bulamayınca açma denenmeli")
 
 
 # ---------------------------------------------------------------------------

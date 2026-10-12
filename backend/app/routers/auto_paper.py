@@ -1424,11 +1424,17 @@ async def _maybe_reopen_after_protect_close(symbol: str, orig_notification_id=No
         _reopen_last_attempt[symbol] = now
 
         # D-06: kararlı bildirim id'si + mevcut dedup kontrolünü ZORLA. Bu saat
-        # kovasında zaten bir yeniden açma yapıldıysa (DB'de notification_id var)
-        # tekrar açma.
+        # kovasında zaten bir yeniden açma yapıldıysa tekrar açma.
         reopen_id = _reopen_notification_id(symbol, now)
+        # R3-09 (2026-10-12): erken ön-kontrol `notification_key` (TEXT) üzerinden
+        # yapılır. Eskiden string `reopen_id` bigint kolonlu
+        # `...by_notification`'a veriliyordu → PostgreSQL "invalid input syntax
+        # for type bigint" fırlatıyor, `except` yutuyordu: hem her saat sessiz tip
+        # hatası loglanıyor hem bu ön-kontrol HİÇ çalışmıyordu. `reopen` akışının
+        # yazma yolu (auto_paper.py:789) da string id'yi `notification_key`e
+        # koyduğundan churn kontrolü aynı kolondan okunmalıdır.
         try:
-            prior_reopen = await database.get_recent_auto_paper_trade_by_notification(reopen_id)
+            prior_reopen = await database.get_recent_auto_paper_trade_by_notification_key(reopen_id)
         except Exception:
             prior_reopen = None
         if prior_reopen:
