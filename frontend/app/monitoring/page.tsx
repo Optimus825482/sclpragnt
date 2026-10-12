@@ -461,6 +461,22 @@ const panelScore = (c: { panel_score?: number | null; velocity_score?: number | 
   return Math.round(100 * Math.min(1, raw / SCORE_NORM_CAP) * 10) / 10;
 };
 
+/** "Son Uyarılar" listesi için: DB'deki `score` değerini PANEL (0-100) ölçeğine getir.
+ *  2026-10-13: liste eskiden ham `score`'u olduğu gibi gösteriyordu (ör. 22250) →
+ *  kart/rapor ile aynı ölçekte görünmüyordu. Panel her zaman ≤100'dür; >100 ise
+ *  kayıt ESKİ/ham ölçektedir → log haritasıyla normalize et. (Raporlar sayfası da
+ *  aynı kuralı `_stored_panel_score` ile uygular.) */
+const panelScoreFromStored = (v: number | null | undefined): number | null => {
+  const s = numOrNull(v);
+  if (s == null) return null;
+  if (s <= 100) return s;                    // zaten panel ölçeği
+  if (s <= 0) return 0;
+  if (SCORE_NORM_MODE === "log") {
+    return Math.round(100 * Math.log1p(s) / Math.log1p(SCORE_NORM_LOG_REF) * 10) / 10;
+  }
+  return Math.round(100 * Math.min(1, s / SCORE_NORM_CAP) * 10) / 10;
+};
+
 // UX (2026-09-27): skor renk eşikleri lib/scoreTone'a taşındı — Grafik radar
 // paneli de AYNI eşikleri kullanıyor (eskiden 70/50 kopyasıydı → tutarsız renk).
 const scoreColor = scoreToneClass;
@@ -1707,7 +1723,7 @@ export default function MonitoringPage() {
           ) : (
             <div className="space-y-2">
               {historyRows.map((row, index) => {
-                const score = numOrNull(row.score);
+                const score = panelScoreFromStored(row.score);
                 const targetPct = numOrNull(row.target_pct);
                 const ts = toMs(row.detected_at);
                 const isPush = row.sent_via_push === true;

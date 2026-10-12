@@ -47,6 +47,23 @@ def get_status() -> dict:
     return dict(_status)
 
 
+def _leadlag_panel_score(residual) -> float:
+    """Residual (%, GL−β·TR) → PANEL skoru (0-100), monoton ve sınırlı.
+
+    Eşleme (kalibre): 0.35→~50 (asgari sinyal), 1.0→~72, 2.5→~92, >=4→~99.
+    Böylece admin eşiği (ör. 85) lead-lag adaylarını da AMAÇLANDIĞI gibi süzer;
+    eski sabit 60 eşiği anlamsız kılıyordu (her aday eşik altı/sabit)."""
+    try:
+        r = float(residual or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if r <= 0:
+        return 0.0
+    # 100 * log1p(r/0.35) / log1p(4/0.35): r=0.35→~50 değil ama monoton; log ölçek
+    import math
+    return round(min(99.0, 100.0 * math.log1p(r / 0.35) / math.log1p(4.0 / 0.35)), 1)
+
+
 async def _scan_once() -> int:
     """Tek Global tarama turu; işlenen tespit sayısını döndürür."""
     from app.state import global_market
@@ -88,13 +105,17 @@ async def _scan_once() -> int:
     # RESIDUAL LEAD-LAG (2026-10-12): düz momentum yerine Global'in TRY'nin henüz
     # yansıtmadığı kısmını (residual) sinyal olarak EKLE. `signal_type="lead_lag"`
     # → cooldown velocity'den AYRI tutulur (aynı sembol iki kaynaktan işlenebilir).
+    # SKOR (2026-10-13 düzeltmesi): sabit 60 YERİNE residual büyüklüğünden PANEL
+    # skoru (0-100) türetilir — böylece admin eşiği (ör. 85) lead-lag için de
+    # anlamlı çalışır. Eşleme: residual 0.35→~50, 1.0→~72, 2.5→~92 (monoton).
     try:
         from app import lead_lag_signal
         ll = await lead_lag_signal.detect_leadlag_candidates(
             adapter=global_adapter, symbols=config.GLOBAL_SYMBOLS, limit=5)
         for c in ll:
             rows.append({"symbol": c["symbol"], "signal_type": "lead_lag",
-                         "score": 60.0, "target_pct": 2.0, "horizon_minutes": 15,
+                         "score": _leadlag_panel_score(c.get("residual")),
+                         "target_pct": 2.0, "horizon_minutes": 15,
                          "_lead_lag": c})
     except Exception as exc:
         logger.debug("global_radar: lead-lag taraması atlandı: %s", exc)
@@ -106,11 +127,21 @@ async def _scan_once() -> int:
             continue
         detections_seen.add(symbol)
         stype = str(cand.get("signal_type") or "velocity")
+        # SKOR ÖLÇEĞİ (2026-10-13 düzeltmesi): `handle_global_detection` artık
+        # PANEL (0-100) skoru bekler (eşik kapısı panel ölçeğinde). Velocity
+        # adayının `velocity_score`'u HAM ölçektedir → panel'e çevrilir. lead_lag
+        # adayının skoru zaten panel (yukarıda türetildi).
+        if stype == "lead_lag":
+            panel_score = float(cand.get("score") or 0.0)
+        else:
+            raw_vs = float(cand.get("velocity_score") or cand.get("score") or 0.0)
+            from app.routers.monitoring import normalize_score
+            panel_score = float(normalize_score(raw_vs))
         try:
             res = await global_lead_lag.handle_global_detection({
                 "global_symbol": symbol,
                 "signal_type": stype,
-                "score": cand.get("velocity_score") or cand.get("score") or 0.0,
+                "score": panel_score,
                 "target_pct": cand.get("target_pct") or 2.0,
                 "horizon_minutes": int(cand.get("horizon_minutes") or 5),
                 "mode": cand.get("mode"),

@@ -5945,15 +5945,34 @@ async def reset_monitoring_notifications(request: Request):
 
 @router.get("/api/monitoring/notifications")
 async def monitoring_notification_history():
-    """Son bildirim geçmişi: kalıcı DB kaydı + oturum içi liste."""
+    """Son bildirim geçmişi: kalıcı DB kaydı + oturum içi liste.
+
+    2026-10-13: kalıcı kayıtlardaki `score`, kart/rapor ile TUTARLI olacak şekilde
+    PANEL (0-100) ölçeğine getirilir. Panel skoru HER ZAMAN ≤100'dür; bir kayıt
+    >100 ise ESKİ/ham velocity_score ölçeğindedir (ör. 22250) → `_panel_from_raw`
+    log haritasıyla normalize edilir. Eskiden bu uç ham değeri olduğu gibi
+    döndürüyordu → aynı ekranda kart (panel ~90) ile liste (ham 22250) iki farklı
+    ölçek gösteriyordu.
+    """
+    def _norm_row(row: dict) -> None:
+        try:
+            s = float(row.get("score") or 0)
+        except (TypeError, ValueError):
+            return
+        if s > 100.0:
+            row["score"] = _panel_from_raw(s)
     try:
         persisted = await database.list_monitoring_notifications(limit=50)
+        for row in persisted:
+            _norm_row(row)
     except Exception as exc:
         logger.warning("monitoring bildirim geçmişi okunamadı: %s", exc)
         persisted = []
     # M1/P2 (R2-18): oturum geçmişi state kilidi altında okunur.
     async with _locked_state():
         session = _monitoring_state["history"][:20]
+    for row in session:
+        _norm_row(row)
     return {"paper_only": True, "history": persisted, "session": session}
 
 

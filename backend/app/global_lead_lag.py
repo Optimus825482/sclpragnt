@@ -131,6 +131,26 @@ async def handle_global_detection(detection: dict[str, Any]) -> dict[str, Any]:
     horizon_minutes = int(detection.get("horizon_minutes") or 15)
     expected_price = round(tr_price * (1.0 + target_pct / 100.0), 6)
 
+    # 2b) EŞİK KAPISI (2026-10-13 düzeltmesi — HATA: bu yol kapıyı ATLIYORDU).
+    #     `score` çağıran tarafından PANEL ölçeğinde (0-100) verilir; admin eşiği
+    #     (`min_score`, ör. 85) TÜM bildirim yolları için bağlayıcıdır. Bu kontrol
+    #     olmadığı için Global/lead-lag adayları eşik altında (ör. sabit 60) push
+    #     gönderebiliyordu. Radar yolundaki `monitoring._notify` kapısıyla AYNI
+    #     ölçek (panel) kullanılır.
+    try:
+        from app.routers.monitoring import _effective_min_score, get_user_notification_settings
+        settings = await get_user_notification_settings()
+        eff_min = float(_effective_min_score(settings))
+        if score < eff_min:
+            logger.debug("global_lead_lag: %s skor %.1f < eşik %.1f → bildirim yok",
+                         tr_symbol, score, eff_min)
+            return {"status": "rejected", "reason": "below_min_score",
+                    "tr_symbol": tr_symbol, "score": score, "min_score": eff_min}
+    except Exception as exc:
+        # Eşik okunamazsa fail-closed DEĞİL: eski davranış (kapı yok) yerine
+        # yalnız uyarı bırak; eşiği okuyamamak bildirimi tamamen kesmesin.
+        logger.warning("global_lead_lag: eşik okunamadı (%s): %s", tr_symbol, exc)
+
     # 3b) TR az önce AYNI sembol için bildirim ürettiyse Global tespiti bildirim
     #     ÜRETMEZ (origin ne olursa olsun kullanıcı TEK bildirim görmeli).
     #     Otonom işlem yine de denenir — `analyzer.positions` zaten açık
