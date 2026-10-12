@@ -298,3 +298,22 @@ def test_calibration_grid_respects_deployable_constraints():
         assert cfg["trail_trigger_pct"] > cfg["trail_gap_pct"], f"trigger<=gap: {cfg}"
     # Varsayılan taban kalibrasyonla hizalı olmalı.
     assert mod.DEFAULT_CFG["sl_pct"] == 1.0
+
+
+def test_calibration_harness_has_entry_scan():
+    """Giriş seçici taraması (2026-10-12): `--entry-scan` modu, pozitif EV veren
+    bir giriş filtresi bulunup bulunmadığını ölçer. Bulgu NO_ENTRY_EDGE idi;
+    bu test modun sessizce kaybolmasını engeller (yeniden üretilebilirlik)."""
+    import importlib.util
+    import pathlib
+    import inspect
+    p = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "calibrate_combined_paper.py"
+    spec = importlib.util.spec_from_file_location("calib2", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert hasattr(mod, "_entry_scan"), "_entry_scan fonksiyonu eksik"
+    src = inspect.getsource(mod._entry_scan)
+    for key in ("score", "atr", "rank", "topn", "verdict", "NO_ENTRY_EDGE"):
+        assert key in src, f"entry_scan bileşeni eksik: {key}"
+    # Cümle-i hikmet: filtreler eğitimde eşiklenip SINAVDA ölçülmeli (walk-forward).
+    assert "train" in src and "test" in src

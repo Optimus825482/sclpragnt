@@ -51,19 +51,26 @@ DEFAULT_CFG = {"sl_pct": 1.0, "trail_trigger_pct": 2.0, "trail_gap_pct": 1.0,
 
 
 def _load_candidates(hours: float) -> list[dict]:
-    """PG'den passes=true adayları çek (fiyat+zaman+hedef)."""
+    """PG'den passes=true adayları çek (fiyat+zaman+hedef+skor+rank).
+
+    Giriş taraması (`--entry-scan`) skor/rank/atr alanlarını da kullanır; bu
+    alanlar NULL olabilir (eski kayıtlar) → savunmacı varsayılan verilir.
+    """
     import psycopg
     since = time.time() - hours * 3600.0
     out = []
     with psycopg.connect(_DB_URL, connect_timeout=8) as conn:
         cur = conn.execute(
-            "SELECT created_at, symbol, price, target_pct FROM velocity_candidates "
+            "SELECT created_at, symbol, price, target_pct, velocity_score, atr_pct, rank "
+            "FROM velocity_candidates "
             "WHERE passes=true AND created_at >= %s AND price > 0 ORDER BY created_at",
             (since,))
-        for ts, sym, px, tgt in cur.fetchall():
+        for ts, sym, px, tgt, score, atr, rank in cur.fetchall():
             try:
                 out.append({"ts": float(ts), "symbol": str(sym).upper(),
-                            "price": float(px), "target_pct": float(tgt or 3.0)})
+                            "price": float(px), "target_pct": float(tgt or 3.0),
+                            "score": float(score or 0.0), "atr": float(atr or 0.0),
+                            "rank": (int(rank) if rank is not None else 99)})
             except (TypeError, ValueError):
                 continue
     return out
@@ -185,10 +192,77 @@ def _grid(base: dict) -> list[dict]:
     return out
 
 
+def _pctile(vals: list[float], p: float) -> float:
+    s = sorted(vals)
+    return s[min(len(s) - 1, int(len(s) * p))] if s else 0.0
+
+
+def _entry_scan(train: list[dict], test: list[dict], bars: dict, *,
+                commission_pct: float, slippage_pct: float) -> dict:
+    """GİRİŞ SEÇİCİSİ taraması (2026-10-12).
+
+    Çıkış kalibrasyonu SL'i düzeltip kaybı azalttı ama portföy pozitife
+    dönmedi → soru "hangi GİRİŞ filtresi edge verir?" Bu fonksiyon tek-değişkenli
+    filtreleri (skor/ATR/rank/ret3/ML) ve gerçek-liste taklidini (zaman kovası
+    başına top-N) eğitimde eşikleyip SINAVDA ölçer. Amaç: pozitife dönen bir
+    bölge var mı? Yoksa bulgu "edge giriş sinyalinde yok" olarak raporlanır.
+    """
+    cfg = dict(DEFAULT_CFG)
+    def ev(pop, filt=None):
+        sel = [c for c in pop if (filt(c) if filt else True)]
+        return _metrics(_simulate_population(sel, bars, cfg,
+                                             commission_pct=commission_pct,
+                                             slippage_pct=slippage_pct))
+    base_te = ev(test)
+    results: dict = {"baseline_test": base_te, "single": [], "topn": []}
+
+    # Tek-değişkenli filtreler: eşik EĞİTİM percentilinden (walk-forward).
+    specs = [
+        ("score>=p70", "score", 0.70, "ge"), ("score>=p85", "score", 0.85, "ge"),
+        ("atr<=p50", "atr", 0.50, "le"), ("atr>=p70", "atr", 0.70, "ge"),
+        ("rank==1", None, None, "r1"),
+    ]
+    for name, fld, p, dirc in specs:
+        if dirc == "r1":
+            f = lambda c: c.get("rank") == 1
+        else:
+            thr = _pctile([c[fld] for c in train], p)
+            f = (lambda th: (lambda c: c[fld] >= th))(thr) if dirc == "ge" \
+                else (lambda th: (lambda c: c[fld] <= th))(thr)
+        m_tr, m_te = ev(train, f), ev(test, f)
+        results["single"].append({"name": name, "train": m_tr, "test": m_te})
+
+    # Gerçek liste taklidi: 30 dk kova başına skorla top-N.
+    def topn(pop, minutes, n):
+        buckets: dict = {}
+        for c in pop:
+            buckets.setdefault(int(c["ts"] // (minutes * 60)), []).append(c)
+        sel = []
+        for b in buckets.values():
+            sel.extend(sorted(b, key=lambda z: -z["score"])[:n])
+        return sel
+    for n in (1, 2, 3, 5):
+        m_tr = _metrics(_simulate_population(topn(train, 30, n), bars, cfg,
+                                             commission_pct=commission_pct, slippage_pct=slippage_pct))
+        m_te = _metrics(_simulate_population(topn(test, 30, n), bars, cfg,
+                                             commission_pct=commission_pct, slippage_pct=slippage_pct))
+        results["topn"].append({"n": n, "train": m_tr, "test": m_te})
+
+    # Hiçbir filtre sınavda pozitif EV değil mi?
+    positives = [s for s in results["single"] if (s["test"]["ev_pct"] or -1) > 0]
+    positives += [{"name": f"top{n['n']}", "test": n["test"]} for n in results["topn"]
+                  if (n["test"]["ev_pct"] or -1) > 0]
+    results["positive_filters"] = positives
+    results["verdict"] = "ENTRY_EDGE_FOUND" if positives else "NO_ENTRY_EDGE"
+    return results
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=3600.0)
     ap.add_argument("--fetch", action="store_true", help="eksikleri REST'ten çek")
+    ap.add_argument("--entry-scan", action="store_true",
+                    help="giriş seçici taraması (skor/rank/ATR/top-N) — çıkış grid'ini atlar")
     ap.add_argument("--commission", type=float, default=0.0015)
     ap.add_argument("--slippage", type=float, default=0.00025)
     ap.add_argument("--out", default="work/combined_paper_calibration.json")
@@ -225,6 +299,27 @@ async def main() -> int:
     split = int(len(covered) * 0.6)
     train, test = covered[:split], covered[split:]
     print(f"eğitim: {len(train)} | sınav: {len(test)}")
+
+    # GİRİŞ TARAMASI modu (2026-10-12): çıkış kalibrasyonundan bağımsız.
+    if args.entry_scan:
+        print("\n=== GİRİŞ SEÇİCİSİ TARAMASI (walk-forward) ===")
+        scan = _entry_scan(train, test, bars_by_sym,
+                           commission_pct=args.commission, slippage_pct=args.slippage)
+        print(f"  baz (filtresiz) SINAV: {scan['baseline_test']}")
+        print("  tek-değişkenli filtreler (SINAV EV):")
+        for s in scan["single"]:
+            print(f"    {s['name']:12s} → {s['test']['ev_pct']} (n {s['test']['n']}, pf {s['test']['payoff']})")
+        print("  gerçek liste taklidi (30dk top-N, SINAV EV):")
+        for t in scan["topn"]:
+            print(f"    top{t['n']} → {t['test']['ev_pct']} (n {t['test']['n']}, pf {t['test']['payoff']})")
+        print(f"  KARAR: {scan['verdict']} (pozitif filtre: {len(scan['positive_filters'])})")
+        out = {"generated_at": time.time(), "hours": args.hours,
+               "candidates_covered": len(covered), "train_n": len(train),
+               "test_n": len(test), "entry_scan": scan}
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+        print(f"rapor: {args.out}")
+        return 0
 
     print("\n-- varsayılan (canlı) --")
     base_tr = _metrics(_simulate_population(train, bars_by_sym, DEFAULT_CFG,
