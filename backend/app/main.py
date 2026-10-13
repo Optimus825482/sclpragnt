@@ -39,6 +39,7 @@ from app.correlation import CorrelationMonitor, cluster_exposure
 from app.promotion import pipeline as promotion_pipeline
 from app import universe_registry
 from app import database
+from app import binance_tr_user_stream
 from app import runtime_deps
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook, top_gainers
 from app import binance_tr_public
@@ -51,6 +52,7 @@ from app import llm_analysis
 from app.binance_tr_private import (get_account_balance, get_trade_history, get_symbol_filters,
                                     place_market_sell, place_market_buy, place_oco_sell,
                                     place_stop_loss_sell, place_limit_sell, cancel_order, get_open_orders,
+                                    place_spot_order, get_order_detail, BinanceTrAmbiguousOrderError,
                                     BinanceTrPartialFillError, reconcile_sell_fill)
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
@@ -3136,6 +3138,25 @@ async def _decrypt_binance_creds(request) -> tuple[str, str]:
     raise HTTPException(status_code=404, detail="Binance API anahtarları yapılandırılmamış — Ayarlar'dan kendi API anahtarlarınızı girin")
 
 
+async def _publish_binance_user_event(user_id: int, event: dict) -> None:
+    """Özel borsa olayını yalnız ilgili kullanıcının doğrulanmış WS oturumlarına ilet."""
+    await ws_manager.broadcast({"type": "binance_user_event", "data": event}, user_id=user_id)
+
+
+async def _ensure_binance_user_stream(user_id: int, api_key: str, api_secret: str) -> dict:
+    """Binance TR kullanıcı akışını başlat veya durumunu döndür."""
+    try:
+        return await binance_tr_user_stream.start_user_stream(
+            user_id, api_key, api_secret,
+            publish_callback=lambda event: _publish_binance_user_event(user_id, event),
+        )
+    except Exception as exc:
+        logger.warning("Binance TR özel kullanıcı akışı başlatılamadı user_id=%s (%s)",
+                       user_id, type(exc).__name__)
+        return {"state": "unavailable", "connected": False,
+                "last_error": type(exc).__name__}
+
+
 @app.get("/api/binance/account")
 async def binance_account(request: Request):
     """Binance TR hesap bakiyesi (salt okunur, oturum açmış kullanıcı)."""
@@ -3161,6 +3182,7 @@ async def binance_positions(request: Request):
         raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
     user_id = int(user["id"])
     api_key, api_secret = await _decrypt_binance_creds(request)
+    stream_status = await _ensure_binance_user_stream(user_id, api_key, api_secret)
     try:
         balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
     except Exception as exc:
@@ -3294,6 +3316,7 @@ async def binance_positions(request: Request):
         "holdings": holdings,
         "balances": non_zero_balances,
         "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2),
+        "user_stream": stream_status,
     }
 
 
@@ -3650,6 +3673,110 @@ def _fmt_tr_price(value: float) -> str:
     """0.72 → '0,72' (Türkçe ondalık virgül; sondaki sıfırlar atılır)."""
     text = f"{float(value):.8f}".rstrip("0").rstrip(".")
     return text.replace(".", ",")
+
+
+@app.post("/api/binance/order")
+async def binance_order(payload: dict, request: Request):
+    """Açık gerçek hesap onayıyla spot emir gönderir; belirsiz sonucu tekrar etmez."""
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    enabled, source = await _real_sell_state_for(int(user["id"]))
+    if not enabled:
+        raise HTTPException(status_code=403, detail=(
+            "Gerçek Binance emirleri kapalı — Ayarlar > Binance TR API bölümünden açın"
+            if source == "panel" else "Gerçek Binance emirleri sunucu yapılandırmasında kapalı"))
+    if str(payload.get("confirmation") or "") != "REAL_ORDER":
+        raise HTTPException(status_code=422, detail="REAL_ORDER onayı gerekli")
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    symbol = str(payload.get("symbol") or "").upper().strip().replace("/", "").replace(" ", "")
+    side = str(payload.get("side") or "").upper().strip()
+    order_type = str(payload.get("type") or "").upper().strip()
+    if not symbol or side not in ("BUY", "SELL"):
+        raise HTTPException(status_code=422, detail="Geçerli symbol ve BUY/SELL side gerekli")
+    # Emir öncesi kullanılabilir spot bakiyeyi taze oku; exchange yine nihai
+    # doğrulamayı yapar. Kilitli varlıklar harcanabilir bakiye sayılmaz.
+    filters = await asyncio.to_thread(get_symbol_filters, api_key, api_secret,
+                                      symbol.replace("/", "").replace("_", ""))
+    if not filters:
+        raise HTTPException(status_code=422, detail="Binance TR sembolü bulunamadı")
+    quote_asset = str(filters.get("quote_asset") or "").upper()
+    base_asset = symbol.replace("_", "").replace("/", "")
+    if quote_asset and base_asset.endswith(quote_asset):
+        base_asset = base_asset[:-len(quote_asset)]
+    else:
+        base_asset = ""
+    try:
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret, True)
+        balance_map = {str(row.get("asset") or "").upper(): float(row.get("free") or 0)
+                       for row in balances}
+        if side == "SELL":
+            needed = float(payload.get("quantity") or 0)
+            if not base_asset or needed <= 0 or needed > balance_map.get(base_asset, 0) + 1e-12:
+                raise HTTPException(status_code=422, detail=f"Satılabilir {base_asset or 'varlık'} bakiyesi yetersiz")
+        elif order_type == "MARKET" and payload.get("quote_order_qty") is not None:
+            needed = float(payload.get("quote_order_qty") or 0)
+            if needed <= 0 or needed > balance_map.get(quote_asset, 0) + 1e-8:
+                raise HTTPException(status_code=422, detail=f"Kullanılabilir {quote_asset} bakiyesi yetersiz")
+        elif payload.get("quantity") is not None:
+            px = float(payload.get("price") or payload.get("stop_limit_price") or 0)
+            if order_type == "MARKET" and px <= 0:
+                try:
+                    ticker = await binance_tr_public.ticker_price([symbol.replace("_", "").replace("/", "")])
+                    px = float((ticker[0] or {}).get("price") or 0) if ticker else 0
+                except Exception:
+                    px = 0
+            needed = float(payload.get("quantity") or 0) * px
+            if px <= 0 or needed > balance_map.get(quote_asset, 0) + 1e-8:
+                raise HTTPException(status_code=422, detail=f"Kullanılabilir {quote_asset} bakiyesi yetersiz")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Emir öncesi bakiye doğrulanamadı: {exc}")
+    try:
+        result = await asyncio.to_thread(
+            place_spot_order, api_key, api_secret, symbol, side, order_type,
+            quantity=payload.get("quantity"), quote_order_qty=payload.get("quote_order_qty"),
+            price=payload.get("price"), stop_price=payload.get("stop_price"),
+            stop_limit_price=payload.get("stop_limit_price"))
+    except BinanceTrAmbiguousOrderError as exc:
+        _actor, _actor_role = _session_identity(request)
+        await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_ORDER_UNKNOWN",
+                              target=exc.symbol, details={"symbol": exc.symbol, "side": side,
+                              "type": order_type, "client_id": exc.client_order_id,
+                              "outcome": "unknown; no retry"}, request=request)
+        return JSONResponse(status_code=202, content={"ok": False, "status": "UNKNOWN",
+            "message": "Emir sonucu belirsiz. Çift emir riskini önlemek için tekrar gönderilmedi; durumu client_id ile sorgulayın.",
+            "symbol": exc.symbol, "client_id": exc.client_order_id})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR emri gönderilemedi: {exc}")
+    _actor, _actor_role = _session_identity(request)
+    # Emir yanıtında olabilecek hassas olmayan, sınırlı alanları audit'e yaz.
+    await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_ORDER_SUBMITTED",
+                          target=result.get("symbol"), details={"symbol": result.get("symbol"),
+                          "side": side, "type": order_type, "order_id": result.get("order_id"),
+                          "client_id": result.get("client_id"), "status": result.get("status")}, request=request)
+    return {"ok": True, "status": result.get("status") or "SUBMITTED", **result}
+
+
+@app.get("/api/binance/order-status")
+async def binance_order_status(request: Request, symbol: str, client_id: str = "", order_id: str = ""):
+    """Emir durumunu orderId veya clientId ile sorgular; kullanıcı anahtarından çıkarılır."""
+    _require_user(request)
+    if bool(client_id) == bool(order_id):
+        raise HTTPException(status_code=422, detail="client_id veya order_id alanlarından yalnız biri gerekli")
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    try:
+        order = await asyncio.to_thread(get_order_detail, api_key, api_secret, symbol,
+                                        client_id=client_id or None, order_id=order_id or None)
+        return {"ok": True, "order": order}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Emir durumu alınamadı: {exc}")
 
 
 @app.get("/api/binance/open-orders")

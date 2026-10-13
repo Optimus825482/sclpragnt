@@ -16,6 +16,7 @@ import { Button } from "./ui";
 const NAV = [
   { href: "/", label: "Anasayfa" },
   { href: "/firsatlar", label: "Fırsatlar" },
+  { href: "/grafik", label: "Grafik" },
   { href: "/gecmis-islemler", label: "Geçmiş İşlemler" },
   { href: "/ayarlar", label: "Ayarlar" },
 ];

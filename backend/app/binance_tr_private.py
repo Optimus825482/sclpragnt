@@ -108,6 +108,14 @@ class BinanceTrApiError(RuntimeError):
         return False
 
 
+class BinanceTrAmbiguousOrderError(RuntimeError):
+    """Emir POST cevabı belirsiz; emir gerçekleşmiş olabilir, tekrar gönderilmemelidir."""
+    def __init__(self, message: str, *, client_order_id: str, symbol: str):
+        super().__init__(message)
+        self.client_order_id = client_order_id
+        self.symbol = symbol
+
+
 class BinanceTrPartialFillError(RuntimeError):
     """MARKET SELL kısmi doldu — istenen miktarın tamamı satılamadı (#36/P1-8).
 
@@ -256,7 +264,7 @@ def _private_ban_delay(attempt: int, headers=None) -> float:
 def _server_time_offset_ms() -> float:
     """Sunucu saati ile yerel saat farkı (ms) — TTL'li önbellek (B-14, #35).
 
-    Ofset `/open/v1/time` ile ölçülüp `timestamp`'a uygulanır. #35'in asıl
+    Ofset `/open/v1/common/time` ile ölçülüp `timestamp`'a uygulanır. #35'in asıl
     hatası: ölçüm BAŞARISIZ olduğunda ofset 0'a düşüyordu, yani sunucu saati
     ölçülemeyen bir anda 5 sn'yi aşan bir kayma TÜM bakiye/açık emir/satış
     akışını `-1021 Timestamp outside recvWindow` ile tek noktadan kırıyordu.
@@ -270,9 +278,9 @@ def _server_time_offset_ms() -> float:
         return float(cached.get("offset") or 0.0)
     measured: float | None = None
     try:
-        payload = _http_get_json(f"{REST_BASE}/open/v1/time")
+        payload = _http_get_json(f"{REST_BASE}/open/v1/common/time")
         data = _unwrap(payload)
-        server_ms = int((data or {}).get("serverTime") or 0) if isinstance(data, dict) else 0
+        server_ms = int((data or {}).get("serverTime") or (data or {}).get("timestamp") or 0) if isinstance(data, dict) else 0
         if server_ms:
             measured = float(server_ms) - now * 1000
     except Exception as exc:
@@ -299,21 +307,8 @@ def _signed_request(method: str, path: str, params: dict | None,
     sinyali 418) için sınırlı yeniden deneme yapılır; her denemede yeni
     timestamp + imza üretilir (eskiden hiç yeniden deneme yoktu).
 
-    #30 — KRİTİK (idempotency): `idempotent=False` ile çağrılan POST'lar
-    (emir gönderme) timeout / 5xx / bozuk JSON sonrası **YENİDEN
-    GÖNDERİLMEZ**. Aksi hâlde ağ zaman aşımında borsa emri ALDIĞI HALDE
-    cevap kaybolursa aynı MARKET SELL ikinci kez atılır ve varlığın iki katı
-    satılır. Yeniden deneme yalnız **418/429** için yapılır; 429'da borsa
-    isteği ALMAMIŞTIR (ağırlık penceresi dolu), 429 dışı 5xx'te ise "emri
-    aldım ama cevabım bozuk" durumu ayırt edilemez. `place_*` fonksiyonları
-    ayrıca benzersiz bir `clientOrderId` (UUID) gönderir; borsa tarafında aynı
-    anahtarı taşıyan ikinci gönderim reddedilir (bkz. `new_client_order_id`).
-
-    #36/P1-8: `idempotency_key` (veya POST gövdesindeki `clientOrderId`) varsa
-    bir 5xx yeniden denemesi ARTIK güvenlidir ve yapılır — borsa aynı anahtarı
-    taşıyan ikinci gönderimi duplicate olarak reddeder, yani emir iki kez
-    oluşmaz. Anahtar YOKSA eski davranış korunur: POST 5xx/timeout'ta tekrar
-    denenmez.
+    Emir POST'larında timeout, 5xx veya bozuk cevap sonucu belirsizse aynı
+    istek tekrar gönderilmez. Binance TR clientId benzersizlik garantisi vermez.
     """
     base_params = dict(params or {})
     base_params["recvWindow"] = RECV_WINDOW_MS
@@ -321,11 +316,8 @@ def _signed_request(method: str, path: str, params: dict | None,
     headers = {"X-MBX-APIKEY": api_key}
     last_error: Exception | None = None
     is_post = method.upper() == "POST"
-    # #36/P1-8: idempotency anahtarı. Açıkça verilmezse emir gönderen POST'ların
-    # gövdesindeki `clientOrderId`'den türetilir. Bu anahtar varsa borsa aynı
-    # emri bir kez kabul eder → 5xx sonrası yeniden deneme çift emir üretmez.
-    idem_key = idempotency_key or (_request_idempotency_key(base_params) if is_post else None)
-    can_retry_post = bool(idem_key)
+    # Geriye dönük parametre kabul edilir ama emir tekrarını açmaz.
+    can_retry_post = False
     # #33: imzalı uçlara ortak eşzamanlılık sınırı. Sembol taraması gibi
     # yüzlerce çağrılık patlamalar bakiye/emir uçlarını tek anda doyuruyordu.
     with _PRIVATE_SEMAPHORE:
@@ -346,9 +338,13 @@ def _signed_request(method: str, path: str, params: dict | None,
                 last_error = exc
                 if exc.is_transient:
                     # 1008 / -1008 (Server Busy / Request Throttled) / 1003 (Rate limit)
-                    # #36/P1-8: idempotency anahtarı olan POST yeniden denebilir
-                    # (borsa duplicate'i reddeder); anahtarsız POST asla.
+                    # Belirsiz emir POST sonucu hiçbir clientId ile tekrar edilmez.
                     if not idempotent and not can_retry_post:
+                        if is_post and path in ("/open/v1/orders", "/open/v1/orders/oco"):
+                            raise BinanceTrAmbiguousOrderError(
+                                f"Emir sonucu belirsiz (Binance TR {exc.code}); tekrar gönderilmedi",
+                                client_order_id=str(base_params.get("clientId") or ""),
+                                symbol=str(base_params.get("symbol") or "")) from exc
                         raise exc
                     if attempt == REST_MAX_ATTEMPTS:
                         break
@@ -397,11 +393,14 @@ def _signed_request(method: str, path: str, params: dict | None,
                     time.sleep(delay)
                     continue
                 if exc.code == 429 or (500 <= exc.code < 600) or binance_err.is_transient:
-                    # #36/P1-8: 429'da borsa isteği ALMAMIŞTIR → her hâlükârda
-                    # güvenli. 5xx/geçici ancak idempotency anahtarı varsa
-                    # (borsa duplicate'i reddeder) veya çağıran idempotent=True
-                    # dediyse yeniden denenir.
+                    # 429 reddedilen istek olduğundan güvenle denenebilir.
+                    # 5xx order POST sonucu belirsizdir ve yukarıda kesilir.
                     if exc.code != 429 and not idempotent and not can_retry_post:
+                        if is_post and path in ("/open/v1/orders", "/open/v1/orders/oco") and exc.code >= 500:
+                            raise BinanceTrAmbiguousOrderError(
+                                f"Emir sonucu belirsiz (HTTP {exc.code}); tekrar gönderilmedi",
+                                client_order_id=str(base_params.get("clientId") or ""),
+                                symbol=str(base_params.get("symbol") or "")) from exc
                         raise binance_err
                     if attempt == REST_MAX_ATTEMPTS:
                         break
@@ -423,9 +422,13 @@ def _signed_request(method: str, path: str, params: dict | None,
                 # POST (emir) için ASLA — çağıranın durum sorgulaması gerekir.
                 last_error = exc
                 if not idempotent:
+                    if is_post and path in ("/open/v1/orders", "/open/v1/orders/oco"):
+                        raise BinanceTrAmbiguousOrderError(
+                            f"Emir sonucu belirsiz; tekrar gönderilmedi: {exc}",
+                            client_order_id=str(base_params.get("clientId") or ""),
+                            symbol=str(base_params.get("symbol") or "")) from exc
                     raise RuntimeError(
-                        f"Binance TR {method.upper()} {path} cevap vermedi; emir gönderilmiş "
-                        f"olabilir, TEKRAR GÖNDERİLMEDİ: {exc}"
+                        f"Binance TR {method.upper()} {path} cevap vermedi; tekrar gönderilmedi: {exc}"
                     ) from exc
                 if attempt == REST_MAX_ATTEMPTS:
                     break
@@ -436,13 +439,10 @@ def _signed_request(method: str, path: str, params: dict | None,
 
 
 def new_client_order_id(prefix: str = "sc") -> str:
-    """Emirlere iliştirilecek benzersiz `clientOrderId` (#30 idempotency).
+    """Durum sorgusunda kullanılacak clientId üretir.
 
-    Binance `clientOrderId` alanı en fazla 36 karakter kabul eder; UUID hex'i
-    güvenle sığar. Anahtar BORSADA saklanır: ağ zaman aşımı sonrası aynı
-    anahtarla yapılan ikinci gönderim "duplicate" olarak reddedilir → varlık
-    iki kez satılmaz. Çağıran, aynı iş mantığı için aynı `id`'yi saklayıp
-    yeniden denediğinde borsa iki ayrı emir oluşturmaz.
+    Binance TR clientId alanı en fazla 36 karakterdir. ID mutabakat içindir;
+    benzersizlik veya emir POST tekrar güvenliği sağlamaz.
     """
     return f"{prefix}{uuid.uuid4().hex}"[:36]
 
@@ -587,20 +587,6 @@ def _order_fill(data: dict, requested_qty: float | None) -> tuple[float, float |
     return (executed, remaining, avg, quote or None)
 
 
-def _request_idempotency_key(params: dict | None) -> str | None:
-    """İmzalı POST için idempotency anahtarını çıkar (varsa).
-
-    Emir gönderen POST'lar `clientOrderId` taşır; borsa aynı anahtarı taşıyan
-    ikinci gönderimi duplicate olarak reddeder. Bu anahtar varsa bir 5xx
-    yeniden denemesi güvenlidir (borsa tarafında dedupe edilir).
-    """
-    if not isinstance(params, dict):
-        return None
-    key = params.get("clientOrderId") or params.get("newClientOrderId")
-    key = str(key or "").strip()
-    return key or None
-
-
 def _to_underscore_symbol(symbol: str) -> str:
     """BTCUSDT → BTC_USDT (doküman: private endpoint'ler alt çizgili sembol ister)."""
     symbol = (symbol or "").upper().replace("_", "")
@@ -654,12 +640,16 @@ def _load_symbol_list_locked(api_key: str, api_secret: str) -> None:
                 "quote_asset": str(r.get("quoteAsset") or "").upper(),
                 "oco_enable": bool(int(r.get("ocoEnable") if r.get("ocoEnable") is not None else 1)),
                 "order_types": r.get("orderTypes") or [],
+                "status": str(r.get("status") or "TRADING").upper(),
             }
             for f in r.get("filters", []) or []:
                 ft = f.get("filterType")
                 if ft == "LOT_SIZE":
                     entry["step_size"] = float(f.get("stepSize") or 0)
                     entry["min_qty"] = float(f.get("minQty") or 0)
+                elif ft == "MARKET_LOT_SIZE":
+                    entry["market_step_size"] = float(f.get("stepSize") or 0)
+                    entry["market_min_qty"] = float(f.get("minQty") or 0)
                 elif ft == "NOTIONAL":
                     entry["min_notional"] = float(f.get("minNotional") or f.get("notional") or 0)
                 elif ft == "PRICE_FILTER":
@@ -690,6 +680,121 @@ def get_all_valid_symbols(api_key: str = "", api_secret: str = "") -> set[str]:
         return set(_symbols_cache.get("filters", {}).keys())
 
 
+_ORDER_TYPE_CODES = {"LIMIT": 1, "MARKET": 2, "STOP_LOSS_LIMIT": 4}
+
+
+def place_spot_order(api_key: str, api_secret: str, symbol: str, side: str, order_type: str,
+                     *, quantity: float | None = None, quote_order_qty: float | None = None,
+                     price: float | None = None, stop_price: float | None = None,
+                     stop_limit_price: float | None = None, client_order_id: str | None = None) -> dict:
+    """Doğrulamalı gerçek spot LIMIT/MARKET/STOP_LOSS_LIMIT emri gönderir.
+
+    Belirsiz POST sonucu `BinanceTrAmbiguousOrderError` olarak yükseltilir;
+    istemci aynı emri tekrar göndermemeli, clientId ile durumu sorgulamalıdır.
+    """
+    symbol_u = _to_underscore_symbol(symbol)
+    side_u, kind = str(side or "").upper(), str(order_type or "").upper()
+    if side_u not in ("BUY", "SELL"):
+        raise ValueError("side BUY veya SELL olmalı")
+    if kind not in _ORDER_TYPE_CODES:
+        raise ValueError("type LIMIT, MARKET veya STOP_LOSS_LIMIT olmalı")
+    filters = get_symbol_filters(api_key, api_secret, symbol_u)
+    if not filters or filters.get("status") != "TRADING":
+        raise ValueError("Sembol bulunamadı veya işlemlere kapalı")
+    declared = {str(x).upper() for x in (filters.get("order_types") or [])}
+    declared_names = {"1": "LIMIT", "2": "MARKET", "4": "STOP_LOSS_LIMIT"}
+    declared = {declared_names.get(x, x) for x in declared}
+    if declared and kind not in declared:
+        raise ValueError(f"{symbol_u} için {kind} emri Binance TR tarafından desteklenmiyor")
+
+    step = float(filters.get("step_size") or 0) or None
+    market_step = float(filters.get("market_step_size") or 0) or step
+    tick = float(filters.get("tick_size") or 0) or None
+    min_qty = float(filters.get("min_qty") or 0)
+    min_notional = float(filters.get("min_notional") or 0)
+    params: dict = {"symbol": symbol_u, "side": 0 if side_u == "BUY" else 1,
+                    "type": _ORDER_TYPE_CODES[kind],
+                    "clientId": (client_order_id or new_client_order_id("ui"))[:36]}
+
+    def positive(v, label):
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} pozitif sayı olmalı")
+        if not math.isfinite(n) or n <= 0:
+            raise ValueError(f"{label} pozitif sayı olmalı")
+        return n
+
+    if kind == "MARKET" and side_u == "BUY" and quote_order_qty is not None:
+        if quantity is not None:
+            raise ValueError("MARKET BUY için quantity veya quote_order_qty alanlarından yalnız biri gönderilmeli")
+        params["quoteOrderQty"] = _fmt_quantity(positive(quote_order_qty, "quote_order_qty"))
+    else:
+        if quantity is None or quote_order_qty is not None:
+            raise ValueError("Bu emir için quantity zorunlu; quote_order_qty kullanılamaz")
+        qty_step = market_step if kind == "MARKET" else step
+        qty_min = float(filters.get("market_min_qty") or min_qty) if kind == "MARKET" else min_qty
+        qty_s = _fmt_quantity(positive(quantity, "quantity"), qty_step)
+        qty_n = float(qty_s or 0)
+        if qty_n <= 0 or (qty_min and qty_n < qty_min):
+            raise ValueError(f"Miktar minimum lotun altında (min {qty_min})")
+        params["quantity"] = qty_s
+
+    if kind == "LIMIT":
+        if price is None or stop_price is not None or stop_limit_price is not None:
+            raise ValueError("LIMIT için price zorunlu; stop alanları kullanılmaz")
+        params.update({"price": _fmt_price(positive(price, "price"), tick), "timeInForce": 1})
+    elif kind == "STOP_LOSS_LIMIT":
+        if quantity is None or price is not None or stop_price is None or stop_limit_price is None:
+            raise ValueError("STOP_LOSS_LIMIT için quantity, stop_price ve stop_limit_price zorunlu")
+        params.update({"price": _fmt_price(positive(stop_limit_price, "stop_limit_price"), tick),
+                       "stopPrice": _fmt_price(positive(stop_price, "stop_price"), tick),
+                       "timeInForce": 1})
+    elif price is not None or stop_price is not None or stop_limit_price is not None:
+        raise ValueError("MARKET emrinde fiyat ve stop alanları kullanılamaz")
+
+    # Miktar emirlerinde bilinen minNotional kontrolü; MARKET BUY quote tutarında doğrudan.
+    if min_notional and "quantity" in params:
+        px = float(params.get("price") or params.get("stopPrice") or 0)
+        if not px:
+            px = _resolve_live_price(symbol_u) or 0
+        if px and float(params["quantity"]) * px < min_notional:
+            raise ValueError(f"Emir tutarı minimum tutarın altında (min {min_notional})")
+    if min_notional and "quoteOrderQty" in params and float(params["quoteOrderQty"]) < min_notional:
+        raise ValueError(f"Emir tutarı minimum tutarın altında (min {min_notional})")
+
+    try:
+        data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
+                               idempotent=False)
+    except BinanceTrAmbiguousOrderError:
+        raise
+    except RuntimeError as exc:
+        # _signed_request eski genel hata metnini de belirsiz sonuç sayar.
+        if "belirsiz" in str(exc).lower() or "cevap vermedi" in str(exc).lower():
+            raise BinanceTrAmbiguousOrderError(str(exc), client_order_id=params["clientId"],
+                                               symbol=symbol_u) from exc
+        raise
+    with _open_orders_lock:
+        _open_orders_cache["expires"] = 0.0
+    invalidate_account_balance_cache(api_key)
+    return {**(data if isinstance(data, dict) else {}), "symbol": symbol_u,
+            "client_id": params["clientId"], "order_id": str(data.get("orderId")) if isinstance(data, dict) and data.get("orderId") else None}
+
+
+def get_order_detail(api_key: str, api_secret: str, symbol: str, *,
+                     order_id: int | str | None = None, client_id: str | None = None) -> dict:
+    """GET /open/v1/orders/detail; orderId veya clientId ile emir mutabakatı."""
+    params: dict = {"symbol": _to_underscore_symbol(symbol)}
+    if order_id not in (None, ""):
+        params["orderId"] = str(order_id)
+    elif client_id:
+        params["clientId"] = str(client_id)
+    else:
+        raise ValueError("order_id veya client_id gerekli")
+    data = _signed_request("GET", "/open/v1/orders/detail", params, api_key, api_secret)
+    return data if isinstance(data, dict) else {}
+
+
 def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, quantity: float,
                       step_size: float | None = None, client_order_id: str | None = None,
                       min_notional: float | None = None,
@@ -699,9 +804,8 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
     Kullanıcı onayı UI katmanında alınır; bu fonksiyon doğrudan emir gönderir.
     Cevap: {"order_id": ..., "symbol": ..., "quantity": ...}.
 
-    #30: `client_order_id` verilmezse deterministik olmayan bir UUID üretilir;
-    bu anahtar borsada emirle birlikte saklanır, böylece timeout sonrası
-    yapılan ikinci gönderim "duplicate" olarak reddedilir. `_signed_request`
+    `clientId` yalnız durum sorgusu içindir; Binance TR emir POST tekrarını
+    clientId ile tekilleştirmez.
     `idempotent=False` ile çağrılır → timeout/5xx/bozuk JSON'da emir ASLA
     tekrar atılmaz.
 
@@ -733,9 +837,8 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
         "side": 1,       # doküman: 0=BUY, 1=SELL
         "type": 2,       # doküman: 2=MARKET (satış için quantity zorunlu)
         "quantity": _fmt_quantity(quantity, step_size),
-        # #30 idempotency anahtarı (aynı iş mantığı için aynı id saklanırsa
-        # borsa ikinci gönderimi duplicate olarak reddeder).
-        "clientOrderId": client_order_id or new_client_order_id("sa"),
+        # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
+        "clientId": client_order_id or new_client_order_id("sa"),
     }
     # #36/P1-8: fiyat geçilmediyse toz kapısı için canlı fiyatı TÜRET. Eskiden
     # çağıran last_price'ı hiç vermediği için bu kapı hiç ateşlenmiyor ve dust
@@ -755,15 +858,15 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
     order_id = data.get("orderId") if isinstance(data, dict) else None
     requested = float(params["quantity"])
     executed_qty, remaining_qty, avg_price, quote_qty = _order_fill(data, requested)
-    logger.info("Binance TR MARKET SELL gönderildi: %s qty=%s executed=%s orderId=%s clientOrderId=%s",
+    logger.info("Binance TR MARKET SELL gönderildi: %s qty=%s executed=%s orderId=%s clientId=%s",
                 symbol_underscore, params["quantity"], executed_qty, order_id,
-                params["clientOrderId"])
+                params["clientId"])
     invalidate_account_balance_cache(api_key)
     with _open_orders_lock:
         _open_orders_cache["expires"] = 0.0
     result = {"order_id": str(order_id) if order_id is not None else None,
               "symbol": symbol_underscore, "quantity": params["quantity"],
-              "client_order_id": params["clientOrderId"],
+              "client_order_id": params["clientId"],
               "requested_qty": requested, "executed_qty": executed_qty}
     if avg_price is not None:
         result["avg_price"] = avg_price
@@ -800,8 +903,7 @@ def place_market_buy(api_key: str, api_secret: str, symbol_underscore: str, quot
     Cevap: {"order_id": ..., "symbol": ..., "quote_qty": ..., "executed_qty": ...,
     "avg_price": ...} (son ikisi proxy cevabında taşıyorsa dolu).
 
-    #30: `client_order_id` (UUID) idempotency anahtarıdır; `_signed_request`
-    `idempotent=False` ile çağrılır.
+    `client_order_id` durum sorgusu içindir; idempotency garantisi vermez.
     """
     if min_notional is not None and min_notional > 0 and quote_qty < min_notional:
         raise ValueError(f"Tutar minimum emrin altında (min {min_notional})")
@@ -810,20 +912,20 @@ def place_market_buy(api_key: str, api_secret: str, symbol_underscore: str, quot
         "side": 0,           # doküman: 0=BUY, 1=SELL
         "type": 2,           # doküman: 2=MARKET
         "quoteOrderQty": f"{float(quote_qty):.2f}",  # quote asset (TRY) büyüklüğü
-        # #30 idempotency anahtarı.
-        "clientOrderId": client_order_id or new_client_order_id("bu"),
+        # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
+        "clientId": client_order_id or new_client_order_id("bu"),
     }
     data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
                            idempotent=False)
     order_id = data.get("orderId") if isinstance(data, dict) else None
-    logger.info("Binance TR MARKET BUY gönderildi: %s quote=%s orderId=%s clientOrderId=%s",
-                symbol_underscore, params["quoteOrderQty"], order_id, params["clientOrderId"])
+    logger.info("Binance TR MARKET BUY gönderildi: %s quote=%s orderId=%s clientId=%s",
+                symbol_underscore, params["quoteOrderQty"], order_id, params["clientId"])
     invalidate_account_balance_cache(api_key)
     with _open_orders_lock:
         _open_orders_cache["expires"] = 0.0
     out = {"order_id": str(order_id) if order_id is not None else None,
            "symbol": symbol_underscore, "quote_qty": params["quoteOrderQty"],
-           "client_order_id": params["clientOrderId"]}
+           "client_order_id": params["clientId"]}
     # Full cevapta doldurma bilgisi varsa ortalamayı hesapla (confirm dialogu).
     try:
         executed = float(data.get("executedQty") or 0) if isinstance(data, dict) else 0.0
@@ -874,8 +976,7 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
     Kural: price (TP) > son fiyat > stop_price (SL trigger).
     stop_limit_price verilmezse stop_price * 0.995 (slippage korumalı) kullanılır.
 
-    #30: `client_order_id` (UUID) idempotency anahtarıdır; timeout sonrası aynı
-    mantıkla yeniden denemek borsada ikinci bir OCO listesi oluşturmaz.
+    `client_order_id` durum sorgusu içindir; idempotency garantisi vermez.
     #34: `min_notional` + `last_price` verilirse minimum tutar istemci tarafında
     da uygulanır (bakiye endpoint'i fiyat döndürmediği için tahmindir).
     """
@@ -908,8 +1009,8 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
         "price": price_str,              # Take-Profit limit fiyatı
         "stopPrice": stop_price_str,     # SL tetik fiyatı
         "stopLimitPrice": stop_limit_price_str,
-        # #30 idempotency anahtarı.
-        "clientOrderId": client_order_id or new_client_order_id("oc"),
+        # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
+        "clientId": client_order_id or new_client_order_id("oc"),
     }
     data = _signed_request("POST", "/open/v1/orders/oco", params, api_key, api_secret,
                            idempotent=False)
@@ -928,7 +1029,7 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
         "sl_price": stop_price_str,
         "sl_limit_price": stop_limit_price_str,
         "orders": orders,
-        "client_order_id": params["clientOrderId"],
+        "client_order_id": params["clientId"],
     }
 
 
@@ -938,8 +1039,7 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
                          client_order_id: str | None = None) -> dict:
     """Tekil STOP_LOSS_LIMIT SELL emri gönderir (POST /open/v1/orders).
 
-    #30: `client_order_id` (UUID) idempotency anahtarıdır; `_signed_request`
-    `idempotent=False` ile çağrılır (timeout sonrası ikinci emir atılmaz).
+    clientId durum sorgusu içindir; Binance TR dedupe garantisi sunmaz.
     """
     if step_size is None or tick_size is None:
         with _symbols_lock:
@@ -962,8 +1062,8 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
         "price": stop_limit_price_str,
         "stopPrice": stop_price_str,
         "timeInForce": 1,           # doküman: INT: 1=GTC, 2=IOC, 3=FOK, 4=GTX
-        # #30 idempotency anahtarı.
-        "clientOrderId": client_order_id or new_client_order_id("sl"),
+        # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
+        "clientId": client_order_id or new_client_order_id("sl"),
     }
     data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
                            idempotent=False)
@@ -979,7 +1079,7 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
         "quantity": qty_str,
         "sl_price": stop_price_str,
         "sl_limit_price": stop_limit_price_str,
-        "client_order_id": params["clientOrderId"],
+        "client_order_id": params["clientId"],
     }
 
 
@@ -988,8 +1088,7 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
                      client_order_id: str | None = None) -> dict:
     """Tekil LIMIT (Take-Profit) SELL emri gönderir (POST /open/v1/orders).
 
-    #30: `client_order_id` (UUID) idempotency anahtarıdır; `_signed_request`
-    `idempotent=False` ile çağrılır.
+    `client_order_id` durum sorgusu içindir; idempotency garantisi vermez.
     """
     if step_size is None or tick_size is None:
         with _symbols_lock:
@@ -1007,8 +1106,8 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
         "quantity": qty_str,
         "price": price_str,
         "timeInForce": 1,    # doküman: INT: 1=GTC
-        # #30 idempotency anahtarı.
-        "clientOrderId": client_order_id or new_client_order_id("tp"),
+        # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
+        "clientId": client_order_id or new_client_order_id("tp"),
     }
     data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
                            idempotent=False)
@@ -1023,7 +1122,7 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
         "symbol": symbol_underscore,
         "quantity": qty_str,
         "price": price_str,
-        "client_order_id": params["clientOrderId"],
+        "client_order_id": params["clientId"],
     }
 
 
@@ -1120,7 +1219,7 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
                 "status": o.get("status", ""),
                 "time": int(o.get("createTime") or o.get("time") or 0),
                 "orderListId": int(o.get("orderListId") or -1),
-                "clientOrderId": str(o.get("clientOrderId") or ""),
+                "clientOrderId": str(o.get("clientId") or o.get("clientOrderId") or ""),
             })
         return out
 

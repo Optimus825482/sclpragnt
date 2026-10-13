@@ -3088,6 +3088,9 @@ async def _combined_scan_rows() -> list[dict]:
             rising_rows.append({
                 "symbol": sym,
                 "strategy": "rising",
+                # `_notify` ufku olmayan birleşik motor sinyallerini 5 dk
+                # ile kaydeder; kartın yaşam süresi aynı gerçek kuralla uyumlu.
+                "horizon_minutes": int(rc.get("horizon_minutes") or 5),
                 "velocity_score": float(rc.get("score") or 0.0),
                 "panel_score": float(rc.get("score") or 0.0),
                 "target_pct": rc.get("target_pct"),
@@ -3196,6 +3199,10 @@ async def _combined_scan_rows() -> list[dict]:
         quality, tc_sources, tc_layers = _combined_quality_score(c)
         row = {
             "symbol": sym, "price": price,
+            # Ufuk, ana sayfa adayının yaşam süresi için taşınır. Velocity ve
+            # momentum kaynaklarında gerçek tarama profilinden gelir; ufuksuz
+            # kaynaklar için değer uydurulmaz.
+            "horizon_minutes": c.get("horizon_minutes"),
             "ceiling_pct": ceil_pct,
             "ceiling_price": c.get("ceiling_price") or (
                 round(price * (1 + float(ceil_pct) / 100.0), 8) if ceil_pct else None),
@@ -3977,6 +3984,7 @@ async def daily_rising_state(request: Request = None):
             out.append({
                 "symbol": sym,
                 "created_at": r.get("notified_at") or rep.get("sent_at"),
+                "horizon_minutes": r.get("horizon_minutes"),
                 "entry_price": e,
                 "current_price": c_,
                 "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
@@ -4008,6 +4016,7 @@ async def daily_rising_state(request: Request = None):
         out.append({
             "symbol": str(r.get("symbol") or "").upper(),
             "created_at": generated_at,
+            "horizon_minutes": r.get("horizon_minutes"),
             "entry_price": r.get("price"),
             "current_price": r.get("price"),
             "change_pct": 0.0 if r.get("price") else None,

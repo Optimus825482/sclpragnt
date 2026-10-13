@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { apiRequest } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import { usePoll } from "../lib/hooks";
 import { formatPct, fmtDateTime } from "../lib/format";
 import { baseAsset, toOpportunityView } from "../lib/opportunity";
@@ -9,6 +11,7 @@ import type { MonitoringState, NotificationsResponse } from "../lib/types";
 import { Badge, Card, EmptyState, SectionHeader, Skeleton, Tabs } from "../components/ui";
 
 type Tab = "live" | "history";
+type LiveRow = { view: ReturnType<typeof toOpportunityView>; kind: string; detectedAt: number | null };
 
 /**
  * FIRSATLAR (tarama) sayfası.
@@ -24,13 +27,77 @@ const PAGE_SIZE = 25;
 
 export default function FirsatlarPage() {
   const [tab, setTab] = useState<Tab>("live");
+  const { role } = useAuth();
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [manualMessage, setManualMessage] = useState<string | null>(null);
+  const [seenCandidates, setSeenCandidates] = useState<Record<string, Record<string, unknown>>>({});
   const monitoring = usePoll<MonitoringState>("/api/monitoring/state", 20_000);
+  const pendingSignals = usePoll<NotificationsResponse>(tab === "live" ? "/api/reports/notifications?day=all&limit=400" : null, tab === "live" ? 60_000 : null);
+
+  useEffect(() => {
+    const current = monitoring.data;
+    if (!current) return;
+    const now = Date.now() / 1000;
+    setSeenCandidates((previous) => {
+      const next: Record<string, Record<string, unknown>> = {};
+      for (const [key, candidate] of Object.entries(previous)) {
+        const detected = Number(candidate.detected_at ?? candidate.created_at ?? 0);
+        const horizon = Number(candidate.horizon_minutes ?? 0);
+        if (detected && horizon > 0 && now < detected + horizon * 60 + 120) next[key] = candidate;
+      }
+      const fresh = [...(current.candidates || []), ...(current.warm || []), ...(current.pulse || [])];
+      for (const candidate of fresh) {
+        const row = candidate as Record<string, unknown>;
+        const symbol = String(row.symbol || "").toUpperCase();
+        if (!symbol) continue;
+        const horizon = Number(row.horizon_minutes ?? 0);
+        if (horizon <= 0) continue;
+        const detected = Number(row.detected_at ?? row.created_at ?? now);
+        next[`${symbol}:${horizon}`] = { ...row, detected_at: detected };
+      }
+      return next;
+    });
+  }, [monitoring.data]);
+
+  async function runManualScan() {
+    if (manualBusy) return;
+    setManualBusy(true);
+    setManualError(null);
+    setManualMessage(null);
+    try {
+      const response = await apiRequest("/api/monitoring/scan", { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.detail || body?.error || `Tarama başarısız (HTTP ${response.status})`);
+      if (body?.error) throw new Error(String(body.error));
+      const scannedAt = Number(body?.scan_at || Date.now() / 1000);
+      setSeenCandidates((previous) => {
+        const next = { ...previous };
+        for (const candidate of body?.candidates || []) {
+          const row = candidate as Record<string, unknown>;
+          const symbol = String(row.symbol || "").toUpperCase();
+          if (!symbol) continue;
+          const horizon = Number(row.horizon_minutes ?? 0);
+          if (horizon <= 0) continue;
+          next[`${symbol}:${horizon}`] = { ...row, detected_at: Number(row.detected_at || scannedAt) };
+        }
+        return next;
+      });
+      setManualMessage(`Tarama tamamlandı · ${Number(body?.candidates?.length || 0)} aday bulundu.`);
+      monitoring.reload();
+      pendingSignals.reload();
+    } catch (error) {
+      setManualError(error instanceof Error ? error.message : "Manuel tarama başarısız oldu.");
+    } finally {
+      setManualBusy(false);
+    }
+  }
 
   const live = useMemo(() => {
     const m = monitoring.data;
     if (!m) return [];
-    const rows: Array<{ view: ReturnType<typeof toOpportunityView>; kind: string }> = [];
-    for (const c of m.candidates || []) rows.push({ view: toOpportunityView(c as Record<string, unknown>), kind: "Aday" });
+    const rows: LiveRow[] = [];
+    for (const c of m.candidates || []) rows.push({ view: toOpportunityView(c as Record<string, unknown>), kind: "Aday", detectedAt: Number((c as Record<string, unknown>).detected_at ?? (c as Record<string, unknown>).created_at) || null });
     // "Isınıyor" (warm) satırları SEMBOL BAŞINA farklı ufuk profilleriyle gelebilir;
     // aynı sembolü tabloda 3-4 kez tekrarlamak gürültü olur → sembol başına EN
     // YAKIN (warm_proximity en yüksek) olanı tut.
@@ -43,10 +110,26 @@ export default function FirsatlarPage() {
       const curProx = cur ? Number(cur.warm_proximity ?? 0) : -Infinity;
       if (!cur || prox > curProx) warmBest.set(sym, w as Record<string, unknown>);
     }
-    for (const w of warmBest.values()) rows.push({ view: toOpportunityView(w), kind: "Isınıyor" });
-    for (const p of m.pulse || []) rows.push({ view: toOpportunityView(p as Record<string, unknown>), kind: "Nabız" });
+    for (const w of warmBest.values()) rows.push({ view: toOpportunityView(w), kind: "Isınıyor", detectedAt: Number(w.detected_at ?? w.created_at) || null });
+    for (const p of m.pulse || []) rows.push({ view: toOpportunityView(p as Record<string, unknown>), kind: "Nabız", detectedAt: Number((p as Record<string, unknown>).detected_at ?? (p as Record<string, unknown>).created_at) || null });
+    const currentKeys = new Set(rows.map(({ view }) => `${view.symbol}:${view.horizonMinutes ?? 5}`));
+    for (const [key, candidate] of Object.entries(seenCandidates)) {
+      if (currentKeys.has(key)) continue;
+      rows.push({ view: toOpportunityView(candidate), kind: "Ufuk süresince", detectedAt: Number(candidate.detected_at ?? candidate.created_at) || null });
+      currentKeys.add(key);
+    }
+    const now = Date.now() / 1000;
+    for (const n of pendingSignals.data?.notifications || []) {
+      const detectedAt = Number(n.detected_at || 0);
+      const horizon = Math.max(1, Number(n.horizon_minutes || 5));
+      if (!detectedAt || now >= detectedAt + horizon * 60 + 120 || n.status !== "BEKLİYOR") continue;
+      const view = toOpportunityView({ ...n, created_at: detectedAt });
+      const key = `${view.symbol}:${view.horizonMinutes ?? horizon}`;
+      if (!currentKeys.has(key)) rows.push({ view, kind: "Ufuk süresince", detectedAt });
+      currentKeys.add(key);
+    }
     return rows;
-  }, [monitoring.data]);
+  }, [monitoring.data, pendingSignals.data, seenCandidates]);
 
   return (
     <div className="space-y-5">
@@ -55,17 +138,26 @@ export default function FirsatlarPage() {
         title="Tarama & tespit"
         description="Sistemin şu an tespit ettikleri ve geçmiş tarama kayıtları (hangi sistem ürettiğiyle birlikte)."
         actions={
-          <Tabs
-            items={[
-              { id: "live", label: "Anlık Tespitler" },
-              { id: "history", label: "Tarama Geçmişi" },
-            ]}
-            active={tab}
-            onChange={(id) => setTab(id as Tab)}
-          />
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {role === "admin" ? (
+              <button type="button" onClick={runManualScan} disabled={manualBusy} className="rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                {manualBusy ? "Tarama yapılıyor…" : "Şimdi Tara"}
+              </button>
+            ) : null}
+            <Tabs
+              items={[
+                { id: "live", label: "Anlık Tespitler" },
+                { id: "history", label: "Tarama Geçmişi" },
+              ]}
+              active={tab}
+              onChange={(id) => setTab(id as Tab)}
+            />
+          </div>
         }
       />
 
+      {manualError ? <div role="alert" className="rounded-lg border border-loss/30 bg-loss/5 px-4 py-2 text-sm text-loss">{manualError}</div> : null}
+      {manualMessage ? <div role="status" className="rounded-lg border border-gain/30 bg-gain/5 px-4 py-2 text-sm text-gain">{manualMessage}</div> : null}
       {tab === "live" ? <LiveFeed monitoring={monitoring} rows={live} /> : <HistoryTable />}
     </div>
   );
@@ -76,7 +168,7 @@ function LiveFeed({
   rows,
 }: {
   monitoring: ReturnType<typeof usePoll<MonitoringState>>;
-  rows: Array<{ view: ReturnType<typeof toOpportunityView>; kind: string }>;
+  rows: LiveRow[];
 }) {
   if (monitoring.loading && !monitoring.data) return <Skeleton className="h-64" />;
   if (monitoring.error && !monitoring.data)
@@ -104,7 +196,7 @@ function LiveFeed({
           </thead>
           <tbody>
             {rows.map(({ view, kind }, i) => (
-              <tr key={`${view.symbol}-${kind}-${i}`} className="border-t border-line">
+              <tr key={`${view.symbol}-${view.horizonMinutes ?? 5}-${kind}-${i}`} className="border-t border-line">
                 <td className="py-2 pr-3">
                   <span className="font-mono font-semibold text-ink-900">{view.base}</span>
                   <span className="text-ink-400"> / TRY</span>

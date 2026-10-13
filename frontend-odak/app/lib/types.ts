@@ -43,6 +43,7 @@ export type MonitoringState = {
 export type DailyOpportunity = {
   symbol: string;
   created_at?: number | null;
+  horizon_minutes?: number | null;
   entry_price?: number | null;
   current_price?: number | null;
   change_pct?: number | null;
@@ -197,6 +198,7 @@ export type BinancePositions = {
   holdings: BinanceHolding[];
   balances: Array<{ asset: string; free: string; locked: string }>;
   total_value_try: number;
+  user_stream?: { state: string; connected: boolean; last_error?: string | null };
 };
 
 /** /api/user/preferences + /api/monitoring/settings (global) */

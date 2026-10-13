@@ -3,19 +3,17 @@
 /**
  * ANA SAYFA (Anasayfa) — tasarımdaki ekranın gerçek veriyle çalışan sürümü.
  *
- * Düzen: üstte kart şeklinde yan yana Fırsatlar; altında Aktif İşlemler tablosu;
- * bunların altında Toplam Portföy / Kullanılabilir Bakiye / Bugünkü Kâr-Zarar
- * yan yana; en sağda sembol aramalı canlı fiyat + alım emri paneli.
+ * Düzen: en üstte portföy özeti bandı; ardından Fırsatlar ve işlem paneli;
+ * en altta Aktif İşlemler tablosu.
  *
- * Veri kaynağı: hızlı olan /api/monitoring/state (radar) birincil; boşsa
- * /api/daily-rising/state. İkisi de `toOpportunityView` ile normalize edilir.
+ * Veri kaynakları: birleşik radar adayları, günlük yükseliş adayları ve
+ * ufku dolmamış kalıcı bildirimler. Hepsi aynı kart kümesinde gösterilir.
  */
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePoll } from "./lib/hooks";
-import { useAuth } from "./lib/auth";
 import { toOpportunityView } from "./lib/opportunity";
-import type { DailyRisingState, MonitoringState } from "./lib/types";
+import type { DailyRisingState, MonitoringState, NotificationsResponse } from "./lib/types";
 import { Badge, Card, SectionHeader, Tabs } from "./components/ui";
 import PortfolioStrip from "./components/PortfolioStrip";
 import OpportunityCard from "./components/OpportunityCard";
@@ -25,18 +23,87 @@ import OrderPanel from "./components/OrderPanel";
 type Horizon = "all" | "5" | "15";
 
 export default function Home() {
-  const { username } = useAuth();
   const [horizon, setHorizon] = useState<Horizon>("all");
   const [selected, setSelected] = useState<string | null>(null);
+  const [seen, setSeen] = useState<Record<string, Record<string, unknown>>>({});
 
   const monitoring = usePoll<MonitoringState>("/api/monitoring/state", 20_000);
   const daily = usePoll<DailyRisingState>("/api/daily-rising/state", 60_000, 30_000);
+  const pendingSignals = usePoll<NotificationsResponse>("/api/reports/notifications?day=all&limit=400", 60_000);
+
+  useEffect(() => {
+    const now = Date.now() / 1000;
+    setSeen((previous) => {
+      const next: Record<string, Record<string, unknown>> = {};
+      for (const [key, candidate] of Object.entries(previous)) {
+        const detected = Number(candidate.detected_at ?? candidate.created_at ?? 0);
+        const horizonMinutes = Number(candidate.horizon_minutes ?? 0);
+        if (detected && horizonMinutes > 0 && now < detected + horizonMinutes * 60 + 120) next[key] = candidate;
+      }
+      const fresh: Record<string, unknown>[] = [
+        ...(monitoring.data?.candidates || []).map((row) => row as Record<string, unknown>),
+        ...(daily.data?.candidates || []).map((row) => row as unknown as Record<string, unknown>),
+      ];
+      for (const row of fresh) {
+        const symbol = String(row.symbol || "").toUpperCase();
+        if (!symbol) continue;
+        const detected = Number(row.detected_at ?? row.created_at ?? 0);
+        const horizonMinutes = Number(row.horizon_minutes ?? 0);
+        // Günlük liste endpointi ufku dönmüyorsa süre uydurmayız; bu adaylar
+        // yine anlık listede görünür ve bildirim kaydından ufuk gelirse tutulur.
+        if (!detected || horizonMinutes <= 0) continue;
+        next[`${symbol}:${horizonMinutes}`] = { ...row, detected_at: detected };
+      }
+      for (const n of pendingSignals.data?.notifications || []) {
+        const detected = Number(n.detected_at || 0);
+        const horizonMinutes = Number(n.horizon_minutes || 0);
+        const symbol = String(n.symbol || "").toUpperCase();
+        if (!symbol || !detected || horizonMinutes <= 0 || n.status !== "BEKLİYOR") continue;
+        if (now >= detected + horizonMinutes * 60 + 120) continue;
+        next[`${symbol}:${horizonMinutes}`] = { ...n, detected_at: detected };
+      }
+      return next;
+    });
+  }, [monitoring.data, daily.data, pendingSignals.data]);
 
   const views = useMemo(() => {
-    const monitorRows = monitoring.data?.candidates ?? [];
-    const source = monitorRows.length > 0 ? monitorRows : daily.data?.candidates ?? [];
-    return source.map((row) => toOpportunityView(row as Record<string, unknown>));
-  }, [monitoring.data, daily.data]);
+    const rows = new Map<string, Record<string, unknown>>();
+    for (const row of monitoring.data?.candidates ?? []) {
+      const raw = row as Record<string, unknown>;
+      const symbol = String(raw.symbol || "").toUpperCase();
+      if (symbol) rows.set(`${symbol}:${Number(raw.horizon_minutes) || "unknown"}`, raw);
+    }
+    for (const row of daily.data?.candidates ?? []) {
+      const raw = row as unknown as Record<string, unknown>;
+      const symbol = String(raw.symbol || "").toUpperCase();
+      if (!symbol) continue;
+      const horizonMinutes = Number(raw.horizon_minutes) || null;
+      const matchedPending = (pendingSignals.data?.notifications || []).find((n) =>
+        String(n.symbol || "").toUpperCase() === symbol && Number(n.horizon_minutes) > 0 && n.status === "BEKLİYOR",
+      );
+      const resolvedHorizon = horizonMinutes ?? (matchedPending ? Number(matchedPending.horizon_minutes) : null);
+      const sources = Array.isArray(raw.confirm_sources) ? raw.confirm_sources : undefined;
+      rows.set(`${symbol}:${resolvedHorizon ?? "unknown"}`, {
+        ...raw,
+        ...(resolvedHorizon ? { horizon_minutes: resolvedHorizon } : {}),
+        ...(sources?.length ? { sources } : {}),
+      });
+    }
+    const now = Date.now() / 1000;
+    for (const n of pendingSignals.data?.notifications || []) {
+      const symbol = String(n.symbol || "").toUpperCase();
+      const detected = Number(n.detected_at || 0);
+      const horizonMinutes = Number(n.horizon_minutes || 0);
+      if (!symbol || !detected || horizonMinutes <= 0 || n.status !== "BEKLİYOR") continue;
+      if (now >= detected + horizonMinutes * 60 + 120) continue;
+      const key = `${symbol}:${horizonMinutes}`;
+      if (!rows.has(key)) rows.set(key, { ...n, detected_at: detected });
+    }
+    for (const [key, row] of Object.entries(seen)) {
+      if (!rows.has(key)) rows.set(key, row);
+    }
+    return [...rows.values()].map((row) => toOpportunityView(row));
+  }, [monitoring.data, daily.data, pendingSignals.data, seen]);
 
   const filtered = useMemo(() => {
     if (horizon === "all") return views;
@@ -45,31 +112,19 @@ export default function Home() {
   }, [views, horizon]);
 
   const selectedView = useMemo(
-    () => filtered.find((o) => o.symbol === selected) || filtered[0] || null,
+    () => filtered.find((o) => `${o.symbol}:${o.horizonMinutes ?? "unknown"}` === selected) || filtered[0] || null,
     [filtered, selected],
   );
 
   useEffect(() => {
-    if (selected && !filtered.some((o) => o.symbol === selected)) setSelected(null);
+    if (selected && !filtered.some((o) => `${o.symbol}:${o.horizonMinutes ?? "unknown"}` === selected)) setSelected(null);
   }, [filtered, selected]);
 
   const loadingFirst = monitoring.loading && !monitoring.data;
   const allFailed = Boolean(monitoring.error) && Boolean(daily.error) && views.length === 0;
-  const sourceLabel = (monitoring.data?.candidates?.length ?? 0) > 0 ? "radar taraması" : "günlük liste";
-
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="odak-kicker">Canlı dashboard</p>
-          <h1 className="mt-1 text-xl font-semibold text-ink-900">
-            {username ? `Hoş geldin, ${username}` : "Fırsat Panosu"}
-          </h1>
-        </div>
-        <p className="text-xs text-ink-400">
-          Kaynak: {sourceLabel} · {views.length} aday
-        </p>
-      </div>
+      <PortfolioStrip />
 
       {allFailed && (
         <div className="odak-card border-loss/30 bg-loss-soft/50 p-3 text-sm text-loss">
@@ -117,11 +172,11 @@ export default function Home() {
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {filtered.slice(0, 6).map((item, index) => (
                 <OpportunityCard
-                  key={item.symbol}
+                  key={`${item.symbol}:${item.horizonMinutes ?? "unknown"}`}
                   rank={index + 1}
                   item={item}
-                  selected={selectedView?.symbol === item.symbol}
-                  onSelect={() => setSelected(item.symbol)}
+                  selected={selectedView?.symbol === item.symbol && selectedView?.horizonMinutes === item.horizonMinutes}
+                  onSelect={() => setSelected(`${item.symbol}:${item.horizonMinutes ?? "unknown"}`)}
                 />
               ))}
             </div>
@@ -142,9 +197,6 @@ export default function Home() {
         </div>
         </div>
       </Card>
-
-      {/* ALT: Portföy özeti (yan yana) */}
-      <PortfolioStrip />
     </div>
   );
 }

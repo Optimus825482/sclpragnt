@@ -3,7 +3,6 @@
 import { usePoll } from "../lib/hooks";
 import { formatPct, formatTL } from "../lib/format";
 import type { BinancePositions, BinanceSettings, DashboardSummary, PortfolioSummary } from "../lib/types";
-import { Skeleton, Stat } from "./ui";
 
 type BinanceDayTrades = { daily?: { realized_pnl_try?: number | null } };
 
@@ -29,14 +28,7 @@ export default function PortfolioStrip() {
   const realPositions = usePoll<BinancePositions>(configured ? "/api/binance/positions" : null, 30_000);
   const today = usePoll<BinanceDayTrades>(configured ? `/api/binance/trades-day?date=${istanbulDate()}` : null, 120_000, 30_000);
 
-  if (!configured) {
-    return (
-      <div className="odak-card p-4 text-sm text-ink-500">
-        Portföy bilgisi için Binance TR API anahtarlarınızı girin (Ayarlar). Anahtar girilene kadar
-        portföy ve bakiye bölümleri gizlenir.
-      </div>
-    );
-  }
+  if (!configured) return null;
 
   const tryFree = (() => {
     const b = realPositions.data?.balances?.find((x) => x.asset === "TRY");
@@ -50,24 +42,36 @@ export default function PortfolioStrip() {
     ? (Number(dailyPnl) / Number(totalValue)) * 100
     : null;
 
+  const metrics = [
+    {
+      label: "Toplam Portföy",
+      value: totalValue != null ? formatTL(totalValue) : "…",
+      detail: `${summary.data?.portfolio?.open_positions ?? 0} açık işlem`,
+      valueTone: "text-ink-900",
+    },
+    {
+      label: "Serbest Bakiye",
+      value: tryFree != null ? formatTL(tryFree) : "…",
+      detail: portfolio.data?.metrics ? `Kapalı ${portfolio.data.metrics.closed_trades} işlem · TRY` : "Kullanılabilir TRY",
+      valueTone: "text-ink-900",
+    },
+    {
+      label: "Bugünkü K/Z",
+      value: dailyPnl == null ? "—" : `${dailyPnl >= 0 ? "+" : ""}${formatTL(dailyPnl)}`,
+      detail: dailyPct == null ? "Gerçekleşen + açık K/Z yükleniyor" : `${formatPct(dailyPct, 2, true)} · gerçekleşen + açık K/Z`,
+      valueTone: dailyPnl == null ? "text-ink-900" : dailyPnl > 0 ? "text-gain" : dailyPnl < 0 ? "text-loss" : "text-ink-900",
+    },
+  ];
+
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <Stat
-        label="Toplam Portföy"
-        value={totalValue != null ? formatTL(totalValue) : "…"}
-        detail={`${summary.data?.portfolio?.open_positions ?? 0} açık işlem`}
-      />
-      <Stat
-        label="Bugün + Açık K/Z"
-        value={dailyPnl == null ? "—" : `${dailyPnl >= 0 ? "+" : ""}${formatTL(dailyPnl)}`}
-        tone={dailyPnl == null ? "neutral" : dailyPnl > 0 ? "gain" : dailyPnl < 0 ? "loss" : "neutral"}
-        detail={dailyPct == null ? "günlük gerçekleşen + açık varlıklar yükleniyor" : `${formatPct(dailyPct, 2, true)} · gerçekleşen + açık K/Z`}
-      />
-      <Stat
-        label="Kullanılabilir Bakiye"
-        value={tryFree != null ? formatTL(tryFree) : "…"}
-        detail={portfolio.data?.metrics ? `kapalı ${portfolio.data.metrics.closed_trades} işlem` : "serbest TRY"}
-      />
-    </div>
+    <section aria-label="Portföy özeti" className="odak-card grid grid-cols-1 divide-y divide-line px-4 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+      {metrics.map((metric) => (
+        <div key={metric.label} className="min-w-0 px-3 py-3 first:pl-0 last:pr-0">
+          <p className="odak-kicker">{metric.label}</p>
+          <p className={`mt-1 font-mono text-xl font-semibold tracking-tight ${metric.valueTone}`}>{metric.value}</p>
+          <p className="mt-0.5 text-xs text-ink-400">{metric.detail}</p>
+        </div>
+      ))}
+    </section>
   );
 }
