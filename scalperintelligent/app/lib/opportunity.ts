@@ -1,5 +1,5 @@
 import type { Candidate, DailyOpportunity } from "./types";
-import { candidateSources } from "./sources";
+import { candidateSources, sourceLabel } from "./sources";
 
 /**
  * İki farklı backend şeklini TEK görünüme indirger.
@@ -27,7 +27,14 @@ export type OpportunityView = {
   ceilingPrice: number | null;
   potentialPrice: number | null;
   targetProbability: number | null;
-  sources: string[];       // hangi sistem üretti
+  sources: string[];
+  confirmSources: string[];
+  confirmLayers: string[];
+  opposingSources: string[];
+  sourceEvidence: Record<string, unknown>;
+  stopLoss: number | null;
+  stopLossPct: number | null;
+  scoreComponents: Array<{ label: string; value: number }>;
 };
 
 function num(value: unknown): number | null {
@@ -84,6 +91,18 @@ export function toOpportunityView(raw: Candidate | DailyOpportunity | Record<str
     potentialPrice: num(r.potential_price),
     targetProbability: num(r.target_probability),
     sources: candidateSources(r),
+    confirmSources: (Array.isArray(r.supporting_sources) ? r.supporting_sources : []).map(sourceLabel).filter(Boolean),
+    confirmLayers: (Array.isArray(r.confirm_layers) ? r.confirm_layers : []).map(sourceLabel).filter(Boolean),
+    opposingSources: (Array.isArray(r.opposing_sources) ? r.opposing_sources : Array.isArray(r.conflicting_sources) ? r.conflicting_sources : []).map(sourceLabel).filter(Boolean),
+    sourceEvidence: r.source_evidence != null && typeof r.source_evidence === "object" ? r.source_evidence as Record<string, unknown> : {},
+    stopLoss: num(r.stop_loss),
+    stopLossPct: num(r.stop_loss_pct),
+    scoreComponents: [
+      ["Kalite", r.quality_score], ["Birleşik", r.scan_score], ["Hız", r.velocity_score], ["Panel", r.panel_score],
+    ].flatMap(([label, value]) => {
+      const score = num(value);
+      return score == null ? [] : [{ label: String(label), value: score }];
+    }),
   };
 }
 

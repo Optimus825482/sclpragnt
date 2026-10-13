@@ -2017,6 +2017,83 @@ async def last_daily_rising_report(kind: str = "slot") -> dict | None:
         return None
 
 
+async def save_unified_scan_run(item: dict) -> str | None:
+    """Kullanıcıya ait salt-veri tarama sonucunu kalıcı geçmişe ekle."""
+    def op(conn):
+        row = conn.execute(
+            "INSERT INTO unified_scan_runs "
+            "(scan_id, username, started_at, completed_at, source, algorithm_version, candidate_count, candidates) "
+            "VALUES(?,?,?,?,?,?,?,?) RETURNING scan_id",
+            (str(item["scan_id"]), str(item["username"]).lower(),
+             float(item["started_at"]), float(item["completed_at"]),
+             str(item.get("source") or "manual"), str(item.get("algorithm_version") or "combined-v1"),
+             int(item.get("candidate_count") or 0), _json_safe_dumps(item.get("candidates") or [])),
+        ).fetchone()
+        conn.commit()
+        return str(row[0]) if row else None
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.warning("birleşik tarama geçmişi yazılamadı", exc_info=True)
+        return None
+
+
+async def list_unified_scan_runs(username: str, limit: int = 30) -> list[dict]:
+    """Yalnız istenen kullanıcının son birleşik tarama kayıtlarını döndür."""
+    def op(conn):
+        rows = conn.execute(
+            "SELECT scan_id, username, started_at, completed_at, source, algorithm_version, "
+            "candidate_count, candidates FROM unified_scan_runs "
+            "WHERE username=? ORDER BY started_at DESC LIMIT ?",
+            (str(username or "").lower(), max(1, min(100, int(limit)))),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["candidates"] = _json_value(item.get("candidates"), [])
+            result.append(item)
+        return result
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.warning("birleşik tarama geçmişi okunamadı", exc_info=True)
+        return []
+
+
+async def get_user_favorites(username: str) -> list[str]:
+    def op(conn):
+        row = conn.execute("SELECT symbols FROM user_favorites WHERE username=?", (str(username or "").lower(),)).fetchone()
+        value = _json_value(row[0], []) if row else []
+        return [str(symbol).upper() for symbol in value if isinstance(symbol, str)]
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.warning("kullanıcı favorileri okunamadı", exc_info=True)
+        return []
+
+
+async def set_user_favorites(username: str, symbols: list[str]) -> list[str] | None:
+    clean = list(dict.fromkeys(str(symbol).upper() for symbol in symbols if symbol))[:50]
+
+    def op(conn):
+        conn.execute(
+            "INSERT INTO user_favorites(username, symbols, updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(username) DO UPDATE SET symbols=excluded.symbols, updated_at=excluded.updated_at",
+            (str(username or "").lower(), _json_safe_dumps(clean), time.time()),
+        )
+        conn.commit()
+        return clean
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logger.warning("kullanıcı favorileri kaydedilemedi", exc_info=True)
+        return None
+
+
 async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
                                        live_prices: dict | None = None,
                                        max_sec: float = 24 * 3600.0) -> list[dict]:

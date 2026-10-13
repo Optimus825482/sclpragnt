@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { apiRequest } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { formatPct, fmtDateTime, formatPrice } from "../lib/format";
@@ -8,7 +8,7 @@ import { baseAsset, toOpportunityView } from "../lib/opportunity";
 import { sourceLabel } from "../lib/sources";
 import { useWatchlist } from "../lib/watchlist";
 import { sound } from "../lib/sound";
-import type { MonitoringState, NotificationsResponse, ScanNotification } from "../lib/types";
+import type { ManualUnifiedScanResponse, NotificationsResponse, UnifiedScanHistoryResponse, UnifiedScanRun } from "../lib/types";
 import { Badge, Card, EmptyState, SectionHeader, Skeleton, Tabs } from "../components/ui";
 
 type Tab = "live" | "history";
@@ -23,134 +23,65 @@ export default function FirsatlarPage() {
   const [manualBusy, setManualBusy] = useState(false);
   const [manualError, setManualError] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState<string | null>(null);
-  const [seenCandidates, setSeenCandidates] = useState<Record<string, Record<string, unknown>>>({});
+  const [manualRun, setManualRun] = useState<UnifiedScanRun | null>(null);
 
   const { isFavorite, toggleFavorite } = useWatchlist();
+  const latestScan = usePoll<{ run: UnifiedScanRun | null }>("/api/unified-scan/latest", 20_000, 30_000);
+  const scanHistory = usePoll<UnifiedScanHistoryResponse>("/api/unified-scan/history?limit=30", 60_000);
 
-  const monitoring = usePoll<MonitoringState>("/api/monitoring/state", 15_000);
-  const pendingSignals = usePoll<NotificationsResponse>(
-    "/api/reports/notifications?day=all&limit=400&history_only=true",
-    45_000
-  );
-
-  useEffect(() => {
-    const current = monitoring.data;
-    if (!current) return;
-    const now = Date.now() / 1000;
-    setSeenCandidates((previous) => {
-      const next: Record<string, Record<string, unknown>> = {};
-      for (const [key, candidate] of Object.entries(previous)) {
-        const detected = Number(candidate.detected_at ?? candidate.created_at ?? 0);
-        const horizon = Number(candidate.horizon_minutes ?? 0);
-        if (detected && horizon > 0 && now < detected + horizon * 60 + 120) next[key] = candidate;
-      }
-      const fresh = [...(current.candidates || []), ...(current.warm || []), ...(current.pulse || [])];
-      for (const candidate of fresh) {
-        const row = candidate as Record<string, unknown>;
-        const symbol = String(row.symbol || "").toUpperCase();
-        if (!symbol) continue;
-        const horizon = Number(row.horizon_minutes ?? 0);
-        if (horizon <= 0) continue;
-        const detected = Number(row.detected_at ?? row.created_at ?? now);
-        next[`${symbol}:${horizon}`] = { ...row, detected_at: detected };
-      }
-      return next;
-    });
-  }, [monitoring.data]);
+  const latestRun = latestScan.data?.run ?? null;
+  const latestRunAt = Number(latestRun?.completed_at ?? latestRun?.generated_at ?? 0);
+  const run = manualRun && Number(manualRun.completed_at || 0) >= latestRunAt ? manualRun : latestRun;
 
   async function runManualScan() {
     if (manualBusy) return;
     setManualBusy(true);
     setManualError(null);
-    setManualMessage("Piyasa taranıyor...");
+    setManualMessage("Salt-veri piyasa taraması başlatılıyor…");
     try {
-      const response = await apiRequest("/api/monitoring/scan", { method: "POST" });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body?.detail || body?.error || `Tarama başarısız (HTTP ${response.status})`);
-      if (body?.error) throw new Error(String(body.error));
-
+      const response = await apiRequest("/api/unified-scan/manual", { method: "POST" });
+      const body = await response.json().catch(() => ({})) as ManualUnifiedScanResponse & { detail?: string };
+      if (!response.ok) throw new Error(body?.detail || `Tarama başarısız (HTTP ${response.status})`);
+      if (!body.ok || body.side_effects.notifications_sent || body.side_effects.paper_positions_opened || body.side_effects.real_orders_submitted) throw new Error("Tarama güvenlik doğrulaması başarısız oldu");
+      const nextRun: UnifiedScanRun = {
+        scan_id: body.scan_id,
+        started_at: body.started_at,
+        completed_at: body.completed_at,
+        algorithm_version: body.algorithm_version,
+        source: "manual",
+        count: body.count,
+        candidates: body.candidates,
+      };
+      setManualRun(nextRun);
+      setManualMessage(`Tarama tamamlandı · ${body.count} aday · emir/bildirim yok`);
       sound.playSignalChime();
-      const count = Number(body?.candidates?.length || 0);
-      setManualMessage(`Tarama tamamlandı · ${count} fırsat bulundu.`);
-
-      monitoring.reload();
-      pendingSignals.reload();
-      setTimeout(() => setManualMessage(null), 4000);
+      latestScan.reload();
+      scanHistory.reload();
+      window.setTimeout(() => setManualMessage(null), 5000);
     } catch (error) {
       setManualError(error instanceof Error ? error.message : "Manuel tarama başarısız oldu.");
-      setTimeout(() => setManualError(null), 4000);
+      window.setTimeout(() => setManualError(null), 5000);
     } finally {
       setManualBusy(false);
     }
   }
 
-  // Canlı Adayları Hazırla
   const live = useMemo(() => {
-    const m = monitoring.data;
-    if (!m) return [];
-    const rows: LiveRow[] = [];
-    for (const c of m.candidates || []) {
-      rows.push({
-        view: toOpportunityView(c as Record<string, unknown>),
-        kind: "Aday",
-        detectedAt: Number((c as Record<string, unknown>).detected_at ?? (c as Record<string, unknown>).created_at) || null,
-      });
-    }
-
-    const warmBest = new Map<string, Record<string, unknown>>();
-    for (const w of m.warm || []) {
-      const sym = String((w as Record<string, unknown>).symbol ?? "");
-      if (!sym) continue;
-      const cur = warmBest.get(sym);
-      const prox = Number((w as Record<string, unknown>).warm_proximity ?? 0);
-      const curProx = cur ? Number(cur.warm_proximity ?? 0) : -Infinity;
-      if (!cur || prox > curProx) warmBest.set(sym, w as Record<string, unknown>);
-    }
-    for (const w of warmBest.values()) {
-      rows.push({
-        view: toOpportunityView(w),
-        kind: "Isınıyor",
-        detectedAt: Number(w.detected_at ?? w.created_at) || null,
-      });
-    }
-
-    for (const p of m.pulse || []) {
-      rows.push({
-        view: toOpportunityView(p as Record<string, unknown>),
-        kind: "Nabız",
-        detectedAt: Number((p as Record<string, unknown>).detected_at ?? (p as Record<string, unknown>).created_at) || null,
-      });
-    }
-
-    const currentKeys = new Set(rows.map(({ view }) => `${view.symbol}:${view.horizonMinutes ?? 5}`));
-    for (const [key, candidate] of Object.entries(seenCandidates)) {
-      if (currentKeys.has(key)) continue;
-      rows.push({
-        view: toOpportunityView(candidate),
-        kind: "Ufuk süresince",
-        detectedAt: Number(candidate.detected_at ?? candidate.created_at) || null,
-      });
-      currentKeys.add(key);
-    }
-
     const now = Date.now() / 1000;
-    for (const n of pendingSignals.data?.notifications || []) {
-      const detectedAt = Number(n.detected_at || 0);
-      const horizon = Math.max(1, Number(n.horizon_minutes || 5));
-      if (!detectedAt || now >= detectedAt + horizon * 60 + 120 || n.status !== "BEKLİYOR") continue;
-      const view = toOpportunityView({ ...n, created_at: detectedAt });
-      const key = `${view.symbol}:${view.horizonMinutes ?? horizon}`;
-      if (!currentKeys.has(key)) rows.push({ view, kind: "Ufuk süresince", detectedAt });
-      currentKeys.add(key);
-    }
-
-    // Arama ve favori filtresi
+    const rows: LiveRow[] = (run?.candidates || []).map((candidate) => {
+      const view = toOpportunityView(candidate);
+      return {
+        view,
+        kind: "Birleşik aday",
+        detectedAt: Number(candidate.detected_at ?? candidate.created_at ?? run?.completed_at ?? run?.generated_at ?? now) || null,
+      };
+    });
     return rows.filter(({ view }) => {
       if (onlyFavorites && !isFavorite(view.symbol)) return false;
       if (search.trim() && !view.symbol.includes(search.trim().toUpperCase())) return false;
       return true;
-    });
-  }, [monitoring.data, pendingSignals.data, seenCandidates, onlyFavorites, search, isFavorite]);
+    }).sort((left, right) => (right.view.strength ?? 0) - (left.view.strength ?? 0));
+  }, [run, onlyFavorites, search, isFavorite]);
 
   return (
     <div className="space-y-5">
@@ -213,18 +144,15 @@ export default function FirsatlarPage() {
       </div>
 
       {tab === "live" ? (
-        <LiveFeed
-          monitoring={monitoring}
-          rows={live}
-          isFavorite={isFavorite}
-          toggleFavorite={toggleFavorite}
-        />
+        <LiveFeed loading={latestScan.loading && !run} error={latestScan.error} rows={live} isFavorite={isFavorite} toggleFavorite={toggleFavorite} />
       ) : (
         <HistorySection
           search={search}
           onlyFavorites={onlyFavorites}
           isFavorite={isFavorite}
           toggleFavorite={toggleFavorite}
+          scanHistory={scanHistory.data?.runs ?? []}
+          scanHistoryLoading={scanHistory.loading && !scanHistory.data}
         />
       )}
     </div>
@@ -232,21 +160,23 @@ export default function FirsatlarPage() {
 }
 
 function LiveFeed({
-  monitoring,
+  loading,
+  error,
   rows,
   isFavorite,
   toggleFavorite,
 }: {
-  monitoring: ReturnType<typeof usePoll<MonitoringState>>;
+  loading: boolean;
+  error: string | null;
   rows: LiveRow[];
   isFavorite: (sym: string) => boolean;
   toggleFavorite: (sym: string) => void;
 }) {
-  if (monitoring.loading && !monitoring.data) return <Skeleton className="h-64" />;
-  if (monitoring.error && !monitoring.data)
-    return <EmptyState title="Tarama durumu alınamadı" hint={monitoring.error} tone="loss" />;
+  if (loading) return <Skeleton className="h-64" />;
+  if (error && rows.length === 0)
+    return <EmptyState title="Birleşik tarama alınamadı" hint={error} tone="loss" />;
   if (rows.length === 0)
-    return <EmptyState title="Uygun aday yok" hint="Filtreleri değiştirebilir veya 'Şimdi Tara' ile yeni tarama yapabilirsiniz." />;
+    return <EmptyState title="Uygun aday yok" hint="Yeni salt-veri taraması başlatabilir veya filtreleri değiştirebilirsiniz." />;
 
   const kindTone: Record<string, "accent" | "warn" | "gain"> = { Aday: "gain", Isınıyor: "warn", Nabız: "accent" };
 
@@ -332,11 +262,15 @@ function HistorySection({
   onlyFavorites,
   isFavorite,
   toggleFavorite,
+  scanHistory,
+  scanHistoryLoading,
 }: {
   search: string;
   onlyFavorites: boolean;
   isFavorite: (sym: string) => boolean;
   toggleFavorite: (sym: string) => void;
+  scanHistory: UnifiedScanRun[];
+  scanHistoryLoading: boolean;
 }) {
   const [page, setPage] = useState(0);
   const { data, error, loading } = usePoll<NotificationsResponse>(
@@ -389,12 +323,37 @@ function HistorySection({
   const safePage = Math.min(page, pageCount - 1);
   const slice = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
 
-  if (loading && !data) return <Skeleton className="h-64" />;
-  if (error && !data) return <EmptyState title="Tarama geçmişi alınamadı" hint={error} tone="loss" />;
-  if (rawNotifications.length === 0) return <EmptyState title="Kayıt yok" hint="Henüz tarama/bildirim kaydı oluşmamış." />;
+  if (loading && !data && scanHistory.length === 0) return <Skeleton className="h-64" />;
+  if (error && !data && scanHistory.length === 0) return <EmptyState title="Tarama geçmişi alınamadı" hint={error} tone="loss" />;
+  if (rawNotifications.length === 0 && scanHistory.length === 0) return <EmptyState title="Kayıt yok" hint="Henüz tarama geçmişi veya başarı kaydı oluşmamış." />;
 
   return (
     <div className="space-y-4">
+      <Card className="p-4">
+        <SectionHeader eyebrow="Birleşik tarama geçmişi" title="Kalıcı aday anlık görüntüleri" description="Her manuel taramanın zamanı, sürümü ve adayları kullanıcı hesabına özel saklanır." />
+        {scanHistoryLoading ? <Skeleton className="mt-3 h-20" /> : scanHistory.length === 0 ? (
+          <p className="mt-3 text-sm text-ink-400">Henüz kaydedilmiş manuel tarama yok.</p>
+        ) : (
+          <div className="mt-3 space-y-2">
+            {scanHistory.map((run) => {
+              const candidates = run.candidates || [];
+              return <details key={run.scan_id} className="rounded-lg border border-line bg-white p-3">
+                <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="font-mono font-semibold text-ink-800">{fmtDateTime(run.completed_at ?? run.generated_at)}</span>
+                  <span className="flex items-center gap-2"><Badge tone="accent">{run.count ?? run.candidate_count ?? candidates.length} aday</Badge><span className="text-xs text-ink-400">{run.algorithm_version || "combined-v1"}</span></span>
+                </summary>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {candidates.length ? candidates.map((candidate) => <span key={`${candidate.symbol}:${candidate.horizon_minutes ?? "x"}`} className="rounded-md bg-canvas px-2 py-1 text-[11px] text-ink-600">
+                    <span className="font-mono font-semibold">{candidate.symbol}</span> · {candidate.horizon_minutes ?? "—"} dk · {Array.isArray(candidate.unified_sources) ? candidate.unified_sources.join(", ") : candidate.strategy || "Birleşik"}
+                  </span>) : <span className="text-xs text-ink-400">Bu taramada aday bulunmadı.</span>}
+                </div>
+              </details>;
+            })}
+          </div>
+        )}
+      </Card>
+
+      {rawNotifications.length === 0 ? <EmptyState title="Başarı kaydı yok" hint="Aday görüntüleri yukarıdaki kalıcı tarama geçmişinde tutuluyor." /> : <>
       {/* SİNYAL BAŞARI KARNESİ */}
       <div className="grid gap-3 sm:grid-cols-4">
         <div className="rounded-xl border border-line bg-white p-3.5 shadow-xs">
@@ -537,6 +496,7 @@ function HistorySection({
           </div>
         </div>
       </Card>
+      </>}
     </div>
   );
 }

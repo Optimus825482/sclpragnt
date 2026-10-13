@@ -26,6 +26,8 @@ const SOURCE_LABELS: Record<string, string> = {
   extra: "Ek Havuz",
   master_surge: "Hacim Patlaması",
   pulse: "Hızlı Nabız",
+  snapback: "Snapback Dip",
+  macd_mtf: "MACD Çoklu Zaman",
   early_discovery: "Erken Keşif",
   whale: "Balina Girişi",
   dip_approach: "Dip Dönüşü",
@@ -58,7 +60,11 @@ export function candidateSources(item: Candidate | Record<string, unknown>): str
   const codes: string[] = [];
   if (raw) {
     for (const s of raw) codes.push(String(s));
-  } else {
+  }
+  if (Array.isArray(r.signal_sources)) {
+    for (const source of r.signal_sources) codes.push(String(source));
+  }
+  if (!raw && !Array.isArray(r.signal_sources)) {
     if (r.pool_source) codes.push(String(r.pool_source));
     if (r.strategy) codes.push(String(r.strategy));
   }

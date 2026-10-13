@@ -1767,6 +1767,42 @@ async def get_market_klines(symbol: str, interval: str = "5m", limit: int = 200)
             "candles": rows, "source": "binance_tr_public"}
 
 
+@app.get("/api/market-tickers")
+async def get_market_tickers(symbols: str):
+    """Toplu, salt-okunur public Binance TR anlık fiyat verisi."""
+    requested = list(dict.fromkeys(
+        re.sub(r"[^A-Z0-9]", "", value.upper())
+        for value in str(symbols or "").split(",")
+        if value.strip()
+    ))
+    requested = [symbol for symbol in requested if 5 <= len(symbol) <= 20][:50]
+    if not requested:
+        return {"generated_at": time.time(), "source": "binance_tr_public_price", "tickers": []}
+    try:
+        rows = await binance_tr_public.ticker_price(requested)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR ticker alınamadı: {exc}")
+    by_symbol = {str(row.get("symbol") or "").upper(): row for row in rows or []}
+    tickers = []
+    for symbol in requested:
+        row = by_symbol.get(symbol)
+        if not row:
+            tickers.append({"symbol": symbol, "available": False})
+            continue
+        def number(key):
+            try:
+                value = float(row.get(key))
+                return value if math.isfinite(value) else None
+            except (TypeError, ValueError):
+                return None
+        tickers.append({
+            "symbol": symbol, "available": True, "last": number("price"),
+            "change_pct": None,
+            "updated_at": time.time(),
+        })
+    return {"generated_at": time.time(), "source": "binance_tr_public_price", "tickers": tickers}
+
+
 @app.get("/api/market-ticker/{symbol}")
 async def get_market_ticker(symbol: str):
     """Tek sembolün 24 saatlik ticker'ı (son fiyat, değişim %, en düşük/yüksek).
@@ -1795,7 +1831,7 @@ async def get_market_ticker(symbol: str):
             return None
 
     if row is None:
-        return {"symbol": sym, "available": False, "source": "binance_tr_public_24h_ticker"}
+        return {"symbol": sym, "available": False, "source": "binance_tr_public_price"}
     return {
         "symbol": sym,
         "available": True,
@@ -1804,7 +1840,7 @@ async def get_market_ticker(symbol: str):
         "high": _f("highPrice"),
         "low": _f("lowPrice"),
         "quote_volume": _f("quoteVolume"),
-        "source": "binance_tr_public_24h_ticker",
+        "source": "binance_tr_public_price",
     }
 
 
@@ -1997,7 +2033,7 @@ async def top_gainers_status(refresh: bool = False):
             "limit": config.TOP_GAINERS_LIMIT, "refresh_seconds": config.TOP_GAINERS_REFRESH_SEC,
             "refresh_minutes": config.TOP_GAINERS_REFRESH_SEC // 60,
             "symbols": config.SYMBOLS, "refreshed_at": runtime.get("top_gainers_refreshed_at"),
-            "source": "binance_tr_public_24h_ticker"}
+            "source": "binance_tr_public_price"}
 
 @app.get("/api/symbol-activity")
 async def symbol_activity_status():

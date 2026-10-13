@@ -91,3 +91,7 @@ select:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .odak-live-dot { animation: none; }
 }
+
+.favorite-ticker-sticky { position: sticky; top: 4rem; z-index: 29; }
+.odak-ticker-scroll { scrollbar-width: none; }
+.odak-ticker-scroll::-webkit-scrollbar { display: none; }

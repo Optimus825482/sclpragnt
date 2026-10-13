@@ -8,7 +8,7 @@
  *      tarayıcı çapraz köken isteği görmez.
  *   2) Oturum cookie'si (scalper_session) odak-ui origin'inde saklanır ve
  *      backend'in `Set-Cookie`'si aynı yoldan geri iletilir → giriş çalışır.
- * Ayrıntı: frontend-odak/README.md.
+ * Ayrıntı: scalperintelligent/README.md.
  */
 const BACKEND_ORIGIN = process.env.BACKEND_ORIGIN || "http://127.0.0.1:8004";
 

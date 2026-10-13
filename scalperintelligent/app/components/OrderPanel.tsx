@@ -8,6 +8,7 @@ import { useLiveMessages } from "../lib/liveSocket";
 import { formatCompact, formatPct, formatPrice, formatTL } from "../lib/format";
 import { sound } from "../lib/sound";
 import type { BinancePositions, BinanceSettings, MarketSymbols, MarketTicker } from "../lib/types";
+import type { OpportunityView } from "../lib/opportunity";
 import { Badge, Button, Card } from "./ui";
 import SymbolSelect from "./SymbolSelect";
 
@@ -64,10 +65,12 @@ function responseDetail(body: any) {
 export default function OrderPanel({
   initialSymbol,
   initialAmount,
+  initialCandidate,
   onTraded,
 }: {
   initialSymbol?: string | null;
   initialAmount?: string | number | null;
+  initialCandidate?: OpportunityView | null;
   onTraded?: () => void;
 }) {
   const symbolsQ = usePoll<MarketSymbols>("/api/market-symbols", 300_000);
@@ -130,10 +133,8 @@ export default function OrderPanel({
 
   useEffect(() => { if (initialSymbol) setSymbol(initialSymbol); }, [initialSymbol]);
   useEffect(() => {
-    if (initialAmount != null && initialAmount !== "") {
-      setAmount(String(initialAmount));
-    }
-  }, [initialAmount]);
+    setAmount(initialAmount == null || initialAmount === "" ? "" : String(initialAmount));
+  }, [initialAmount, initialSymbol]);
   const activeSymbol = symbol || initialSymbol || null;
   const ticker = usePoll<MarketTicker>(activeSymbol ? `/api/market-ticker/${activeSymbol}` : null, 15_000);
   const base = activeSymbol ? activeSymbol.replace("TRY", "").replace("USDT", "") : "";
@@ -270,6 +271,11 @@ export default function OrderPanel({
         {balances.data?.user_stream?.connected ? "Özel emir ve bakiye akışı bağlı" : `Özel akış: ${balances.data?.user_stream?.state || "bağlanıyor"} · REST durum sorgusu kullanılabilir`}
       </p>}
       <div className="mt-2"><SymbolSelect symbols={symbolsQ.data?.symbols || []} value={activeSymbol} onChange={setSymbol} /></div>
+      {initialCandidate && initialCandidate.symbol === activeSymbol && <div className="mt-2 rounded-lg border border-accent/20 bg-accent/5 p-2.5 text-[10px]">
+        <div className="flex items-center justify-between gap-2"><span className="font-semibold text-ink-800">Aday panele aktarıldı</span><span className="text-ink-500">{initialCandidate.horizonMinutes ?? "—"} dk · skor {initialCandidate.strength ?? "—"}</span></div>
+        <p className="mt-1 text-ink-500">Kaynak: {initialCandidate.sources.length ? initialCandidate.sources.join(" · ") : "Birleşik tarama"}{initialCandidate.potentialPct != null ? ` · potansiyel ${initialCandidate.potentialPct.toFixed(2)}%` : ""}</p>
+        <p className="mt-1 font-medium text-warn">Aday aktarımı emir göndermez. Gerçek emir için risk kontrolü ve son onay gerekir.</p>
+      </div>}
 
       {!activeSymbol ? (
         <p className="mt-4 rounded-lg border border-dashed border-line py-6 text-center text-xs text-ink-400">Fiyat ve emir için bir sembol seçin.</p>

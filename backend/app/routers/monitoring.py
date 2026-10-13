@@ -4,7 +4,9 @@ import json
 import logging
 import math
 import os
+import re
 import time
+import uuid
 from collections import deque, Counter
 from datetime import datetime
 
@@ -88,6 +90,8 @@ _loop_task = None
 # Manuel (/api/monitoring/scan) ile arka plan döngüsü aynı anda taramasın diye
 # ortak kilit — çift tarama/çift journal/state yarışını önler (2026-09-04).
 _scan_lock = asyncio.Lock()
+_combined_scan_lock = asyncio.Lock()
+_unified_scan_cache: dict = {"generated_at": 0.0, "candidates": []}
 
 # State lock: _monitoring_state ve _deferred_push concurrent okuma/yazma
 # yarisini onler (2026-09-07).
@@ -3044,21 +3048,30 @@ def _combined_quality_score(c: dict) -> tuple[float, int, int]:
 
 
 async def _combined_scan_rows() -> list[dict]:
-    """TÜM radar stratejilerini TEK taramada birleştir; TEK birleşik puan üret.
+    """TÜM radar stratejilerini salt-okunur biçimde birleştirip puan üret.
 
-    Akış: velocity(5dk+15dk) + günlük momentum + short-squeeze adayları havuzu
-    → sembol bazında tekilleştir (en yüksek panel skoru kalır) →
-    `unified_signals.enrich_candidates` ile jump/erken/yükseliş füzyonu + Master
-    Surge 4 katman + uyarlanabilir hedefler → MACD-tek (fusion_only) adaylar
-    eklenir. Her adaya anlık fiyat, tavan (yükselme miktarı), potansiyel ve
-    ihtimal yazılır; tavanına ulaşan adaylar `_hit` ile işaretlenir.
+    Akış: velocity(5/15 + ek ufuklar), günlük momentum, short-squeeze, MACD
+    jump/erken/yükseliş, MACD MTF teyidi, yükseliş eğilimi, pulse ve Snapback
+    adaylarını ortaklaştırır. Adaylar sembol + ufuk bazında tekilleşir; geçersiz
+    Binance TR sembolleri elenir ve kaynak uzlaşısı/kanıtı korunur. Global Radar
+    kullanıcıya ayrı kaynak olarak eklenmez. Tavanına ulaşan adaylar `_hit` olur.
     """
     from app.binance_tr_public import trading_symbols as _trading_syms
+    from app import early_discovery, snapback_service
+    valid_symbols: set[str] = set()
     try:
-        tr_syms = [s for s in await _trading_syms("TRY")]
+        tr_syms = [str(symbol).upper() for symbol in await _trading_syms("TRY")]
+        valid_symbols.update(tr_syms)
     except Exception:
         tr_syms = []
-    # Ufuklar: 5/15 + (bayrak açıksa) 30/60. 30/60 için ayrı gather (sayı esnek).
+    try:
+        valid_symbols.update(str(symbol).upper() for symbol in await _trading_syms("USDT"))
+    except Exception:
+        pass
+    if not valid_symbols:
+        valid_symbols.update(str(symbol).upper() for symbol in (getattr(config, "SYMBOLS", []) or []))
+
+    # Ufuklar: 5/15 + (bayrak açıksa) 30/60; mevcut kaynaklar aynı turda okunur.
     from app.routers.velocity import _active_horizons as _act_h2
     _extra_h = [h for h in _act_h2() if h not in (5, 15)]
     _gather = [
@@ -3066,12 +3079,20 @@ async def _combined_scan_rows() -> list[dict]:
         detect_velocity_candidates({}, horizon_minutes=15),
         _short_squeeze_candidates(tr_syms),
     ] + [detect_velocity_candidates({}, horizon_minutes=h) for h in _extra_h]
+    _gather.append(snapback_service.scan_snapback_opportunities())
     _res = await asyncio.gather(*_gather, return_exceptions=True)
     scan5 = _res[0] if isinstance(_res[0], dict) else {}
     scan15 = _res[1] if isinstance(_res[1], dict) else {}
     squeeze = _res[2] if isinstance(_res[2], list) else []
     extra_scans = {h: (_res[3 + i] if isinstance(_res[3 + i], dict) else {})
                    for i, h in enumerate(_extra_h)}
+    snapback_result = _res[3 + len(_extra_h)]
+    snapback_rows = (snapback_result.get("opportunities") or []) if isinstance(snapback_result, dict) else []
+    try:
+        pulse_rows = early_discovery.top_candidates(config.DISCOVERY_PULSE_LIMIT) or []
+    except Exception as exc:
+        logger.debug("kombine: keşif nabzı alınamadı: %s", exc)
+        pulse_rows = []
     mom = await _daily_momentum_candidates(scan5, scan15)
 
     # YÜKSELİŞ ADAYLARI (2026-10-12): MACD snapshot'ından yükseliş/erken adaylarını
@@ -3102,7 +3123,51 @@ async def _combined_scan_rows() -> list[dict]:
     except Exception as exc:
         logger.debug("kombine: yükseliş adayları alınamadı: %s", exc)
 
-    # Havuz: velocity adayları (tüm ufuklar) + izleme listesi + momentum + squeeze + yükseliş.
+    pulse_candidates: list[dict] = []
+    for pulse in pulse_rows:
+        symbol = str(pulse.get("symbol") or "").upper()
+        try:
+            return_1m = float(pulse.get("return_1m_pct") or 0)
+            volume_burst = float(pulse.get("volume_burst") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not symbol or return_1m <= 0:
+            continue
+        pulse_score = max(35.0, min(99.0, 50.0 + return_1m * 8.0 + min(max(volume_burst - 1.0, 0.0), 5.0) * 3.0))
+        pulse_candidates.append({
+            "symbol": symbol, "strategy": "pulse", "source_only": "pulse",
+            "horizon_minutes": 5, "price": pulse.get("price"),
+            "velocity_score": _raw_from_panel(pulse_score), "panel_score": pulse_score,
+            "source_evidence": {"return_1m_pct": return_1m,
+                                "return_20s_pct": pulse.get("return_20s_pct"),
+                                "volume_burst": volume_burst,
+                                "sample_age_sec": pulse.get("sample_age_sec")},
+        })
+
+    snapback_candidates: list[dict] = []
+    for snapback in snapback_rows:
+        symbol = str(snapback.get("symbol") or "").upper()
+        try:
+            panel_score = float(snapback.get("quality_score") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not symbol or panel_score <= 0:
+            continue
+        snapback_candidates.append({
+            "symbol": symbol, "strategy": "snapback", "source_only": "snapback",
+            "horizon_minutes": 60, "price": snapback.get("current_price"),
+            "velocity_score": _raw_from_panel(panel_score), "panel_score": panel_score,
+            "stop_loss": snapback.get("stop_loss"),
+            "stop_loss_pct": snapback.get("stop_loss_pct"),
+            "source_evidence": {"rsi7": snapback.get("rsi7"),
+                                "rsi14": snapback.get("rsi14"),
+                                "grade": snapback.get("grade"),
+                                "macro_regime": snapback.get("macro_regime"),
+                                "stop_loss": snapback.get("stop_loss"),
+                                "stop_loss_pct": snapback.get("stop_loss_pct")},
+        })
+
+    # Havuz: tüm tarayıcılar + MACD füzyonu, ham pulse ve Snapback sonuçları.
     pool: list[dict] = []
     for src in [scan5, scan15, *extra_scans.values()]:
         pool.extend(src.get("candidates") or [])
@@ -3110,26 +3175,43 @@ async def _combined_scan_rows() -> list[dict]:
     pool.extend(mom)
     pool.extend(squeeze)
     pool.extend(rising_rows)
+    pool.extend(pulse_candidates)
+    pool.extend(snapback_candidates)
 
-    # Sembol bazında tekilleştir — en yüksek panel/velocity skoru kalan kayıt.
-    by_sym: dict[str, dict] = {}
-    for c in pool:
-        sym = str(c.get("symbol") or "").upper()
-        if not sym:
+    def _source_ids(item: dict) -> list[str]:
+        known = item.get("signal_sources")
+        if isinstance(known, list):
+            return [str(source) for source in known if source]
+        source = item.get("source_only") or item.get("source") or item.get("strategy")
+        if source == "both":
+            return ["daily_momentum", "short_squeeze"]
+        return [str(source)] if source else []
+
+    # Aynı sembolü yalnız aynı ufukta tekilleştir; kaynak uzlaşısını sakla.
+    by_key: dict[tuple[str, int], dict] = {}
+    for candidate in pool:
+        symbol = str(candidate.get("symbol") or "").upper()
+        if not symbol:
             continue
-        cur = by_sym.get(sym)
-        if cur is None:
-            by_sym[sym] = c
+        try:
+            horizon = int(candidate.get("horizon_minutes") or 0)
+        except (TypeError, ValueError):
+            horizon = 0
+        key = (symbol, horizon)
+        current = by_key.get(key)
+        if current is None:
+            candidate["signal_sources"] = _source_ids(candidate)
+            by_key[key] = candidate
             continue
-        def _rank(x: dict) -> float:
-            return float(x.get("panel_score") or x.get("velocity_score") or 0)
-        if _rank(c) > _rank(cur):
-            # strateji etiketlerini birleştir (both)
-            a, b = str(cur.get("strategy") or ""), str(c.get("strategy") or "")
-            by_sym[sym] = c
-            if a and b and a != b:
-                by_sym[sym]["strategy"] = "both"
-    merged = list(by_sym.values())
+        merged_sources = list(dict.fromkeys(_source_ids(current) + _source_ids(candidate)))
+        def _rank(item: dict) -> float:
+            return float(item.get("panel_score") or item.get("velocity_score") or 0)
+        chosen = candidate if _rank(candidate) > _rank(current) else current
+        chosen["signal_sources"] = merged_sources
+        if len(merged_sources) > 1:
+            chosen["strategy"] = "both"
+        by_key[key] = chosen
+    merged = list(by_key.values())
 
     # Füzyon + Master Surge zenginleştirmesi (jump/erken/yükseliş + 4 katman).
     try:
@@ -3137,31 +3219,50 @@ async def _combined_scan_rows() -> list[dict]:
     except Exception as exc:
         logger.debug("kombine füzyon zenginleştirme: %s", exc)
         fusion_only = []
-    seen = {str(c.get("symbol") or "").upper() for c in merged}
-    for c in fusion_only:
-        sym = str(c.get("symbol") or "").upper()
-        if sym and sym not in seen:
-            merged.append(c)
-            seen.add(sym)
+    seen: set[tuple[str, int]] = set()
+    for candidate in merged:
+        try:
+            seen.add((str(candidate.get("symbol") or "").upper(), int(candidate.get("horizon_minutes") or 0)))
+        except (TypeError, ValueError):
+            seen.add((str(candidate.get("symbol") or "").upper(), 0))
+    for candidate in fusion_only:
+        symbol = str(candidate.get("symbol") or "").upper()
+        try:
+            horizon = int(candidate.get("horizon_minutes") or 0)
+        except (TypeError, ValueError):
+            horizon = 0
+        key = (symbol, horizon)
+        if symbol and key not in seen:
+            candidate["signal_sources"] = _source_ids(candidate)
+            merged.append(candidate)
+            seen.add(key)
+    for candidate in merged:
+        candidate["unified_sources"] = list(dict.fromkeys(
+            [str(source) for source in (candidate.get("unified_sources") or []) if source]
+            + _source_ids(candidate)
+        ))
 
     # Bugünkü MFE: o günkü tavanına ulaşan adaylar listeden çıkarılır.
-    _today_mfe: dict[str, float] = {}
+    _today_mfe: dict[tuple[str, int], float] = {}
     try:
         for r in await _today_rising_rows(limit=200):
             sym = str(r.get("symbol") or "").upper()
             if r.get("mfe_pct") is not None:
-                prev = _today_mfe.get(sym)
+                try:
+                    horizon = int(r.get("horizon_minutes") or 0)
+                except (TypeError, ValueError):
+                    horizon = 0
+                key = (sym, horizon)
+                prev = _today_mfe.get(key)
                 if prev is None or float(r["mfe_pct"]) > prev:
-                    _today_mfe[sym] = float(r["mfe_pct"])
+                    _today_mfe[key] = float(r["mfe_pct"])
     except Exception:
         pass
 
-    now = time.time()
-    cooldown = float(config.DAILY_MOMENTUM_REPEAT_COOLDOWN_MIN) * 60.0
     out: list[dict] = []
     for c in merged:
         sym = str(c.get("symbol") or "").upper()
-        if not sym or sym in analyzer.positions:
+        if not sym or (valid_symbols and sym not in valid_symbols) or sym in analyzer.positions:
             continue
         try:
             price = float(_ticker_price(sym) or c.get("price") or 0)
@@ -3189,16 +3290,37 @@ async def _combined_scan_rows() -> list[dict]:
             prob = touch_probability(ceil_pct, atr_pct)
         hit = False
         try:
-            mfe = _today_mfe.get(sym)
+            mfe = _today_mfe.get((sym, int(c.get("horizon_minutes") or 0)))
+            if mfe is None:
+                mfe = _today_mfe.get((sym, 0))
             if mfe is not None and ceil_pct is not None and float(mfe) >= float(ceil_pct):
                 hit = True
         except (TypeError, ValueError):
             hit = False
-        # KALİTE PUANI (0-99): velocity paneli + çok-kaynak teyidi + Master
-        # Surge katman sayısı. Doygunluğa girmez; 100 "kesin" algısı oluşmaz.
+        mtf = macd_mtf.cached_compact(sym)
+        if mtf:
+            try:
+                if float(mtf.get("age_sec") or 0) > 180:
+                    mtf = None
+                elif float(mtf.get("confluence") or 0) >= 45:
+                    c["unified_sources"] = list(dict.fromkeys(
+                        list(c.get("unified_sources") or []) + ["macd_mtf"]
+                    ))
+            except (TypeError, ValueError):
+                mtf = None
+        # KALİTE PUANI (0-99): motor uzlaşısı + velocity + Master Surge katmanları.
         quality, tc_sources, tc_layers = _combined_quality_score(c)
+        signal_sources = list(dict.fromkeys(
+            [str(source) for source in (c.get("signal_sources") or []) if source]
+            + [str(source) for source in (c.get("unified_sources") or []) if source]
+        ))
         row = {
             "symbol": sym, "price": price,
+            "change_pct": (c.get("source_evidence") or {}).get("return_1m_pct"),
+            "return_1m_pct": (c.get("source_evidence") or {}).get("return_1m_pct"),
+            "volume_burst": (c.get("source_evidence") or {}).get("volume_burst"),
+            "detected_at": (c.get("source_evidence") or {}).get("detected_at") or time.time(),
+            "target_pct": c.get("target_pct"),
             # Ufuk, ana sayfa adayının yaşam süresi için taşınır. Velocity ve
             # momentum kaynaklarında gerçek tarama profilinden gelir; ufuksuz
             # kaynaklar için değer uydurulmaz.
@@ -3213,6 +3335,13 @@ async def _combined_scan_rows() -> list[dict]:
             "quality_score": quality,
             "confirm_sources": tc_sources,
             "confirm_layers": tc_layers,
+            "signal_sources": signal_sources,
+            "supporting_sources": ["macd_mtf"] if mtf and mtf.get("verdict") == "GÜÇLÜ" else [],
+            "opposing_sources": c.get("opposing_sources") or [],
+            "source_evidence": c.get("source_evidence") or {},
+            "macd_mtf": mtf,
+            "stop_loss": c.get("stop_loss"),
+            "stop_loss_pct": c.get("stop_loss_pct"),
             "unified_score": c.get("unified_score"),
             "unified_sources": c.get("unified_sources"),
             "strategy": c.get("strategy") or "combined",
@@ -3226,19 +3355,30 @@ async def _combined_scan_rows() -> list[dict]:
             "_hit": hit,
         }
         out.append(row)
-        # DB kaydı (aday geçmişi + başarı ölçümü; cooldown'lu).
+
+    out.sort(key=lambda r: (float(r.get("scan_score") or 0), _is_both(r)), reverse=True)
+    return out
+
+
+async def _persist_combined_scan_rows(rows: list[dict]) -> None:
+    """Açıkça stateful kombine gönderimlerinde aday geçmişini cooldown ile yaz."""
+    now = time.time()
+    cooldown = float(config.DAILY_MOMENTUM_REPEAT_COOLDOWN_MIN) * 60.0
+    for row in rows:
+        sym = row["symbol"]
         try:
             last = await database.last_daily_rising_at(sym)
             if last is None or (now - last) >= cooldown:
                 await database.save_daily_rising({
-                    "created_at": now, "symbol": sym, "price": price,
-                    "target_pct": c.get("target_pct"), "ceiling_pct": ceil_pct,
+                    "created_at": now, "symbol": sym, "price": row["price"],
+                    "target_pct": row.get("target_pct"),
+                    "ceiling_pct": row["ceiling_pct"],
                     "ceiling_price": row["ceiling_price"],
-                    "velocity_score": c.get("velocity_score"),
-                    "ret_8h": c.get("ret_8h_pct"), "adx": c.get("adx_14"),
-                    "atr_pct": atr_pct, "slope": c.get("slope_15m"),
+                    "velocity_score": row["velocity_score"],
+                    "ret_8h": row["ret_8h_pct"], "adx": row["adx_14"],
+                    "atr_pct": row["atr_pct_15m"], "slope": row["slope_15m"],
                     "spread_pct": (market.orderflow.get(sym) or {}).get("spread_pct"),
-                    "horizon_minutes": c.get("horizon_minutes"),
+                    "horizon_minutes": row.get("horizon_minutes"),
                     "notified": False, "strategy": row["strategy"],
                     "potential_pct": row["potential_pct"],
                     "details": {"quality_score": row["quality_score"],
@@ -3249,9 +3389,6 @@ async def _combined_scan_rows() -> list[dict]:
                 })
         except Exception as exc:
             logger.debug("kombine aday kaydı (%s): %s", sym, exc)
-
-    out.sort(key=lambda r: (float(r.get("scan_score") or 0), _is_both(r)), reverse=True)
-    return out
 
 
 def _inherit_anchor_prices(top: list[dict], prev_candidates: list[dict],
@@ -3323,6 +3460,7 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     except Exception as exc:
         logger.warning("kombine tarama başarısız: %s", exc)
         return False
+    await _persist_combined_scan_rows(cands)
     n = int(cfg.get("top_n", 3) or 3)
     min_score = float(cfg.get("min_score", 10.0))
     # EŞİK HER ADAYA UYGULANIR (kullanıcı geri bildirimi 2026-10-12): eskiden
@@ -4498,42 +4636,135 @@ def _merge_candidates(*groups: list[dict]) -> list[dict]:
 
 
 @router.post("/api/daily-rising/manual-scan")
+@router.post("/api/unified-scan/manual")
 async def daily_rising_manual_scan(request: Request = None):
-    """Elle tarama: günlük momentum + short-squeeze adaylarını TEK listede döndür.
-
-    İki strateji PARALEL koşar; sonuç sembol bazında birleştirilir (her satırda
-    `strategy`: daily_momentum | short_squeeze | both). Bu uç SALT KEŞİF
-    amaçlıdır: pozisyon açmaz, DB'ye yazmaz. Kullanıcı onay verirse watchlist'e
-    ekler.
-    """
+    """Kimliği doğrulanmış kullanıcı için salt-veri birleşik piyasa taraması."""
+    from app import security
     from app.api_common import rate_limit
-    from app.binance_tr_public import trading_symbols as _trading_syms
-    if not rate_limit("daily_rising_manual", rate_per_sec=1 / 15.0, burst=2):
-        raise HTTPException(status_code=429, detail="Çok sık tarama — lütfen bekleyin")
+    user = security.request_user(
+        request.headers, request.cookies,
+        client_fingerprint=security.client_fingerprint(request),
+    ) if request else None
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    username = str(user.get("username") or "").strip().lower()
+    if not username:
+        raise HTTPException(status_code=401, detail="Geçerli kullanıcı oturumu gerekli")
+    if not rate_limit(f"unified_scan:{username}", rate_per_sec=1 / 30.0, burst=1):
+        raise HTTPException(status_code=429, detail="Tarama sınırına ulaşıldı; lütfen bekleyin")
+    if _combined_scan_lock.locked():
+        raise HTTPException(status_code=409, detail="Başka bir birleşik tarama sürüyor")
+    scan_id = uuid.uuid4().hex
+    started_at = time.time()
     try:
-        tr_syms = [s for s in await _trading_syms("TRY")]
-    except Exception:
-        tr_syms = []
-    try:
-        scan5, scan15, squeeze = await asyncio.gather(
-            detect_velocity_candidates({}, horizon_minutes=5),
-            detect_velocity_candidates({}, horizon_minutes=15),
-            _short_squeeze_candidates(tr_syms),
-            return_exceptions=True,
-        )
+        async with _combined_scan_lock:
+            candidates = await _combined_scan_rows()
     except Exception as exc:
-        logger.warning("manuel günlük tarama hatası: %s", exc)
-        return {"ok": False, "error": str(exc), "candidates": []}
-    scan5 = scan5 if isinstance(scan5, dict) else {}
-    scan15 = scan15 if isinstance(scan15, dict) else {}
-    squeeze = squeeze if isinstance(squeeze, list) else []
-    mom = await _daily_momentum_candidates(scan5, scan15)
-    cands = _merge_candidates(mom, squeeze)
-    return {"ok": True, "paper_only": True, "generated_at": time.time(),
-            "enabled": bool(config.DAILY_MOMENTUM_ENABLED),
-            "count": len(cands),
-            "counts": {"daily_momentum": len(mom), "short_squeeze": len(squeeze)},
-            "candidates": cands}
+        logger.warning("kullanıcı birleşik taraması başarısız: %s", exc)
+        raise HTTPException(status_code=502, detail="Piyasa taraması tamamlanamadı") from exc
+    completed_at = time.time()
+    _unified_scan_cache.update(generated_at=completed_at, candidates=candidates)
+    saved_id = await database.save_unified_scan_run({
+        "scan_id": scan_id, "username": username,
+        "started_at": started_at, "completed_at": completed_at,
+        "source": "manual", "algorithm_version": "combined-v1",
+        "candidate_count": len(candidates), "candidates": candidates,
+    })
+    if saved_id is None:
+        raise HTTPException(status_code=503, detail="Tarama tamamlandı ancak geçmişe kaydedilemedi")
+    return {
+        "ok": True, "paper_only": True,
+        "side_effects": {"scan_history_persisted": True, "notifications_sent": False,
+                        "paper_positions_opened": False, "real_orders_submitted": False},
+        "scan_id": scan_id, "started_at": started_at,
+        "completed_at": completed_at,
+        "algorithm_version": "combined-v1",
+        "count": len(candidates), "candidates": candidates,
+    }
+
+
+@router.get("/api/unified-scan/latest")
+async def unified_scan_latest(request: Request):
+    """Oturum sahibinin en son public-data birleşik tarama anlık görüntüsünü döndür."""
+    from app import security
+    user = security.request_user(
+        request.headers, request.cookies,
+        client_fingerprint=security.client_fingerprint(request),
+    )
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    now = time.time()
+    generated_at = float(_unified_scan_cache.get("generated_at") or 0)
+    candidates = _unified_scan_cache.get("candidates") or []
+    if not generated_at or now - generated_at > 20:
+        async with _combined_scan_lock:
+            generated_at = float(_unified_scan_cache.get("generated_at") or 0)
+            if not generated_at or time.time() - generated_at > 20:
+                candidates = await _combined_scan_rows()
+                generated_at = time.time()
+                _unified_scan_cache.update(generated_at=generated_at, candidates=candidates)
+            else:
+                candidates = _unified_scan_cache.get("candidates") or []
+    return {"run": {"scan_id": None, "generated_at": generated_at,
+                     "algorithm_version": "combined-v1", "candidates": candidates,
+                     "count": len(candidates)}}
+
+
+@router.get("/api/unified-scan/history")
+async def unified_scan_history(request: Request, limit: int = 30):
+    """Oturum sahibinin kendi birleşik tarama geçmişini döndür."""
+    from app import security
+    user = security.request_user(
+        request.headers, request.cookies,
+        client_fingerprint=security.client_fingerprint(request),
+    )
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    username = str(user.get("username") or "").strip().lower()
+    rows = await database.list_unified_scan_runs(username, limit=max(1, min(100, limit)))
+    return {"runs": rows, "count": len(rows)}
+
+
+@router.get("/api/user/favorites")
+async def get_user_favorites(request: Request):
+    from app import security
+    user = security.request_user(
+        request.headers, request.cookies,
+        client_fingerprint=security.client_fingerprint(request),
+    )
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    symbols = await database.get_user_favorites(str(user.get("username") or ""))
+    return {"symbols": symbols}
+
+
+@router.put("/api/user/favorites")
+async def update_user_favorites(payload: dict, request: Request):
+    from app import security
+    user = security.request_user(
+        request.headers, request.cookies,
+        client_fingerprint=security.client_fingerprint(request),
+    )
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    raw = payload.get("symbols") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=422, detail="symbols bir dizi olmalı")
+    symbols = []
+    for value in raw:
+        symbol = re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+        if not symbol:
+            continue
+        if not (symbol.endswith("TRY") or symbol.endswith("USDT")) or len(symbol) < 5:
+            raise HTTPException(status_code=422, detail=f"Geçersiz piyasa sembolü: {symbol}")
+        if symbol not in symbols:
+            symbols.append(symbol)
+    if len(symbols) > 50:
+        raise HTTPException(status_code=422, detail="En fazla 50 favori sembol eklenebilir")
+    saved = await database.set_user_favorites(str(user.get("username") or ""), symbols)
+    if saved is None:
+        raise HTTPException(status_code=503, detail="Favoriler kaydedilemedi")
+    return {"symbols": saved}
 
 
 @router.get("/api/daily-rising/watchlist")

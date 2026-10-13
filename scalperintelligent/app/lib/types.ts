@@ -39,6 +39,45 @@ export type MonitoringState = {
   risk_off?: boolean;
 };
 
+export type UnifiedScanRun = {
+  scan_id: string | null;
+  started_at?: number;
+  completed_at?: number;
+  generated_at?: number;
+  algorithm_version?: string;
+  source?: string;
+  count?: number;
+  candidate_count?: number;
+  candidates: Candidate[];
+};
+
+export type UnifiedScanResponse = { run: UnifiedScanRun | null };
+export type UnifiedScanHistoryResponse = { runs: UnifiedScanRun[]; count: number };
+export type ManualUnifiedScanResponse = {
+  ok: boolean;
+  paper_only: true;
+  side_effects: { scan_history_persisted: true; notifications_sent: false; paper_positions_opened: false; real_orders_submitted: false };
+  scan_id: string;
+  started_at: number;
+  completed_at: number;
+  algorithm_version: string;
+  count: number;
+  candidates: Candidate[];
+};
+
+export type PublicMarketTicker = {
+  symbol: string;
+  available: boolean;
+  last?: number | null;
+  change_pct?: number | null;
+  updated_at?: number;
+};
+export type PublicMarketTickersResponse = {
+  generated_at: number;
+  source: string;
+  tickers: PublicMarketTicker[];
+};
+
 /** /api/daily-rising/state → candidates[] */
 export type DailyOpportunity = {
   symbol: string;

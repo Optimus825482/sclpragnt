@@ -12,6 +12,9 @@ docs/*.dump
 scalperagent-backup-*.sqlite*
 frontend/node_modules/
 frontend/.next/
+frontend-odak/
+scalperintelligent/node_modules/
+scalperintelligent/.next/
 *.pyc
 *.tsbuildinfo
 

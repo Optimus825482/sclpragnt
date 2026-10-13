@@ -13,6 +13,7 @@ Kapsam:
 """
 import os
 import sys
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SCALPER_ENV", "development")
@@ -120,6 +121,10 @@ def test_combined_scan_merges_all_strategies():
     assert "detect_velocity_candidates" in src
     assert "_daily_momentum_candidates" in src
     assert "_short_squeeze_candidates" in src
+    assert "early_discovery" in src
+    assert "snapback_service" in src
+    assert "macd_mtf.cached_compact" in src
+    assert "valid_symbols" in src
     assert "enrich_candidates" in src          # jump/early/rising füzyonu + Master Surge
     assert "_compute_potential" in src
     assert "scan_score" in src
@@ -559,3 +564,205 @@ def test_combined_default_window_is_24h():
     c = config.config
     assert c.COMBINED_RISING_START_HOUR == 0
     assert c.COMBINED_RISING_END_HOUR == 23
+
+
+def test_daily_rising_state_fallback_does_not_persist_scan(monkeypatch):
+    """The read-only GET fallback may build candidates but must not journal them."""
+    import asyncio
+    from app.routers import monitoring as mo
+    from app import binance_tr_public, rising_signals, early_discovery, snapback_service, macd_mtf
+
+    async def _empty_stats(**kwargs):
+        return {}
+
+    async def _no_report(kind=mo.COMBINED_LIST_KIND):
+        return None
+
+    async def _symbols(quote_asset="TRY"):
+        return ["READONLYTRY"]
+
+    async def _velocity(*args, **kwargs):
+        return {"candidates": [{
+            "symbol": "READONLYTRY", "price": 10.0,
+            "velocity_score": 1000, "panel_score": 1000,
+            "horizon_minutes": kwargs.get("horizon_minutes", 5),
+            "ceiling_pct": 2.0, "potential_pct": 3.0,
+            "target_probability": 50.0,
+        }], "watchlist": []}
+
+    async def _empty_momentum(*args, **kwargs):
+        return []
+
+    async def _empty_squeeze(*args, **kwargs):
+        return []
+
+    async def _empty_snapback(*args, **kwargs):
+        return {"opportunities": []}
+
+    async def _empty_history(**kwargs):
+        return []
+
+    writes = []
+
+    async def _unexpected_write(*args, **kwargs):
+        writes.append((args, kwargs))
+        return None
+
+    async def _settings():
+        return {"top_n": 1, "min_score": 0.0, "list_min": 15}
+
+    monkeypatch.setattr(mo.database, "get_daily_rising_stats", _empty_stats)
+    monkeypatch.setattr(mo.database, "last_daily_rising_report", _no_report)
+    monkeypatch.setattr(mo.database, "list_daily_rising", _empty_history)
+    monkeypatch.setattr(mo.database, "last_daily_rising_at", _unexpected_write)
+    monkeypatch.setattr(mo.database, "save_daily_rising", _unexpected_write)
+    monkeypatch.setattr(mo, "combined_rising_settings", _settings)
+    monkeypatch.setattr(binance_tr_public, "trading_symbols", _symbols)
+    monkeypatch.setattr(mo, "detect_velocity_candidates", _velocity)
+    monkeypatch.setattr(mo, "_daily_momentum_candidates", _empty_momentum)
+    monkeypatch.setattr(mo, "_short_squeeze_candidates", _empty_squeeze)
+    monkeypatch.setattr(snapback_service, "scan_snapback_opportunities", _empty_snapback)
+    monkeypatch.setattr(early_discovery, "top_candidates", lambda limit: [])
+    monkeypatch.setattr(macd_mtf, "cached_compact", lambda symbol: None)
+    monkeypatch.setattr(mo, "_ticker_price", lambda symbol: None)
+    monkeypatch.setattr(mo.unified_signals, "enrich_candidates", lambda rows: [])
+    monkeypatch.setattr(rising_signals, "detect_rising_candidates", lambda: [])
+
+    rows = asyncio.run(mo._combined_scan_rows())
+    assert [(candidate["symbol"], candidate["horizon_minutes"]) for candidate in rows] == [
+        ("READONLYTRY", 5), ("READONLYTRY", 15), ("READONLYTRY", 30), ("READONLYTRY", 60),
+    ]
+
+    result = asyncio.run(mo.daily_rising_state())
+
+    assert result["source"] == "live_scan"
+    assert [candidate["symbol"] for candidate in result["candidates"]] == ["READONLYTRY"]
+    assert writes == []
+
+
+def test_manual_unified_scan_requires_user_and_only_stores_results(monkeypatch):
+    """Manual scans require a session and persist candidates without execution side effects."""
+    import asyncio
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from app import api_common, security
+    from app.routers import monitoring as mo
+
+    request = SimpleNamespace(headers={}, cookies={}, client=None)
+    monkeypatch.setattr(security, "client_fingerprint", lambda request: "fp")
+    monkeypatch.setattr(security, "request_user", lambda *args, **kwargs: None)
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(mo.daily_rising_manual_scan(request))
+    assert denied.value.status_code == 401
+
+    monkeypatch.setattr(security, "request_user", lambda *args, **kwargs: {"username": "Trader1", "role": "user"})
+    monkeypatch.setattr(api_common, "rate_limit", lambda *args, **kwargs: True)
+    candidates = [{"symbol": "SAFETRY", "price": 1.25, "horizon_minutes": 5}]
+    async def _scan():
+        return candidates
+    saved = []
+    async def _save(item):
+        saved.append(item)
+        return item["scan_id"]
+    monkeypatch.setattr(mo, "_combined_scan_rows", _scan)
+    monkeypatch.setattr(mo.database, "save_unified_scan_run", _save)
+
+    result = asyncio.run(mo.daily_rising_manual_scan(request))
+
+    assert result["ok"] is True
+    assert result["paper_only"] is True
+    assert result["side_effects"] == {
+        "scan_history_persisted": True, "notifications_sent": False,
+        "paper_positions_opened": False, "real_orders_submitted": False,
+    }
+    assert result["candidates"] == candidates
+    assert saved[0]["username"] == "trader1"
+    assert saved[0]["candidates"] == candidates
+
+    monkeypatch.setattr(api_common, "rate_limit", lambda *args, **kwargs: False)
+    with pytest.raises(HTTPException) as limited:
+        asyncio.run(mo.daily_rising_manual_scan(request))
+    assert limited.value.status_code == 429
+
+
+def test_unified_scan_history_is_scoped_to_authenticated_user(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from app import security
+    from app.routers import monitoring as mo
+
+    request = SimpleNamespace(headers={}, cookies={}, client=None)
+    monkeypatch.setattr(security, "client_fingerprint", lambda request: "fp")
+    monkeypatch.setattr(security, "request_user", lambda *args, **kwargs: {"username": "Trader1", "role": "user"})
+    calls = []
+    async def _history(username, limit):
+        calls.append((username, limit))
+        return []
+    monkeypatch.setattr(mo.database, "list_unified_scan_runs", _history)
+
+    result = asyncio.run(mo.unified_scan_history(request, limit=1000))
+
+    assert result == {"runs": [], "count": 0}
+    assert calls == [("trader1", 100)]
+
+
+def test_combined_scan_includes_pulse_snapback_and_macd_mtf(monkeypatch):
+    import asyncio
+    from app import binance_tr_public, early_discovery, macd_mtf, rising_signals, snapback_service
+    from app.routers import monitoring as mo
+
+    async def _symbols(quote_asset="TRY"):
+        return ["PULSETRY", "SNAPTRY"]
+
+    async def _velocity(*args, **kwargs):
+        return {"candidates": [], "watchlist": []}
+
+    async def _empty(*args, **kwargs):
+        return []
+
+    async def _snapback(*args, **kwargs):
+        return {"opportunities": [{
+            "symbol": "SNAPTRY", "current_price": 5.0, "quality_score": 88,
+            "rsi7": 15.0, "rsi14": 28.0, "grade": "A+",
+            "macro_regime": "BULL_REGIME", "stop_loss": 4.7, "stop_loss_pct": 6.0,
+        }]}
+
+    async def _no_potential(*args, **kwargs):
+        return None
+
+    async def _no_atr(*args, **kwargs):
+        return None
+
+    async def _no_history(**kwargs):
+        return []
+
+    monkeypatch.setattr(binance_tr_public, "trading_symbols", _symbols)
+    monkeypatch.setattr(mo, "detect_velocity_candidates", _velocity)
+    monkeypatch.setattr(mo, "_daily_momentum_candidates", _empty)
+    monkeypatch.setattr(mo, "_short_squeeze_candidates", _empty)
+    monkeypatch.setattr(snapback_service, "scan_snapback_opportunities", _snapback)
+    monkeypatch.setattr(early_discovery, "top_candidates", lambda limit: [{
+        "symbol": "PULSETRY", "price": 2.0, "return_1m_pct": 1.0,
+        "return_20s_pct": 0.6, "volume_burst": 3.0, "sample_age_sec": 1.0,
+    }])
+    monkeypatch.setattr(macd_mtf, "cached_compact", lambda symbol: {
+        "verdict": "GÜÇLÜ", "confluence": 82.0, "age_sec": 5.0,
+    } if symbol == "PULSETRY" else None)
+    monkeypatch.setattr(rising_signals, "detect_rising_candidates", lambda: [])
+    monkeypatch.setattr(mo, "_ticker_price", lambda symbol: None)
+    monkeypatch.setattr(mo, "_today_rising_rows", _no_history)
+    monkeypatch.setattr(mo, "_live_atr_pct", _no_atr)
+    monkeypatch.setattr(mo, "_compute_potential", _no_potential)
+    monkeypatch.setattr(mo.unified_signals, "enrich_candidates", lambda rows: [])
+
+    candidates = asyncio.run(mo._combined_scan_rows())
+    by_symbol = {candidate["symbol"]: candidate for candidate in candidates}
+
+    assert "pulse" in by_symbol["PULSETRY"]["signal_sources"]
+    assert "macd_mtf" in by_symbol["PULSETRY"]["signal_sources"]
+    assert by_symbol["PULSETRY"]["return_1m_pct"] == 1.0
+    assert by_symbol["PULSETRY"]["supporting_sources"] == ["macd_mtf"]
+    assert "snapback" in by_symbol["SNAPTRY"]["signal_sources"]
+    assert by_symbol["SNAPTRY"]["horizon_minutes"] == 60
+    assert by_symbol["SNAPTRY"]["stop_loss"] == 4.7
+    assert by_symbol["SNAPTRY"]["source_evidence"]["rsi7"] == 15.0

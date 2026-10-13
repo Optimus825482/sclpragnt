@@ -230,9 +230,9 @@ services:
       - "traefik.enable=false"
     logging: *default-logging
 
-  frontend-odak:
+  scalperintelligent:
     build:
-      context: ./frontend-odak
+      context: ./scalperintelligent
       args:
         NEXT_BASE_PATH: /yeni-arayuz
         BACKEND_ORIGIN: http://backend:8004
@@ -281,7 +281,7 @@ services:
     depends_on:
       frontend:
         condition: service_started
-      frontend-odak:
+      scalperintelligent:
         condition: service_started
       backend:
         condition: service_healthy
