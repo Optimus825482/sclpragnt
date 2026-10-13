@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useWatchlist } from "../lib/watchlist";
 
 /**
- * Aramalı sembol seçici (tasarımdaki "üstten sembol adına tıklayınca açılan
- * arama özellikli select"). Harici kütüphane yok; basit filtre + klavye.
+ * Aramalı ve favori destekli sembol seçici.
+ * Favori sembolleri listenin en başında gösterir.
  */
 export default function SymbolSelect({
   symbols,
@@ -20,6 +21,7 @@ export default function SymbolSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const boxRef = useRef<HTMLDivElement>(null);
+  const { isFavorite, toggleFavorite } = useWatchlist();
 
   useEffect(() => {
     if (!open) return;
@@ -39,12 +41,29 @@ export default function SymbolSelect({
 
   const filtered = useMemo(() => {
     const q = query.trim().toUpperCase();
-    if (!q) return symbols.slice(0, 60);
-    const hits = symbols.filter((s) => s.includes(q));
-    // Baştan eşleşenler önce (daha sezgisel).
-    hits.sort((a, b) => Number(b.startsWith(q)) - Number(a.startsWith(q)));
-    return hits.slice(0, 60);
-  }, [symbols, query]);
+    let hits = symbols;
+    if (q) {
+      hits = symbols.filter((s) => s.includes(q));
+    }
+
+    // Sıralama kuralı:
+    // 1. Favoriler en başta
+    // 2. Arama varsa baştan eşleşenler
+    return hits
+      .slice()
+      .sort((a, b) => {
+        const favA = isFavorite(a) ? 1 : 0;
+        const favB = isFavorite(b) ? 1 : 0;
+        if (favA !== favB) return favB - favA;
+        if (q) {
+          const startA = a.startsWith(q) ? 1 : 0;
+          const startB = b.startsWith(q) ? 1 : 0;
+          if (startA !== startB) return startB - startA;
+        }
+        return a.localeCompare(b);
+      })
+      .slice(0, 60);
+  }, [symbols, query, isFavorite]);
 
   return (
     <div ref={boxRef} className="relative">
@@ -55,7 +74,12 @@ export default function SymbolSelect({
         aria-expanded={open}
         className="flex w-full items-center justify-between rounded-lg border border-line bg-white px-3 py-2 text-left text-sm hover:border-ink-400"
       >
-        <span className={value ? "font-mono font-semibold text-ink-900" : "text-ink-400"}>{value || "Sembol seç"}</span>
+        <span className="flex items-center gap-1.5">
+          {value && isFavorite(value) && <span className="text-amber-500 text-xs">★</span>}
+          <span className={value ? "font-mono font-semibold text-ink-900" : "text-ink-400"}>
+            {value || "Sembol seç"}
+          </span>
+        </span>
         <span className="text-ink-400">▾</span>
       </button>
 
@@ -72,25 +96,39 @@ export default function SymbolSelect({
             {filtered.length === 0 ? (
               <li className="px-3 py-4 text-center text-xs text-ink-400">Sonuç yok</li>
             ) : (
-              filtered.map((s) => (
-                <li key={s}>
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={s === value}
-                    onClick={() => {
-                      onChange(s);
-                      setOpen(false);
-                      setQuery("");
-                    }}
-                    className={`block w-full px-3 py-1.5 text-left font-mono text-xs hover:bg-accent-soft ${
-                      s === value ? "bg-accent-soft text-accent" : "text-ink-700"
-                    }`}
-                  >
-                    {s}
-                  </button>
-                </li>
-              ))
+              filtered.map((s) => {
+                const fav = isFavorite(s);
+                return (
+                  <li key={s} className="flex items-center justify-between px-2 hover:bg-slate-50">
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={s === value}
+                      onClick={() => {
+                        onChange(s);
+                        setOpen(false);
+                        setQuery("");
+                      }}
+                      className={`flex-1 py-1.5 text-left font-mono text-xs ${
+                        s === value ? "font-bold text-accent" : "text-ink-700"
+                      }`}
+                    >
+                      {s}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFavorite(s);
+                      }}
+                      className={`p-1 text-xs ${fav ? "text-amber-500" : "text-ink-300 hover:text-amber-500"}`}
+                      title={fav ? "Favoriden çıkar" : "Favoriye ekle"}
+                    >
+                      {fav ? "★" : "☆"}
+                    </button>
+                  </li>
+                );
+              })
             )}
           </ul>
         </div>

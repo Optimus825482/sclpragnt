@@ -6,6 +6,7 @@ import { apiRequest, API_BASE } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { useLiveMessages } from "../lib/liveSocket";
 import { formatCompact, formatPct, formatPrice, formatTL } from "../lib/format";
+import { sound } from "../lib/sound";
 import type { BinancePositions, BinanceSettings, MarketSymbols, MarketTicker } from "../lib/types";
 import { Badge, Button, Card } from "./ui";
 import SymbolSelect from "./SymbolSelect";
@@ -60,14 +61,22 @@ function responseDetail(body: any) {
 }
 
 /** Gerçek Binance TR spot emir paneli. Emir kabulü ile gerçekleşme durumu ayrı gösterilir. */
-export default function OrderPanel({ initialSymbol, onTraded }: { initialSymbol?: string | null; onTraded?: () => void }) {
+export default function OrderPanel({
+  initialSymbol,
+  initialAmount,
+  onTraded,
+}: {
+  initialSymbol?: string | null;
+  initialAmount?: string | number | null;
+  onTraded?: () => void;
+}) {
   const symbolsQ = usePoll<MarketSymbols>("/api/market-symbols", 300_000);
   const binance = usePoll<BinanceSettings>("/api/binance/settings", 30_000);
   const balances = usePoll<BinancePositions>(binance.data?.configured ? "/api/binance/positions" : null, 30_000);
   const [symbol, setSymbol] = useState<string | null>(initialSymbol ?? null);
   const [side, setSide] = useState<"BUY" | "SELL">("BUY");
   const [kind, setKind] = useState<OrderKind>("MARKET");
-  const [amount, setAmount] = useState("");
+  const [amount, setAmount] = useState(initialAmount ? String(initialAmount) : "");
   const [limitPrice, setLimitPrice] = useState("");
   const [stopPrice, setStopPrice] = useState("");
   const [stopLimitPrice, setStopLimitPrice] = useState("");
@@ -120,6 +129,11 @@ export default function OrderPanel({ initialSymbol, onTraded }: { initialSymbol?
   });
 
   useEffect(() => { if (initialSymbol) setSymbol(initialSymbol); }, [initialSymbol]);
+  useEffect(() => {
+    if (initialAmount != null && initialAmount !== "") {
+      setAmount(String(initialAmount));
+    }
+  }, [initialAmount]);
   const activeSymbol = symbol || initialSymbol || null;
   const ticker = usePoll<MarketTicker>(activeSymbol ? `/api/market-ticker/${activeSymbol}` : null, 15_000);
   const base = activeSymbol ? activeSymbol.replace("TRY", "").replace("USDT", "") : "";
@@ -222,6 +236,7 @@ export default function OrderPanel({ initialSymbol, onTraded }: { initialSymbol?
 
       const nextReceipt = mergeReceipt(body, activeSymbol);
       setReceipt(nextReceipt);
+      sound.playSuccessTone();
       const normalizedStatus = normalizeOrderStatus(nextReceipt.status);
       setMessage(normalizedStatus === "UNKNOWN"
         ? { tone: "warn", text: "Emrin sonucu belirsiz. Yinelenen emir oluşmaması için yeniden göndermeyin; emir durumunu sorgulayın." }
@@ -293,6 +308,24 @@ export default function OrderPanel({ initialSymbol, onTraded }: { initialSymbol?
           <label className="mt-3 block"><span className="odak-kicker">Tetikleme fiyatı ({quoteAsset})</span><input value={stopPrice} onChange={(e) => setStopPrice(e.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" placeholder="0" className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2 font-mono text-sm text-ink-900 outline-none focus:border-accent" /></label>
           <label className="mt-3 block"><span className="odak-kicker">Limit fiyatı ({quoteAsset})</span><input value={stopLimitPrice} onChange={(e) => setStopLimitPrice(e.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" placeholder="0" className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2 font-mono text-sm text-ink-900 outline-none focus:border-accent" /></label>
         </>}
+        {side === "BUY" && kind === "MARKET" && quoteAsset === "TRY" && (
+          <div className="mt-2 grid grid-cols-4 gap-1">
+            {[500, 1000, 2500, 5000].map((val) => (
+              <button
+                key={val}
+                type="button"
+                onClick={() => setAmount(String(val))}
+                className={`rounded-md border py-1 text-[11px] font-mono transition-colors ${
+                  amount === String(val)
+                    ? "border-accent bg-accent-soft text-accent font-bold"
+                    : "border-line bg-canvas/70 text-ink-600 hover:border-accent"
+                }`}
+              >
+                ₺{val.toLocaleString("tr-TR")}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="mt-2 grid grid-cols-4 gap-1.5">
           {[25, 50, 75, 100].map((pct) => <button key={pct} type="button" disabled={side === "BUY" ? quoteFree <= 0 || (kind !== "MARKET" && !priceForEstimate) : assetFree <= 0} onClick={() => {
             if (side === "SELL") setAmount((assetFree * pct / 100).toFixed(6));

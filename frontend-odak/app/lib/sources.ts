@@ -24,6 +24,11 @@ const SOURCE_LABELS: Record<string, string> = {
   discovery: "Keşif Akışı",
   symbol: "Takip Listesi",
   extra: "Ek Havuz",
+  master_surge: "Hacim Patlaması",
+  pulse: "Hızlı Nabız",
+  early_discovery: "Erken Keşif",
+  whale: "Balina Girişi",
+  dip_approach: "Dip Dönüşü",
   // Pozisyon/strateji kaynakları (aktif işlemler tablosu)
   auto_paper: "Otonom",
   AUTO_PAPER: "Otonom",
