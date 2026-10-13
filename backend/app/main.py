@@ -189,10 +189,12 @@ from app.routers import auto_paper as auto_paper_routes
 from app.routers import macd_monitor as macd_monitor_routes
 from app.routers import snapback as snapback_routes
 from app.routers import user_prefs as user_prefs_routes
+from app.routers import journal as journal_routes
 app.include_router(auto_paper_routes.router)
 app.include_router(macd_monitor_routes.router)
 app.include_router(snapback_routes.router)
 app.include_router(user_prefs_routes.router)
+app.include_router(journal_routes.router)
 
 
 _TTS_VOICE = "tr-TR-EmelNeural"
@@ -4740,6 +4742,13 @@ async def portfolio_summary():
         "generated_at": time.time(),
         "paper_only": True,
     }
+
+
+@app.get("/api/portfolio/equity-curve")
+async def portfolio_equity_curve():
+    """Kapanan paper işlemlerden equity eğrisi + kâr kalitesi metrikleri (salt-okunur)."""
+    return {"ok": True, "curve": await database.get_portfolio_equity_curve(),
+            "generated_at": time.time(), "paper_only": True}
 
 
 @app.get("/api/chart/{symbol}/timeframe-trends")

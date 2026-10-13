@@ -7607,3 +7607,113 @@ async def get_combined_paper_stats() -> dict:
     except Exception:
         logger.debug("combined_paper istatistik okunamadı", exc_info=True)
         return {}
+
+# ---------------------------------------------------------------------------
+# İŞLEM GÜNLÜĞÜ (journal) — kullanıcıya özel scalping disiplin notları.
+# Migration 012_trade_journal.sql ile kurulur; append-only not satırları.
+# ---------------------------------------------------------------------------
+
+async def get_trade_journal(username: str, limit: int = 200):
+    """Kullanıcının işlem günlüğü notları (yeniden eskiye)."""
+    def op(conn):
+        rows = conn.execute(
+            "SELECT id, symbol, strategy_tag, note, created_at, updated_at FROM trade_journal "
+            "WHERE username=? ORDER BY created_at DESC LIMIT ?",
+            (str(username or "").strip().lower(), max(1, min(int(limit), 500)))).fetchall()
+        return [dict(r) for r in rows]
+    return await _run_db(op)
+
+
+async def add_trade_journal_note(username: str, symbol: str, note: str,
+                                 strategy_tag: str | None = None) -> dict:
+    """Yeni günlük notu ekler; sembol zorunlu, not boş olamaz."""
+    clean_user = str(username or "").strip().lower()
+    clean_symbol = str(symbol or "").upper().strip()
+    clean_note = str(note or "").strip()
+    clean_tag = str(strategy_tag or "").strip() or None
+    if not clean_user:
+        raise ValueError("username zorunludur")
+    if not clean_symbol or len(clean_symbol) > 24:
+        raise ValueError("geçerli bir sembol gerekli")
+    if not clean_note or len(clean_note) > 4000:
+        raise ValueError("not 1-4000 karakter olmalıdır")
+    now = time.time()
+
+    def op(conn):
+        cursor = conn.execute(
+            "INSERT INTO trade_journal(username, symbol, strategy_tag, note, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (clean_user, clean_symbol, clean_tag, clean_note, now, now))
+        conn.commit()
+        return {"id": int(cursor.lastrowid or 0), "symbol": clean_symbol,
+                "strategy_tag": clean_tag, "note": clean_note,
+                "created_at": now, "updated_at": now}
+    return await _run_db(op)
+
+
+async def delete_trade_journal_note(username: str, note_id: int) -> bool:
+    """Kullanıcının KENDİ notunu siler (id sahiplik kontrolü WHERE içinde)."""
+    def op(conn):
+        cursor = conn.execute(
+            "DELETE FROM trade_journal WHERE id=? AND username=?",
+            (int(note_id), str(username or "").strip().lower()))
+        conn.commit()
+        return int(cursor.rowcount or 0) > 0
+    return await _run_db(op)
+
+
+async def get_portfolio_equity_curve():
+    """Kapanan paper işlemlerden equity eğrisi + kâr kalitesi metrikleri.
+
+    Salt-okunur: trades tablosundan exit_time sırasıyla kümülatif PnL,
+    tepe-dip (max drawdown), profit factor ve expectancy üretir.
+    """
+    def op(conn):
+        cutoff = _get_reset_cutoff_sync(conn)
+        where = ' WHERE exit_time > %s' if cutoff else ''
+        params = (cutoff,) if cutoff else ()
+        rows = conn.execute(
+            "SELECT exit_time, pnl, symbol, strategy FROM trades" + where +
+            " ORDER BY exit_time ASC, id ASC", params).fetchall()
+        points, equity, peak, max_dd = [], 0.0, 0.0, 0.0
+        wins = losses = 0
+        gross_win = gross_loss = 0.0
+        daily: dict = {}
+        for row in rows:
+            pnl = float(row["pnl"] or 0.0)
+            equity += pnl
+            peak = max(peak, equity)
+            max_dd = max(max_dd, peak - equity)
+            if pnl > 0:
+                wins += 1
+                gross_win += pnl
+            elif pnl < 0:
+                losses += 1
+                gross_loss += -pnl
+            day = ""
+            exit_time = float(row["exit_time"] or 0.0)
+            if exit_time:
+                day = time.strftime("%Y-%m-%d", time.localtime(exit_time))
+                daily.setdefault(day, {"pnl": 0.0, "trades": 0})
+                daily[day]["pnl"] = round(daily[day]["pnl"] + pnl, 4)
+                daily[day]["trades"] += 1
+            points.append({
+                "t": exit_time,
+                "equity": round(equity, 2),
+                "symbol": row["symbol"],
+                "pnl": round(pnl, 2),
+            })
+        decided = wins + losses
+        return {
+            "points": points[-500:],
+            "closed_trades": len(points),
+            "net_pnl": round(equity, 2),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / decided * 100, 1) if decided else 0.0,
+            "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else (None if gross_win == 0 else 999.0),
+            "max_drawdown_try": round(max_dd, 2),
+            "expectancy_try": round(equity / decided, 2) if decided else 0.0,
+            "daily": [{"day": d, **v} for d, v in sorted(daily.items())][-60:],
+        }
+    return await _run_db(op)
