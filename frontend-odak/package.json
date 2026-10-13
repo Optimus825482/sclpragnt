@@ -1,0 +1,27 @@
+{
+  "name": "scalper-odak-ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Odak AI Trader — sadeleştirilmiş açık tema panel (Scalper Agent V4 için alternatif arayüz)",
+  "scripts": {
+    "dev": "next dev -p 3055",
+    "build": "next build",
+    "start": "next start -p 3055",
+    "start:standalone": "node .next/standalone/server.js",
+    "typecheck": "next typegen && tsc --noEmit --incremental false"
+  },
+  "dependencies": {
+    "next": "16.3.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10",
+    "postcss": "8.5.26",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5"
+  }
+}

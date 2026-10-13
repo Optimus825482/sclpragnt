@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Odak UI — AÇIK TEMA. Yalnız bu uygulamaya özel; mevcut frontend'in koyu
+   temasına dokunmaz. Renk jetonları tailwind.config.ts'te tanımlıdır. */
+
+:root {
+  color-scheme: light;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  max-width: 100%;
+  background: theme(colors.canvas);
+  color: theme(colors.ink.900);
+  -webkit-font-smoothing: antialiased;
+}
+
+button, a, select, input, textarea { -webkit-tap-highlight-color: transparent; }
+button, a { touch-action: manipulation; }
+
+/* Ortak yüzeyler */
+.odak-card {
+  background: theme(colors.card);
+  border: 1px solid theme(colors.line);
+  border-radius: 1rem;
+  box-shadow: theme(boxShadow.card);
+}
+
+.odak-kicker {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: theme(colors.ink.400);
+}
+
+/* Tablo yatay kaydırma (mobil) */
+.odak-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+
+/* İnce, açık tema kaydırma çubuğu */
+.odak-scroll::-webkit-scrollbar { height: 8px; width: 8px; }
+.odak-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+
+/* Erişilebilir odak halkası — mavi vurgu */
+.odak-focus:focus-visible,
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid theme(colors.accent.DEFAULT);
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+@keyframes odak-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.odak-live-dot { animation: odak-pulse 1.6s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .odak-live-dot { animation: none; }
+}
