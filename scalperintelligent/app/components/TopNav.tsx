@@ -14,7 +14,9 @@ const NAV = [
   { href: "/", label: "Anasayfa" },
   { href: "/firsatlar", label: "Sinyal & Tarama" },
   { href: "/grafik", label: "Grafikler" },
+  { href: "/emirler", label: "Açık Emirler" },
   { href: "/gecmis-islemler", label: "İşlem Geçmişi" },
+  { href: "/alarmlar", label: "Alarmlar" },
   { href: "/ayarlar", label: "Ayarlar" },
 ];
 

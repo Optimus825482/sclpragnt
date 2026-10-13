@@ -11,6 +11,9 @@ import type { BinancePositions, BinanceSettings, MarketSymbols, MarketTicker } f
 import type { OpportunityView } from "../lib/opportunity";
 import { Badge, Button, Card } from "./ui";
 import SymbolSelect from "./SymbolSelect";
+import OrderBook from "./OrderBook";
+
+type SlTpMode = "OCO" | "SL_ONLY" | "TP_ONLY";
 
 type OrderKind = "MARKET" | "LIMIT" | "STOP_LIMIT";
 type OrderReceipt = {
@@ -88,6 +91,18 @@ export default function OrderPanel({
   const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState<{ tone: "gain" | "loss" | "warn"; text: string } | null>(null);
   const [receipt, setReceipt] = useState<OrderReceipt | null>(null);
+
+  // SL/TP koruma (gerçek pozisyon için borsada bekleyen emir)
+  const [sltpOpen, setSltpOpen] = useState(false);
+  const [sltpMode, setSltpMode] = useState<SlTpMode>("OCO");
+  const [tpPrice, setTpPrice] = useState("");
+  const [slPrice, setSlPrice] = useState("");
+  const [slLimitPrice, setSlLimitPrice] = useState("");
+  const [sltpQty, setSltpQty] = useState("");
+  const [cancelExisting, setCancelExisting] = useState(false);
+  const [sltpBusy, setSltpBusy] = useState(false);
+  const [sltpConfirm, setSltpConfirm] = useState(false);
+  const [sltpMessage, setSltpMessage] = useState<{ tone: "gain" | "loss" | "warn"; text: string } | null>(null);
   const receiptRef = useRef(receipt);
   receiptRef.current = receipt;
 
@@ -150,6 +165,54 @@ export default function OrderPanel({
     ? Number(amount || 0)
     : Number(amount || 0) * Number(priceForEstimate || 0);
   const orderTypeLabel = kind === "STOP_LIMIT" ? "Stop-Limit" : kind === "LIMIT" ? "Limit" : "Piyasa";
+  const avgCost = balances.data?.holdings?.find((h) => h.asset === base)?.avg_cost_try ?? null;
+  const currentPrice = ticker.data?.last ?? null;
+
+  function sltpPctFill(target: "tp" | "sl", pct: number) {
+    if (!currentPrice) return;
+    const value = target === "tp" ? currentPrice * (1 + pct / 100) : currentPrice * (1 - pct / 100);
+    if (target === "tp") setTpPrice(value.toFixed(priceDigits(currentPrice)));
+    else setSlPrice(value.toFixed(priceDigits(currentPrice)));
+  }
+
+  function priceDigits(price: number) {
+    if (price >= 1000) return 2;
+    if (price >= 1) return 4;
+    return 6;
+  }
+
+  async function submitSltp() {
+    if (!activeSymbol) return;
+    const tp = Number(tpPrice || 0);
+    const sl = Number(slPrice || 0);
+    if (sltpMode === "OCO" && (tp <= 0 || sl <= 0)) { setSltpMessage({ tone: "loss", text: "OCO için hem TP hem SL fiyatı gerekli." }); return; }
+    if (sltpMode === "TP_ONLY" && tp <= 0) { setSltpMessage({ tone: "loss", text: "Kâr Al (TP) fiyatı girin." }); return; }
+    if (sltpMode === "SL_ONLY" && sl <= 0) { setSltpMessage({ tone: "loss", text: "Zarar Kes (SL) fiyatı girin." }); return; }
+    if (sltpMode === "OCO" && tp <= sl) { setSltpMessage({ tone: "loss", text: "TP fiyatı SL fiyatından büyük olmalı." }); return; }
+    setSltpBusy(true);
+    setSltpConfirm(false);
+    setSltpMessage(null);
+    try {
+      const payload: Record<string, unknown> = { asset: base, mode: sltpMode, cancel_existing: cancelExisting };
+      if (tp > 0) payload.tp_price = tp;
+      if (sl > 0) payload.sl_price = sl;
+      if (Number(slLimitPrice) > 0) payload.sl_limit_price = Number(slLimitPrice);
+      if (Number(sltpQty) > 0) payload.quantity = Number(sltpQty);
+      const response = await apiRequest(`${API_BASE}/api/binance/set-sl-tp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(responseDetail(body) || `Koruma emri gönderilemedi (${response.status})`);
+      setSltpMessage({ tone: "gain", text: "Koruma emri borsaya gönderildi. Açık emirler ekranından durumu izleyin." });
+      balances.reload();
+    } catch (reason) {
+      setSltpMessage({ tone: "loss", text: reason instanceof Error ? reason.message : "Koruma emri gönderilemedi" });
+    } finally {
+      setSltpBusy(false);
+    }
+  }
 
   function mergeReceipt(body: any, fallbackSymbol: string): OrderReceipt {
     const raw = body?.order ?? body?.data ?? body;
@@ -292,6 +355,8 @@ export default function OrderPanel({
           </div>
         </div>
 
+        <OrderBook symbol={activeSymbol} />
+
         <div className="mt-3 grid grid-cols-2 gap-2">
           <button type="button" onClick={() => { setSide("BUY"); setAmount(""); }} className={`rounded-lg py-2 text-sm font-semibold ${side === "BUY" ? "bg-gain text-white" : "border border-line text-ink-500"}`}>AL</button>
           <button type="button" onClick={() => { setSide("SELL"); setAmount(""); }} className={`rounded-lg py-2 text-sm font-semibold ${side === "SELL" ? "bg-loss text-white" : "border border-line text-ink-500"}`}>SAT</button>
@@ -363,6 +428,65 @@ export default function OrderPanel({
             {receipt.avgPrice != null && <p>Ortalama gerçekleşme fiyatı: <span className="font-mono">{formatPrice(Number(receipt.avgPrice))}</span></p>}
           </div>
         </div>}
+
+        {binance.data?.configured && assetFree > 0 && (
+          <div className="mt-3 rounded-xl border border-line p-3">
+            <button type="button" onClick={() => setSltpOpen((open) => !open)} className="flex w-full items-center justify-between text-left" aria-expanded={sltpOpen}>
+              <span className="odak-kicker">Pozisyon Koruması (SL / TP / OCO)</span>
+              <span className="text-ink-400">{sltpOpen ? "▾" : "▸"}</span>
+            </button>
+            {sltpOpen && <>
+              <p className="mt-1.5 text-[10px] text-ink-400">{assetFree} {base} için borsada bekleyen satış koruması kurulur. Otomatik trailing yalnızca paper motorunda çalışır; gerçek pozisyonda kâr büyüdükçe SL'i buradan elle yukarı taşıyın.</p>
+              <div className="mt-2 grid grid-cols-3 gap-1">
+                {([["OCO", "OCO (SL+TP)"], ["SL_ONLY", "Sadece SL"], ["TP_ONLY", "Sadece TP"]] as const).map(([value, label]) => (
+                  <button key={value} type="button" onClick={() => { setSltpMode(value); setSltpConfirm(false); }} className={`rounded-lg px-1.5 py-1.5 text-[11px] font-semibold ${sltpMode === value ? "bg-accent text-white" : "border border-line text-ink-500"}`}>{label}</button>
+                ))}
+              </div>
+              <div className="mt-2">
+                <span className="odak-kicker">Kâr Al (TP) fiyatı</span>
+                <input value={tpPrice} onChange={(e) => { setTpPrice(e.target.value.replace(/[^\d.]/g, "")); setSltpConfirm(false); }} inputMode="decimal" placeholder={currentPrice ? (currentPrice * 1.03).toFixed(priceDigits(currentPrice)) : "0"} disabled={sltpMode === "SL_ONLY"} className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2 font-mono text-sm text-ink-900 outline-none focus:border-accent disabled:opacity-40" />
+                <div className="mt-1 grid grid-cols-4 gap-1">
+                  {[2, 3, 5, 8].map((pct) => <button key={pct} type="button" disabled={!currentPrice || sltpMode === "SL_ONLY"} onClick={() => sltpPctFill("tp", pct)} className="rounded-md border border-line py-1 text-[11px] text-ink-500 hover:border-accent hover:text-accent disabled:opacity-40">%+{pct}</button>)}
+                </div>
+              </div>
+              <div className="mt-2">
+                <span className="odak-kicker">Zarar Kes (SL) fiyatı</span>
+                <input value={slPrice} onChange={(e) => { setSlPrice(e.target.value.replace(/[^\d.]/g, "")); setSltpConfirm(false); }} inputMode="decimal" placeholder={currentPrice ? (currentPrice * 0.98).toFixed(priceDigits(currentPrice)) : "0"} disabled={sltpMode === "TP_ONLY"} className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2 font-mono text-sm text-ink-900 outline-none focus:border-accent disabled:opacity-40" />
+                <div className="mt-1 grid grid-cols-4 gap-1">
+                  {[-1, -2, -3, -5].map((pct) => <button key={pct} type="button" disabled={!currentPrice || sltpMode === "TP_ONLY"} onClick={() => sltpPctFill("sl", pct)} className="rounded-md border border-line py-1 text-[11px] text-ink-500 hover:border-loss hover:text-loss disabled:opacity-40">{pct}%</button>)}
+                </div>
+                {avgCost != null && avgCost > 0 && (
+                  <button type="button" disabled={sltpMode === "TP_ONLY"} onClick={() => { setSlPrice(Number(avgCost).toFixed(priceDigits(Number(avgCost)))); setSltpConfirm(false); }} className="mt-1 w-full rounded-md border border-accent/40 bg-accent-soft py-1 text-[11px] font-semibold text-accent disabled:opacity-40" title="Stop'u maliyet fiyatına çek: kâr büyüdükçe sermayeyi kilitle">
+                    ⟲ Başabaş çek (maliyet ≈ {formatPrice(avgCost)})
+                  </button>
+                )}
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <label className="block"><span className="odak-kicker">SL limit (ops.)</span><input value={slLimitPrice} onChange={(e) => setSlLimitPrice(e.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" placeholder="—" className="mt-1 w-full rounded-lg border border-line bg-white px-2 py-1.5 font-mono text-xs text-ink-900 outline-none focus:border-accent" /></label>
+                <label className="block"><span className="odak-kicker">Miktar (boş = tümü)</span><input value={sltpQty} onChange={(e) => setSltpQty(e.target.value.replace(/[^\d.]/g, ""))} inputMode="decimal" placeholder={String(assetFree)} className="mt-1 w-full rounded-lg border border-line bg-white px-2 py-1.5 font-mono text-xs text-ink-900 outline-none focus:border-accent" /></label>
+              </div>
+              <label className="mt-2 flex items-center gap-2 text-[11px] text-ink-500">
+                <input type="checkbox" checked={cancelExisting} onChange={(e) => setCancelExisting(e.target.checked)} className="h-3.5 w-3.5 accent-[color:var(--color-accent)]" />
+                Önceki açık satış emirlerini iptal et (gerekli olabilir)
+              </label>
+              {!sltpConfirm ? (
+                <Button variant="danger" className="mt-2 w-full" disabled={sltpBusy || (sltpMode === "OCO" && (!Number(tpPrice) || !Number(slPrice))) || (sltpMode === "TP_ONLY" && !Number(tpPrice)) || (sltpMode === "SL_ONLY" && !Number(slPrice))} onClick={() => setSltpConfirm(true)}>
+                  KORUMA EMRİNİ GÖZDEN GEÇİR
+                </Button>
+              ) : (
+                <div className="mt-2 rounded-lg bg-slate-50 p-2.5 text-[11px]">
+                  <p className="font-semibold text-ink-800">{sltpMode === "OCO" ? "OCO" : sltpMode === "SL_ONLY" ? "Zarar Kes (SL)" : "Kâr Al (TP)"} · {cancelExisting ? Number(sltpQty) > 0 ? sltpQty : `${assetFree} ${base} (tümü)` : `${Number(sltpQty) > 0 ? sltpQty : assetFree} ${base}`}</p>
+                  <p className="mt-0.5 text-ink-500">TP {sltpMode === "SL_ONLY" ? "—" : formatPrice(Number(tpPrice || 0))} · SL {sltpMode === "TP_ONLY" ? "—" : formatPrice(Number(slPrice || 0))}{cancelExisting ? " · eski satış emirleri İPTAL edilecek" : ""}</p>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button type="button" onClick={() => setSltpConfirm(false)} className="rounded-lg border border-line px-3 py-2 font-semibold text-ink-600">Geri dön</button>
+                    <Button variant="danger" disabled={sltpBusy} onClick={submitSltp}>{sltpBusy ? "Gönderiliyor…" : "Gerçek koruma emrini onayla"}</Button>
+                  </div>
+                </div>
+              )}
+              {sltpMessage && <p role="status" className={`mt-2 text-[11px] ${sltpMessage.tone === "gain" ? "text-gain" : sltpMessage.tone === "loss" ? "text-loss" : "text-ink-500"}`}>{sltpMessage.text}</p>}
+            </>}
+          </div>
+        )}
       </>}
       {reviewOpen && activeSymbol && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReviewOpen(false); }}>
         <section role="dialog" aria-modal="true" aria-labelledby="order-review-title" className="w-full max-w-md rounded-2xl border border-line bg-white p-5 shadow-2xl">

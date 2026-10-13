@@ -10,7 +10,9 @@ const ITEMS = [
   { href: "/", label: "Anasayfa", icon: "⌂" },
   { href: "/firsatlar", label: "Fırsatlar", icon: "◎" },
   { href: "/#aktif-islemler", label: "Aktif İşlemler", icon: "≡" },
+  { href: "/emirler", label: "Açık Emirler", icon: "⧗" },
   { href: "/gecmis-islemler", label: "Geçmiş İşlemler", icon: "◷" },
+  { href: "/alarmlar", label: "Fiyat Alarmları", icon: "◔" },
   { href: "/ayarlar", label: "Ayarlar", icon: "⚙" },
 ];
 

@@ -10,9 +10,21 @@ import { useWatchlist } from "../lib/watchlist";
 import { sound } from "../lib/sound";
 import type { ManualUnifiedScanResponse, NotificationsResponse, UnifiedScanHistoryResponse, UnifiedScanRun } from "../lib/types";
 import { Badge, Card, EmptyState, SectionHeader, Skeleton, Tabs } from "../components/ui";
+import { downloadCsv, toCsv } from "../lib/csv";
 
 type Tab = "live" | "history";
 type LiveRow = { view: ReturnType<typeof toOpportunityView>; kind: string; detectedAt: number | null };
+type EngineSummary = {
+  hit_rate?: number | null;
+  measured?: number;
+  ceiling_hits?: number;
+  avg_mfe_pct?: number | null;
+  avg_sent_gain_all_pct?: number | null;
+  avg_sent_gain_today_pct?: number | null;
+  avg_sim_all_pct?: number | null;
+  report_count?: number;
+  by_source?: Record<string, { measured: number; ceiling_hits: number; hit_rate: number | null; avg_mfe_pct: number | null }>;
+};
 
 const PAGE_SIZE = 25;
 
@@ -277,6 +289,27 @@ function HistorySection({
     "/api/reports/notifications?day=all&limit=400&history_only=true",
     60_000
   );
+  const engineSummary = usePoll<EngineSummary>("/api/daily-rising/reports/summary?days=14&limit=200", 120_000);
+
+  function exportScanHistoryCsv() {
+    const headers = ["tarama_zamani", "surum", "sembol", "ufuk_dk", "kaynaklar", "fiyat", "skor"];
+    const rows: Array<Array<string | number | null | undefined>> = [];
+    for (const run of scanHistory) {
+      const completed = run.completed_at ?? run.generated_at ?? null;
+      for (const candidate of run.candidates || []) {
+        rows.push([
+          completed ? fmtDateTime(completed) : "",
+          run.algorithm_version || "combined-v1",
+          candidate.symbol,
+          candidate.horizon_minutes ?? null,
+          Array.isArray(candidate.unified_sources) ? candidate.unified_sources.join(" | ") : candidate.strategy || "",
+          candidate.price ?? null,
+          candidate.scan_score ?? candidate.quality_score ?? null,
+        ]);
+      }
+    }
+    downloadCsv(`tarama-gecmisi-${new Date().toISOString().slice(0, 10)}.csv`, toCsv(headers, rows));
+  }
 
   const rawNotifications = data?.notifications || [];
 
@@ -329,8 +362,64 @@ function HistorySection({
 
   return (
     <div className="space-y-4">
+      {engineSummary.data && (engineSummary.data.by_source && Object.keys(engineSummary.data.by_source).length > 0) ? (
+        <Card className="p-4">
+          <SectionHeader
+            eyebrow="Motor Başarı Paneli"
+            title="Hangi motorun adayları hedefe ulaşıyor?"
+            description="Son 14 günün gönderilen liste raporlarından ölçülen MFE ve hedef-tavan isabet oranları (kaynak bazında)."
+          />
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-lg bg-canvas p-3">
+              <p className="odak-kicker">Genel isabet</p>
+              <p className="mt-1 font-mono text-xl font-bold text-gain">{engineSummary.data.hit_rate != null ? `%${engineSummary.data.hit_rate}` : "—"}</p>
+              <p className="text-[11px] text-ink-400">{engineSummary.data.measured ?? 0} aday ölçüldü</p>
+            </div>
+            <div className="rounded-lg bg-canvas p-3">
+              <p className="odak-kicker">Ort. tepe (MFE)</p>
+              <p className="mt-1 font-mono text-xl font-bold text-accent">{engineSummary.data.avg_mfe_pct != null ? `+%${engineSummary.data.avg_mfe_pct}` : "—"}</p>
+              <p className="text-[11px] text-ink-400">tüm zamanlar · {engineSummary.data.report_count ?? 0} rapor</p>
+            </div>
+            <div className="rounded-lg bg-canvas p-3">
+              <p className="odak-kicker">Gerçekleşebilir ort. net %</p>
+              <p className="mt-1 font-mono text-xl font-bold text-ink-900">{engineSummary.data.avg_sim_all_pct != null ? `${engineSummary.data.avg_sim_all_pct > 0 ? "+" : ""}%${engineSummary.data.avg_sim_all_pct}` : "—"}</p>
+              <p className="text-[11px] text-ink-400">otonom paper kurallarıyla simülasyon</p>
+            </div>
+          </div>
+          <div className="odak-scroll mt-3">
+            <table className="w-full min-w-[520px] border-collapse text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-400">
+                <th className="pb-2 pr-3 font-medium">Motor</th>
+                <th className="pb-2 pr-3 text-right font-medium">Ölçülen</th>
+                <th className="pb-2 pr-3 text-right font-medium">Tavan isabeti</th>
+                <th className="pb-2 text-right font-medium">Ort. MFE</th>
+              </tr></thead>
+              <tbody>{Object.entries(engineSummary.data.by_source).map(([source, stat]) => (
+                <tr key={source} className="border-t border-line">
+                  <td className="py-2 pr-3 font-mono font-semibold text-ink-800">{sourceLabel(source) || source}</td>
+                  <td className="py-2 pr-3 text-right font-mono text-ink-600">{stat.measured}</td>
+                  <td className="py-2 pr-3 text-right font-mono font-semibold text-gain">{stat.hit_rate != null ? `%${stat.hit_rate}` : "—"}</td>
+                  <td className="py-2 text-right font-mono text-ink-700">{stat.avg_mfe_pct != null ? `+%${stat.avg_mfe_pct}` : "—"}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </Card>
+      ) : null}
+
       <Card className="p-4">
-        <SectionHeader eyebrow="Birleşik tarama geçmişi" title="Kalıcı aday anlık görüntüleri" description="Her manuel taramanın zamanı, sürümü ve adayları kullanıcı hesabına özel saklanır." />
+        <SectionHeader
+          eyebrow="Birleşik tarama geçmişi"
+          title="Kalıcı aday anlık görüntüleri"
+          description="Her manuel taramanın zamanı, sürümü ve adayları kullanıcı hesabına özel saklanır."
+          actions={
+            <button type="button" onClick={exportScanHistoryCsv} disabled={scanHistory.length === 0}
+              className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-accent hover:bg-accent-soft disabled:opacity-40"
+              title="Tarama geçmişini CSV olarak indir">
+              ⤓ CSV indir
+            </button>
+          }
+        />
         {scanHistoryLoading ? <Skeleton className="mt-3 h-20" /> : scanHistory.length === 0 ? (
           <p className="mt-3 text-sm text-ink-400">Henüz kaydedilmiş manuel tarama yok.</p>
         ) : (
