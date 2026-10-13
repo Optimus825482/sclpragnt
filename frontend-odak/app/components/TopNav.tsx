@@ -4,44 +4,43 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { useAuth } from "../lib/auth";
-import { useLiveStatus } from "../lib/liveSocket";
-import { Badge, Button } from "./ui";
+import { Button } from "./ui";
 
 /**
- * TEK ÜST MENÜ — bilinçli karar.
+ * TEK ÜST MENÜ — sistem adı: SCALPER INTELLIGENT TRADE SYSTEMS.
+ * Menü: Anasayfa · Fırsatlar · Geçmiş İşlemler · Ayarlar.
  *
- * Tasarım incelemesinde en yüksek öncelikli sorun, aynı menülerin hem üstte hem
- * solda tekrar etmesiydi. Bu arayüzde navigasyon YALNIZCA burada; sol sidebar
- * kaldırıldı. Sistem durumu kompakt bir şeride taşındı (bkz. StatusStrip).
+ * Tasarım incelemesindeki "çift navigasyon" sorunu nedeniyle sol sidebar YOK.
+ * Canlı/bağlantı durumu sağ üstte kompakt bir nokta ile gösterilir.
  */
 const NAV = [
-  { href: "/", label: "Fırsatlar" },
-  { href: "/positions", label: "Pozisyonlar" },
-  { href: "/strategies", label: "Stratejiler" },
+  { href: "/", label: "Anasayfa" },
+  { href: "/firsatlar", label: "Fırsatlar" },
+  { href: "/gecmis-islemler", label: "Geçmiş İşlemler" },
+  { href: "/ayarlar", label: "Ayarlar" },
 ];
 
 export default function TopNav() {
   const pathname = usePathname();
   const { username, role, logout } = useAuth();
-  const liveStatus = useLiveStatus();
   const [busy, setBusy] = useState(false);
-
   const isAdmin = role === "admin";
   const initial = (username || "?").charAt(0).toUpperCase();
 
   return (
-    <header className="sticky top-0 z-30 border-b border-line bg-white/90 backdrop-blur">
-      <div className="mx-auto flex h-16 max-w-[1400px] items-center gap-4 px-4 sm:px-6">
-        {/* Marka */}
-        <Link href="/" className="flex items-center gap-2.5">
-          <span className="grid h-8 w-8 place-items-center rounded-lg bg-accent text-sm font-bold text-white">O</span>
-          <span className="hidden text-sm font-semibold tracking-tight text-ink-900 sm:block">
-            ODAK <span className="font-normal text-ink-500">AI Trader</span>
+    <header className="sticky top-0 z-30 border-b border-line bg-white/95 backdrop-blur">
+      <div className="mx-auto flex h-16 max-w-[1500px] items-center gap-3 px-4 sm:px-6">
+        <Link href="/" className="flex shrink-0 items-center gap-2.5">
+          <span className="grid h-8 w-8 place-items-center rounded-lg bg-accent text-sm font-bold text-white">S</span>
+          <span className="hidden leading-tight sm:block">
+            <span className="block text-[13px] font-bold tracking-tight text-ink-900">SCALPER</span>
+            <span className="block text-[9px] font-medium uppercase tracking-[0.14em] text-ink-400">
+              Intelligent Trade Systems
+            </span>
           </span>
         </Link>
 
-        {/* Ana menü (yalnızca burada) */}
-        <nav className="flex items-center gap-1 overflow-x-auto" aria-label="Ana navigasyon">
+        <nav className="flex items-center gap-0.5 overflow-x-auto" aria-label="Ana navigasyon">
           {NAV.map((item) => {
             const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
             return (
@@ -59,30 +58,14 @@ export default function TopNav() {
           })}
         </nav>
 
-        {/* Sağ araçlar */}
         <div className="ml-auto flex items-center gap-2.5">
-          <span className="hidden items-center gap-1.5 sm:flex">
-            <Badge tone={liveStatus === "open" ? "gain" : "warn"}>
-              <span className={`h-1.5 w-1.5 rounded-full ${liveStatus === "open" ? "bg-gain odak-live-dot" : "bg-warn"}`} />
-              {liveStatus === "open" ? "Canlı" : "Bağlantı yok"}
-            </Badge>
-          </span>
-
-          {/* Binance TR — kendi hesabın (mevcut arayüzdeki canlı işlem) */}
-          <a
-            href="http://localhost:3004/binance-tr"
-            className="hidden rounded-lg border border-line px-2.5 py-1.5 text-xs font-medium text-ink-500 hover:border-ink-400 hover:text-ink-900 sm:inline-flex"
-            title="Mevcut panelde Binance TR canlı işlem"
-          >
-            Binance TR ↗
-          </a>
-
           {username && (
-            <div className="flex items-center gap-2">
-              <span
-                className="grid h-8 w-8 place-items-center rounded-full bg-canvas text-xs font-bold text-ink-700"
-                title={`${username}${isAdmin ? " (yönetici)" : ""}`}
-              >
+            <>
+              <span className="hidden sm:block text-right leading-tight">
+                <span className="block text-xs font-semibold text-ink-900">{username}</span>
+                <span className="block text-[10px] uppercase tracking-wide text-ink-400">{isAdmin ? "Yönetici" : "Kullanıcı"}</span>
+              </span>
+              <span className="grid h-8 w-8 place-items-center rounded-full bg-canvas text-xs font-bold text-ink-700">
                 {initial}
               </span>
               <Button
@@ -100,7 +83,7 @@ export default function TopNav() {
               >
                 {busy ? "…" : "Çıkış"}
               </Button>
-            </div>
+            </>
           )}
         </div>
       </div>

@@ -7,10 +7,15 @@ import { useVisibleInterval } from "./useVisibleInterval";
 export type PollState<T> = { data: T | null; error: string | null; loading: boolean; reload: () => void };
 
 /**
- * GET + periyodik yenileme. Ağ hatası `error`'a yazılır (sessizce "veri yok"
- * gibi gösterilmez — koyu tema H-05 ilkesi). Sekme gizliyken durur.
+ * GET + periyodik yenileme, ZAMAN AŞIMLI.
+ *
+ * Neden timeout: bazı backend uçları (ör. `/api/daily-rising/state`, gönderilmiş
+ * liste yokken canlı kombine taramaya düşer) onlarca saniye askıda kalabiliyor.
+ * Tarayıcı `fetch`'inin varsayılan zaman aşımı yoktur → asılı istek `loading`
+ * durumunu sonsuza dek açık bırakır ve sayfa iskelet üstünde donar. AbortController
+ * ile sınırlıyoruz; aşılırsa `error` yazılır ve arayüz yaşamaya devam eder.
  */
-export function usePoll<T>(path: string | null, intervalMs: number | null): PollState<T> {
+export function usePoll<T>(path: string | null, intervalMs: number | null, timeoutMs = 12_000): PollState<T> {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(Boolean(path));
@@ -25,7 +30,9 @@ export function usePoll<T>(path: string | null, intervalMs: number | null): Poll
 
   const reload = useCallback(() => {
     if (!path) return;
-    getJSON<T>(path)
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    getJSON<T>(path, { signal: controller.signal })
       .then((value) => {
         if (!mounted.current) return;
         setData(value);
@@ -33,12 +40,17 @@ export function usePoll<T>(path: string | null, intervalMs: number | null): Poll
       })
       .catch((reason: unknown) => {
         if (!mounted.current) return;
-        setError(reason instanceof Error ? reason.message : "Bağlantı hatası");
+        if (reason instanceof DOMException && reason.name === "AbortError") {
+          setError(`Zaman aşımı (${timeoutMs / 1000}sn) — sunucu yanıt vermedi`);
+        } else {
+          setError(reason instanceof Error ? reason.message : "Bağlantı hatası");
+        }
       })
       .finally(() => {
+        clearTimeout(timer);
         if (mounted.current) setLoading(false);
       });
-  }, [path]);
+  }, [path, timeoutMs]);
 
   useEffect(() => {
     if (!path) return;

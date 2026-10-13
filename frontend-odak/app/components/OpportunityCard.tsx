@@ -2,11 +2,13 @@
 
 import { Badge } from "./ui";
 import { formatPct, formatPrice } from "../lib/format";
-import type { Opportunity } from "../lib/types";
+import type { OpportunityView } from "../lib/opportunity";
 
 /**
- * Fırsat kartı. Tasarımdaki kartın sadeleştirilmiş hâli: her alan gerçek bir
- * backend değerine bağlı, olmayan alan gizlenir (uydurma yok).
+ * Fırsat kartı — tasarımdaki kartın birebir karşılığı:
+ * sıra no · süre rozeti · coin/isim · yükseliş potansiyeli kutusu · fiyat+değişim
+ * · Hedef / Sinyal Gücü / Hacim Artışı · "İşleme Gir" butonu.
+ * Kartın altında hangi TESPİT SİSTEMİNİN ürettiği etiketler görünür.
  */
 export default function OpportunityCard({
   rank,
@@ -15,64 +17,88 @@ export default function OpportunityCard({
   onSelect,
 }: {
   rank: number;
-  item: Opportunity;
+  item: OpportunityView;
   selected: boolean;
   onSelect: () => void;
 }) {
-  const potential = item.potential_pct ?? item.ceiling_pct ?? null;
-  const change = item.change_pct ?? null;
-  const strength = item.quality_score ?? item.scan_score ?? null;
-  const horizon = (item as { horizon_minutes?: number }).horizon_minutes ?? null;
+  const { potentialPct, changePct, strength, price, horizonMinutes, volumeRatio } = item;
 
   return (
     <button
       type="button"
       onClick={onSelect}
       aria-pressed={selected}
-      className={`odak-card w-full p-4 text-left transition-shadow hover:shadow-pop ${
+      className={`odak-card flex w-full flex-col p-4 text-left transition-shadow hover:shadow-pop ${
         selected ? "ring-2 ring-accent" : ""
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="grid h-7 w-7 place-items-center rounded-lg bg-canvas text-xs font-bold text-ink-500">{rank}</span>
-          <div>
-            <p className="font-mono text-sm font-semibold text-ink-900">{item.symbol}</p>
-            {horizon != null && <p className="text-[11px] text-ink-400">{horizon} dk ufuk</p>}
-          </div>
+          <span className="grid h-6 w-6 place-items-center rounded-md bg-canvas text-xs font-bold text-ink-500">{rank}</span>
+          {horizonMinutes != null && (
+            <span className="rounded-md bg-canvas px-1.5 py-0.5 font-mono text-[10px] font-semibold text-ink-500">
+              {horizonMinutes} DK
+            </span>
+          )}
         </div>
-        {potential != null && (
-          <div className="text-right">
-            <p className="font-mono text-lg font-bold text-gain">↗ {formatPct(potential, 1)}</p>
-            <p className="text-[10px] leading-tight text-ink-400">potansiyel</p>
+        {potentialPct != null && (
+          <div className="rounded-lg bg-gain-soft px-2.5 py-1 text-right">
+            <p className="font-mono text-base font-bold leading-none text-gain">↗ {formatPct(potentialPct, 0)}</p>
+            <p className="mt-0.5 text-[9px] leading-tight text-gain/80">Yükseliş Potansiyeli</p>
           </div>
         )}
       </div>
 
-      <div className="mt-3 flex items-baseline justify-between">
-        <span className="font-mono text-sm text-ink-700">{formatPrice(item.current_price)}</span>
-        {change != null && (
-          <span className={`font-mono text-xs ${change >= 0 ? "text-gain" : "text-loss"}`}>
-            {change >= 0 ? "+" : ""}
-            {formatPct(change, 1)}
+      <div className="mt-3">
+        <p className="font-mono text-sm font-bold text-ink-900">
+          {item.base} <span className="text-ink-400">/ TRY</span>
+        </p>
+      </div>
+
+      <div className="mt-1.5 flex items-baseline gap-2">
+        <span className="font-mono text-lg font-semibold text-ink-900">{formatPrice(price)}</span>
+        {changePct != null && (
+          <span className={`font-mono text-xs font-semibold ${changePct >= 0 ? "text-gain" : "text-loss"}`}>
+            {changePct >= 0 ? "+" : ""}
+            {formatPct(changePct, 1)}
           </span>
         )}
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 border-t border-line pt-3">
+      <div className="mt-3 grid grid-cols-3 gap-2 border-t border-line pt-3 text-center">
         <div>
-          <p className="text-[10px] text-ink-400">Hedef</p>
-          <p className="font-mono text-xs text-ink-700">{formatPct(item.potential_pct, 1, true)}</p>
+          <p className="text-[9px] uppercase tracking-wide text-ink-400">Hedef</p>
+          <p className="font-mono text-xs font-semibold text-ink-700">{formatPct(item.targetPct ?? potentialPct, 1, true)}</p>
         </div>
         <div>
-          <p className="text-[10px] text-ink-400">Sinyal gücü</p>
-          <p className="font-mono text-xs text-ink-700">{strength != null ? Math.round(strength) : "—"}</p>
+          <p className="text-[9px] uppercase tracking-wide text-ink-400">Sinyal Gücü</p>
+          <p className="font-mono text-xs font-semibold text-ink-700">{strength != null ? `%${Math.round(strength)}` : "—"}</p>
+        </div>
+        <div>
+          <p className="text-[9px] uppercase tracking-wide text-ink-400">Hacim Oranı</p>
+          <p className="font-mono text-xs font-semibold text-ink-700">
+            {/* volume_ratio ortalamaya göre ORAN (≥2.0 eşik). Oran olarak bas:
+                1.8× gibi. Yüzdeye çevirmek yanıltıcı olurdu. */}
+            {volumeRatio != null ? `${volumeRatio.toFixed(2)}×` : "—"}
+          </p>
         </div>
       </div>
 
-      <div className="mt-3 flex items-center justify-between">
-        <Badge tone="accent">Detay</Badge>
-        <span className="text-[11px] text-ink-400">{item.strategy || item.status || ""}</span>
+      {/* Hangi sistem üretti */}
+      {item.sources.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1">
+          {item.sources.slice(0, 3).map((s) => (
+            <Badge key={s} tone="accent">
+              {s}
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3">
+        <span className="inline-flex w-full items-center justify-center rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white">
+          İşleme Gir →
+        </span>
       </div>
     </button>
   );

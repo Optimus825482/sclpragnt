@@ -143,3 +143,44 @@ export function EmptyState({ title, hint, tone = "neutral" }: { title: string; h
 export function Skeleton({ className = "" }: { className?: string }) {
   return <div className={`animate-pulse rounded-lg bg-canvas ${className}`} />;
 }
+
+/** Aç/kapat anahtarı (erişilebilir switch). */
+export function Toggle({
+  checked,
+  onChange,
+  label,
+  hint,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  label: ReactNode;
+  hint?: ReactNode;
+  disabled?: boolean;
+}) {
+  return (
+    <label className={`flex items-center justify-between gap-4 py-2.5 ${disabled ? "opacity-50" : ""}`}>
+      <span className="min-w-0">
+        <span className="block text-sm font-medium text-ink-900">{label}</span>
+        {hint && <span className="mt-0.5 block text-xs text-ink-400">{hint}</span>}
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={typeof label === "string" ? label : undefined}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+          checked ? "bg-gain" : "bg-ink-400/40"
+        } disabled:cursor-not-allowed`}
+      >
+        <span
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${
+            checked ? "left-[1.375rem]" : "left-0.5"
+          }`}
+        />
+      </button>
+    </label>
+  );
+}

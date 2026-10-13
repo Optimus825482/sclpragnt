@@ -53,6 +53,26 @@ async def send_whatsapp(text: str) -> bool:
     Hata fırlatmaz: köprü kapalı/erişilemez olsa bile çağıran akış (tarama)
     etkilenmez, yalnız log düşer.
     """
+    return await _send_whatsapp(to=None, text=text)
+
+
+async def send_whatsapp_to_number(text: str, number: str) -> bool:
+    """Tek bir TELEFON NUMARASINA WhatsApp mesajı gönder (kullanıcı bildirimi).
+
+    NEDEN AYRI: `send_whatsapp` tek bir GRUBA (`WHATSAPP_GROUP_ID`) gönderir.
+    Kullanıcı bazlı bildirimler ise kişinin kendi numarasına gitmeli. Köprü
+    `to` alanını JID olarak kabul eder; telefon için `<rakam>@s.whatsapp.net`
+    biçimi kullanılır. Numara `user_prefs.normalize_phone` ile ülke kodlu
+    rakam dizisine çevrilmiş olarak gelir.
+    """
+    digits = "".join(ch for ch in str(number or "") if ch.isdigit())
+    if not digits:
+        return False
+    return await _send_whatsapp(to=f"{digits}@s.whatsapp.net", text=text)
+
+
+async def _send_whatsapp(*, to: str | None, text: str) -> bool:
+    """Ortak gönderim gövdesi. `to` verilmezse yapılandırılmış grup kullanılır."""
     if not text or not whatsapp_enabled():
         return False
     url, key, grp = _cfg()
@@ -60,8 +80,9 @@ async def send_whatsapp(text: str) -> bool:
     if key:
         headers["X-Bridge-Key"] = key
     payload = {"message": text}
-    if grp:
-        payload["to"] = grp
+    target = to or grp
+    if target:
+        payload["to"] = target
     try:
         result = await asyncio.to_thread(_post_sync, f"{url}/send", payload, headers)
         ok = bool(result.get("ok"))

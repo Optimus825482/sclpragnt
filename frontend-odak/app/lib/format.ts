@@ -66,11 +66,26 @@ export function formatSignedTL(value: number | null | undefined): string {
 /**
  * YÜZDE alanları için biçim. Backend bu alanları ÇOĞUNLUKLA hazır yüzde olarak
  * döndürür (`change_pct`, `potential_pct`, `net_pct`, `mfe_pct` … → 3.97 = %3,97).
- * Bu yüzden çarpmadan basılır. `sign` ile baştaki işaret zorlanır.
+ * Bu yüzden çarpmadan basılır. `sign` ile pozitifte başa işaret konur.
+ *
+ * İŞARET YERİ: negatifte eksi, yüzde işaretinden ÖNCE gelir → `-%3.97`
+ * (Türkçe yazım). Eskiden `%-3.97` çıkıyordu.
  */
 export function formatPct(value: number | string | null | undefined, digits = 2, sign = false): string {
   const n = Number(value);
   if (value == null || value === "" || !Number.isFinite(n)) return "—";
-  const prefix = sign && n > 0 ? "+" : "";
-  return `${prefix}%${n.toFixed(digits)}`;
+  const neg = n < 0 || Object.is(n, -0);
+  const prefix = neg ? "-" : sign && n > 0 ? "+" : "";
+  return `${prefix}%${Math.abs(n).toFixed(digits)}`;
+}
+
+/** Büyük sayıları kısaltır: 1.25B, 340M, 12.4K. Eksik/geçersiz → "—". */
+export function formatCompact(value: number | null | undefined): string {
+  const n = Number(value);
+  if (value == null || !Number.isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return n.toLocaleString("tr-TR", { maximumFractionDigits: 2 });
 }

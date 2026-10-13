@@ -186,9 +186,11 @@ app.include_router(monitoring.router)
 from app.routers import auto_paper as auto_paper_routes
 from app.routers import macd_monitor as macd_monitor_routes
 from app.routers import snapback as snapback_routes
+from app.routers import user_prefs as user_prefs_routes
 app.include_router(auto_paper_routes.router)
 app.include_router(macd_monitor_routes.router)
 app.include_router(snapback_routes.router)
+app.include_router(user_prefs_routes.router)
 
 
 _TTS_VOICE = "tr-TR-EmelNeural"
@@ -1761,6 +1763,48 @@ async def get_market_klines(symbol: str, interval: str = "5m", limit: int = 200)
         logger.debug("canlı mum aboneliği kaydedilemedi: %s", exc)
     return {"symbol": sym, "interval": interval,
             "candles": rows, "source": "binance_tr_public"}
+
+
+@app.get("/api/market-ticker/{symbol}")
+async def get_market_ticker(symbol: str):
+    """Tek sembolün 24 saatlik ticker'ı (son fiyat, değişim %, en düşük/yüksek).
+
+    NEDEN: Sembol arama panelinin "o anki fiyat + 24s istatistik" bloğu için
+    sunucu tarafında tek sembollük 24h veri ucu YOKTU (`ticker_24h()` tüm
+    evreni çeker, `/api/market/top-gainers` yalnız sembol listesi döner).
+    Bu uç, mevcut `binance_tr_public.ticker_24h` (weight:80, 5 sn önbellekli)
+    çağrısını tek sembole indirip arayüzün ihtiyaç duyduğu alanları döndürür.
+    """
+    sym = symbol.replace("_", "").upper()
+    try:
+        rows = await binance_tr_public.ticker_24h([sym])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR ticker alınamadı: {exc}")
+    row = None
+    for item in rows or []:
+        if str(item.get("symbol") or "").upper() == sym:
+            row = item
+            break
+
+    def _f(key):
+        try:
+            return float(row.get(key)) if row and row.get(key) not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    if row is None:
+        return {"symbol": sym, "available": False, "source": "binance_tr_public_24h_ticker"}
+    return {
+        "symbol": sym,
+        "available": True,
+        "last": _f("lastPrice"),
+        "change_pct": _f("priceChangePercent"),
+        "high": _f("highPrice"),
+        "low": _f("lowPrice"),
+        "quote_volume": _f("quoteVolume"),
+        "source": "binance_tr_public_24h_ticker",
+    }
+
 
 @app.get("/api/market-depth/{symbol}")
 async def get_market_depth(symbol: str, limit: int = 20):

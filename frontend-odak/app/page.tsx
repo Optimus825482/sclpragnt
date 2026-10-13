@@ -1,26 +1,25 @@
 "use client";
 
 /**
- * ANA SAYFA — sadeleştirilmiş dashboard.
+ * ANA SAYFA (Anasayfa) — tasarımdaki ekranın gerçek veriyle çalışan sürümü.
  *
- * Tasarımdaki "ODAK AI TRADER" ekranının gerçek veriyle çalışan sürümü.
- * Sadeleştirmeler:
- *   - Tek üst menü (sol sidebar yok → çift navigasyon kaldırıldı),
- *   - Renk hiyerarşisi: vurgu MAVİ; yeşil/kırmızı yalnız K/Z için,
- *   - Bilgi yoğunluğu azaltıldı; sistem durumu tek şeritte,
- *   - Sahte emir formu yerine aday detayı + gerçek işlem bağlantısı.
+ * Düzen: üstte kart şeklinde yan yana Fırsatlar; altında Aktif İşlemler tablosu;
+ * bunların altında Toplam Portföy / Kullanılabilir Bakiye / Bugünkü Kâr-Zarar
+ * yan yana; en sağda sembol aramalı canlı fiyat + alım emri paneli.
+ *
+ * Veri kaynağı: hızlı olan /api/monitoring/state (radar) birincil; boşsa
+ * /api/daily-rising/state. İkisi de `toOpportunityView` ile normalize edilir.
  */
 import { useEffect, useMemo, useState } from "react";
 import { usePoll } from "./lib/hooks";
-import { useLiveMessages } from "./lib/liveSocket";
 import { useAuth } from "./lib/auth";
+import { toOpportunityView } from "./lib/opportunity";
 import type { DailyRisingState, MonitoringState } from "./lib/types";
 import { Badge, Card, SectionHeader, Tabs } from "./components/ui";
-import StatusStrip from "./components/StatusStrip";
 import PortfolioStrip from "./components/PortfolioStrip";
 import OpportunityCard from "./components/OpportunityCard";
-import CandidateDetail from "./components/CandidateDetail";
 import ActiveTradesTable from "./components/ActiveTradesTable";
+import OrderPanel from "./components/OrderPanel";
 
 type Horizon = "all" | "5" | "15";
 
@@ -29,48 +28,36 @@ export default function Home() {
   const [horizon, setHorizon] = useState<Horizon>("all");
   const [selected, setSelected] = useState<string | null>(null);
 
-  const state = usePoll<DailyRisingState>("/api/daily-rising/state", 20_000);
   const monitoring = usePoll<MonitoringState>("/api/monitoring/state", 20_000);
+  const daily = usePoll<DailyRisingState>("/api/daily-rising/state", 60_000, 30_000);
 
-  // Fırsat kaynağı: önce kombine liste (daily-rising), boşsa radar adayları.
-  const opportunities = useMemo(() => {
-    const fromDaily = state.data?.candidates || [];
-    if (fromDaily.length > 0) return fromDaily;
-    return (monitoring.data?.candidates || []) as DailyRisingState["candidates"];
-  }, [state.data, monitoring.data]);
+  const views = useMemo(() => {
+    const monitorRows = monitoring.data?.candidates ?? [];
+    const source = monitorRows.length > 0 ? monitorRows : daily.data?.candidates ?? [];
+    return source.map((row) => toOpportunityView(row as Record<string, unknown>));
+  }, [monitoring.data, daily.data]);
 
   const filtered = useMemo(() => {
-    if (horizon === "all") return opportunities;
+    if (horizon === "all") return views;
     const want = Number(horizon);
-    return opportunities.filter((o) => {
-      const h = (o as { horizon_minutes?: number }).horizon_minutes;
-      return h == null ? horizon === "5" : h === want;
-    });
-  }, [opportunities, horizon]);
+    return views.filter((v) => (v.horizonMinutes == null ? horizon === "5" : v.horizonMinutes === want));
+  }, [views, horizon]);
 
-  // Seçili sembol; liste değişince ilk aday seçilir.
-  const selectedItem = useMemo(
+  const selectedView = useMemo(
     () => filtered.find((o) => o.symbol === selected) || filtered[0] || null,
     [filtered, selected],
   );
-
-  // Canlı mesajlarda tazeleme tetikle (sinyal/pozisyon/otonom değişimleri).
-  useLiveMessages((msg) => {
-    if (["signal", "trade_updated", "portfolio_reconciled", "auto_paper_trade", "reset"].includes(msg.type)) {
-      state.reload();
-      monitoring.reload();
-    }
-  });
 
   useEffect(() => {
     if (selected && !filtered.some((o) => o.symbol === selected)) setSelected(null);
   }, [filtered, selected]);
 
-  const hasError = state.error && monitoring.error;
+  const loadingFirst = monitoring.loading && !monitoring.data;
+  const allFailed = Boolean(monitoring.error) && Boolean(daily.error) && views.length === 0;
+  const sourceLabel = (monitoring.data?.candidates?.length ?? 0) > 0 ? "radar taraması" : "günlük liste";
 
   return (
     <div className="space-y-5">
-      {/* Karşılama */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="odak-kicker">Canlı dashboard</p>
@@ -79,25 +66,21 @@ export default function Home() {
           </h1>
         </div>
         <p className="text-xs text-ink-400">
-          Kaynak: {state.data?.source === "last_sent" ? "son gönderilen liste" : "canlı tarama"} ·{" "}
-          {state.data?.candidates?.length ?? 0} aday
+          Kaynak: {sourceLabel} · {views.length} aday
         </p>
       </div>
 
-      <StatusStrip />
-      <PortfolioStrip />
-
-      {hasError && (
-        <div className="odak-card border-warn/30 bg-warn-soft p-3 text-sm text-warn">
-          Bazı veriler alınamadı — {state.error || monitoring.error}. Veri geldiğinde otomatik güncellenecek.
+      {allFailed && (
+        <div className="odak-card border-loss/30 bg-loss-soft/50 p-3 text-sm text-loss">
+          Fırsat verisi alınamadı — {monitoring.error || daily.error}. Backend çalışıyor mu?
         </div>
       )}
 
-      {/* Fırsatlar + detay */}
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+      {/* ÜST: Fırsat kartları (yan yana) + SAĞ: işlem paneli */}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_330px]">
         <Card className="p-5">
           <SectionHeader
-            eyebrow="AI Fırsatları"
+            eyebrow="Fırsatlar"
             title={
               <span className="inline-flex items-center gap-2">
                 En yüksek potansiyelli adaylar
@@ -119,10 +102,10 @@ export default function Home() {
             }
           />
 
-          {state.loading && !state.data ? (
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              {[0, 1, 2, 3].map((i) => (
-                <div key={i} className="odak-card h-40 animate-pulse bg-canvas" />
+          {loadingFirst ? (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {[0, 1, 2, 3, 4, 5].map((i) => (
+                <div key={i} className="h-52 animate-pulse rounded-xl bg-canvas" />
               ))}
             </div>
           ) : filtered.length === 0 ? (
@@ -130,13 +113,13 @@ export default function Home() {
               Şu anda uygun aday yok. Tarama arka planda devam ediyor.
             </p>
           ) : (
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              {filtered.slice(0, 8).map((item, index) => (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {filtered.slice(0, 6).map((item, index) => (
                 <OpportunityCard
                   key={item.symbol}
                   rank={index + 1}
                   item={item}
-                  selected={selectedItem?.symbol === item.symbol}
+                  selected={selectedView?.symbol === item.symbol}
                   onSelect={() => setSelected(item.symbol)}
                 />
               ))}
@@ -145,17 +128,20 @@ export default function Home() {
         </Card>
 
         <div className="lg:sticky lg:top-20 lg:self-start">
-          <CandidateDetail item={selectedItem} />
+          <OrderPanel initialSymbol={selectedView?.symbol ?? null} />
         </div>
       </div>
 
-      {/* Aktif işlemler */}
+      {/* ORTA: Aktif işlemler tablosu */}
       <Card className="p-5">
-        <SectionHeader eyebrow="Aktif İşlemler" title="Açık pozisyonlar" description="Net K/Z (gidiş-dönüş komisyonu düşülmüş)." />
+        <SectionHeader eyebrow="Aktif İşlemlerim" title="Açık pozisyonlar" description="Net K/Z (gidiş-dönüş komisyonu düşülmüş)." />
         <div className="mt-4">
-          <ActiveTradesTable limit={6} />
+          <ActiveTradesTable limit={8} />
         </div>
       </Card>
+
+      {/* ALT: Portföy özeti (yan yana) */}
+      <PortfolioStrip />
     </div>
   );
 }

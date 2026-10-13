@@ -8,8 +8,8 @@ const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "600", "700"], 
 const jetbrains = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-mono", display: "swap" });
 
 export const metadata: Metadata = {
-  title: "ODAK AI Trader — Sade Panel",
-  description: "Scalper Agent V4 için sadeleştirilmiş açık tema panel (paper data)",
+  title: "Scalper Intelligent Trade Systems",
+  description: "Scalper Agent V4 — sade panel (paper veri)",
   icons: { icon: "/icon.svg" },
 };
 
@@ -25,7 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={`${inter.variable} ${jetbrains.variable} font-sans`}>
         <AuthGate>
           <TopNav />
-          <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6">{children}</main>
+          <main className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6">{children}</main>
         </AuthGate>
       </body>
     </html>

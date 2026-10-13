@@ -937,6 +937,59 @@ async def _send_push(notif: dict) -> bool:
         return False
 
 
+def _notif_whatsapp_text(notif: dict) -> str:
+    """Bildirim zarfından kullanıcıya gidecek kısa WhatsApp mesajı üret."""
+    sym = str(notif.get("symbol") or "")
+    title = str(notif.get("title") or "Yeni fırsat")
+    message = str(notif.get("message") or "")
+    score = notif.get("score")
+    target = notif.get("target_pct")
+    bits = [f"📣 {title}"]
+    if sym:
+        bits.append(f"Sembol: {sym}")
+    if score is not None:
+        try:
+            bits.append(f"Skor: {float(score):.0f}")
+        except (TypeError, ValueError):
+            pass
+    if target is not None:
+        try:
+            bits.append(f"Hedef: +%{float(target):.1f}")
+        except (TypeError, ValueError):
+            pass
+    if message:
+        bits.append(message)
+    bits.append("— Scalper Intelligent Trade Systems")
+    return "\n".join(bits)
+
+
+async def _broadcast_user_whatsapp(notif: dict) -> None:
+    """WhatsApp bildirimi AÇIK olan her kullanıcıya bildirimi gönder.
+
+    Kullanıcı tercihleri `user_prefs` router'ında saklanır; her kullanıcı kendi
+    numarasını girer. Hata fırlatmaz (bildirim akışını asla bozmaz).
+    """
+    try:
+        from app.routers import user_prefs
+        if not user_prefs.whatsapp_notify.whatsapp_enabled():
+            return
+        users = await database.list_users()
+        text = _notif_whatsapp_text(notif)
+        for u in users:
+            name = str(u.get("username") or "").strip()
+            if not name:
+                continue
+            prefs = await user_prefs.get_prefs_for(name)
+            if not prefs.get("whatsapp_enabled"):
+                continue
+            number = user_prefs.normalize_phone(prefs.get("phone", ""))
+            if not number:
+                continue
+            await user_prefs.whatsapp_notify.send_whatsapp_to_number(text, number)
+    except Exception as exc:
+        logger.debug("kullanıcı WhatsApp fan-out atlandı: %s", exc)
+
+
 async def _flush_deferred_push():
     """Sessiz saat bittiyse ertelenen push kuyruğunu boşalt (M1/P1 — R2-07/R4-12).
 
@@ -1825,6 +1878,16 @@ async def _deliver_scan_notifications(notified: list) -> None:
         logger.info("Monitoring: sessiz saatlerde %d bildirim push kuyruğuna alındı", len(new_notifs))
         for notif in new_notifs:
             _deferred_push.append(notif)
+    # KULLANICI WHATSAPP BİLDİRİMİ: WhatsApp'ı AÇAN her kullanıcıya (kendi
+    # numarasına) bu bildirim mesaj olarak gönderilir. Push tesliminden BAĞIMSIZ:
+    # kullanıcı push aboneliği olmasa da WhatsApp isteyebilir. Sessiz saatte
+    # gönderilmez (kullanıcı tercihine saygı). Hata bildirim akışını bozmaz.
+    if new_notifs and not quiet:
+        try:
+            for notif in new_notifs:
+                await _broadcast_user_whatsapp(notif)
+        except Exception as exc:
+            logger.debug("kullanıcı WhatsApp yayını atlandı: %s", exc)
     # Otonom Paper Trade: Panel uyarısı veya Push ile gelen her geçerli fırsatta pozisyon aç!
     # (2026-09-22 Erkan Kararı: Panel uyarısında da açık işlem yoksa açılır; sent_via_push zorunluluğu yok).
     try:

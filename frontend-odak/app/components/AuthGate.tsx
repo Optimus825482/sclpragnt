@@ -18,11 +18,26 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     const response = await apiRequest(`${API_BASE}/api/auth/status`, { cache: "no-store" });
+    // 5xx neredeyse her zaman "proxy hedefi (backend) erişilemez" demektir —
+    // Next rewrite, backend kapalıyken 502/500 döndürür. Bunu ağ hatası sayıp
+    // YENİDEN DENE akışına alıyoruz (yalnız TypeError değil).
+    if (response.status >= 500) {
+      throw new Error(
+        "Backend'e ulaşılamadı (proxy " + response.status + "). Backend çalışıyor mu? (port 8004)",
+      );
+    }
     if (!response.ok) throw new Error(`Kimlik durumu alınamadı (${response.status})`);
     const next = (await response.json()) as AuthStatus;
     setStatus(next);
     return next;
   }, []);
+
+  // Ağ hatası (TypeError) VEYA proxy 5xx → yeniden denenebilir durum.
+  const markRetryable = (reason: unknown) => {
+    const message = reason instanceof Error ? reason.message : "Backend bağlantısı kurulamadı";
+    setNetworkError(reason instanceof TypeError || /ulaşılamadı|proxy \d{3}/.test(message));
+    setError(message);
+  };
 
   useEffect(() => {
     const expired = () => {
@@ -30,11 +45,9 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setError("Oturum süresi doldu. Yeniden giriş yapın.");
     };
     window.addEventListener("odak:auth-expired", expired);
-    refresh().catch((reason) => {
-      setNetworkError(reason instanceof TypeError);
-      setError(reason instanceof Error ? reason.message : "Backend bağlantısı kurulamadı");
-    });
+    refresh().catch(markRetryable);
     return () => window.removeEventListener("odak:auth-expired", expired);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh]);
 
   const login = async (event: FormEvent) => {
@@ -83,9 +96,9 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     return (
       <main className="grid min-h-screen place-items-center bg-canvas p-5">
         <section className="odak-card w-full max-w-md p-7">
-          <span className="grid h-10 w-10 place-items-center rounded-xl bg-accent text-base font-bold text-white">O</span>
-          <h1 className="mt-4 text-xl font-semibold text-ink-900">ODAK AI Trader</h1>
-          <p className="mt-1 text-sm text-ink-500">Scalper Agent V4 · paper data paneli</p>
+          <span className="grid h-10 w-10 place-items-center rounded-xl bg-accent text-base font-bold text-white">S</span>
+          <h1 className="mt-4 text-xl font-semibold text-ink-900">Scalper Intelligent Trade Systems</h1>
+          <p className="mt-1 text-sm text-ink-500">Scalper Agent V4 · paper veri paneli</p>
 
           {!status && !error && <p className="mt-5 text-sm text-ink-400">Oturum doğrulanıyor…</p>}
 
@@ -126,11 +139,26 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             </form>
           )}
 
-          {error && <p role="alert" className="mt-4 text-sm text-loss">{error}</p>}
+          {error && (
+            <p role="alert" className="mt-4 text-sm text-loss">
+              {error}
+            </p>
+          )}
           {networkError && (
-            <Button className="mt-2 w-full" onClick={() => { setError(""); refresh().catch((r) => setError(r instanceof Error ? r.message : "Bağlantı hatası")); }}>
-              Yeniden dene
-            </Button>
+            <div className="mt-3 rounded-lg border border-warn/30 bg-warn-soft p-3 text-xs text-warn">
+              Panel açık ama arka uç servisine ulaşılamıyor. Backend'i başlatın (port 8004) ve
+              yeniden deneyin.
+              <Button
+                className="mt-2 w-full"
+                onClick={() => {
+                  setError("");
+                  setNetworkError(false);
+                  refresh().catch(markRetryable);
+                }}
+              >
+                Yeniden dene
+              </Button>
+            </div>
           )}
         </section>
       </main>
