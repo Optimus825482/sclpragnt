@@ -5506,6 +5506,7 @@ async def report_notifications(
     channel: str = "all",
     source: str = "all",
     include_archived: bool = False,
+    history_only: bool = False,
 ):
     """Radar bildirim raporu - gercek kapanis M1 olcmeye dayali basari.
     day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
@@ -5515,6 +5516,8 @@ async def report_notifications(
     source: 'all', 'velocity', 'jump', 'early', 'rising'.
     include_archived: True ise RAPOR BAŞLANGICI öncesi bildirimler de listelenir
     ("arşivi göster"). Varsayılan False → yalnız deploy sonrası sinyaller.
+    history_only: UI tarama geçmişi için tüm dönem başarı istatistiğini ve paper
+    trade eşlemesini atlar; adayların MFE/sonuç alanları yine listelenir.
     """
     limit = max(1, min(int(limit), 1000))
     if day == "all":
@@ -5572,22 +5575,23 @@ async def report_notifications(
     # Otonom paper trade eşleştirmesi için son işlemleri çek
     trades_by_nid = {}
     trades_by_sym = {}
-    try:
-        def _fetch_trades_op(conn):
-            trades = conn.execute(
-                "SELECT id, symbol, notification_id, status, pnl, pnl_pct, exit_reason, entry_time, exit_time FROM auto_paper_trades ORDER BY entry_time DESC LIMIT 1000"
-            ).fetchall()
-            return [dict(t) for t in trades]
-        t_rows = await database._run_db(_fetch_trades_op)
-        for td in t_rows:
-            nid = td.get("notification_id")
-            if nid and nid not in trades_by_nid:
-                trades_by_nid[nid] = td
-            sym = td.get("symbol")
-            if sym:
-                trades_by_sym.setdefault(sym, []).append(td)
-    except Exception as exc:
-        logger.debug("auto_paper_trades eslesmesi yuklenemedi: %s", exc)
+    if not history_only:
+        try:
+            def _fetch_trades_op(conn):
+                trades = conn.execute(
+                    "SELECT id, symbol, notification_id, status, pnl, pnl_pct, exit_reason, entry_time, exit_time FROM auto_paper_trades ORDER BY entry_time DESC LIMIT 1000"
+                ).fetchall()
+                return [dict(t) for t in trades]
+            t_rows = await database._run_db(_fetch_trades_op)
+            for td in t_rows:
+                nid = td.get("notification_id")
+                if nid and nid not in trades_by_nid:
+                    trades_by_nid[nid] = td
+                sym = td.get("symbol")
+                if sym:
+                    trades_by_sym.setdefault(sym, []).append(td)
+        except Exception as exc:
+            logger.debug("auto_paper_trades eslesmesi yuklenemedi: %s", exc)
 
     result = []
     for row in rows:
@@ -5773,11 +5777,14 @@ async def report_notifications(
         "success_rate": (multi_success / multi_evaluated * 100) if multi_evaluated else None,
     }
 
-    # Seçilen gün / dönem genel başarı dökümü (day=all ise tüm zamanlar)
-    # slim=True: agregasyon message/title kullanmaz → kolon transferini atla.
-    all_rows = await database.get_monitoring_velocity_matches(
-        limit=None, day=effective_day, slim=True,
-        ignore_reports_baseline=include_archived)
+    # Seçilen gün / dönem genel başarı dökümü (day=all ise tüm zamanlar).
+    # History UI bu özetleri kullanmıyor; day=all isteğinde sınırsız geçmişi
+    # tekrar eşleştirmek 12sn timeout'a neden olabiliyordu.
+    all_rows = []
+    if not history_only:
+        all_rows = await database.get_monitoring_velocity_matches(
+            limit=None, day=effective_day, slim=True,
+            ignore_reports_baseline=include_archived)
     all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
     if req_conf > 1:
         all_rows = [r for r in all_rows if len(_parse_sources(r.get("sources"))) >= req_conf]

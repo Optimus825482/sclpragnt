@@ -33,7 +33,7 @@ export default function FirsatlarPage() {
   const [manualMessage, setManualMessage] = useState<string | null>(null);
   const [seenCandidates, setSeenCandidates] = useState<Record<string, Record<string, unknown>>>({});
   const monitoring = usePoll<MonitoringState>("/api/monitoring/state", 20_000);
-  const pendingSignals = usePoll<NotificationsResponse>(tab === "live" ? "/api/reports/notifications?day=all&limit=400" : null, tab === "live" ? 60_000 : null);
+  const pendingSignals = usePoll<NotificationsResponse>(tab === "live" ? "/api/reports/notifications?day=all&limit=400&history_only=true" : null, tab === "live" ? 60_000 : null);
 
   useEffect(() => {
     const current = monitoring.data;
@@ -236,7 +236,7 @@ function LiveFeed({
 function HistoryTable() {
   const [page, setPage] = useState(0);
   // Geniş çekim (400 kayıt); istemcide sayfalanır.
-  const { data, error, loading } = usePoll<NotificationsResponse>("/api/reports/notifications?day=all&limit=400", 60_000);
+  const { data, error, loading } = usePoll<NotificationsResponse>("/api/reports/notifications?day=all&limit=400&history_only=true", 60_000);
 
   const items = data?.notifications || [];
   const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
