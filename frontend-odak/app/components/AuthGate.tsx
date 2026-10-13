@@ -98,7 +98,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         <section className="odak-card w-full max-w-md p-7">
           <span className="grid h-10 w-10 place-items-center rounded-xl bg-accent text-base font-bold text-white">S</span>
           <h1 className="mt-4 text-xl font-semibold text-ink-900">Scalper Intelligent Trade Systems</h1>
-          <p className="mt-1 text-sm text-ink-500">Scalper Agent V4 · paper veri paneli</p>
+          <p className="mt-1 text-sm text-ink-500">PANEL</p>
 
           {!status && !error && <p className="mt-5 text-sm text-ink-400">Oturum doğrulanıyor…</p>}
 

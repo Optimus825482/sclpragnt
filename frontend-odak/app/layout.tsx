@@ -9,7 +9,7 @@ const jetbrains = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500", "6
 
 export const metadata: Metadata = {
   title: "Scalper Intelligent Trade Systems",
-  description: "Scalper Agent V4 — sade panel (paper veri)",
+  description: "Scalper Intelligent Trade Systems — PANEL",
   icons: { icon: "/icon.svg" },
 };
 
