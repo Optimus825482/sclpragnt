@@ -1,72 +1,27 @@
-# Odak UI — sadeleştirilmiş açık tema panel
+# Scalper Intelligent Trade Systems — arayüz
 
-Scalper Agent V4 (mevcut `frontend/`) için **alternatif, sadeleştirilmiş arayüz**.
-Tasarım isteğinden yola çıkarak (`tasarım 1.png` → "ODAK AI TRADER") inşa edildi;
-GERÇEK backend uçlarına bağlıdır, sahte/statik veri içermez.
+Scalper Agent V4 için gerçek backend verilerine bağlı açık tema Next.js arayüzü. Ana ekran referans görselindeki üst menü, sol menü, yatay fırsat kartları, aktif hesap varlıkları, portföy özeti ve sağ Binance TR paneli düzenini izler.
 
-## Neden ayrı bir dizin/uygulama
+## Sayfalar ve veri
 
-Mevcut `frontend/` koyu temalı (bunker + neon yeşil) ve tek kabuk (Sidebar + TopBar)
-üzerine kurulu. Bu tasarım ise **açık tema + mavi vurgu + tek üst menü** istiyor.
-Var olan 30+ sayfayı ve koyu tema sözleşmesini bozmadan denemek için ayrı bir Next.js
-uygulaması olarak kuruldu. İkisi aynı backend'e bağlanır ve **yan yana** çalışabilir.
+- `/` — birleşik radar fırsatları (`/api/monitoring/state`, boşsa `/api/daily-rising/state`), sinyal kaynak etiketleri, Binance TR varlık tablosu, portföy özeti ve gerçek market emir paneli.
+- `/firsatlar` — anlık aday/ısınan/nabız kayıtları ve sayfalı tarama bildirimi geçmişi; her adayda üreten sistem etiketleri.
+- `/gecmis-islemler` — tarih seçilebilir Binance TR gerçekleşen spot dolumları; komisyon ve günlük gerçekleşen net K/Z.
+- `/ayarlar` — profil, uygulama/ses/WhatsApp bildirimleri ve kullanıcı bazlı Binance TR anahtar yönetimi.
 
-## Sadeleştirme kararları (tasarım incelemesinden)
+Fırsat görünümü master monitoring/radar yanıtındaki konsolide adayları ve kaynaklarını kullanır; tarama POST ile tetiklenmez. Böylece ekran yenilemeleri strateji tarama veya paper otomasyon yan etkisi üretmez.
 
-Görsel, iki vision modeliyle çapraz doğrulandı; **üç ortak sorun** vardı ve burada
-bilinçli olarak düzeltildi:
+Binance API key/secret ayar ekranından kaydedilir ve backend tarafından şifreli saklanır. Emir paneli Binance TR gerçek market alış/satış endpoint'lerini çağırır. Emir gönderimi için kullanıcı hesabı bağlı olmalı ve sunucu tarafındaki gerçek işlem kapısı açık olmalıdır. Portföy/aktif varlık verisi hesap bağlanmadan gösterilmez. Bu panel yalnızca MARKET emirlerini etkinleştirir; Limit ve Stop-Limit görselde devre dışı bırakılmıştır.
 
-| Tespit | Bu arayüzde çözüm |
-|---|---|
-| **Çift navigasyon** (üst menü + sol sidebar aynı linkleri tekrarlıyor) | Sol sidebar YOK; navigasyon yalnızca tek üst menüde (`TopNav.tsx`). |
-| **Renk/hiyerarşi gürültüsü** (her blokta doygun yeşil, maviyle çakışıyor) | Vurgu rengi MAVİ (`#0066ff`). Yeşil/kırmızı YALNIZCA K/Z verisi için. |
-| **Aşırı yoğunluk** (tek ekranda 6+ bölge) | Sistem durumu tek şeride indi (`StatusStrip`); kart/tablo/detay üç net bölge. |
-
-Ek sapma: tasarımdaki **sahte AL/SAT emir formu konmadı** — sistem paper-only'dir.
-Yerine seçili adayın gerçek alanlarını gösteren bir detay paneli (`CandidateDetail`)
-ve gerçek işlem için mevcut panelin Binance TR sayfasına bağlantı eklendi.
-
-## Entegrasyon modeli (CORS'suz)
-
-Tarayıcı `/api/...` isteklerini **bu uygulamanın kendi origin'ine** yapar; Next.js
-sunucusu bunları `BACKEND_ORIGIN`'e proxy'ler (`next.config.js` → `rewrites`). Böylece:
-
-- **CORS yapılandırması gerekmez** (proxy sunucu-sunucu; tarayıcı çapraz köken görmez),
-- oturum cookie'si (`scalper_session`, aynı-origin) bu origin'de saklanır ve çalışır.
-
-Not: cookie same-origin olduğu için backend'in CORS origin listesine bu portu eklemek
-GEREKMEZ. Yalnızca backend ayakta olmalıdır.
+Bildirim tercihleri `/api/user/preferences` üzerinden saklanır; WhatsApp tercihi açık olduğunda telefon numarası istenir ve sunucudaki WhatsApp Bridge ayarına göre gönderim yapılır.
 
 ## Çalıştırma
 
 ```bash
 cd frontend-odak
 npm install
-# Backend varsayılan http://127.0.0.1:8004 (docker-compose). Farklıysa:
-#   BACKEND_ORIGIN=http://host:8004 npm run dev
+# BACKEND_ORIGIN varsayılanı: http://127.0.0.1:8004
 npm run dev      # http://localhost:3055
 ```
 
-Üretim: `npm run build && npm start` (port 3055). Docker imajı: `Dockerfile`.
-
-## Kapsam (bu sürüm)
-
-Sayfalar:
-- `/` — **Fırsatlar**: aday kartları (gerçek `/api/daily-rising/state`), seçili aday
-  detayı, portföy şeridi, açık pozisyon tablosu,
-- `/positions` — açık pozisyonlar + risk özeti (`/api/positions`, `/api/risk/summary`),
-- `/strategies` — promosyon hattı (`/api/strategy/pipeline`).
-
-Veri kaynakları (hepsi gerçek, mevcut backend):
-`/api/daily-rising/state`, `/api/monitoring/state`, `/api/dashboard/summary`,
-`/api/portfolio/summary`, `/api/positions`, `/api/risk/summary`, `/api/strategy/pipeline`,
-`/api/system/health` ve `WS /ws` (canlı tazeleme).
-
-**Bilinçli kapsam dışı:** push bildirimleri, PWA/service-worker, uyarı modalları,
-grafik sayfaları, admin/veritabanı, LLM/chat, Binance TR emir formu (mevcut panelde).
-Bunlar gerekirse aynı kalıplarla eklenebilir.
-
-## Doğrulama
-
-- `npm run typecheck` → temiz
-- `npm run build` → temiz (bkz. commit mesajı)
+Üretim: `npm run build && npm start`. Next.js `/api/*` isteklerini sunucu tarafından `BACKEND_ORIGIN` adresine proxy'ler; tarayıcı ve oturum aynı origin'i kullanır.

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "./ui";
 import { apiFetch } from "../lib/api";
 import { toMs } from "../lib/format";
-import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
+import { useLiveMessages } from "../lib/liveSocket";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import SymbolLink from "./SymbolLink";
 import { useAuth } from "../lib/auth";
@@ -44,9 +44,7 @@ export default function Sidebar() {
     const [notifications, setNotifications] = useState<any[]>([]);
     const [unread, setUnread] = useState(0);
     const [notificationsOpen, setNotificationsOpen] = useState(false);
-    const [health, setHealth] = useState<any>(null);
     const [macroRegime, setMacroRegime] = useState<any>(null);
-    const liveStatus = useLiveStatus();
     const onLiveMessage = useCallback((message: any) => {
         if (message.type !== "alert") return;
         const item = { ...(message.data || {}), id: message.data?.id || `${Date.now()}`, triggered_at: message.data?.triggered_at || Date.now() / 1000 };
@@ -103,12 +101,6 @@ export default function Sidebar() {
             .catch(() => undefined);
         load();
     }, []);
-    const loadHealth = useCallback(() => {
-        apiFetch("/api/system/health").then(setHealth).catch(() => setHealth(null));
-    }, []);
-    useEffect(() => { loadHealth(); }, [loadHealth]);
-    useVisibleInterval(loadHealth, 10_000);
-
     const loadMacroRegime = useCallback(() => {
         apiFetch("/api/signals/macro-regime").then(setMacroRegime).catch(() => setMacroRegime(null));
     }, []);
@@ -232,29 +224,14 @@ export default function Sidebar() {
                         </p>
                     </div>
                 )}
-                <Link
-                    href="/system-health"
+                <a
+                    href="/yeni-arayuz/"
                     onClick={() => setOpen(false)}
-                    className={`group block rounded-lg border p-2.5 transition-all ${
-                        pathname === "/system-health"
-                            ? "border-neon-green/50 bg-neon-green/10"
-                            : "border-bunker-800 bg-bunker-950/60 hover:border-bunker-700 hover:bg-bunker-900/80"
-                    }`}
-                    title="Detaylı sistem sağlığını görüntüle"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-neon-green/40 bg-neon-green/10 px-3 py-3 font-mono text-xs font-bold tracking-wide text-neon-green transition-colors hover:border-neon-green hover:bg-neon-green/20"
+                    title="Scalper Intelligent Trade Systems arayüzünü aç"
                 >
-                    <div className="flex items-center justify-between">
-                        <p className="eyebrow group-hover:text-white transition-colors">SİSTEM SAĞLIĞI</p>
-                        <span className="font-mono text-[10px] text-bunker-muted group-hover:text-neon-green transition-colors">Detay →</span>
-                    </div>
-                    <p className={`font-mono text-xs mt-1 flex items-center gap-1.5 ${health?.status === "ok" && liveStatus === "open" ? "text-neon-green" : "text-yellow-300"}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${health?.status === "ok" && liveStatus === "open" ? "bg-neon-green animate-pulse" : "bg-yellow-300"}`} />
-                        {health ? `${String(health.status || "bilinmiyor").toUpperCase()} · WS ${liveStatus === "open" ? "BAĞLI" : "KAPALI"}` : "BAĞLANTI BEKLENİYOR"}
-                    </p>
-                    <p className="font-mono text-[10px] text-bunker-muted mt-0.5">Canlı servis & altyapı durumu</p>
-                </Link>
-                <p className="mt-2 font-mono text-[9px] text-bunker-muted/60" title="Build ID — eğer güncelleme sonrası bu değişmişse yeni sürüm yüklenmiştir">
-                  ● v{typeof window !== "undefined" ? (document.documentElement.dataset.buildId || process.env.NEXT_PUBLIC_BUILD_ID || "dev") : (process.env.NEXT_PUBLIC_BUILD_ID || "dev")}
-                </p>
+                    ✨ YENİ ARAYÜZÜ AÇ
+                </a>
             </div>
         </aside>
         {notificationsOpen && <div className="fixed inset-0 z-[100] grid place-items-center bg-black/75 p-4" onClick={() => setNotificationsOpen(false)}>

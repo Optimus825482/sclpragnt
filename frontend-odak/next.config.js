@@ -16,6 +16,9 @@ const BACKEND_ORIGIN = process.env.BACKEND_ORIGIN || "http://127.0.0.1:8004";
 const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
+  // Üretimde aynı host altında oturum cookie'sini paylaşarak sunulur.
+  // Değer build-time'da gömülür; yerel geliştirmede kök yol varsayılanı korunur.
+  basePath: process.env.NEXT_BASE_PATH || "",
   async rewrites() {
     // `/api/*` → backend. `:path*` yakalama; sorgu dizesi korunur.
     return [{ source: "/api/:path*", destination: `${BACKEND_ORIGIN}/api/:path*` }];

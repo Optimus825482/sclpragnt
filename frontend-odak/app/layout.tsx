@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import AuthGate from "./components/AuthGate";
 import TopNav from "./components/TopNav";
+import SideNav from "./components/SideNav";
 
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "600", "700"], variable: "--font-sans", display: "swap" });
 const jetbrains = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-mono", display: "swap" });
@@ -10,7 +11,7 @@ const jetbrains = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500", "6
 export const metadata: Metadata = {
   title: "Scalper Intelligent Trade Systems",
   description: "Scalper Intelligent Trade Systems — PANEL",
-  icons: { icon: "/icon.svg" },
+  icons: { icon: `${process.env.NEXT_BASE_PATH || ""}/icon.svg` },
 };
 
 export const viewport = {
@@ -25,7 +26,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={`${inter.variable} ${jetbrains.variable} font-sans`}>
         <AuthGate>
           <TopNav />
-          <main className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6">{children}</main>
+          <div className="mx-auto flex max-w-[1800px] items-start">
+            <SideNav />
+            <main className="min-w-0 flex-1 px-4 py-6 sm:px-6">{children}</main>
+          </div>
         </AuthGate>
       </body>
     </html>

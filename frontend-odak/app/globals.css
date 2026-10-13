@@ -61,6 +61,33 @@ select:focus-visible {
 }
 .odak-live-dot { animation: odak-pulse 1.6s ease-in-out infinite; }
 
+.odak-sidebar {
+  position: sticky;
+  top: 4rem;
+  width: 224px;
+  min-height: calc(100vh - 4rem);
+  flex: 0 0 224px;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 1.25rem 0.85rem 1.5rem;
+  border-right: 1px solid theme(colors.line);
+  background: rgba(255,255,255,.74);
+}
+.odak-side-link {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  border-radius: .65rem;
+  padding: .72rem .8rem;
+  color: theme(colors.ink.700);
+  font-size: .9rem;
+  transition: background .15s ease, color .15s ease;
+}
+.odak-side-link:hover { background: theme(colors.canvas); color: theme(colors.ink.900); }
+.odak-side-link-active { background: theme(colors.accent.DEFAULT); color: #fff; box-shadow: 0 5px 16px rgba(0,102,255,.22); }
+.odak-side-link-active:hover { background: theme(colors.accent.hover); color: #fff; }
+.odak-system-status { border: 1px solid theme(colors.line); border-radius: .9rem; background: #fff; padding: .9rem; }
+
 @media (prefers-reduced-motion: reduce) {
   .odak-live-dot { animation: none; }
 }

@@ -5,6 +5,14 @@ import { formatPct, formatTL } from "../lib/format";
 import type { BinancePositions, BinanceSettings, DashboardSummary, PortfolioSummary } from "../lib/types";
 import { Skeleton, Stat } from "./ui";
 
+type BinanceDayTrades = { daily?: { realized_pnl_try?: number | null } };
+
+function istanbulDate() {
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Istanbul", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const get = (type: string) => parts.find((part) => part.type === type)?.value || "00";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
 /**
  * Portföy şeridi — Toplam Portföy / Günlük Kâr-Zarar / Kullanılabilir Bakiye.
  *
@@ -19,6 +27,7 @@ export default function PortfolioStrip() {
   const summary = usePoll<DashboardSummary>(configured ? "/api/dashboard/summary" : null, 15_000);
   const portfolio = usePoll<PortfolioSummary>(configured ? "/api/portfolio/summary" : null, 15_000);
   const realPositions = usePoll<BinancePositions>(configured ? "/api/binance/positions" : null, 30_000);
+  const today = usePoll<BinanceDayTrades>(configured ? `/api/binance/trades-day?date=${istanbulDate()}` : null, 120_000, 30_000);
 
   if (!configured) {
     return (
@@ -34,9 +43,11 @@ export default function PortfolioStrip() {
     return b ? Number(b.free) : null;
   })();
   const totalValue = realPositions.data?.total_value_try ?? null;
-  const dailyPnl = summary.data?.auto_paper_today.pnl ?? null;
-  const dailyPct = summary.data?.portfolio?.total_value
-    ? (Number(dailyPnl) / Number(summary.data.portfolio.total_value)) * 100
+  const realizedToday = today.data?.daily?.realized_pnl_try;
+  const openPnl = realPositions.data?.holdings?.reduce((sum, h) => sum + Number(h.pnl_try || 0), 0);
+  const dailyPnl = realizedToday == null || openPnl == null ? null : Number(realizedToday) + openPnl;
+  const dailyPct = totalValue && dailyPnl != null
+    ? (Number(dailyPnl) / Number(totalValue)) * 100
     : null;
 
   return (
@@ -47,10 +58,10 @@ export default function PortfolioStrip() {
         detail={`${summary.data?.portfolio?.open_positions ?? 0} açık işlem`}
       />
       <Stat
-        label="Günlük Kâr/Zarar"
+        label="Bugün + Açık K/Z"
         value={dailyPnl == null ? "—" : `${dailyPnl >= 0 ? "+" : ""}${formatTL(dailyPnl)}`}
         tone={dailyPnl == null ? "neutral" : dailyPnl > 0 ? "gain" : dailyPnl < 0 ? "loss" : "neutral"}
-        detail={dailyPct == null ? "otonom işlemler" : `${formatPct(dailyPct, 2, true)} · otonom`}
+        detail={dailyPct == null ? "günlük gerçekleşen + açık varlıklar yükleniyor" : `${formatPct(dailyPct, 2, true)} · gerçekleşen + açık K/Z`}
       />
       <Stat
         label="Kullanılabilir Bakiye"

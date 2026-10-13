@@ -11,6 +11,7 @@
  * /api/daily-rising/state. İkisi de `toOpportunityView` ile normalize edilir.
  */
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { usePoll } from "./lib/hooks";
 import { useAuth } from "./lib/auth";
 import { toOpportunityView } from "./lib/opportunity";
@@ -103,7 +104,7 @@ export default function Home() {
           />
 
           {loadingFirst ? (
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {[0, 1, 2, 3, 4, 5].map((i) => (
                 <div key={i} className="h-52 animate-pulse rounded-xl bg-canvas" />
               ))}
@@ -113,7 +114,7 @@ export default function Home() {
               Şu anda uygun aday yok. Tarama arka planda devam ediyor.
             </p>
           ) : (
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {filtered.slice(0, 6).map((item, index) => (
                 <OpportunityCard
                   key={item.symbol}
@@ -133,10 +134,12 @@ export default function Home() {
       </div>
 
       {/* ORTA: Aktif işlemler tablosu */}
-      <Card className="p-5">
-        <SectionHeader eyebrow="Aktif İşlemlerim" title="Açık pozisyonlar" description="Net K/Z (gidiş-dönüş komisyonu düşülmüş)." />
+      <Card className="p-5" >
+        <div id="aktif-islemler" className="scroll-mt-24">
+        <SectionHeader eyebrow="Aktif İşlemlerim" title="Açık pozisyonlar" description="Güncel fiyat ve net K/Z (gidiş-dönüş komisyonu düşülmüş)." actions={<Link href="/gecmis-islemler" className="rounded-lg border border-line px-3 py-2 text-sm font-medium text-accent hover:bg-accent-soft">Tümünü Gör</Link>} />
         <div className="mt-4">
           <ActiveTradesTable limit={8} />
+        </div>
         </div>
       </Card>
 
