@@ -5,6 +5,7 @@ import Link from "next/link";
 import { formatPct, formatPrice } from "../lib/format";
 import type { OpportunityView } from "../lib/opportunity";
 import { useWatchlist } from "../lib/watchlist";
+import { SourceBadges } from "./ui";
 import MarketChart from "./MarketChart";
 
 function chartInterval(minutes: number | null) {
@@ -150,17 +151,8 @@ export default function OpportunityCard({
             </div>
           </div>
 
-          {/* SİNYALİ ÜRETEN MOTORLAR (ikincil, sade etiketler) */}
-          {item.sources.length > 0 && (
-            <div className="mt-2 flex flex-wrap items-center gap-1">
-              <span className="text-[9px] uppercase tracking-wide text-ink-400">Motorlar</span>
-              {item.sources.slice(0, 4).map((source) => (
-                <span key={source} className="rounded bg-canvas px-1 py-0.5 text-[9px] font-medium text-ink-500">
-                  {source}
-                </span>
-              ))}
-            </div>
-          )}
+          {/* SİNYALİ ÜRETEN MOTORLAR (her motora özgü renkli rozetler) */}
+          <SourceBadges codes={item.sourceCodes} max={4} label="Motorlar" className="mt-2" />
           {item.confirmSources.length > 0 && <p className="mt-1 text-[10px] text-gain">Uzlaşı: {item.confirmSources.join(" · ")}</p>}
           {item.opposingSources.length > 0 && <p className="mt-1 text-[10px] text-loss">Çelişki: {item.opposingSources.join(" · ")}</p>}
           {item.sourceEvidence.rsi7 != null && <p className="mt-1 text-[10px] text-ink-500">Snapback kanıtı: RSI7 {String(item.sourceEvidence.rsi7)} · RSI14 {String(item.sourceEvidence.rsi14)}{item.stopLoss != null ? ` · Stop ${formatPrice(item.stopLoss)} (${formatPct(-(item.stopLossPct ?? 0), 1)})` : ""}</p>}
@@ -168,7 +160,7 @@ export default function OpportunityCard({
           {item.scoreComponents.length > 0 && <p className="mt-1 text-[10px] text-ink-400">Skor kanıtı: {item.scoreComponents.map(({ label, value }) => `${label} ${Math.round(value)}`).join(" · ")}</p>}
         </div>
 
-        {/* AKSİYON BUTONLARI: HIZLI İŞLEM VE GRAFİK */}
+        {/* AKSİYON BUTONLARI: HIZLI İŞLEM VE GRAFİK (mobil dokunuş dostu) */}
         <div className="mt-3.5 space-y-1.5">
           <div className="grid grid-cols-[1fr_auto] gap-1.5">
             <button
@@ -177,17 +169,18 @@ export default function OpportunityCard({
                 onSelect();
                 onQuickBuy?.(item.symbol, 1000);
               }}
-              className="flex items-center justify-center gap-1 rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-accent/90 transition-colors"
+              className="flex min-h-[2.5rem] items-center justify-center gap-1 rounded-lg bg-accent px-2 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-accent/90 sm:text-xs"
             >
               <span>⚡</span>
-              <span>Panele aktar · ₺1.000</span>
+              <span className="truncate">Panele aktar · ₺1.000</span>
             </button>
 
             <button
               type="button"
               onClick={() => setQuickMenuOpen(!quickMenuOpen)}
-              className="rounded-lg border border-line bg-canvas px-2.5 py-2 text-xs font-bold text-ink-700 hover:bg-slate-200"
-              title="Diğer Hızlı Tutar Seçenekleri"
+              aria-expanded={quickMenuOpen}
+              aria-label="Diğer hızlı tutar seçenekleri"
+              className="min-h-[2.5rem] rounded-lg border border-line bg-canvas px-2.5 text-xs font-bold text-ink-700 transition-colors hover:bg-slate-200"
             >
               ▾
             </button>
@@ -205,7 +198,7 @@ export default function OpportunityCard({
                     onSelect();
                     onQuickBuy?.(item.symbol, amount);
                   }}
-                  className="rounded bg-white py-1 text-[11px] font-mono font-semibold text-ink-800 shadow-xs hover:bg-accent-soft hover:text-accent border border-line/60"
+                  className="min-h-[2rem] rounded border border-line/60 bg-white py-1 font-mono text-[11px] font-semibold text-ink-800 shadow-xs transition-colors hover:border-accent hover:bg-accent-soft hover:text-accent"
                 >
                   ₺{amount.toLocaleString("tr-TR")}
                 </button>
@@ -217,7 +210,7 @@ export default function OpportunityCard({
             <button
               type="button"
               onClick={onSelect}
-              className="inline-flex items-center justify-center rounded-lg border border-line bg-white px-2 py-1.5 text-xs font-medium text-ink-700 hover:border-accent hover:text-accent"
+              className="inline-flex min-h-[2.25rem] items-center justify-center rounded-lg border border-line bg-white px-2 text-xs font-medium text-ink-700 transition-colors hover:border-accent hover:text-accent"
             >
               Formu Aç
             </button>
@@ -225,7 +218,7 @@ export default function OpportunityCard({
               type="button"
               onClick={() => setChartOpen(true)}
               aria-haspopup="dialog"
-              className="inline-flex items-center justify-center rounded-lg border border-accent/25 bg-accent-soft px-2 py-1.5 text-xs font-semibold text-accent hover:bg-accent/15"
+              className="inline-flex min-h-[2.25rem] items-center justify-center rounded-lg border border-accent/25 bg-accent-soft px-2 text-xs font-semibold text-accent transition-colors hover:bg-accent/15"
             >
               ▥ Grafik
             </button>

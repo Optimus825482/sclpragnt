@@ -135,7 +135,7 @@ export default function Home() {
             type="button"
             onClick={handleManualScan}
             disabled={scanBusy}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-accent/90 disabled:opacity-60"
+            className="flex min-h-[2.25rem] items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-accent/90 disabled:opacity-60"
             title="Yalnız piyasa verisi taranır; emir veya bildirim gönderilmez"
           >
             <span className={scanBusy ? "animate-spin" : ""}>⟳</span>

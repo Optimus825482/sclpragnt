@@ -79,3 +79,25 @@ export function candidateSources(item: Candidate | Record<string, unknown>): str
   }
   return labels;
 }
+
+/**
+ * Kaynak KODLARI (etiketsiz, tekrarsız). Rozet bileşeni her koda özel stil
+ * uygularken bu ham kodları kullanır.
+ */
+export function candidateSourceCodes(item: Candidate | Record<string, unknown>): string[] {
+  const r = item as Record<string, unknown>;
+  const raw = (Array.isArray(r.sources) && r.sources.length ? r.sources : null)
+    || (Array.isArray(r.unified_sources) && r.unified_sources.length ? r.unified_sources : null);
+  const codes: string[] = [];
+  if (raw) {
+    for (const s of raw) codes.push(String(s));
+  }
+  if (Array.isArray(r.signal_sources)) {
+    for (const source of r.signal_sources) codes.push(String(source));
+  }
+  if (!raw && !Array.isArray(r.signal_sources)) {
+    if (r.pool_source) codes.push(String(r.pool_source));
+    if (r.strategy) codes.push(String(r.strategy));
+  }
+  return Array.from(new Set(codes.map((code) => code.trim()).filter(Boolean)));
+}

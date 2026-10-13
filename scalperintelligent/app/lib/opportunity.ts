@@ -1,5 +1,5 @@
 import type { Candidate, DailyOpportunity } from "./types";
-import { candidateSources, sourceLabel } from "./sources";
+import { candidateSources, candidateSourceCodes, sourceLabel } from "./sources";
 
 /**
  * İki farklı backend şeklini TEK görünüme indirger.
@@ -28,6 +28,7 @@ export type OpportunityView = {
   potentialPrice: number | null;
   targetProbability: number | null;
   sources: string[];
+  sourceCodes: string[];
   confirmSources: string[];
   confirmLayers: string[];
   opposingSources: string[];
@@ -91,6 +92,7 @@ export function toOpportunityView(raw: Candidate | DailyOpportunity | Record<str
     potentialPrice: num(r.potential_price),
     targetProbability: num(r.target_probability),
     sources: candidateSources(r),
+    sourceCodes: candidateSourceCodes(r),
     confirmSources: (Array.isArray(r.supporting_sources) ? r.supporting_sources : []).map(sourceLabel).filter(Boolean),
     confirmLayers: (Array.isArray(r.confirm_layers) ? r.confirm_layers : []).map(sourceLabel).filter(Boolean),
     opposingSources: (Array.isArray(r.opposing_sources) ? r.opposing_sources : Array.isArray(r.conflicting_sources) ? r.conflicting_sources : []).map(sourceLabel).filter(Boolean),

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { sourceLabel } from "../lib/sources";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "success";
 
@@ -48,6 +49,82 @@ export function Badge({ children, tone = "neutral", className = "" }: { children
     <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none ${badgeTones[tone]} ${className}`}>
       {children}
     </span>
+  );
+}
+
+/* --- Motor bazlı sinyal kaynak rozetleri --------------------------------- */
+
+type SourceBadgeStyle = { label: string; icon: ReactNode; cls: string };
+
+const SOURCE_BADGE_NEUTRAL = "border-line bg-canvas text-ink-500";
+
+/** Her tarama motoruna özgü renk + ikon. Açık tema tek vurgu (mavi) korunur. */
+const SOURCE_BADGES: Record<string, SourceBadgeStyle> = {
+  velocity: { label: "Radar", icon: "◎", cls: "border-accent/25 bg-accent-soft text-accent" },
+  jump: { label: "MACD Sıçrama", icon: "⚡", cls: "border-violet-200 bg-violet-50 text-violet-700" },
+  early: { label: "Erken Sıçrama", icon: "◷", cls: "border-violet-200 bg-violet-50/60 text-violet-600" },
+  rising: { label: "Yükseliş", icon: "↗", cls: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  daily_momentum: { label: "Momentum", icon: "⇗", cls: "border-amber-200 bg-amber-50 text-amber-700" },
+  short_squeeze: { label: "Squeeze", icon: "⇈", cls: "border-orange-200 bg-orange-50 text-orange-700" },
+  pulse: {
+    label: "Nabız", icon: <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />,
+    cls: "border-rose-200 bg-rose-50 text-rose-600",
+  },
+  snapback: { label: "Snapback", icon: "⟲", cls: "border-cyan-200 bg-cyan-50 text-cyan-700" },
+  macd_mtf: { label: "MACD MTF", icon: "≣", cls: "border-indigo-200 bg-indigo-50 text-indigo-700" },
+  macd_snapshot: { label: "MACD Anlık", icon: "◐", cls: "border-slate-200 bg-slate-100 text-slate-600" },
+  fusion: { label: "Füzyon", icon: "✦", cls: "border-transparent bg-accent text-white" },
+  both: { label: "Momentum+Squeeze", icon: "⇄", cls: "border-amber-200 bg-amber-50 text-amber-700" },
+  gainer: { label: "Kazananlar", icon: "▲", cls: SOURCE_BADGE_NEUTRAL },
+  mover: { label: "Hareketli", icon: "◆", cls: SOURCE_BADGE_NEUTRAL },
+  discovery: { label: "Keşif", icon: "✚", cls: SOURCE_BADGE_NEUTRAL },
+  symbol: { label: "Takip", icon: "★", cls: SOURCE_BADGE_NEUTRAL },
+  extra: { label: "Ek Havuz", icon: "＋", cls: SOURCE_BADGE_NEUTRAL },
+};
+
+/**
+ * Sinyal motorlarını her birine özgü renkli/ikonlu rozetlerle gösterir.
+ * `codes` ham kaynak kodlarıdır (örn. "velocity", "snapback"); bilinmeyen
+ * kodlar nötr rozete düşer ve `sourceLabel` etiketi kullanılır.
+ */
+export function SourceBadges({
+  codes,
+  max = 4,
+  label,
+  className = "",
+}: {
+  codes: string[];
+  max?: number;
+  label?: string;
+  className?: string;
+}) {
+  const visible = codes.slice(0, max);
+  if (!visible.length) return null;
+  return (
+    <div className={`flex flex-wrap items-center gap-1 ${className}`}>
+      {label && <span className="text-[9px] uppercase tracking-wide text-ink-400">{label}</span>}
+      {visible.map((code) => {
+        const badge = SOURCE_BADGES[code] ?? { label: sourceLabel(code) || code, icon: "▪", cls: SOURCE_BADGE_NEUTRAL };
+        return (
+          <span
+            key={code}
+            title={`Sinyal kaynağı: ${badge.label}`}
+            className={`inline-flex max-w-[10rem] items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-semibold leading-none ${badge.cls}`}
+          >
+            <span aria-hidden className="inline-flex items-center text-[9px] leading-none">{badge.icon}</span>
+            <span className="truncate">{badge.label}</span>
+          </span>
+        );
+      })}
+      {codes.length > max && (
+        <span
+          className="rounded-full border border-line bg-canvas px-1.5 py-0.5 text-[10px] font-semibold text-ink-400"
+          title={codes.slice(max).map((code) => sourceLabel(code) || code).join(", ")}
+        >
+          +{codes.length - max}
+        </span>
+      )}
+    </div>
   );
 }
 

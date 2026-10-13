@@ -67,8 +67,8 @@ export default function TopNav() {
             </div>
           </Link>
 
-          {/* Menü Sekmeleri */}
-          <nav className="flex items-center gap-1 overflow-x-auto" aria-label="Ana navigasyon">
+          {/* Menü Sekmeleri (mobilde kaydırılabilir, kaydırma çubuğu gizli) */}
+          <nav className="odak-ticker-scroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto sm:flex-none" aria-label="Ana navigasyon">
             {NAV.map((item) => {
               const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
               return (
