@@ -225,7 +225,7 @@ export default function Sidebar() {
                     </div>
                 )}
                 <a
-                    href="/yeni-arayuz/"
+                    href="/yeni-arayuz"
                     onClick={() => setOpen(false)}
                     className="flex w-full items-center justify-center gap-2 rounded-lg border border-neon-green/40 bg-neon-green/10 px-3 py-3 font-mono text-xs font-bold tracking-wide text-neon-green transition-colors hover:border-neon-green hover:bg-neon-green/20"
                     title="Scalper Intelligent Trade Systems arayüzünü aç"
