@@ -114,10 +114,14 @@ def test_format_combined_status_avg_and_sort():
 
 def test_combined_scan_merges_all_strategies():
     """Kombine motor kaynağı: velocity + günlük momentum + short-squeeze + füzyon
-    (jump/early/rising) + Master Surge hepsini TEK taramada birleştirir."""
+    (jump/early/rising) + Master Surge hepsini TEK taramada birleştirir.
+
+    Birleşik tarama mantığı `app.unified_scan.combined_scan_rows` içinde;
+    `monitoring._combined_scan_rows` ona delege eder."""
     import inspect
     from app.routers import monitoring as mo
-    src = inspect.getsource(mo._combined_scan_rows)
+    from app import unified_scan
+    src = inspect.getsource(unified_scan.combined_scan_rows)
     assert "detect_velocity_candidates" in src
     assert "_daily_momentum_candidates" in src
     assert "_short_squeeze_candidates" in src
@@ -129,6 +133,9 @@ def test_combined_scan_merges_all_strategies():
     assert "_compute_potential" in src
     assert "scan_score" in src
     assert "calculate_adaptive_targets" in src  # hedef/miktar
+    # Delegasyon: monitoring sarmalayıcısı birleşik taramayı çağırır.
+    deleg = inspect.getsource(mo._combined_scan_rows)
+    assert "unified_scan" in deleg and "combined_scan_rows" in deleg
 
 
 def test_combined_quality_score_no_saturation():

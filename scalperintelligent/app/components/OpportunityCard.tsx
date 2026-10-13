@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Badge } from "./ui";
 import { formatPct, formatPrice } from "../lib/format";
 import type { OpportunityView } from "../lib/opportunity";
 import { useWatchlist } from "../lib/watchlist";
@@ -33,6 +32,16 @@ export default function OpportunityCard({
   const favorited = isFavorite(item.symbol);
   const interval = chartInterval(horizonMinutes);
   const chartUrl = `/grafik?symbol=${encodeURIComponent(item.symbol)}&interval=${interval}`;
+
+  // Birleşik skor tonu: 75+ güçlü (yeşil), 55+ orta (amber), altı nötr.
+  const score = strength != null ? Math.round(strength) : null;
+  const scoreTone = score == null
+    ? { ring: "border-line", text: "text-ink-500", bg: "bg-canvas", label: "text-ink-400" }
+    : score >= 75
+      ? { ring: "border-gain/30", text: "text-gain", bg: "bg-gain-soft", label: "text-gain/80" }
+      : score >= 55
+        ? { ring: "border-amber-300", text: "text-amber-600", bg: "bg-amber-50", label: "text-amber-700/80" }
+        : { ring: "border-line", text: "text-ink-700", bg: "bg-canvas", label: "text-ink-400" };
 
   useEffect(() => {
     if (!chartOpen) return;
@@ -90,23 +99,34 @@ export default function OpportunityCard({
             )}
           </div>
 
-          {/* SEMBOL VE FİYAT */}
-          <button type="button" onClick={onSelect} aria-pressed={selected} className="mt-2.5 block w-full text-left">
-            <div className="flex items-center justify-between">
+          {/* SEMBOL + FİYAT + BİRLEŞİK SKOR (kahraman öğe) */}
+          <div className="mt-2.5 flex items-center justify-between gap-2">
+            <button type="button" onClick={onSelect} aria-pressed={selected} className="min-w-0 flex-1 text-left">
               <p className="font-mono text-base font-bold text-ink-900">
                 {item.base} <span className="text-xs font-normal text-ink-400">/ TRY</span>
               </p>
-            </div>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className="font-mono text-lg font-semibold text-ink-900">{formatPrice(price)}</span>
-              {changePct != null && (
-                <span className={`font-mono text-xs font-semibold ${changePct >= 0 ? "text-gain" : "text-loss"}`}>
-                  {changePct >= 0 ? "+" : ""}
-                  {formatPct(changePct, 1)}
-                </span>
-              )}
-            </div>
-          </button>
+              <div className="mt-1 flex items-baseline gap-2">
+                <span className="font-mono text-lg font-semibold text-ink-900">{formatPrice(price)}</span>
+                {changePct != null && (
+                  <span className={`font-mono text-xs font-semibold ${changePct >= 0 ? "text-gain" : "text-loss"}`}>
+                    {changePct >= 0 ? "+" : ""}
+                    {formatPct(changePct, 1)}
+                  </span>
+                )}
+              </div>
+            </button>
+            {score != null && (
+              <div className={`shrink-0 rounded-xl border px-2.5 py-1.5 text-right ${scoreTone.bg} ${scoreTone.ring}`}>
+                <p className={`font-mono text-2xl font-bold leading-none ${scoreTone.text}`}>{score}</p>
+                <p className={`mt-0.5 text-[8px] font-semibold uppercase tracking-wide leading-tight ${scoreTone.label}`}>
+                  Birleşik Skor
+                </p>
+                <p className="text-[8px] leading-tight text-ink-400">
+                  {item.sources.length > 1 ? `${item.sources.length} motor` : "tek motor"}
+                </p>
+              </div>
+            )}
+          </div>
 
           {/* İSTATİSTİK ŞERİDİ */}
           <div className="mt-3 grid grid-cols-3 gap-1.5 border-t border-line/80 pt-2.5 text-center">
@@ -117,9 +137,9 @@ export default function OpportunityCard({
               </p>
             </div>
             <div>
-              <p className="text-[9px] uppercase tracking-wide text-ink-400">Güven Skoru</p>
-              <p className="font-mono text-xs font-semibold text-accent">
-                {strength != null ? `%${Math.round(strength)}` : "—"}
+              <p className="text-[9px] uppercase tracking-wide text-ink-400">Olasılık</p>
+              <p className="font-mono text-xs font-semibold text-ink-700">
+                {item.targetProbability != null ? `%${Math.round(item.targetProbability)}` : "—"}
               </p>
             </div>
             <div>
@@ -130,13 +150,14 @@ export default function OpportunityCard({
             </div>
           </div>
 
-          {/* SİNYALİ ÜRETEN MOTORLAR (ROZETLER) */}
+          {/* SİNYALİ ÜRETEN MOTORLAR (ikincil, sade etiketler) */}
           {item.sources.length > 0 && (
-            <div className="mt-2.5 flex flex-wrap gap-1">
-              {item.sources.slice(0, 3).map((source) => (
-                <Badge key={source} tone="accent">
+            <div className="mt-2 flex flex-wrap items-center gap-1">
+              <span className="text-[9px] uppercase tracking-wide text-ink-400">Motorlar</span>
+              {item.sources.slice(0, 4).map((source) => (
+                <span key={source} className="rounded bg-canvas px-1 py-0.5 text-[9px] font-medium text-ink-500">
                   {source}
-                </Badge>
+                </span>
               ))}
             </div>
           )}
