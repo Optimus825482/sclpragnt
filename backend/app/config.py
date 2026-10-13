@@ -726,6 +726,15 @@ class Config:
     POOL_MIN_COMPOSITE = float(os.getenv("POOL_MIN_COMPOSITE", "60.0"))
     # Motor mutabakatı: en az kaç katman teyit etmeli (4 katmandan). 2 = yarı.
     POOL_MIN_CONFLUENCE = int(os.getenv("POOL_MIN_CONFLUENCE", "2"))
+    # KATMANLI AĞIRLIKLI ADAY SKORU (rising_pool.score_candidate) ağırlıkları.
+    # Dört katman: güç (velocity panel), mutabakat (kaynak+confluence), trend
+    # (ret3 yukarı), likidite (ATR/hacim uyumu). Toplam 1.0'a normalize edilir.
+    POOL_W_STRENGTH = float(os.getenv("POOL_W_STRENGTH", "0.35"))
+    POOL_W_AGREEMENT = float(os.getenv("POOL_W_AGREEMENT", "0.30"))
+    POOL_W_TREND = float(os.getenv("POOL_W_TREND", "0.20"))
+    POOL_W_LIQUIDITY = float(os.getenv("POOL_W_LIQUIDITY", "0.15"))
+    # Skor-top-N seçimi: havuzdan en iyi N aday. 0 = kapalı (tüm havuz).
+    POOL_TOP_N = int(os.getenv("POOL_TOP_N", "0"))
 
     # Net Kâr Hedefi & Maliyet Güvencesi (Kullanıcı Kuralı 2026-09-19):
     # %2.0 hedeflenen scalping işleminde komisyon + spread maliyetleri (~%1.0)

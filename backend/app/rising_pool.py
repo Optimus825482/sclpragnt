@@ -184,13 +184,111 @@ async def _collect_all(now: float) -> list[dict]:
         c["pool_composite_index"] = _num(ms.get("composite_index"), 0.0)
         c["pool_confluence"] = int(_num(ms.get("confluence_count"), 0))
         c["pool_genuinely_rising"] = bool(is_genuinely_rising(c))
+        c["pool_score"] = score_candidate(c)
         out.append(c)
-    # sıralama: gerçekten-yükselen önce, sonra composite
+    # sıralama: gerçekten-yükselen önce, sonra katmanlı skor
     out.sort(key=lambda r: (r.get("pool_genuinely_rising", False),
-                            r.get("pool_composite_index", 0.0)), reverse=True)
+                            r.get("pool_score", 0.0)), reverse=True)
     return out
 
 
 def genuinely_rising_rows(rows: list[dict]) -> list[dict]:
     """Havuzdan yalnız "gerçekten yükselen" adayları süz (push/WhatsApp/paper girdisi)."""
     return [r for r in (rows or []) if r.get("pool_genuinely_rising")]
+
+
+# ---------------------------------------------------------------------------
+# KATMANLI AĞIRLIKLI ADAY SKORU (2026-10-13) — aday seçimini iyileştirme denemesi
+# ---------------------------------------------------------------------------
+# Amaç: mevcut AYRI puanlamalar (panel/velocity, füzyon, master_surge composite,
+# upside_rank) yerine TEK, katmanlı ve ağırlıklı bir aday skoru. Her katman 0-1
+# normalize edilir, ağırlıklarla toplanır → 0-100. Ağırlıklar toplamı 1.0.
+#
+#   L1 GÜÇ      : velocity panel (ham skoru 0-100'e) — sinyal ne kadar güçlü
+#   L2 MUTABAKAT: fuse kaynak sayısı + master_surge confluence katmanı — kaç motor teyit
+#   L3 TREND    : kısa getiri (ret3) pozitif ve anlamlı — fiyat gerçekten yukarı mı
+#   L4 LİKİDİTE : hacim/ATR uyumu — hareket yürütülebilir mi (ince tahtada değil)
+#
+# Varsayılan ağırlıklar (POOL_W_*): güç 0.35, mutabakat 0.30, trend 0.20, likidite 0.15.
+# Replay (unified_pool_replay) bu skorun EV'yi iyileştirip iyileştirmediğini ölçer.
+def _clamp01(x: float) -> float:
+    return 0.0 if x < 0 else (1.0 if x > 1 else x)
+
+
+def _weights() -> tuple[float, float, float, float]:
+    from app.config import config
+    w = (
+        float(getattr(config, "POOL_W_STRENGTH", 0.35)),
+        float(getattr(config, "POOL_W_AGREEMENT", 0.30)),
+        float(getattr(config, "POOL_W_TREND", 0.20)),
+        float(getattr(config, "POOL_W_LIQUIDITY", 0.15)),
+    )
+    tot = sum(w)
+    return tuple(x / tot for x in w) if tot > 0 else (0.25, 0.25, 0.25, 0.25)
+
+
+def score_candidate(row: dict) -> float:
+    """Katmanlı ağırlıklı aday skoru (0-100). Saf fonksiyon; DB/ağ YOK.
+
+    L1 GÜÇ      : panel/velocity skoru (0-100 → 0-1)
+    L2 MUTABAKAT: (füzyon kaynak sayısı + master_surge katman sayısı) normalize;
+                  hem ham kaynak hem 4-katman teyidi sayılır (kaç motor hemfikir).
+    L3 TREND    : `ret3_pct` pozitifse ve >0.5% ise tam, 0-0.5% arası doğrusal,
+                  negatifse 0 (fiyat gerçekten yukarı değil → trend katmanı sıfır).
+    L4 LİKİDİTE : `volume_ratio` + `atr_pct` makul bandda ise tam; aşırı yüksek ATR
+                  (ince/oynak tahta) veya sıfır hacim → düşürür.
+    """
+    # L1 güç — panel skoru (varsa panel_score, yoksa ham velocity'yi normalize et)
+    panel = row.get("panel_score")
+    if panel is None:
+        try:
+            from app.routers.velocity import _panel_score as _ps
+            panel = _ps(row.get("velocity_score") or 0)
+        except Exception:
+            panel = 0.0
+    l1 = _clamp01(_num(panel, 0.0) / 100.0)
+
+    # L2 mutabakat — kaynak sayısı (0..3) + master_surge katmanı (0..4)
+    srcs = len([s for s in (row.get("unified_sources") or []) if s])
+    ms = row.get("master_surge") if isinstance(row.get("master_surge"), dict) else {}
+    layers = int(_num(ms.get("confluence_count"), 0))
+    l2 = _clamp01((min(3, srcs) / 3.0) * 0.5 + (min(4, layers) / 4.0) * 0.5)
+
+    # L3 trend — ret3 pozitif ve anlamlı
+    ret3 = _num(row.get("ret3_pct"), 0.0)
+    if ret3 <= 0:
+        l3 = 0.0
+    elif ret3 >= 0.5:
+        l3 = 1.0
+    else:
+        l3 = ret3 / 0.5
+
+    # L4 likidite — aşırı oynak/ince tahtayı cezalandır (ATR>3% veya hacim yok)
+    atr = _num(row.get("atr_pct"), 0.0)
+    vol_r = _num(row.get("volume_ratio"), 0.0)
+    if atr <= 0:
+        l4 = 0.4                       # ATR bilinmiyor → ölçülü ceza
+    elif atr > 3.0:
+        l4 = _clamp01(1.0 - (atr - 3.0) / 3.0)   # 3%→1.0, 6%→0
+    else:
+        l4 = 1.0
+    if vol_r > 0:                      # hacim verisi varsa hafif bonus/ceza
+        l4 = _clamp01(l4 * (1.0 if vol_r >= 1.0 else 0.8))
+
+    w1, w2, w3, w4 = _weights()
+    return round(min(100.0, max(0.0, (l1 * w1 + l2 * w2 + l3 * w3 + l4 * w4) * 100.0)), 2)
+
+
+def annotate_pool_scores(rows: list[dict]) -> list[dict]:
+    """Havuz satırlarına `pool_score` yaz (katmanlı ağırlıklı skor). Sıralamaz."""
+    for r in (rows or []):
+        if isinstance(r, dict):
+            r["pool_score"] = score_candidate(r)
+    return rows
+
+
+def top_by_pool_score(rows: list[dict], n: int) -> list[dict]:
+    """Katmanlı skora göre en iyi N aday. Popülasyon alt kümesi seçimi için."""
+    scored = [r for r in (rows or []) if isinstance(r, dict)]
+    scored.sort(key=lambda r: _num(r.get("pool_score"), 0.0), reverse=True)
+    return scored[:max(0, int(n))]

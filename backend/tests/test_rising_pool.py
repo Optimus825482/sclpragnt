@@ -86,3 +86,54 @@ def test_genuinely_rising_rows_filter():
 def test_pool_disabled_by_default_no_live_change():
     """Aşama C'ye kadar canlı yol değişmemeli: bayrak varsayılan KAPALI."""
     assert config.UNIFIED_POOL_ENABLED is False
+
+
+# ---------------------------------------------------------------------------
+# Katmanlı ağırlıklı skor (score_candidate) — 2026-10-13
+# ---------------------------------------------------------------------------
+def test_score_monotonic_and_bounded():
+    strong = {"panel_score": 95, "unified_sources": ["velocity", "jump", "early"],
+              "master_surge": {"confluence_count": 4}, "ret3_pct": 1.2,
+              "atr_pct": 1.5, "volume_ratio": 1.5}
+    weak = {"panel_score": 20, "unified_sources": [], "master_surge": {"confluence_count": 0},
+            "ret3_pct": -1.0, "atr_pct": 5.0, "volume_ratio": 0.5}
+    s = rp.score_candidate(strong); w = rp.score_candidate(weak)
+    assert 0 <= w < s <= 100, f"skor sıralı ve 0-100 olmalı: strong={s} weak={w}"
+
+
+def test_score_trend_layer_zero_on_negative_ret():
+    base = {"panel_score": 60, "unified_sources": ["velocity"],
+            "master_surge": {"confluence_count": 2}, "atr_pct": 1.0}
+    up = rp.score_candidate({**base, "ret3_pct": 1.0})
+    dn = rp.score_candidate({**base, "ret3_pct": -1.0})
+    assert up > dn, "trend katmanı yukarı getiride daha yüksek skor vermeli"
+
+
+def test_score_liquidity_penalizes_extreme_atr():
+    base = {"panel_score": 60, "unified_sources": ["velocity"],
+            "master_surge": {"confluence_count": 2}, "ret3_pct": 0.6}
+    normal = rp.score_candidate({**base, "atr_pct": 1.5})
+    extreme = rp.score_candidate({**base, "atr_pct": 6.0})
+    assert normal > extreme, "aşırı ATR cezalandırılmalı"
+
+
+def test_top_by_pool_score_orders_desc():
+    rows = [{"symbol": "A", "panel_score": 90, "unified_sources": ["velocity", "jump", "early"],
+             "master_surge": {"confluence_count": 4}, "ret3_pct": 1.0, "atr_pct": 1.0},
+            {"symbol": "B", "panel_score": 10, "unified_sources": [],
+             "master_surge": {"confluence_count": 0}, "ret3_pct": -1.0, "atr_pct": 5.0}]
+    rp.annotate_pool_scores(rows)
+    top = rp.top_by_pool_score(rows, 1)
+    assert top and top[0]["symbol"] == "A"
+
+
+def test_score_weights_configurable(monkeypatch):
+    # Ağırlıklar config'ten; geçersiz (toplam 0) durumda eşit ağırlığa düşer.
+    from app.config import config
+    monkeypatch.setattr(config, "POOL_W_STRENGTH", 0.0)
+    monkeypatch.setattr(config, "POOL_W_AGREEMENT", 0.0)
+    monkeypatch.setattr(config, "POOL_W_TREND", 0.0)
+    monkeypatch.setattr(config, "POOL_W_LIQUIDITY", 0.0)
+    # Çökmemeli (eşit ağırlık yedeği)
+    v = rp.score_candidate({"panel_score": 50, "ret3_pct": 0.5, "atr_pct": 1.0})
+    assert 0 <= v <= 100

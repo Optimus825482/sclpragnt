@@ -50,13 +50,15 @@ def _load_candidates(days: float, db_url: str) -> list[dict]:
     since = time.time() - days * 86400.0
     out = []
     with psycopg.connect(db_url, connect_timeout=8) as conn:
-        for ts, sym, px, tgt, profile in conn.execute(
-            "SELECT created_at, symbol, price, target_pct, candidate_id FROM velocity_candidates "
+        for ts, sym, px, tgt, profile, ret3, atr in conn.execute(
+            "SELECT created_at, symbol, price, target_pct, candidate_id, ret3_pct, atr_pct "
+            "FROM velocity_candidates "
             "WHERE passes=true AND created_at>=%s AND price>0 ORDER BY created_at", (since,)):
             try:
                 from app.routers.velocity import _velocity_horizon_from_candidate_id as _h
                 out.append({"ts": float(ts), "sym": str(sym).upper(), "price": float(px),
-                            "target": float(tgt or 2.0), "h": _h(str(profile or ""))})
+                            "target": float(tgt or 2.0), "h": _h(str(profile or "")),
+                            "ret3": float(ret3 or 0.0), "atr": float(atr or 0.0)})
             except (TypeError, ValueError):
                 continue
     return out
@@ -170,6 +172,19 @@ def main() -> int:
         out.sort(key=lambda r: r["ts"])
         return out
 
+    # Katmanlı skor vekili (replay): velocity panel + çok-kaynak + trend + likidite.
+    from app.rising_pool import score_candidate
+
+    def _pool_score(c) -> float:
+        return score_candidate({
+            "panel_score": None,
+            "velocity_score": (c["target"] / max(1, c["h"])) * 1000.0,  # panel vekili (replay)
+            "unified_sources": (["velocity", "rising"] if _confluence(c) else ["velocity"]),
+            "master_surge": {"confluence_count": (2 if _confluence(c) else 1)},
+            "ret3_pct": c.get("ret3", 0.0),
+            "atr_pct": c.get("atr", 0.0),
+        })
+
     # Walk-forward: %60 eğitim / %40 sınav
     split = int(len(cands) * 0.6)
     tr, te = cands[:split], cands[split:]
@@ -180,33 +195,42 @@ def main() -> int:
         cur_te = _sim_stream(te, cost)
         # BİRLEŞİK: confluence vekili kapısı
         uni_te = _sim_stream([c for c in te if _confluence(c)], cost)
+        # SKOR-TOP-N: eğitimde eşik (üst %50 skor) → sınavda uygula
+        tr_scores = sorted(_pool_score(c) for c in tr)
+        thr = tr_scores[int(len(tr_scores) * 0.5)] if tr_scores else 0.0
+        sc_te = _sim_stream([c for c in te if _pool_score(c) >= thr], cost)
         results[f"mevcut_{cost_name}"] = _metrics(cur_te)
         results[f"birlesik_{cost_name}"] = _metrics(uni_te)
-        # 3-fold stabilite (birleşik)
-        folds = []
-        for k in range(3):
-            a, b = int(len(uni_te) * k / 3), int(len(uni_te) * (k + 1) / 3)
-            folds.append(_metrics(uni_te[a:b])["ev"])
-        results[f"birlesik_{cost_name}_folds"] = folds
-        # Gün-gün (birleşik)
-        byday = defaultdict(list)
-        for r in uni_te:
-            byday[int(r["ts"] // 86400)].append(r["net_pct"])
-        results[f"birlesik_{cost_name}_daily_pos"] = (
-            f"{sum(1 for v in byday.values() if statistics.mean(v) > 0)}/{len(byday)}")
+        results[f"skortop_{cost_name}"] = _metrics(sc_te)
+        # 3-fold stabilite
+        for tag, stream in (("birlesik", uni_te), ("skortop", sc_te)):
+            folds = []
+            for k in range(3):
+                a, b = int(len(stream) * k / 3), int(len(stream) * (k + 1) / 3)
+                folds.append(_metrics(stream[a:b])["ev"])
+            results[f"{tag}_{cost_name}_folds"] = folds
+        # Gün-gün
+        for tag, stream in (("birlesik", uni_te), ("skortop", sc_te)):
+            byday = defaultdict(list)
+            for r in stream:
+                byday[int(r["ts"] // 86400)].append(r["net_pct"])
+            results[f"{tag}_{cost_name}_daily_pos"] = (
+                f"{sum(1 for v in byday.values() if statistics.mean(v) > 0)}/{len(byday)}")
 
-    # t-testi: birleşik vs mevcut (taker)
+    # t-testi: her iki aday akışı vs mevcut (taker)
     cur = [r["net_pct"] for r in _sim_stream(te, _TAKER_COST)]
     uni = [r["net_pct"] for r in _sim_stream([c for c in te if _confluence(c)], _TAKER_COST)]
+    sc = [r["net_pct"] for r in _sim_stream([c for c in te if _pool_score(c) >= thr], _TAKER_COST)]
     results["paired_t_birlesik_vs_mevcut"] = _paired_t(uni, cur)
+    results["paired_t_skortop_vs_mevcut"] = _paired_t(sc, cur)
 
-    # Sembol yoğunlaşması (birleşik)
-    uni_rows = _sim_stream([c for c in te if _confluence(c)], _TAKER_COST)
+    # Sembol yoğunlaşması (skor-top)
+    sc_rows = _sim_stream([c for c in te if _pool_score(c) >= thr], _TAKER_COST)
     cnt = defaultdict(int)
-    for r in uni_rows:
+    for r in sc_rows:
         cnt[r["sym"]] += 1
     tot = sum(cnt.values()) or 1
-    results["birlesik_concentration"] = {
+    results["skortop_concentration"] = {
         "symbols": len(cnt),
         "top_share_pct": round(100 * max(cnt.values()) / tot, 1) if cnt else None}
 
@@ -215,10 +239,12 @@ def main() -> int:
         print(f"  {k}: {v}")
     # Karar
     uni_ev = results.get("birlesik_taker", {}).get("ev")
-    folds = results.get("birlesik_taker_folds", [])
+    sc_ev = results.get("skortop_taker", {}).get("ev")
+    folds = results.get("skortop_taker_folds", [])
     stable = all((f or -9) > 0 for f in folds if f is not None)
-    print(f"\n  KARAR: birleşik taker EV={uni_ev} | fold stabil={stable} | "
-          f"eşik(net EV>0 & 3-fold>0)={'GEÇTİ' if (uni_ev or -9) > 0 and stable else 'GEÇMEDİ'}")
+    best = max([x for x in (uni_ev, sc_ev) if x is not None] or [-9])
+    print(f"\n  KARAR: birleşik EV={uni_ev} | skortop EV={sc_ev} | fold stabil={stable} | "
+          f"eşik(net EV>0 & 3-fold>0)={'GEÇTİ' if best > 0 and stable else 'GEÇMEDİ'}")
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
