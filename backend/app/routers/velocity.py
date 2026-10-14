@@ -601,11 +601,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # devam eder — fail-open, yalnız bilinen düşük hacim elenir.
             _qv = _quote_vol_24h.get(symbol)
             if _qv is not None and _qv < config.VELOCITY_MIN_QUOTE_VOL_24H:
-                return {"symbol": symbol, "price": None, "passes": False,
-                        "block_reason": f"likidite_tabani:{_qv:.0f}<{config.VELOCITY_MIN_QUOTE_VOL_24H:.0f}",
-                        "horizon_minutes": horizon_minutes,
-                        "pool_source": pool_source.get(symbol, "unknown"),
-                        "quote_vol_24h": round(_qv, 0)}
+                return None
             try:
                 rows = await _fetch_cached(symbol, "1m", 60)
             except Exception:
@@ -1255,6 +1251,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
         (savunma: yabancı veri asla sıralamaya sızmaz) ve uyuşmazlıkta `None`.
         """
         target = str(r.get("symbol") or "").upper()
+        if not r.get("price"):
+            return None
         try:
             micro = microflow.get_snapshot(symbol=target, price=r["price"])
         except Exception:
@@ -1279,10 +1277,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
         if r:
             r["microstructure"] = _micro_for(r)
             r["micro_mult"] = round(micro_structure_multiplier(r["microstructure"]), 3)
-    candidates = [r for r in results if r and r["passes"]]
+    candidates = [r for r in results if r and r.get("passes") and "velocity_score" in r]
     # Sıralama: ham skor × mikro-yapı çarpanı (kalite çarpanı burada DEĞİL;
     # upside_rank_score içinde uygulanır — monitoring/ortak sıralama anahtarı).
-    candidates.sort(key=lambda r: r["velocity_score"] * r["micro_mult"], reverse=True)
+    candidates.sort(key=lambda r: (r.get("velocity_score") or 0.0) * (r.get("micro_mult") or 1.0), reverse=True)
     for rank, candidate in enumerate(candidates[:limit], 1):
         candidate["rank"] = rank
     # Izleme listesi: geçmeyen ama kayda deger hareket sinyali olanlar.
@@ -1292,8 +1290,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     # expm1). Panel 0.6 paneli çok düşük olduğu için ham eşik de çok küçüktür —
     # amaç "her elenen aday izlemeye düşmesin".
     _watchlist_min_raw = _panel_to_raw_score(0.6)
-    watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= _watchlist_min_raw]
-    watchlist.sort(key=lambda r: r["velocity_score"] * r["micro_mult"], reverse=True)
+    watchlist = [r for r in results if r and not r.get("passes") and (r.get("velocity_score") or 0.0) >= _watchlist_min_raw]
+    watchlist.sort(key=lambda r: (r.get("velocity_score") or 0.0) * (r.get("micro_mult") or 1.0), reverse=True)
     # "Isınıyor" (warm) şeridi (2026-09-26): eşiği kıl payı kaçıran adaylar
     # block_reason'a gömülüp görünmez olmasın — erken görünürlük listesi.
     # Auto-entry BU listeye BAĞLI DEĞİLDİR (yalnız panel/bildirim okur).

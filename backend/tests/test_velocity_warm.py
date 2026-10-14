@@ -187,5 +187,29 @@ class WarmKablojDumanTesti(unittest.TestCase):
         self.assertIn("if not passes and exhausted is None and not rejection_wick:", src)
 
 
+class VelocityResultsSafetyTest(unittest.TestCase):
+    """detect_velocity_candidates sonuç sıralama ve watchlist hata koruması."""
+
+    def test_missing_velocity_score_does_not_raise(self):
+        """Sonuç sözlüklerinde 'velocity_score' eksik olsa bile KeyError atılmamalı."""
+        results = [
+            {"symbol": "TEST1", "passes": False, "price": 10.0},
+            {"symbol": "TEST2", "passes": True, "velocity_score": 150.0, "micro_mult": 1.0, "price": 20.0},
+            {"symbol": "TEST3", "passes": False, "velocity_score": 80.0, "micro_mult": 1.0, "price": 30.0},
+            None,
+        ]
+        _min_raw = 0.5
+        candidates = [r for r in results if r and r.get("passes") and "velocity_score" in r]
+        candidates.sort(key=lambda r: (r.get("velocity_score") or 0.0) * (r.get("micro_mult") or 1.0), reverse=True)
+        watchlist = [r for r in results if r and not r.get("passes") and (r.get("velocity_score") or 0.0) >= _min_raw]
+        watchlist.sort(key=lambda r: (r.get("velocity_score") or 0.0) * (r.get("micro_mult") or 1.0), reverse=True)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["symbol"], "TEST2")
+        self.assertEqual(len(watchlist), 1)
+        self.assertEqual(watchlist[0]["symbol"], "TEST3")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
