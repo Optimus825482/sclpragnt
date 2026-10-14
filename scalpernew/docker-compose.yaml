@@ -32,6 +32,21 @@ services:
         limits:
           memory: 1G
           cpus: "1.0"
+    # 2026-10-14 (RAM/performans): kök stack ile aynı Postgres profili —
+    # shared_buffers=256MB, work_mem=8MB, maintenance_work_mem=64MB,
+    # wal_compression=on. 1G konteyner bütçesine göre.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - wal_compression=on
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-scalpernew}
       POSTGRES_USER: ${POSTGRES_USER:-scalpernew}
@@ -126,18 +141,21 @@ services:
     container_name: scalpernew-frontend
     restart: unless-stopped
     stop_grace_period: 5s
-    mem_limit: 1g
-    cpus: 1.0
+    # 2026-10-14 (RAM): Next standalone ~150-300MB gerçek kullanım →
+    # 512m cap + Node heap tavanı (384MB).
+    mem_limit: 512m
+    cpus: 0.5
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: "1.0"
+          memory: 512M
+          cpus: "0.5"
     depends_on:
       backend:
         condition: service_started
     environment:
       BACKEND_ORIGIN: http://backend:8004
+      NODE_OPTIONS: --max-old-space-size=384
     expose:
       - "3055"
     healthcheck:
@@ -157,13 +175,14 @@ services:
     container_name: scalpernew-gateway
     restart: unless-stopped
     stop_grace_period: 5s
-    mem_limit: 1g
-    cpus: 1.0
+    # 2026-10-14 (RAM): nginx gerçek kullanım <50MB → 256m / 0.5 CPU.
+    mem_limit: 256m
+    cpus: 0.5
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: "1.0"
+          memory: 256M
+          cpus: "0.5"
     depends_on:
       frontend:
         condition: service_started

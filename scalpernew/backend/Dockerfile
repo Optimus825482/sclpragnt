@@ -40,4 +40,7 @@ EXPOSE 8004
 # --backlog=4096 startup sırasında biriken bağlantı kuyruğunu genişletir
 # (varsayılan 2048 yetersiz kalabilir; kabul bekleyen istekler düşer → 502).
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004", "--timeout-keep-alive", "65", "--backlog", "4096"]
+# 2026-10-14 (RAM/performans optimizasyonu — kök backend Dockerfile ile aynı):
+# --loop uvloop + --http httptools (uvicorn[standard] içinde zaten var) ve
+# --no-access-log (erişim logu gateway'de tutuluyor; backend'de tekrar gereksiz).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004", "--timeout-keep-alive", "65", "--backlog", "4096", "--loop", "uvloop", "--http", "httptools", "--no-access-log"]

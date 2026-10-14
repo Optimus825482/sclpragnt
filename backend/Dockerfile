@@ -40,4 +40,11 @@ EXPOSE 8004
 # --backlog=4096 startup sırasında biriken bağlantı kuyruğunu genişletir
 # (varsayılan 2048 yetersiz kalabilir; kabul bekleyen istekler düşer → 502).
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004", "--timeout-keep-alive", "65", "--backlog", "4096"]
+# 2026-10-14 (RAM/performans optimizasyonu):
+#  * --loop uvloop: uvicorn[standard] zaten uvloop içerir; libuv tabanlı
+#    event loop istek/WS fanout'ta asyncio varsayılanından belirgin hızlıdır.
+#  * --http httptools: HTTP ayrıştırıcı C ile yazılmış; yüksek istek hacminde
+#    CPU kazandırır. (İkisi de requirements'ta zaten var, yeni bağımlılık YOK.)
+#  * --no-access-log: erişim logu gateway (nginx) tarafında zaten tutuluyor;
+#    backend'de tekrarı yüksek tarama trafiğinde gereksiz IO + RAM demekti.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004", "--timeout-keep-alive", "65", "--backlog", "4096", "--loop", "uvloop", "--http", "httptools", "--no-access-log"]

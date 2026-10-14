@@ -27,6 +27,24 @@ services:
         limits:
           memory: 1G
           cpus: "1.0"
+    # 2026-10-14 (RAM/performans): 1G konteyner bütçesine göre ayarlanmış
+    # Postgres bellek profili. shared_buffers 256MB (RGZ: konteyner cap'inin
+    # ~%25'i), work_mem 8MB (sorgu başına sıralama/hash bütçesi),
+    # maintenance_work_mem 64MB (indeks/vacuum), wal_compression ile WAL
+    # disk yazısı küçülür. Bu olmayan ayarlarla Postgres varsayılanları
+    # (shared_buffers=128MB, work_mem=4MB) küçükte kalıyordu.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - wal_compression=on
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-scalper}
       POSTGRES_USER: ${POSTGRES_USER:-scalper}
@@ -201,14 +219,17 @@ services:
         NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
     restart: unless-stopped
     stop_grace_period: 5s
-    # #74: Next.js build sürecinde (node) ve çalışırken 1G / 1 CPU.
-    mem_limit: 1g
-    cpus: 1.0
+    # 2026-10-14 (RAM): Next standalone gerçek kullanım ~150-300MB.
+    # 1G→512m cap + Node heap tavanı (384MB) — heap sızınsa bile konteyneri
+    # şişirmeden yeniden başlatır. Build süreci Dockerfile'da ayrı aşamadadır,
+    # runtime cap'i build'i etkilemez.
+    mem_limit: 512m
+    cpus: 0.5
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: "1.0"
+          memory: 512M
+          cpus: "0.5"
     depends_on:
       backend:
         # The UI shell does not require the API to be healthy at process
@@ -216,6 +237,7 @@ services:
         condition: service_started
     environment:
       NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
+      NODE_OPTIONS: --max-old-space-size=384
     expose:
       - "3004"
     healthcheck:
@@ -239,18 +261,21 @@ services:
         NEXT_PUBLIC_API_URL: /yeni-arayuz
     restart: unless-stopped
     stop_grace_period: 5s
-    mem_limit: 1g
-    cpus: 1.0
+    # 2026-10-14 (RAM): frontend ile aynı profil — 512m cap + Node heap
+    # tavanı. Next standalone gerçek kullanım ~150-300MB.
+    mem_limit: 512m
+    cpus: 0.5
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: "1.0"
+          memory: 512M
+          cpus: "0.5"
     depends_on:
       backend:
         condition: service_started
     environment:
       BACKEND_ORIGIN: http://backend:8004
+      NODE_OPTIONS: --max-old-space-size=384
     expose:
       - "3055"
     healthcheck:
@@ -271,13 +296,14 @@ services:
     stop_grace_period: 5s
     # #74: nginx düşük ayak izli; 1G üst sınır yeterli (rate-limit zone'ları
     # 10m × 3 = ~30 MB). 1 CPU.
-    mem_limit: 1g
-    cpus: 1.0
+    # 2026-10-14 (RAM): nginx gerçek kullanım <50MB → 256m / 0.5 CPU yeterli.
+    mem_limit: 256m
+    cpus: 0.5
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: "1.0"
+          memory: 256M
+          cpus: "0.5"
     depends_on:
       frontend:
         condition: service_started
