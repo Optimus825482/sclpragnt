@@ -15,11 +15,9 @@ frontend/.next/
 frontend-odak/
 scalperintelligent/node_modules/
 scalperintelligent/.next/
-# scalpernew izole stack'i: yerel build artıkları asla commit edilmez
-scalpernew/backend/venv/
-scalpernew/backend/__pycache__/
-scalpernew/frontend/node_modules/
-scalpernew/frontend/.next/
+# scalpernew ayrı repoya taşındı (Optimus825482/scalpernew); burada yalnızca
+# silinemeyen önbellek artıkları kaldı → git tamamen yok sayar.
+scalpernew/
 *.pyc
 *.tsbuildinfo
 
