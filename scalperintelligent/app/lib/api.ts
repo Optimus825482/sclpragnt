@@ -13,9 +13,13 @@
 const base = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 
 export const API_BASE = base;
+// WS her zaman GATEWAY'in kök `/ws` ucuna bağlanır (backend WS, nginx'te
+// hardened blok). API base'i (basePath, örn. /yeni-arayuz) KULLANILMAZ:
+// basePath altındaki `/yeni-arayuz/ws` nginx'te Next.js konteynerine gider,
+// Next.js WS proxy'leyemediği için bağlantı sürekli düşer (2026-10-14).
 export const WS_URL =
   process.env.NEXT_PUBLIC_WS_URL ||
-  `${base || (typeof window !== "undefined" ? window.location.origin : "")}`
+  `${typeof window !== "undefined" ? window.location.origin : ""}`
     .replace(/^http/, "ws")
     .replace(/\/$/, "") + "/ws";
 
