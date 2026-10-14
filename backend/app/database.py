@@ -7717,3 +7717,153 @@ async def get_portfolio_equity_curve():
             "daily": [{"day": d, **v} for d, v in sorted(daily.items())][-60:],
         }
     return await _run_db(op)
+
+
+# ---------------------------------------------------------------------------
+# BİRLEŞİK ADAY SONUÇ JOURNAL'I (Faz 2) — Migration 013_unified_outcomes.sql.
+# Amaç: pulse/snapback/short-squeeze/master-surge ve birleşik scan_score'un
+# GERÇEK isabetini ölçmek. Placeholder stili: `?` (PostgresCompat → %s).
+# ---------------------------------------------------------------------------
+
+async def save_unified_candidates(rows: list[dict]) -> int:
+    """Birleşik tarama adaylarını journal'a yazar; (symbol, horizon_minutes,
+    detected_at) üçlüsünde duplicate VARSA eklemez. Dönen değer: eklenen satır."""
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    if not rows:
+        return 0
+
+    def op(conn):
+        inserted = 0
+        for row in rows:
+            symbol = str(row.get("symbol") or "").upper().strip()
+            entry = row.get("entry_price")
+            try:
+                entry = float(entry) if entry is not None else None
+            except (TypeError, ValueError):
+                entry = None
+            if not symbol or entry is None or entry <= 0:
+                continue
+            try:
+                horizon = int(row.get("horizon_minutes") or 0)
+            except (TypeError, ValueError):
+                horizon = 0
+            try:
+                detected = float(row.get("detected_at") or 0)
+            except (TypeError, ValueError):
+                detected = 0.0
+            if detected <= 0:
+                continue
+            sources = row.get("sources")
+            if not isinstance(sources, str):
+                sources = _json_safe_dumps(list(sources or []))
+            score = row.get("scan_score")
+            ceiling = row.get("ceiling_pct")
+            target = row.get("target_pct")
+            cur = conn.execute(
+                """INSERT INTO unified_candidate_outcomes
+                    (symbol, horizon_minutes, sources, scan_score, entry_price,
+                     ceiling_pct, target_pct, detected_at)
+                SELECT ?,?,?,?,?,?,?,?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM unified_candidate_outcomes
+                    WHERE symbol=? AND horizon_minutes=? AND detected_at=?)""",
+                (symbol, horizon, sources,
+                 float(score) if score is not None else None,
+                 entry,
+                 float(ceiling) if ceiling is not None else None,
+                 float(target) if target is not None else None,
+                 detected,
+                 symbol, horizon, detected))
+            inserted += int(cur.rowcount or 0)
+        conn.commit()
+        return inserted
+    return await _run_db(op)
+
+
+async def get_unified_pending_outcomes(older_than_sec: float, limit: int = 200) -> list[dict]:
+    """Sonucu henüz doldurulmamış, en az `older_than_sec` eski satırlar (eskiden yeniye)."""
+    cutoff = time.time() - max(0.0, float(older_than_sec))
+
+    def op(conn):
+        rows = conn.execute(
+            "SELECT id, symbol, horizon_minutes, sources, scan_score, entry_price, "
+            "ceiling_pct, target_pct, detected_at FROM unified_candidate_outcomes "
+            "WHERE outcome_filled_at IS NULL AND detected_at <= ? "
+            "ORDER BY detected_at ASC LIMIT ?",
+            (cutoff, max(1, min(2000, int(limit))))).fetchall()
+        return [dict(r) for r in rows]
+    return await _run_db(op)
+
+
+async def update_unified_outcome(row_id: int, mfe_pct, mae_pct, hit: bool) -> None:
+    """Bir journal satırının MFE/MAE/hit sonucunu mühürler (`outcome_filled_at` set)."""
+
+    def op(conn):
+        conn.execute(
+            "UPDATE unified_candidate_outcomes SET mfe_pct=?, mae_pct=?, hit=?, "
+            "outcome_filled_at=? WHERE id=?",
+            (float(mfe_pct) if mfe_pct is not None else None,
+             float(mae_pct) if mae_pct is not None else None,
+             bool(hit), time.time(), int(row_id)))
+        conn.commit()
+    await _run_db(op)
+
+
+async def get_unified_outcome_stats(days: int = 14) -> dict:
+    """Son N günün DOLU (mühürlü) journal satırlarından isabet özeti.
+
+    Genel: {measured, hit_rate, avg_mfe_pct, avg_mae_pct}. `by_source`: her
+    kaynak için ayrı kırılım — sources JSON'u parse edilir ve bir satır KENDİ
+    kaynaklarının HER BİRİNE kâra katılır (çok kaynaklı aday çok kaynağa sayılır).
+    """
+    since = time.time() - max(0.0, float(days)) * 86400.0
+
+    def op(conn):
+        rows = conn.execute(
+            "SELECT sources, mfe_pct, mae_pct, hit FROM unified_candidate_outcomes "
+            "WHERE outcome_filled_at IS NOT NULL AND detected_at >= ? "
+            "ORDER BY detected_at DESC", (since,)).fetchall()
+        measured = hits = 0
+        mfe_values: list[float] = []
+        mae_values: list[float] = []
+        by_source: dict[str, list[tuple[float, bool]]] = {}
+        for row in rows:
+            item = dict(row)
+            mfe = item.get("mfe_pct")
+            if mfe is None:
+                continue
+            mfe = float(mfe)
+            measured += 1
+            mfe_values.append(mfe)
+            if item.get("mae_pct") is not None:
+                mae_values.append(float(item["mae_pct"]))
+            hit = bool(item["hit"]) if item.get("hit") is not None else False
+            if hit:
+                hits += 1
+            try:
+                raw_sources = item.get("sources")
+                src_list = (json.loads(raw_sources) if isinstance(raw_sources, str)
+                            else list(raw_sources or []))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                src_list = []
+            for src in src_list:
+                by_source.setdefault(str(src), []).append((mfe, hit))
+
+        def _avg(values):
+            return round(sum(values) / len(values), 3) if values else None
+
+        return {
+            "days": float(days),
+            "measured": measured,
+            "hit_rate": round(100.0 * hits / measured, 2) if measured else None,
+            "avg_mfe_pct": _avg(mfe_values),
+            "avg_mae_pct": _avg(mae_values),
+            "by_source": [
+                {"source": src, "measured": len(entries),
+                 "hit_rate": round(100.0 * sum(1 for _m, h in entries if h) / len(entries), 2)
+                 if entries else None,
+                 "avg_mfe_pct": _avg([m for m, _h in entries])}
+                for src, entries in sorted(by_source.items())
+            ],
+        }
+    return await _run_db(op)

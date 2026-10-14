@@ -634,6 +634,11 @@ def test_daily_rising_state_fallback_does_not_persist_scan(monkeypatch):
     monkeypatch.setattr(mo, "_ticker_price", lambda symbol: None)
     monkeypatch.setattr(mo.unified_signals, "enrich_candidates", lambda rows: [])
     monkeypatch.setattr(rising_signals, "detect_rising_candidates", lambda: [])
+    # 2026-10-14: VELOCITY_EXTRA_HORIZONS_ENABLED varsayılanı "false" oldu
+    # (30/60 dk pump-and-fade kanıtı). Testin asıl amacı salt-okunur fallback
+    # kayıt yapmamalı; 30/60 ufuk kapsamını korumak için ufuk listesi sabitlenir.
+    from app.routers import velocity as _vel_mod
+    monkeypatch.setattr(_vel_mod, "_active_horizons", lambda: [5, 15, 30, 60])
 
     rows = asyncio.run(mo._combined_scan_rows())
     assert [(candidate["symbol"], candidate["horizon_minutes"]) for candidate in rows] == [

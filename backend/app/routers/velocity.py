@@ -516,10 +516,19 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     _pool_set: set[str] = set()
     pool_source: dict[str, str] = {}
     _change_24h: dict[str, float] = {}
+    # Faz 1.4 (radar analizi 2026-10-14): 24s quote hacmi haritası — likidite
+    # tabanı filtresi scan_one başında bedava eler (kline isteği harcamadan).
+    _quote_vol_24h: dict[str, float] = {}
     for _row in (all_ticker_rows or []):
         try:
             _sym = str(_row.get("symbol") or "").upper()
             _chg = float(_row.get("priceChangePercent"))
+            try:
+                _qv = float(_row.get("quoteVolume") or 0)
+                if _qv > 0:
+                    _quote_vol_24h[_sym] = _qv
+            except (TypeError, ValueError):
+                pass
         except (TypeError, ValueError, AttributeError):
             continue
         if _sym and _sym not in _change_24h:
@@ -585,6 +594,18 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
 
     async def scan_one(symbol: str) -> dict | None:
         async with sem:
+            # Faz 1.4 (radar analizi 2026-10-14): LİKİDİTE TABANI — 24s quote
+            # hacmi tabanın altındaysa sembol P&D/wash-trade havuzuna girer
+            # (NBER w30783: raporlanan hacmin büyük kısmı şüpheli olabilir).
+            # Kline isteği HARCANMADAN elenir. Veri YOKSA (ticker eksik) tarama
+            # devam eder — fail-open, yalnız bilinen düşük hacim elenir.
+            _qv = _quote_vol_24h.get(symbol)
+            if _qv is not None and _qv < config.VELOCITY_MIN_QUOTE_VOL_24H:
+                return {"symbol": symbol, "price": None, "passes": False,
+                        "block_reason": f"likidite_tabani:{_qv:.0f}<{config.VELOCITY_MIN_QUOTE_VOL_24H:.0f}",
+                        "horizon_minutes": horizon_minutes,
+                        "pool_source": pool_source.get(symbol, "unknown"),
+                        "quote_vol_24h": round(_qv, 0)}
             try:
                 rows = await _fetch_cached(symbol, "1m", 60)
             except Exception:
@@ -1077,6 +1098,86 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # gerçek MFE yetişemiyordu. ML tahmini hedef belirlemede (dynamic_target_pct
             # ml_pct parametresi) hâlâ kullanılır; skoru etkilemez.
             velocity_score = round(velocity_score, 2)  # cap kaldirildi (2026-09-07)
+
+            # ---- RADAR GÜÇLENDİRME (Faz 1, 2026-10-14; docs/radar-improvement-analysis.md) ----
+            # Skor çarpanları SIRALAMA/eşik tarafını etkiler; yapısal `passes`
+            # kapısı bu bloktan ÖNCE hesaplandığı için değişmez. Tüm bulgular
+            # `radar` alanında raporlanır (UI/journal açıklayabilir).
+            _radar: dict = {}
+            # 1.2 TAKER TEYİDİ: son 10 kapanmış 1m barda agresif alıcı payı
+            # (takerBuyBaseVolume[9] / volume[5]). Yükselişte alıcı payı zayıfsa
+            # (≤0.45) skor cezalanır, güçlüyse (≥0.58) küçük bonus. Eski 9-sütun
+            # kline verisinde taker alanı yoktur → teyit yapılmaz (fail-open).
+            if config.VELOCITY_TAKER_CONFIRM_ENABLED and len(rows) >= 10:
+                try:
+                    _win = rows[-10:]
+                    _vol_sum = sum(float(r[5]) for r in _win)
+                    if _vol_sum > 0 and all(len(r) > 9 for r in _win):
+                        _taker_ratio = sum(float(r[9]) for r in _win) / _vol_sum
+                        _radar["taker_buy_ratio"] = round(_taker_ratio, 3)
+                        if _taker_ratio >= config.VELOCITY_TAKER_STRONG_RATIO:
+                            velocity_score = round(velocity_score * config.VELOCITY_TAKER_STRONG_MULT, 2)
+                            _radar["taker_confirm"] = "strong"
+                        elif _taker_ratio <= config.VELOCITY_TAKER_WEAK_RATIO:
+                            velocity_score = round(velocity_score * config.VELOCITY_TAKER_WEAK_MULT, 2)
+                            _radar["taker_confirm"] = "weak"
+                except (TypeError, ValueError, IndexError) as exc:
+                    logger.debug("taker teyidi %s: %s", symbol, exc)
+            # 1.1 REJİM KAPISI: Choppiness Index (10 bar) > 61.8 VE 15m ADX
+            # güçsüzse (<20 ya da yok) piyasa testere → trend sinyal beklentisi
+            # düşer; skor çarpanla kırılır (sinyal silinmez, flag raporlanır).
+            if config.VELOCITY_REGIME_GATE_ENABLED and len(closes) >= 10:
+                try:
+                    _n = 10
+                    _hs = highs[-_n:]
+                    _ls = lows[-_n:]
+                    _cs = closes[-_n:]
+                    _tr_sum = sum(max(_hs[k] - _ls[k], abs(_hs[k] - _cs[k - 1]),
+                                      abs(_ls[k] - _cs[k - 1])) for k in range(1, _n))
+                    _rng = max(_hs) - min(_ls)
+                    if _tr_sum > 0 and _rng > 0:
+                        _choppy = 100.0 * math.log10(_tr_sum / _rng) / math.log10(_n)
+                        _radar["choppiness_10"] = round(_choppy, 1)
+                        _adx_strong = adx_14 is not None and adx_14 >= config.VELOCITY_REGIME_CHOP_ADX_MAX
+                        if _choppy > config.VELOCITY_REGIME_CHOPPINESS_MAX and not _adx_strong:
+                            velocity_score = round(velocity_score * config.VELOCITY_REGIME_CHOP_SCORE_MULT, 2)
+                            _radar["regime_chop"] = True
+                except (TypeError, ValueError) as exc:
+                    logger.debug("rejim kapısı %s: %s", symbol, exc)
+            # 1.4 GEÇ FAZ: 24s değişim parabolikse (≥40%) kalan yükseliş düşük —
+            # yeni long sinyali cezalanır (P&D literatürü: geç giren ortalama
+            # kaybeder; Dhawan&Putniş). Sinyal silinmez, etiketlenir.
+            _chg24 = _change_24h.get(symbol)
+            if _chg24 is not None and _chg24 >= config.VELOCITY_LATE_PHASE_CHANGE_PCT:
+                velocity_score = round(velocity_score * config.VELOCITY_LATE_PHASE_SCORE_MULT, 2)
+                _radar["late_phase"] = True
+            # 1.4 SPREAD FAIL-CLOSED: orderflow anlık görüntüsü YOKSA aday kör
+            # geçmesin; maliyet belirsizliği skorda görünür ceza olsun
+            # (eski davranış: spread None → kontrol yok, tam skor).
+            if config.VELOCITY_SPREAD_FAIL_CLOSED and spread_pct is None:
+                velocity_score = round(velocity_score * config.VELOCITY_SPREAD_UNKNOWN_SCORE_MULT, 2)
+                _radar["spread_unknown"] = True
+            # Faz 3.5 EMİR DEFTERİ DENGESİZLİĞİ: (bid−ask)/(bid+ask). Pozitif
+            # değer alış derinliği baskınlığı; sıralama tie-breaker'ı olarak
+            # birleşik taramada kullanılır (spoofing riski: sadece tie-break).
+            try:
+                _bq = float(flow_snap.get("bid_qty") or 0)
+                _aq = float(flow_snap.get("ask_qty") or 0)
+                if _bq > 0 and _aq > 0:
+                    _radar["book_imbalance"] = round((_bq - _aq) / (_bq + _aq), 3)
+            except (TypeError, ValueError):
+                pass
+            # 1.3 ZİRVE-YAKINLIK (George&Hwang 2004): mevcut 1m pencerenin
+            # (≤60 bar ≈ 1 saat) aralık konumu (0=dip, 1=tepe). ≥0.9 tepe
+            # yenileme/kırılım bölgesi; birleşik taramada 'proximity' ailesi.
+            try:
+                _hi = max(highs[-60:])
+                _lo = min(lows[-60:])
+                if _hi - _lo > 0:
+                    _radar["range_pos_60"] = round((price - _lo) / (_hi - _lo), 3)
+            except (TypeError, ValueError):
+                pass
+
             return {"symbol": symbol, "price": price, "volume_ratio": round(volume_ratio, 2),
                     "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
@@ -1127,6 +1228,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "ceiling_price": ceiling_price,
                     "base_hit_pct": VELOCITY_BASE_RATE_PCT,
                     "calibrated_hit_pct": VELOCITY_CALIBRATED_HIT_PCT if passes else None,
+                    # Radar güçlendirme bulguları (Faz 1, 2026-10-14): taker
+                    # payı, choppiness, rejim/geç faz/spread bayrakları ve emir
+                    # defteri dengesizliği — UI ve outcome journal açıklayıcılığı.
+                    "radar": _radar,
                     "last_closed_at": rows[-1][0]}
 
     results = await asyncio.gather(*(scan_one(s) for s in pool))

@@ -264,8 +264,57 @@ class Config:
     # UZUN UFUK (2026-10-13): 30dk/60dk profilleri. Ufuk büyüdükçe tutma süresi
     # de uzamalı (yoksa 60dk hedefi 30dk'da kesilir). Bayrak kapalıysa yalnız
     # 5dk/15dk taranır — davranış öncekiyle BİREBİR aynı.
+    # 2026-10-14 (radar analizi, docs/radar-improvement-analysis.md): 30/60 dk
+    # profillerinde MAE>MFE → pump-and-fade kanıtlandı (velocity.py profil
+    # yorumu); varsayılan KAPALI. Kanıtlanmış peak-capture çıkışı devreye
+    # girmeden yalnız bilinçli env ile açılmalı.
     VELOCITY_EXTRA_HORIZONS_ENABLED = os.getenv(
-        "VELOCITY_EXTRA_HORIZONS_ENABLED", "true").lower() == "true"
+        "VELOCITY_EXTRA_HORIZONS_ENABLED", "false").lower() == "true"
+    # --- RADAR GÜÇLENDİRME (2026-10-14, Faz 1) -------------------------------
+    # 1.1 REJİM KAPISI: choppiness (+ varsa 15m ADX) chop rejiminde trend
+    # modundaki sinyalleri bastırır; notr mod skorunu çarpanla kırpar.
+    # Literatür: BBW/Choppiness rejim filtresi false-positive'i en ucuz düşüren
+    # AND gate'tir (meta-labeling çalışmaları).
+    VELOCITY_REGIME_GATE_ENABLED = os.getenv(
+        "VELOCITY_REGIME_GATE_ENABLED", "true").lower() == "true"
+    VELOCITY_REGIME_CHOPPINESS_MAX = float(os.getenv("VELOCITY_REGIME_CHOPPINESS_MAX", "61.8"))
+    VELOCITY_REGIME_CHOP_ADX_MAX = float(os.getenv("VELOCITY_REGIME_CHOP_ADX_MAX", "20.0"))
+    VELOCITY_REGIME_CHOP_SCORE_MULT = float(os.getenv("VELOCITY_REGIME_CHOP_SCORE_MULT", "0.5"))
+    # 1.2 TAKER TEYİDİ: kline takerBuyBaseVolume (index 9) ile agresif alıcı
+    # payı. Yükseliş hareketinde taker alım payı zayıfsa (≤0.45) skor cezalanır,
+    # güçlüyse (≥0.58) küçük teyit bonusu.
+    VELOCITY_TAKER_CONFIRM_ENABLED = os.getenv(
+        "VELOCITY_TAKER_CONFIRM_ENABLED", "true").lower() == "true"
+    VELOCITY_TAKER_STRONG_RATIO = float(os.getenv("VELOCITY_TAKER_STRONG_RATIO", "0.58"))
+    VELOCITY_TAKER_STRONG_MULT = float(os.getenv("VELOCITY_TAKER_STRONG_MULT", "1.05"))
+    VELOCITY_TAKER_WEAK_RATIO = float(os.getenv("VELOCITY_TAKER_WEAK_RATIO", "0.45"))
+    VELOCITY_TAKER_WEAK_MULT = float(os.getenv("VELOCITY_TAKER_WEAK_MULT", "0.95"))
+    # 1.4 P&D / LİKİDİTE HİJYENİ:
+    # - 24s quote hacim tabanı (TRY): altındaki semboller taramaya hiç alınmaz
+    #   (wash-trade/P&D havuzu filtresi; NBER w30783).
+    VELOCITY_MIN_QUOTE_VOL_24H = float(os.getenv("VELOCITY_MIN_QUOTE_VOL_24H", "1000000"))
+    # - Geç faz etiketi: 24s değişim çok yüksekse (parabolik pump) yeni long
+    #   sinyali düşürülür (P&D literatürü: geç giren ortalama kaybeder).
+    VELOCITY_LATE_PHASE_CHANGE_PCT = float(os.getenv("VELOCITY_LATE_PHASE_CHANGE_PCT", "40.0"))
+    VELOCITY_LATE_PHASE_SCORE_MULT = float(os.getenv("VELOCITY_LATE_PHASE_SCORE_MULT", "0.6"))
+    # - Spread fail-closed: spread verisi YOKSA aday kör geçmesin; skor
+    #   görünür biçimde kırılır (`spread_unknown` alanıyla raporlanır).
+    VELOCITY_SPREAD_FAIL_CLOSED = os.getenv(
+        "VELOCITY_SPREAD_FAIL_CLOSED", "true").lower() == "true"
+    VELOCITY_SPREAD_UNKNOWN_SCORE_MULT = float(os.getenv("VELOCITY_SPREAD_UNKNOWN_SCORE_MULT", "0.85"))
+    # Faz 3.4: global radar geç faz koruması — global 24s değişimi bu eşiği
+    # aşmışsa sinyal "geç faz" kabul edilir, TR bildirimine/işlemine dönmez.
+    GLOBAL_LATE_PHASE_CHANGE_PCT = float(os.getenv("GLOBAL_LATE_PHASE_CHANGE_PCT", "25.0"))
+    # Faz 3.3: SQUEEZE TEYİDİ (OI delta + funding trendi). OI 1 saatte +%10+
+    # ise short sıkışması KAPANIYOR demektir (teyit, skor ×1.25); OI hızla
+    # eriyorsa (≤−%8) squeeze sönmüş olur (skor ×0.7). JFM 2026: funding
+    # gelecekteki spot volatilitesi hakkında ayrı bilgi taşır.
+    SQUEEZE_OI_CONFIRM_ENABLED = os.getenv(
+        "SQUEEZE_OI_CONFIRM_ENABLED", "true").lower() == "true"
+    SQUEEZE_OI_STRONG_PCT = float(os.getenv("SQUEEZE_OI_STRONG_PCT", "10.0"))
+    SQUEEZE_OI_FADE_PCT = float(os.getenv("SQUEEZE_OI_FADE_PCT", "-8.0"))
+    SQUEEZE_OI_CONFIRM_MULT = float(os.getenv("SQUEEZE_OI_CONFIRM_MULT", "1.25"))
+    SQUEEZE_OI_FADE_MULT = float(os.getenv("SQUEEZE_OI_FADE_MULT", "0.7"))
     # Ufuk → maksimum tutma (dk). Ufuk sonundaki getiri NEGATİF olduğu için
     # (pump-and-fade) çıkış peak-capture'a (TP/trailing) dayanır; bu süre üst sınır.
     VELOCITY_MAX_HOLD_BY_HORIZON = {

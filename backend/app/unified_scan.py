@@ -80,13 +80,42 @@ def normalize_score(raw_score: float) -> float:
     return _panel_from_raw(raw_score)
 
 
+def _radar_family_bonus(c: dict) -> tuple[float, list[str]]:
+    """Faz 3.2 ENSEMBLE AİLE BONUSU (2026-10-14, docs/radar-improvement-analysis.md).
+
+    Korelasyonsuz 3 kanıt ailesi, her biri +2 (toplam cap +6):
+      * flow      : taker alıcı payı güçlü VEYA emir defteri alış baskın (>0.15)
+      * proximity : 1 saatlik aralık konumu ≥0.9 (tepe yenileme bölgesi;
+                    George&Hwang 2004 zirve-yakınlık etkisi)
+      * clean     : rejim chop DEĞİL VE geç faz DEĞİL VE spread bilinmiyor DEĞİL
+    Kanıt YOKSA (sentetik/test satırlarında `radar` alanı yoktur) bonus 0 —
+    mevcut puanlama davranışı birebir korunur.
+    """
+    radar = c.get("radar") if isinstance(c.get("radar"), dict) else {}
+    if not radar:
+        return 0.0, []
+    bonus = 0.0
+    fam: list[str] = []
+    if radar.get("taker_confirm") == "strong" or float(radar.get("book_imbalance") or 0) > 0.15:
+        bonus += 2.0
+        fam.append("flow")
+    if float(radar.get("range_pos_60") or 0) >= 0.9:
+        bonus += 2.0
+        fam.append("proximity")
+    if not radar.get("regime_chop") and not radar.get("late_phase") and not radar.get("spread_unknown"):
+        bonus += 2.0
+        fam.append("clean")
+    return min(6.0, bonus), fam
+
+
 def _combined_quality_score(c: dict) -> tuple[float, int, int]:
     """Kombine KALİTE PUANI (0-99, doygunluğa GİRMEZ).
 
-    Üç bileşen:
+    Bileşenler:
       * velocity panel skoru (0-100)           : ağırlık %60
       * çok-kaynak teyidi (0..3 motor)         : her kaynak +8 (max +24)
       * Master Surge katman sayısı (0..4)      : her katman +4 (max +16)
+      * radar aile bonusu (Faz 3.2, 0..+6)     : kanıta dayalı ensemble
     Üst sınır 99 → "100 = kesin garanti" yanılgısı oluşmaz.
 
     Döner: (puan, teyit_motor_sayısı, surge_katman_sayısı).
@@ -95,7 +124,8 @@ def _combined_quality_score(c: dict) -> tuple[float, int, int]:
     sources = len([s for s in (c.get("unified_sources") or []) if s])
     ms = c.get("master_surge") if isinstance(c.get("master_surge"), dict) else {}
     layers = int(ms.get("confluence_count") or 0)
-    score = panel * 0.6 + min(3, sources) * 8 + min(4, layers) * 4
+    fam_bonus, _fam = _radar_family_bonus(c)
+    score = panel * 0.6 + min(3, sources) * 8 + min(4, layers) * 4 + fam_bonus
     return round(min(99.0, max(0.0, score)), 1), sources, layers
 
 
@@ -364,6 +394,7 @@ async def combined_scan_rows() -> list[dict]:
             except (TypeError, ValueError):
                 mtf = None
         quality, tc_sources, tc_layers = _combined_quality_score(c)
+        _fam_bonus, _fam_list = _radar_family_bonus(c)
         signal_sources = list(dict.fromkeys(
             [str(source) for source in (c.get("signal_sources") or []) if source]
             + [str(source) for source in (c.get("unified_sources") or []) if source]
@@ -403,11 +434,17 @@ async def combined_scan_rows() -> list[dict]:
             "atr_pct_15m": atr_pct,
             "master_surge_block": (c.get("master_surge") or {}).get("block_reason") if isinstance(c.get("master_surge"), dict) else None,
             "confluence_4way": bool(c.get("confluence_4way")),
+            # Radar güçlendirme (Faz 1/3, 2026-10-14): kanıt bayrakları + aile
+            # listesi + emir defteri dengesizliği (sıralama tie-breaker'ı).
+            "radar": c.get("radar"),
+            "radar_families": _fam_list,
             "_hit": hit,
         }
         out.append(row)
 
-    out.sort(key=lambda r: (float(r.get("scan_score") or 0), _is_both(r)), reverse=True)
+    out.sort(key=lambda r: (float(r.get("scan_score") or 0), _is_both(r),
+                            (r.get("radar") or {}).get("book_imbalance") or 0.0),
+             reverse=True)
     return out
 
 
@@ -417,5 +454,6 @@ __all__ = [
     "_raw_from_panel",
     "_panel_from_raw",
     "_combined_quality_score",
+    "_radar_family_bonus",
     "combined_scan_rows",
 ]

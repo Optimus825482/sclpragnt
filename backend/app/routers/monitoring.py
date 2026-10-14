@@ -2974,6 +2974,44 @@ async def _combined_scan_rows() -> list[dict]:
     return await _unified_scan()
 
 
+# --- BİRLEŞİK ADAY SONUÇ JOURNAL'I (Faz 2) --------------------------------
+# unified_candidate_outcomes: her birleşik taramanın satırları journal'a yazılır,
+# ufku dolanlar 1m mumlarla MFE/MAE/hit ile doldurulur. Ölçüm kanalı TAMAMEN
+# pasiftir: hatalar yutulur (logger.debug), tarama/bildirim davranışı değişmez.
+_unified_outcome_scan_cache: dict = {"generated_at": 0.0, "recorded_at": 0.0, "rows": []}
+
+
+async def _record_unified_outcomes(rows=None) -> int:
+    """Tarama satırlarını unified_outcomes journal'ına kaydet (hata yutar).
+
+    `rows=None` → son taramanın önbellekteki satırları; yalnız HENÜZ
+    kaydedilmemiş bir tarama varsa yazar (aynı tarama iki kez yazılmaz).
+    """
+    try:
+        from app import unified_outcomes
+        cache = _unified_outcome_scan_cache
+        if rows is None:
+            if not cache["rows"] or cache["recorded_at"] >= cache["generated_at"]:
+                return 0
+            rows = cache["rows"]
+        saved = await unified_outcomes.record_scan_rows(rows)
+        cache["recorded_at"] = cache["generated_at"]
+        return int(saved or 0)
+    except Exception as exc:
+        logger.debug("birleşik aday outcome kaydı: %s", exc)
+        return 0
+
+
+async def _fill_unified_outcomes() -> int:
+    """Ufku dolmuş journal satırlarının MFE/MAE/hit sonucunu doldur (hata yutar)."""
+    try:
+        from app import unified_outcomes
+        return int(await unified_outcomes.fill_pending_outcomes() or 0)
+    except Exception as exc:
+        logger.debug("birleşik aday outcome doldurma: %s", exc)
+        return 0
+
+
 async def _persist_combined_scan_rows(rows: list[dict]) -> None:
     """Açıkça stateful kombine gönderimlerinde aday geçmişini cooldown ile yaz."""
     now = time.time()
@@ -3075,6 +3113,10 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
         logger.warning("kombine tarama başarısız: %s", exc)
         return False
     await _persist_combined_scan_rows(cands)
+    # FAZ 2: aynı satırlar birleşik aday outcome journal'ına da yazılır
+    # (duplicate korumalı; hata yutar — gönderim akışını etkilemez).
+    _unified_outcome_scan_cache.update(generated_at=time.time(), rows=cands)
+    await _record_unified_outcomes(cands)
     n = int(cfg.get("top_n", 3) or 3)
     min_score = float(cfg.get("min_score", 10.0))
     # EŞİK HER ADAYA UYGULANIR (kullanıcı geri bildirimi 2026-10-12): eskiden
@@ -3286,6 +3328,11 @@ async def daily_rising_combined_loop():
     startup_attempted = False
     while True:
         try:
+            # FAZ 2 (her tur): yeni tarama satırlarını journal'a kaydet + ufku
+            # dolan bekleyen outcome'ları doldur. İkisi de hata yutar; döngü
+            # bu ölçüm kanalı yüzünden ASLA durmaz.
+            await _record_unified_outcomes()
+            await _fill_unified_outcomes()
             cfg = await combined_rising_settings()
             if cfg.get("enabled"):
                 from app.whatsapp_notify import whatsapp_enabled
@@ -4167,6 +4214,7 @@ async def _short_squeeze_candidates(tr_symbols: list[str]) -> list[dict]:
     tek "Yükseliş Adayları" listesinde birleşebilsin. Sadece `strategy` farklı.
     """
     from app.derivatives_service import scan_short_squeeze
+    from app.config import config as _cfg
     try:
         sq = await scan_short_squeeze(tr_symbols, top_n=20)
     except Exception as exc:
@@ -4193,6 +4241,20 @@ async def _short_squeeze_candidates(tr_symbols: list[str]) -> list[dict]:
             px_f = None
         if not px_f:
             continue
+        # Faz 3.3 (2026-10-14): OI delta + funding trendi teyidi. OI hızla
+        # artıyorsa squeeze teyitli (skor ×1.25), OI eriyorsa sönmüş (×0.7).
+        # Hata/veri yoksa çarpan 1.0 — tarama asla düşmez.
+        _squeeze_confirm: dict = {}
+        _squeeze_mult = 1.0
+        if getattr(_cfg, "SQUEEZE_OI_CONFIRM_ENABLED", True):
+            try:
+                from app.derivatives_service import squeeze_confirmation as _sq_confirm
+                _squeeze_confirm = await _sq_confirm(sym) or {}
+                _squeeze_mult = float(_squeeze_confirm.get("confirm_score_mult") or 1.0)
+            except Exception as exc:
+                logger.debug("squeeze teyidi %s: %s", sym, exc)
+                _squeeze_confirm = {}
+                _squeeze_mult = 1.0
         atr_pct = await _live_atr_pct(sym)
         if not atr_pct:
             continue
@@ -4202,16 +4264,20 @@ async def _short_squeeze_candidates(tr_symbols: list[str]) -> list[dict]:
         except Exception:
             ceil_pct = round(atr_pct * 3.0, 2)
         pot = await _compute_potential(sym, px_f)
+        _sq_score = round(float(s.get("score") or 0) * _squeeze_mult, 1)
         rows.append({
             "symbol": sym, "price": px_f,
             "target_pct": ceil_pct,
             "ceiling_pct": ceil_pct,
             "ceiling_price": round(px_f * (1 + ceil_pct / 100.0), 8),
-            "velocity_score": s.get("score"),
-            "panel_score": normalize_score(s.get("score", 0)),
+            "velocity_score": _sq_score,
+            "panel_score": normalize_score(_sq_score),
             "atr_pct_15m": round(atr_pct, 3),
             "funding_rate_pct": s.get("funding_rate_pct"),
             "funding_state": s.get("funding_state"),
+            "funding_trend": _squeeze_confirm.get("funding_trend"),
+            "oi_change_1h_pct": _squeeze_confirm.get("oi_change_1h_pct"),
+            "squeeze_confirmed": bool(_squeeze_confirm.get("squeeze_confirmed")),
             "derivatives_bias": s.get("derivatives_bias"),
             "short_squeeze_potential": bool(s.get("short_squeeze_potential")),
             "strategy": "short_squeeze",
@@ -4337,6 +4403,23 @@ async def unified_scan_history(request: Request, limit: int = 30):
     username = str(user.get("username") or "").strip().lower()
     rows = await database.list_unified_scan_runs(username, limit=max(1, min(100, limit)))
     return {"runs": rows, "count": len(rows)}
+
+
+@router.get("/api/unified-scan/outcome-stats")
+async def unified_scan_outcome_stats(days: int = 14):
+    """Birleşik aday outcome journal özeti (Faz 2) — salt-okunur.
+
+    pulse/snapback/short-squeeze/master-surge ve birleşik scan_score'un gerçek
+    isabeti: genel {measured, hit_rate, avg_mfe_pct, avg_mae_pct} + kaynak
+    bazında `by_source` kırılımı.
+    """
+    from app import unified_outcomes
+    try:
+        clean_days = max(1, min(90, int(days)))
+    except (TypeError, ValueError):
+        clean_days = 14
+    stats = await unified_outcomes.outcome_stats(days=clean_days)
+    return {"ok": True, **stats}
 
 
 @router.get("/api/user/favorites")

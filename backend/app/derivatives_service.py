@@ -282,3 +282,78 @@ def get_cached_derivatives_intel(symbol: str, max_age_sec: float | None = None) 
     if ttl > 0 and age >= ttl:
         return None
     return cached[1]
+
+
+# ----------------------------------------------------------------------
+# SQUEEZE TEYİDİ (Faz 3.3, 2026-10-14; docs/radar-improvement-analysis.md)
+# OI delta (1 saat, 5m barlar) + funding trendi. Kısa squeeze adayının
+# gerçekten "kalabalık short KAPANIYOR" mu yoksa sönmüş mü olduğunu ayırt
+# eder: OI hızla artıyorsa short pozisyonları hâlâ açılıyor/likidite
+# birikiyor (teyit); OI eriyorsa kısa sıkışma çoktan oynanmış (fade).
+# ----------------------------------------------------------------------
+_OI_HIST_CACHE: dict[str, tuple[float, dict]] = {}
+OI_HIST_TTL_SEC = 300.0  # 5 dk TTL — openInterestHist çağrısını kısıtlar
+
+
+async def squeeze_confirmation(symbol: str) -> dict:
+    """Short-squeeze teyit verisi: OI 1s değişimi + funding trendi.
+
+    DÖNÜŞ: {"oi_change_1h_pct": float|None, "funding_trend": "strengthening"|
+    "easing"|"flat"|None, "confirm_score_mult": float, "squeeze_confirmed": bool}
+    Ağ/listeli olmama durumunda çarpan 1.0 (nötr) döner — tarama asla düşmez.
+    """
+    fut = symbol_to_futures(symbol)
+    now = time.time()
+    cached = _OI_HIST_CACHE.get(fut)
+    if cached and (now - cached[0]) < OI_HIST_TTL_SEC:
+        return cached[1]
+
+    def _fetch_sync():
+        oi_url = f"{FAPI_BASE}/futures/data/openInterestHist?symbol={fut}&period=5m&limit=13"
+        fr_url = f"{FAPI_BASE}/fapi/v1/fundingRate?symbol={fut}&limit=3"
+        return _fetch_fapi_json(oi_url), _fetch_fapi_json(fr_url)
+
+    oi_hist, fr_hist = await asyncio.to_thread(_fetch_sync)
+    result: dict = {"oi_change_1h_pct": None, "funding_trend": None,
+                    "confirm_score_mult": 1.0, "squeeze_confirmed": False}
+    try:
+        if isinstance(oi_hist, list) and len(oi_hist) >= 2:
+            first = float(oi_hist[0].get("sumOpenInterest") or 0)
+            last = float(oi_hist[-1].get("sumOpenInterest") or 0)
+            if first > 0:
+                result["oi_change_1h_pct"] = round((last / first - 1) * 100.0, 2)
+    except (TypeError, ValueError, AttributeError, IndexError):
+        pass
+    try:
+        if isinstance(fr_hist, list) and len(fr_hist) >= 2:
+            rates = [float(r.get("fundingRate") or 0) for r in fr_hist]
+            # Kayıt sırası eskiden yeniye; fonlama daha negatife gidiyorsa
+            # short baskısı güçleniyor (squeeze dinamiği sürüyor).
+            if rates[-1] < rates[-2]:
+                result["funding_trend"] = "strengthening"
+            elif rates[-1] > rates[-2]:
+                result["funding_trend"] = "easing"
+            else:
+                result["funding_trend"] = "flat"
+    except (TypeError, ValueError, AttributeError, IndexError):
+        pass
+
+    oi_chg = result.get("oi_change_1h_pct")
+    if oi_chg is not None:
+        # Eşikler config'ten (SQUEEZE_OI_*): +%10+ → teyit, ≤−%8 → fade.
+        try:
+            from app.config import config as _cfg
+            strong = float(getattr(_cfg, "SQUEEZE_OI_STRONG_PCT", 10.0))
+            fade = float(getattr(_cfg, "SQUEEZE_OI_FADE_PCT", -8.0))
+            confirm_mult = float(getattr(_cfg, "SQUEEZE_OI_CONFIRM_MULT", 1.25))
+            fade_mult = float(getattr(_cfg, "SQUEEZE_OI_FADE_MULT", 0.7))
+        except Exception:
+            strong, fade, confirm_mult, fade_mult = 10.0, -8.0, 1.25, 0.7
+        if oi_chg >= strong:
+            result["confirm_score_mult"] = confirm_mult
+            result["squeeze_confirmed"] = True
+        elif oi_chg <= fade:
+            result["confirm_score_mult"] = fade_mult
+
+    _OI_HIST_CACHE[fut] = (now, result)
+    return result

@@ -127,6 +127,26 @@ async def _scan_once() -> int:
             continue
         detections_seen.add(symbol)
         stype = str(cand.get("signal_type") or "velocity")
+        # Faz 3.4 GEÇ FAZ KORUMASI (2026-10-14, docs/radar-improvement-analysis.md):
+        # Global parite 24s'te çoktan parabolikse (≥ GLOBAL_LATE_PHASE_CHANGE_PCT)
+        # hareket olgunlaşmıştır — TR'ye "yeni sinyal" olarak taşımak geç giren
+        # alıcı üretir. Böyle tespitler işlenmez (lead-lag teyidi zaten residual
+        # >0.35% ile yalnız yansımayan hareketi alır; bu kapı velocity tespitlerini
+        # korur). Bayat ticker verisi korumayı atlar (fail-open, bilgi eksiği).
+        try:
+            _chg = float((cand.get("radar") or {}).get("change_24h")
+                         if isinstance(cand.get("radar"), dict) else None)
+        except (TypeError, ValueError):
+            _chg = None
+        if _chg is None:
+            _chg = cand.get("change_24h")
+        try:
+            if _chg is not None and float(_chg) >= float(
+                    getattr(config, "GLOBAL_LATE_PHASE_CHANGE_PCT", 25.0)):
+                logger.debug("global_radar: geç faz atlandı %s (24s %%%.1f)", symbol, float(_chg))
+                continue
+        except (TypeError, ValueError):
+            pass
         # SKOR ÖLÇEĞİ (2026-10-13 düzeltmesi): `handle_global_detection` artık
         # PANEL (0-100) skoru bekler (eşik kapısı panel ölçeğinde). Velocity
         # adayının `velocity_score`'u HAM ölçektedir → panel'e çevrilir. lead_lag

@@ -84,3 +84,20 @@ planının girdisidir.
 Faz 1 (hızlı kazanç, 1-3+4): filtre tabanlı, sinyal mantığı değişmez, false-positive düşer.
 Faz 2 (ölçüm, 7): hangi motor gerçekten iş yarıyorsa kanıtla; bonusları veriye bağla.
 Faz 3 (mimari, 5+8+6+9+10): negatif EV ufuklar temizlenir, skor motoru ensemble'a geçer.
+
+## UYGULAMA DURUMU (2026-10-14)
+
+| Madde | Durum | Yer |
+|---|---|---|
+| 1 Rejim kapısı | ✅ velocity `_radar` bloğu (Choppiness 10 bar > 61.8 + ADX < 20 → skor ×0.5) | velocity.py, config VELOCITY_REGIME_* |
+| 2 Taker teyidi | ✅ kline[9]/[5] oranı; güçli ×1.05 / zayıf ×0.95 (eski 9-sütun veride fail-open) | velocity.py, VELOCITY_TAKER_* |
+| 3 Zirve-yakınlık | ✅ range_pos_60 (1s aralık konumu) + unified 'proximity' ailesi +2 | velocity.py + unified_scan._radar_family_bonus |
+| 4 P&D hijyeni | ✅ 24s hacim tabanı 1M TRY (kline isteğinden önce eler), geç faz (24s ≥%40 → ×0.6), spread fail-closed (×0.85) | velocity.py, VELOCITY_MIN_QUOTE_VOL_24H vb. |
+| 5 30/60 dk ufuk | ✅ VELOCITY_EXTRA_HORIZONS_ENABLED varsayılanı false (peak-capture kanıtlanınca env ile açılır) | config.py |
+| 6 OI + funding squeeze teyidi | ✅ derivatives_service.squeeze_confirmation (OI 1s Δ ≥%10 → ×1.25, ≤−%8 → ×0.7; funding trendi strengthening/easing) | derivatives_service.py + monitoring._short_squeeze_candidates |
+| 7 Outcome journal | ✅ unified_candidate_outcomes tablosu (migration 013) + döngü içi fill + /api/unified-scan/outcome-stats | unified_outcomes.py, database.py, monitoring.py |
+| 8 Ensemble scorer | ✅ unified _radar_family_bonus: flow/proximity/clean aileleri (+2 each, cap +6); radar verisi yoksa davranış eski | unified_scan.py |
+| 9 Lead-lag teyit konumlandırma | ✅ global radar geç faz kapısı (global 24s ≥%25 → tespit işlenmez); residual filtresi zaten vardı | global_radar.py, GLOBAL_LATE_PHASE_CHANGE_PCT |
+| 10 CVD/book imbalance | ✅ book_imbalance (bid−ask)/(bid+ask) aday `radar` alanında; unified sıralama tie-breaker. CVD zaten microflow micro_mult ile sıralamada | velocity.py + unified_scan.sort |
+
+Tüm yeni eşikler env ile ayarlanabilir, varsayılanlar temkinli. `radar` alanı aday satırlarında taşınır → UI/outcome journal açıklayıcılığı hazır. Doğrulama: test_daily_rising_combined + test_unified_outcomes + velocity testleri geçti (ruff/py_compile temiz).
