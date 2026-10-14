@@ -224,14 +224,6 @@ export default function Sidebar() {
                         </p>
                     </div>
                 )}
-                <a
-                    href="/yeni-arayuz"
-                    onClick={() => setOpen(false)}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-neon-green/40 bg-neon-green/10 px-3 py-3 font-mono text-xs font-bold tracking-wide text-neon-green transition-colors hover:border-neon-green hover:bg-neon-green/20"
-                    title="Scalper Intelligent Trade Systems arayüzünü aç"
-                >
-                    ✨ YENİ ARAYÜZÜ AÇ
-                </a>
             </div>
         </aside>
         {notificationsOpen && <div className="fixed inset-0 z-[100] grid place-items-center bg-black/75 p-4" onClick={() => setNotificationsOpen(false)}>
