@@ -1,0 +1,5224 @@
+import os
+import asyncio
+import functools
+import math
+import time
+import logging
+import subprocess
+import json
+import tempfile
+import csv
+import io
+import random
+import re
+import hmac
+import hashlib
+import uuid
+from collections import deque
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
+from starlette.background import BackgroundTask
+from starlette.datastructures import MutableHeaders
+from fastapi.middleware.cors import CORSMiddleware
+
+logger = logging.getLogger("scalper.main")
+from app.config import config
+from app.market_intelligence import (estimate_local_regime, execution_quality,
+                                     symbol_safety, trade_economics,
+                                     microstructure_snapshot, symbol_outcome_profile,
+                                     symbol_behavior_profile, regime_transition_signal)
+from app.self_learning import build_learning_context
+from app.market_data import MarketData
+from app.microflow import microflow
+from app.analyzer import ScalpAnalyzer
+from app.circuit_breaker import breaker as strategy_breaker
+from app import calibration as calibration_service
+from app.correlation import CorrelationMonitor, cluster_exposure
+from app.promotion import pipeline as promotion_pipeline
+from app import universe_registry
+from app import database
+from app import binance_tr_user_stream
+from app import runtime_deps
+from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook, top_gainers
+from app import binance_tr_public
+from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
+from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
+from app import ml_forecast
+from app import chat_prediction_learning
+from app import chat_prediction_replay
+from app import llm_analysis
+from app.binance_tr_private import (get_account_balance, get_trade_history, get_symbol_filters,
+                                    place_market_sell, place_market_buy, place_oco_sell,
+                                    place_stop_loss_sell, place_limit_sell, cancel_order, get_open_orders,
+                                    place_spot_order, get_order_detail, BinanceTrAmbiguousOrderError,
+                                    BinanceTrPartialFillError, reconcile_sell_fill)
+from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
+from app.memory_service import build_document
+from app import memory_service
+from app import migration_monitor
+from app import alerting
+from app import security
+from app import pattern_research
+from app.agent_learning import (new_trace_id, start_trace, append_event, finish_trace,
+                                 evaluate_output, save_evaluation, save_experience, upsert_instinct, set_runtime_pool,
+                                 promote_validated_instincts)
+from app.ws_runtime import ws_manager
+try:
+    import asyncpg
+except ImportError:
+    asyncpg = None
+from app.state import market, analyzer, apply_symbol_universe  # noqa: F401  (shared singletons)
+from app.api_common import (  # noqa: F401
+    _start_background, _background_tasks,
+    _json_safe_positions, _fresh_public_price, _llm_guard_block_reason, correlation_monitor,
+    _radar_snapshot, _radar_response_cache, log_user_action, client_context,
+    rate_limit, loop_health,
+    # Denetim 3.4 #36: kapanış sırasında supervisor'ın yeniden görev üretmesini engelle.
+    begin_shutdown, end_shutdown, is_shutting_down, clear_background_registry)
+from app.routers import llm_chat as llm_chat_routes
+from app.routers import chart_forecast as chart_forecast_routes
+from app.routers import maintenance as maintenance_routes, reports as reports_routes
+from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
+from app.routers import global_radar as global_radar_routes
+from app.routers.global_radar import global_radar_loop
+from app.routers.maintenance import (  # noqa: F401
+    backfill_symbol_history, backfill_missing_active_history, history_candle_loop, microstructure_snapshot_loop)
+from app.routers.llm_chat import (  # noqa: F401
+    llm_forecast_evaluation_loop, chat_prediction_learning_loop, chat_prediction_auto_trade_loop,
+    llm_position_manager_loop, _price_watch_symbol, _llm_entry_quality_gate,
+    _parse_forecast_response, _complete_forecast_text, scan_market_snapshots,
+    deep_analyze_symbol, detect_15m_upside_candidates, detect_5m_upside_candidates)
+from app.routers.runtime import (  # noqa: F401
+    ws_broadcast_loop, alert_loop, strategy_loop, radar_loop,
+    refresh_top_gainer_symbols, top_gainers_refresh_loop, refresh_symbol_activity,
+    bootstrap_symbol_activity, symbol_activity_loop, llm_replenish_after_close, llm_idle_trigger_loop,
+    _radar_lock, _ws_snapshot_cache, correlation_refresh_loop, correlation_exposure_status,
+    derivatives_refresh_loop)
+from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loop, load_velocity_atr_profiles  # noqa: F401
+from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
+from app.routers.monitoring import (rising_evidence_loop, daily_momentum_loop,
+                                    daily_rising_combined_loop)  # noqa: F401
+from app.combined_paper import combined_paper_management_loop  # noqa: F401
+from app.routers import monitoring  # noqa: F401
+
+try:
+    import edge_tts
+except ImportError:
+    edge_tts = None
+
+_DEFAULT_CORS_ORIGINS = "http://localhost:3004,http://localhost:3000"
+
+
+def _cors_origins_from_env() -> list[str]:
+    """CORS origin listesini env'den üretir ve ``*`` değerini REDDEDER (G-25).
+
+    ``allow_credentials=True`` iken ``Access-Control-Allow-Origin: *`` birlikte
+    kullanılamaz (tarayıcı reddeder, yanlış deploy güvenlik açığıdır). Bu yüzden
+    ``*`` sessizce kabul edilmez: atılır ve loglanır. Liste boş kalırsa güvenli
+    localhost varsayılanına düşülür.
+    """
+    raw = os.getenv("CORS_ORIGINS", _DEFAULT_CORS_ORIGINS)
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    if "*" in origins:
+        logger.critical(
+            "CORS_ORIGINS '*' içeriyor ama allow_credentials=True; wildcard origin "
+            "REDDEDİLDİ (G-25). Açık origin listesi verin.")
+        origins = [origin for origin in origins if origin != "*"]
+    if not origins:
+        logger.critical("CORS_ORIGINS geçerli origin bırakmadı; localhost varsayılanı kullanılıyor.")
+        origins = [origin.strip() for origin in _DEFAULT_CORS_ORIGINS.split(",") if origin.strip()]
+    return origins
+
+
+# G-26: nginx doğrudan atlanırsa (dev / Docker iç ağı, :8000) savunma derinliği
+# başlıkları uygulama katmanında da eklenir. nginx/default.conf aynı başlıkları
+# üretir; burada ikinci kez set edilmesi zararsızdır (setdefault kullanılır).
+class SecurityHeadersMiddleware:
+    """X-Frame-Options / HSTS / CSP / Referrer-Policy / X-Content-Type-Options."""
+
+    #: Swagger/ReDoc UI kendi CDN script'lerini kullanır; CSP onları kırar.
+    _CSP_EXEMPT_PREFIXES = ("/docs", "/redoc", "/openapi.json")
+
+    def __init__(self, app, csp: str | None = None):
+        self.app = app
+        self.csp = csp if csp is not None else "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = str(scope.get("path") or "")
+        csp_exempt = any(path.startswith(prefix) for prefix in self._CSP_EXEMPT_PREFIXES)
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.setdefault("X-Frame-Options", "DENY")
+                headers.setdefault("X-Content-Type-Options", "nosniff")
+                headers.setdefault("Referrer-Policy", "no-referrer")
+                headers.setdefault("Strict-Transport-Security",
+                                   "max-age=31536000; includeSubDomains")
+                if not csp_exempt:
+                    headers.setdefault("Content-Security-Policy", self.csp)
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+app = FastAPI(title="Scalper Agent V4 - Paper Trading")
+cors_origins = _cors_origins_from_env()
+# Explicit method/header allowlist: wildcard methods+headers combined with
+# credentials is a known CORS misconfiguration risk if CORS_ORIGINS is ever
+# broadened. The API only needs the methods below. G-25: `*` reddedilir.
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=True,
+                   allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                   allow_headers=["Authorization", "Content-Type", "X-Real-IP", "X-Bridge-Secret"])
+app.add_middleware(SecurityHeadersMiddleware)
+
+app.include_router(maintenance_routes.router)
+app.include_router(llm_chat_routes.router)
+app.include_router(chart_forecast_routes.router)
+app.include_router(system_routes.router)
+app.include_router(reports_routes.router)
+app.include_router(velocity_routes.router)
+app.include_router(monitoring.router)
+
+from app.routers import auto_paper as auto_paper_routes
+from app.routers import macd_monitor as macd_monitor_routes
+from app.routers import snapback as snapback_routes
+from app.routers import user_prefs as user_prefs_routes
+from app.routers import journal as journal_routes
+app.include_router(auto_paper_routes.router)
+app.include_router(macd_monitor_routes.router)
+app.include_router(snapback_routes.router)
+app.include_router(user_prefs_routes.router)
+app.include_router(journal_routes.router)
+
+
+_TTS_VOICE = "tr-TR-EmelNeural"
+_TTS_EMOJI = re.compile("[\\U00010000-\\U0010ffff]")
+
+def _speech_text(value: object) -> str:
+    text = str(value or "")
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"!?\[([^]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"[#>*_~|]", " ", text)
+    text = _TTS_EMOJI.sub(" ", text)
+    # Give the Turkish neural voice unambiguous financial/market notation.
+    def decimal(value):
+        number = str(value).replace(",", ".")
+        return number.replace("-", "eksi ").replace(".", " virgül ")
+    text = re.sub(r"%\s*(-?\d+(?:[.,]\d+)?)", lambda m: "yüzde " + decimal(m.group(1)), text)
+    text = re.sub(r"(-?\d+(?:[.,]\d+)?)\s*%", lambda m: "yüzde " + decimal(m.group(1)), text)
+    text = re.sub(r"(?<![\w%])-\s*(\d+(?:[.,]\d+)?)", lambda m: "eksi " + decimal(m.group(1)), text)
+    text = re.sub(r"\b(\d+(?:[.,]\d+)?)\s*[xX]\b", r"\1 kat", text)
+    text = re.sub(r"\b(\d+)m\b", r"\1 dakika", text, flags=re.I)
+    text = re.sub(r"\b(\d+)h\b", r"\1 saat", text, flags=re.I)
+    text = re.sub(r"(?<![\w-])(\d+)[.,](\d+)", lambda m: f"{m.group(1)} virgül {m.group(2)}", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:1200]
+
+@app.post("/api/tts/edge")
+async def edge_tts_audio(payload: dict, request: Request = None):
+    # G-18: harici edge-tts servisini çağıran pahalı uç → admin kapısı + hız sınırı.
+    _require_admin(request)
+    if not rate_limit("tts-edge", rate_per_sec=0.2, burst=3):
+        raise HTTPException(status_code=429, detail="Çok fazla seslendirme isteği; lütfen bekleyin")
+    global edge_tts
+    if edge_tts is None:
+        try:
+            import edge_tts as runtime_edge_tts
+            edge_tts = runtime_edge_tts
+        except ImportError:
+            pass
+    if edge_tts is None:
+        raise HTTPException(503, "Edge TTS bağımlılığı sunucuda kurulu değil")
+    text = _speech_text(payload.get("text"))
+    if not text:
+        raise HTTPException(400, "Seslendirilecek metin bulunamadı")
+    try:
+        rate = max(-50, min(100, int(payload.get("rate", 0))))
+        pitch = max(-50, min(50, int(payload.get("pitch", 0))))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Ses hızı ve perde sayısal olmalı")
+    async def audio():
+        communicate = edge_tts.Communicate(text, _TTS_VOICE, rate=f"{rate:+d}%", pitch=f"{pitch:+d}Hz")
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                yield chunk["data"]
+    return StreamingResponse(audio(), media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.middleware("http")
+async def require_admin_session(request: Request, call_next):
+    public_paths = {"/health", "/api/auth/status", "/api/auth/login"}
+    if request.method == "OPTIONS" or request.url.path in public_paths:
+        return await call_next(request)
+    if not security.auth_configured():
+        return JSONResponse({"detail": "Yönetici kimlik doğrulaması yapılandırılmamış"}, status_code=503)
+    # P1-5 (2026-10-07): oturum token'ı User-Agent parmak izine bağlıdır; burada
+    # doğrulanır. Uyuşmazsa (çalınmış cookie / farklı tarayıcı) 401 → yeni giriş
+    # gerekir. Aynı tarayıcıda sayfa yenileme / yeniden bağlanma UA değiştirmediği
+    # için normal kullanım bozulmaz.
+    if not security.request_authenticated(request.headers, request.cookies,
+                                          client_fingerprint=security.client_fingerprint(request)):
+        return JSONResponse({"detail": "Kimlik doğrulama gerekli"}, status_code=401)
+    return await call_next(request)
+
+
+def _session_user(request: Request):
+    """Current principal from cookie/bearer, or None."""
+    return security.request_user(request.headers, request.cookies,
+                                 client_fingerprint=security.client_fingerprint(request))
+
+
+def _session_identity(request) -> tuple[str | None, str | None]:
+    """(username, role) — audit kayıtları GERÇEK rolü taşısın diye (G-28).
+
+    Eskiden ``log_user_action(..., None, ...)`` çağrıları audit tablosuna
+    ``actor_role=None`` yazıyordu; "kim, hangi yetkiyle" sorusu cevapsız kalıyordu.
+    """
+    if request is None:
+        return None, None
+    try:
+        user = security.request_user(request.headers, request.cookies,
+                                     client_fingerprint=security.client_fingerprint(request)) or {}
+    except Exception:
+        return None, None
+    return user.get("username"), user.get("role")
+
+
+def _require_admin(request: Request):
+    """Admin-only gate; raises 403 for non-admin principals.
+
+    G-23 (2026-09-12): uygulama artık paylaşılan ``app.security.require_admin``
+    içinde. Buradaki ad yalnız uyumluluk/override noktası olarak kalır; router'lar
+    ``app.api_common.require_admin`` üzerinden bu ada erişir (gizli
+    router→main import döngüsü yok).
+    """
+    return security.require_admin(request)
+
+
+def _require_user(request: Request):
+    """Oturum açmış TÜM kullanıcılar (Binance TR çok kullanıcılı, 2026-09-19).
+
+    Auth middleware zaten tüm /api/* isteklerinde oturum zorunlu tuttuğu için
+    burada yalnız principal'ın çözülüp çözülmediği doğrulanır. Admin dahil her
+    kullanıcı kendi Binance anahtarlarını kullanır — kullanıcılar birbirinin
+    bakiyesini/emrini göremez. ``request=None`` testlerde principal atlamak
+    için kullanılır (G-27 testleri request'siz çağırır).
+    """
+    if request is None:
+        return {"username": "admin", "role": "admin"}
+    user = _session_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    return user
+
+
+# DENETİM 3.4 #35 (2026-09-26): PBKDF2-HMAC-SHA256 200.000 iterasyon saf CPU
+# işidir ve çağıranın thread'inde ~100-300 ms sürer. `async def` handler içinde
+# doğrudan çağrıldığında event loop BU SÜRE boyunca durur; o sırada
+# ws_broadcast_loop (1 sn), strategy_loop (5 sn) ve alert_loop (1 sn) ilerlemez.
+# `/api/admin/users` POST/PUT'u art arda çağrılarak API'yi kilitleme yüzeyidir.
+# `auth_login` bu işi çoktan `asyncio.to_thread` ile sarmalıyordu; aynı desen
+# artık TEK yerde tanımlanır ve TÜM parola işlemleri (hash + verify) onu kullanır.
+# Sarmalayıcı `functools.partial` ile `hash_password`/`verify_password`'a bağlanır;
+# böylece `asyncio.to_thread(_hash_password, pw)` çağrısı tek ve okunur kalır.
+_hash_password = functools.partial(security.hash_password)
+_verify_password = functools.partial(security.verify_password)
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    user = _session_user(request)
+    return {"configured": security.auth_configured(),
+            "authenticated": user is not None,
+            "username": (user or {}).get("username"),
+            "role": (user or {}).get("role")}
+
+
+@app.get("/api/profile")
+async def profile_current(request: Request):
+    """Oturumdaki kullanıcının profil bilgisi (şifre hash'i hariç)."""
+    principal = _session_user(request)
+    if not principal:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    user = await database.get_user_by_username(principal.get("username") or "")
+    if not user:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+    return {"ok": True, "user": _public_user(user), "paper_only": True}
+
+
+@app.put("/api/profile/password")
+async def profile_update_password(payload: dict, request: Request):
+    """Oturumdaki kullanıcı kendi şifresini günceller (mevcut şifre doğrulanır).
+
+    Varsayılan env-admin (DB kaydı olmayan 'admin') şifresini bu uçtan
+    değiştiremez; onun için DB kullanıcısı oluşturulmalı (admin create user).
+    """
+    principal = _session_user(request)
+    if not principal:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    current_password = str(payload.get("current_password") or "")
+    new_password = str(payload.get("new_password") or "")
+    if len(new_password) < 6:
+        raise HTTPException(status_code=422, detail="Yeni şifre en az 6 karakter olmalı")
+    user = await database.get_user_by_username(principal.get("username") or "")
+    if not user:
+        # DB kaydı olmayan env-admin: profil şifresi değiştirilemez
+        raise HTTPException(status_code=409, detail="Bu kullanıcı için profil şifre değişikliği desteklenmiyor (env yöneticisi)")
+    if not await asyncio.to_thread(_verify_password, current_password, user.get("password_hash") or ""):
+        raise HTTPException(status_code=403, detail="Mevcut şifre hatalı")
+    updated = await database.update_user(
+        int(user["id"]), password_hash=await asyncio.to_thread(_hash_password, new_password))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+    security.set_user_session_version(
+        updated.get("username") or principal.get("username") or "",
+        int(updated.get("session_version") or 0),
+    )
+    await log_user_action(principal.get("username"), principal.get("role"), "user", "PASSWORD_CHANGE",
+                          target=principal.get("username"), details={"via": "profile"}, request=request)
+    return {"ok": True, "message": "Şifre güncellendi", "paper_only": True}
+
+
+@app.get("/api/dashboard/summary")
+async def dashboard_summary():
+    """Ana sayfa dashboard özeti (salt okunur): bugünün sinyalleri, otonom işlem durumu, portföy."""
+    return {"paper_only": True, **await database.get_dashboard_summary()}
+
+
+@app.post("/api/auth/login")
+async def auth_login(payload: dict, response: Response, request: Request):
+    if not security.auth_configured():
+        raise HTTPException(status_code=503, detail="SCALPER_ADMIN_PASSWORD ve SCALPER_SESSION_SECRET gerekli")
+    # P1-5 (2026-10-07): Eskiden `X-Real-IP` KOŞULSUZ okunuyordu; istemci
+    # başlığı sahteleştirip her denemede yeni anahtar üretiyor ve login
+    # brute-force limitini (5 deneme) sıfırlıyordu. Artık başlık YALNIZ peer
+    # güvenilir proxy ise kabul edilir (security.trusted_client_ip); aksi halde
+    # gerçek soket adresi kullanılır.
+    client_key = security.trusted_client_ip(request) or "unknown"
+    if not security.login_allowed(client_key):
+        await log_user_action(None, None, "auth", "LOGIN_BLOCKED",
+                              target=str(payload.get("username") or "").strip().lower() or None,
+                              details={"reason": "too_many_attempts"}, request=request)
+        raise HTTPException(status_code=429, detail="Çok fazla başarısız giriş; 5 dakika sonra tekrar deneyin")
+    username = str(payload.get("username") or "").strip().lower()
+    password = str(payload.get("password") or "")
+    # Varsayılan admin (env şifresi) ile DB kullanıcısı aynı anda denenir:
+    # env'de SCALPER_ADMIN_PASSWORD tanımlıysa o şifreyle "admin" girişine izin ver.
+    matched = False
+    user = None
+    try:
+        user = await database.get_user_by_username(username)
+    except Exception:
+        user = None
+    if user is not None:
+        # PBKDF2 (200k iterasyon) ~100 ms sürer; event loop'u bloke etmemek
+        # için thread'e atılır (giriş denemesi başına tüm API'yi dondurmaz).
+        matched = bool(user.get("is_active")) and await asyncio.to_thread(
+            _verify_password, password, user.get("password_hash") or "")
+        if user.get("is_active") and not matched:
+            matched = False
+    elif username == "admin":
+        # Henüz DB'ye tohumlanmamış admin: env şifresiyle eşleşirse geçici kabul.
+        matched = security.password_matches(password)
+        if matched:
+            user = {"username": "admin", "role": "admin", "is_active": True}
+    security.record_login_result(client_key, matched)
+    if not matched or user is None:
+        await log_user_action(username, None, "auth", "LOGIN_FAILED",
+                              target=username, details={"reason": "bad_credentials"}, request=request)
+        raise HTTPException(status_code=401, detail="Kullanıcı adı veya şifre hatalı")
+    role = str(user.get("role") or "user").lower()
+    session_version = int(user.get("session_version") or 0)
+    security.set_user_session_version(user.get("username") or username, session_version)
+    await log_user_action((user.get("username") or username).lower(), role, "auth", "LOGIN_SUCCESS",
+                          target=(user.get("username") or username).lower(), request=request)
+    cookie_secure = os.getenv("SCALPER_COOKIE_SECURE", "1") == "1"
+    # 2026-09-16: Uygulama TERS PROXY (Coolify/Traefik) arkasında çalışırken TLS
+    # proxy'de sonlanır ve backend her isteği düz http olarak görür. Bu yüzden
+    # uyarı `request.url.scheme`e bakınca YANLIŞ ALARM veriyordu ("SCALPER_COOKIE_SECURE=1
+    # ama scheme=http") — tarayıcı aslında https'te. Gerçek istemci şeması
+    # `X-Forwarded-Proto` içindedir. Cookie `secure` bayrağı GÜVENLİK için
+    # config'den (spoof edilebilir başlıktan değil) gelmeye devam eder; yalnızca
+    # UYARI doğru şemaya göre üretilir.
+    forwarded_proto = (request.headers.get("x-forwarded-proto", "") or "").split(",")[0].strip().lower()
+    effective_scheme = forwarded_proto or request.url.scheme
+    if cookie_secure and effective_scheme != "https":
+        # Altyapı uyarısı (denetim maddesi): secure=1 + düz http (LAN erişimi)
+        # kombinasyonunda tarayıcı oturum cookie'sini REDDEDER ve login
+        # SESSİZCE döngüye girer. Ayarı değiştirmek yerine bir kez uyarı logla:
+        # LAN için SCALPER_COOKIE_SECURE=0 (veya ters proxy ile https) gerekir.
+        username_log = (user.get("username") or username)
+        logger.warning(
+            "auth login: SCALPER_COOKIE_SECURE=1 ama istemci şeması=%s — tarayıcı bu "
+            "cookie'yi kaydetmeyecektir (secure flag). Düz http LAN erişiminde "
+            "SCALPER_COOKIE_SECURE=0 kullanın veya https üzerinden erişin. "
+            "(kullanıcı=%s)", effective_scheme, username_log)
+    response.set_cookie(security.SESSION_COOKIE,
+                        security.create_session_token(username=user.get("username") or username, role=role,
+                                                      session_version=session_version,
+                                                      # P1-5: oturumu tarayıcı (User-Agent) parmak
+                                                      # izine bağla; çalınan cookie farklı istemcide
+                                                      # reddedilir (UA yoksa boş → bağlanmaz, fail-open).
+                                                      client_fingerprint=security.client_fingerprint(request)),
+                        httponly=True,
+                        secure=cookie_secure, samesite="strict",
+                        max_age=43200, path="/")
+    return {"ok": True, "authenticated": True, "username": (user.get("username") or username).lower(), "role": role}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request, response: Response):
+    principal = _session_user(request)
+    if principal:
+        username = str(principal.get("username") or "").strip().lower()
+        try:
+            user = await database.get_user_by_username(username)
+            if user:
+                updated = await database.bump_user_session_version(int(user["id"]))
+                if updated:
+                    security.set_user_session_version(username, int(updated.get("session_version") or 0))
+        except Exception as exc:
+            print(f"[Auth] oturum sürümü yükseltilemedi: {exc}", flush=True)
+    await log_user_action((principal or {}).get("username"), (principal or {}).get("role"),
+                          "auth", "LOGOUT", request=request)
+    response.delete_cookie(security.SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Admin-only user management (2026-09-03)
+# ---------------------------------------------------------------------------
+def _public_user(user: dict) -> dict:
+    return {k: v for k, v in (user or {}).items() if k != "password_hash"}
+
+
+
+# ---------------------------------------------------------------------------
+# Admin Veritabanı sayfası (2026-09-04): tablo listesi, satır verisi, CSV/SQL export.
+# Yalnızca admin rolü. PostgreSQL şeması public.
+# ---------------------------------------------------------------------------
+# Admin export üst sınırı: sınırsız SELECT * büyük tablolarda (signals,
+# decision_logs, agent_trace_events) tüm veriyi belleğe çekip isteği/sunucuyu
+# kilitleyebiliyordu.
+_ADMIN_EXPORT_MAX_ROWS = 20000
+_DB_TABLE_DESCRIPTIONS = {
+    "agent_eval_cases": "Ajan değerlendirme test senaryoları",
+    "agent_eval_runs": "Ajan değerlendirme koşu kayıtları",
+    "agent_evaluations": "Ajan çıktı değerlendirme sonuçları",
+    "agent_experiences": "Ajan deneyim kayıtları (self-learning)",
+    "agent_trace_events": "Ajan izleme (trace) olayları",
+    "agent_traces": "Ajan işlem izleri",
+    "alert_events": "Uyarı tetiklenme olayları",
+    "alert_rules": "Uyarı kuralları",
+    "analysis_snapshots": "Analiz anlık görüntüleri (regime/confluence)",
+    "audit_logs": "Güvenlik ve kullanıcı hareket kayıtları",
+    "chart_forecasts": "Chart tahmin journal'ı",
+    "chart_settings": "Chart indikatör ayarları (sembol bazlı)",
+    "chat_messages": "Chat mesaj geçmişi",
+    "chat_prediction_insights": "Chat tahmin öğrenme içgörüleri",
+    "chat_predictions": "Chat tahmin kayıtları",
+    "decision_logs": "Strateji karar günlüğü",
+    "embedding_jobs": "Embedding iş kuyruğu",
+    "historical_candles": "Geçmiş mum verisi",
+    "historical_feature_snapshots": "Geçmiş özellik anlık görüntüleri",
+    "llm_forecast_lessons": "LLM tahmin dersleri (aktif/candidate)",
+    "llm_forecasts": "LLM tahmin journal'ı",
+    "llm_models": "LLM model tanımları",
+    "llm_providers": "LLM sağlayıcıları (API anahtarları şifreli)",
+    "llm_settings": "LLM ayar anahtar-değer deposu",
+    "llm_skills": "LLM uzmanlık talimatları",
+    "llm_symbol_guards": "Sembol koruma/cooldown kayıtları",
+    "llm_tool_logs": "LLM araç çağrı günlüğü",
+    "memory_documents": "Hafıza belgeleri",
+    "memory_embeddings": "Hafıza vektör embedding'leri",
+    "memory_relations": "Hafıza ilişki grafiği",
+    "memory_retrieval_logs": "Hafıza getirme günlüğü",
+    "microstructure_snapshots": "Mikro yapı (orderbook/akış) anlık görüntüleri",
+    "migration_meta": "Şema migrasyon durumu",
+    "ml_model_artifacts": "ML model artifact meta verisi",
+    "monitoring_notifications": "Radar bildirim geçmişi",
+    "notification_channels": "Bildirim kanal tanımları",
+    "paper_orders": "Paper emir kayıtları",
+    "positions": "Açık pozisyonlar",
+    "push_subscriptions": "Web push abonelikleri",
+    "replay_klines": "Replay/analiz için geçici mum verisi",
+    "research_patterns": "Desen araştırma bulguları",
+    "research_runs": "Araştırma koşu kayıtları",
+    "signals": "Sinyal günlüğü",
+    "symbol_target_state": "Sembol bazlı adaptif hedef durumu",
+    "trades": "Kapanan işlemler (paper)",
+    "trading_instincts": "Öğrenilmiş işlem içgüdüleri",
+    "auto_paper_trades": "Otonom paper trade (bildirimden tetiklenen)",
+    "users": "Kullanıcı hesapları",
+    "velocity_candidates": "Hız avcısı aday journal'ı",
+    "virtual_wallet": "Paper cüzdan bakiyeleri",
+}
+
+
+@app.get("/api/admin/db/tables")
+async def admin_db_tables(request: Request):
+    """Admin: tüm public tabloları + satır sayısı + açıklamayı listeler."""
+    _require_admin(request)
+
+    def op(conn):
+        rows = conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name"
+        ).fetchall()
+        names = [str(r["table_name"] if isinstance(r, dict) else r[0]) for r in rows]
+        if not names:
+            return []
+        # N+1 yerine tek sorgu: her tablo için ayrı _run_db çağırmak her seferinde
+        # yeni bir bağlantı/tur açıyordu. Tablolar tek UNION ALL ile sayılır.
+        # Adlar information_schema'dan gelir; yine de tanımlayıcı doğrulanır.
+        safe = [n for n in names if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", n)]
+        parts = [f"SELECT '{n}' AS table_name, COUNT(*) AS row_count FROM \"{n}\"" for n in safe]
+        counts = {
+            str(r["table_name"] if isinstance(r, dict) else r[0]):
+                int(r["row_count"] if isinstance(r, dict) else r[1])
+            for r in conn.execute(" UNION ALL ".join(parts)).fetchall()
+        }
+        return [{"table": n, "rows": counts.get(n),
+                 "description": _DB_TABLE_DESCRIPTIONS.get(n, "")} for n in names]
+
+    return {"paper_only": True, "tables": await database._run_db(op)}
+
+
+@app.get("/api/admin/db/table")
+async def admin_db_table_rows(request: Request, table: str = "", page: int = 1, page_size: int = 50):
+    """Admin: seçili tablonun verilerini sayfalı döndürür."""
+    _require_admin(request)
+    name = str(table or "").strip()
+    if not name or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        raise HTTPException(status_code=422, detail="Geçersiz tablo adı")
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 500))
+    offset = (page - 1) * page_size
+
+    def op(conn):
+        total = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+        rows = conn.execute(f'SELECT * FROM "{name}" ORDER BY 1 DESC LIMIT %s OFFSET %s',
+                            (page_size, offset)).fetchall()
+        cols = [d[0] for d in (conn.execute(f'SELECT * FROM "{name}" LIMIT 0')).description]
+        return {"total": int(total), "columns": cols,
+                "rows": [dict(r) if isinstance(r, dict) else dict(zip(cols, r)) for r in rows]}
+
+    try:
+        return {"paper_only": True, "table": name, "page": page,
+                "page_size": page_size, **await database._run_db(op)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Tablo okunamadı: {exc}")
+
+
+@app.get("/api/admin/db/table/export")
+async def admin_db_table_export(request: Request, table: str = "", format: str = "csv"):
+    """Admin: tablo verisini CSV veya SQL (INSERT) olarak indirir."""
+    _require_admin(request)
+    name = str(table or "").strip()
+    if not name or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        raise HTTPException(status_code=422, detail="Geçersiz tablo adı")
+    fmt = str(format or "csv").lower()
+    if fmt not in {"csv", "sql"}:
+        raise HTTPException(status_code=422, detail="format csv veya sql olmalı")
+
+    def op(conn):
+        # Sınırsız SELECT * büyük tablolarda (signals, decision_logs,
+        # agent_trace_events) tüm veriyi belleğe çekip sunucuyu kilitliyordu.
+        # LIMIT+1 çekip fazlalığı atıyoruz -> hem bellek sınırlı hem de
+        # "kesildi mi?" bilgisi gerçekten doğru oluyor.
+        rows = conn.execute(f'SELECT * FROM "{name}" LIMIT {_ADMIN_EXPORT_MAX_ROWS + 1}').fetchall()
+        cols = [d[0] for d in (conn.execute(f'SELECT * FROM "{name}" LIMIT 0')).description]
+        return {"columns": cols,
+                "rows": [dict(r) if isinstance(r, dict) else dict(zip(cols, r)) for r in rows]}
+
+    try:
+        data = await database._run_db(op)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Tablo okunamadı: {exc}")
+    cols, rows = data["columns"], data["rows"]
+    # G-01: `truncated` hiç tanımlanmıyordu -> endpoint her çağrıda NameError.
+    truncated = len(rows) > _ADMIN_EXPORT_MAX_ROWS
+    if truncated:
+        rows = rows[:_ADMIN_EXPORT_MAX_ROWS]
+
+    if fmt == "csv":
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+        writer.writeheader()
+        for r in rows:
+            clean = {}
+            for k, v in r.items():
+                if isinstance(v, (dict, list)):
+                    v = json.dumps(v, ensure_ascii=False, default=str)
+                clean[k] = v
+            writer.writerow(clean)
+        content = buf.getvalue()
+        media = "text/csv; charset=utf-8"
+        filename = f"{name}.csv"
+    else:
+        lines = [f"-- {name} export {datetime.now(timezone.utc).isoformat()}"]
+        for r in rows:
+            vals = []
+            for col in cols:
+                v = r.get(col)
+                if v is None:
+                    vals.append("NULL")
+                elif isinstance(v, (dict, list)):
+                    vals.append("'" + json.dumps(v, ensure_ascii=False, default=str).replace("'", "''") + "'")
+                elif isinstance(v, bool):
+                    vals.append("TRUE" if v else "FALSE")
+                elif isinstance(v, (int, float)):
+                    vals.append(str(v))
+                else:
+                    vals.append("'" + str(v).replace("'", "''") + "'")
+            col_list = ", ".join(f'"{cc}"' for cc in cols)
+            lines.append(f'INSERT INTO "{name}" ({col_list}) VALUES ({", ".join(vals)});')
+        content = "\n".join(lines)
+        media = "application/sql; charset=utf-8"
+        filename = f"{name}.sql"
+
+    return Response(content=content, media_type=media, headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(len(content.encode("utf-8"))),
+        "X-Export-Rows": str(len(rows)),
+        "X-Export-Truncated": "true" if truncated else "false",
+    })
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(request: Request):
+    _require_admin(request)
+    return {"ok": True, "users": await database.list_users()}
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(payload: dict, request: Request):
+    admin = _require_admin(request)
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    if not username or len(username) < 3 or len(username) > 32:
+        raise HTTPException(status_code=422, detail="Kullanıcı adı 3-32 karakter olmalı")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", username):
+        raise HTTPException(status_code=422, detail="Kullanıcı adı yalnız harf, rakam, nokta, tire ve alt çizgi içerebilir")
+    if len(password) < 6:
+        raise HTTPException(status_code=422, detail="Şifre en az 6 karakter olmalı")
+    existing = await database.get_user_by_username(username)
+    if existing:
+        raise HTTPException(status_code=409, detail="Bu kullanıcı adı zaten kayıtlı")
+    role = str(payload.get("role") or "user").lower()
+    if role not in {"admin", "user"}:
+        raise HTTPException(status_code=422, detail="Rol 'admin' veya 'user' olmalı")
+    user = await database.create_user(username, await asyncio.to_thread(_hash_password, password), role=role,
+                                      is_active=bool(payload.get("is_active", True)))
+    security.set_user_session_version((user or {}).get("username") or username.lower(), int((user or {}).get("session_version") or 0))
+    await log_user_action(admin.get("username"), "admin", "user", "USER_CREATE",
+                          target=(user or {}).get("username") or username.lower(),
+                          details={"role": role, "is_active": bool(payload.get("is_active", True))}, request=request)
+    return {"ok": True, "user": _public_user(user)}
+
+
+@app.put("/api/admin/users/{user_id}")
+async def admin_update_user(user_id: int, payload: dict, request: Request):
+    admin = _require_admin(request)
+    existing = await database.get_user_by_id(user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+    kwargs = {}
+    if "username" in payload:
+        username = str(payload.get("username") or "").strip()
+        if not username or len(username) < 3 or len(username) > 32:
+            raise HTTPException(status_code=422, detail="Kullanıcı adı 3-32 karakter olmalı")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", username):
+            raise HTTPException(status_code=422, detail="Kullanıcı adı yalnız harf, rakam, nokta, tire ve alt çizgi içerebilir")
+        dup = await database.get_user_by_username(username)
+        if dup and int(dup["id"]) != int(user_id):
+            raise HTTPException(status_code=409, detail="Bu kullanıcı adı zaten kayıtlı")
+        kwargs["username"] = username
+    if "password" in payload and str(payload.get("password") or "").strip():
+        password = str(payload.get("password") or "")
+        if len(password) < 6:
+            raise HTTPException(status_code=422, detail="Şifre en az 6 karakter olmalı")
+        kwargs["password_hash"] = await asyncio.to_thread(_hash_password, password)
+    if "role" in payload:
+        role = str(payload.get("role") or "user").lower()
+        if role not in {"admin", "user"}:
+            raise HTTPException(status_code=422, detail="Rol 'admin' veya 'user' olmalı")
+        # Son admin kilitlenmesin: kendi rolünü değiştiren admin engellenir.
+        if existing.get("username") == admin.get("username") and role != "admin":
+            raise HTTPException(status_code=422, detail="Kendi admin rolünüzü değiştiremezsiniz")
+        # DENETİM 3.3 #22 (2026-09-26): Başka bir admin'in rolü düşürülürken
+        # sistemde başka admin kalmayabilir — son admin koruması kendi kendini
+        # korumakla sınırlıydı. Rol değişikliği oturumları da etkilediği için
+        # aşağıda oturum sürümü düşürülür; burada ek olarak "son admin" kuralı
+        # TÜM admin'ler için uygulanır.
+        if existing.get("role") == "admin" and role != "admin":
+            admins = [u for u in await database.list_users()
+                      if u.get("role") == "admin" and int(u.get("id") or 0) != int(user_id)]
+            if not admins:
+                raise HTTPException(status_code=422, detail="Son admin rolü düşürülemez")
+        kwargs["role"] = role
+    if "is_active" in payload:
+        kwargs["is_active"] = bool(payload.get("is_active", True))
+    user = await database.update_user(user_id, **kwargs)
+    if user:
+        # Rol/is_active/şifre değiştiğinde `database.update_user` `session_version`'ı
+        # artırdığı için eski token'lar `sv` eşleşmediği için reddedilir. Burada
+        # sürüm haritası hedef kullanıcı için YENİDEN YAZILIR; özellikle rol
+        # düşürmede token'daki imzalı `role` bayat kalmasın diye eski kayıt önce
+        # düşülür (denetim 3.3 #22 açık talebi).
+        security.remove_user_session_version(existing.get("username") or "")
+        security.set_user_session_version(user.get("username") or "", int(user.get("session_version") or 0))
+    await log_user_action(admin.get("username"), "admin", "user", "USER_UPDATE",
+                          target=(existing.get("username") or str(user_id)),
+                          details={"changed": sorted(kwargs.keys()), "new_username": kwargs.get("username")}, request=request)
+    return {"ok": True, "user": _public_user(user)}
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(user_id: int, request: Request):
+    admin = _require_admin(request)
+    existing = await database.get_user_by_id(user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+    if existing.get("username") == admin.get("username"):
+        raise HTTPException(status_code=422, detail="Kendi hesabınızı silemezsiniz")
+    if existing.get("role") == "admin":
+        admins = [u for u in await database.list_users() if u.get("role") == "admin"]
+        if len(admins) <= 1:
+            raise HTTPException(status_code=422, detail="Son admin silinemez")
+    await database.delete_user(user_id)
+    security.remove_user_session_version(existing.get("username") or "")
+    await log_user_action(admin.get("username"), "admin", "user", "USER_DELETE",
+                          target=existing.get("username") or str(user_id),
+                          details={"role": existing.get("role")}, request=request)
+    return {"ok": True, "deleted": user_id}
+
+
+@app.get("/api/admin/audit-logs")
+async def admin_list_audit_logs(request: Request, limit: int = 100, offset: int = 0,
+                                actor: str | None = None, category: str | None = None,
+                                action: str | None = None, q: str | None = None):
+    """Admin-only olay kayıtları (kim, ne zaman, ne yaptı, IP, cihaz)."""
+    _require_admin(request)
+    logs = await database.list_audit_logs(limit, offset, actor=actor, category=category,
+                                          action=action, q=q)
+    total = await database.count_audit_logs(actor=actor, category=category, action=action, q=q)
+    return {"ok": True, "logs": logs, "total": total, "limit": len(logs), "offset": offset}
+
+
+@app.delete("/api/admin/audit-logs")
+async def admin_delete_audit_logs(payload: dict = None, request: Request = None):
+    """Eski olay kayıtlarını siler (varsayılan: 30 günden eski). before_ts epoch saniyedir."""
+    admin = _require_admin(request)
+    before_ts = float((payload or {}).get("before_ts") or 0)
+    if not before_ts or before_ts > time.time():
+        before_ts = time.time() - 30 * 86400
+    deleted = await database.delete_audit_logs_before(before_ts)
+    await log_user_action(admin.get("username"), "admin", "user", "AUDIT_LOG_PURGE",
+                          details={"before_ts": before_ts, "deleted": deleted}, request=request)
+    return {"ok": True, "deleted": deleted}
+
+_pg_pool = None
+_trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
+
+
+
+
+@app.get("/api/btc-5min-scan")
+async def btc_5min_scan():
+    raise HTTPException(status_code=410, detail="BTC_5M_ODDS_SCALPER sistemden kaldırıldı")
+
+def _repair_log(level, message):
+    _trade_repair["logs"].append({"time": time.time(), "level": level, "message": message})
+    _trade_repair["logs"] = _trade_repair["logs"][-100:]
+
+async def learning_promotion_loop():
+    """Promote only evidence-backed instincts; never changes system prompts directly."""
+    while True:
+        try:
+            if _pg_pool:
+                result = await promote_validated_instincts(_pg_pool, dry_run=False)
+                if result.get("promoted"):
+                    print(f"[Learning] promoted instincts: {result['promoted']}")
+        except Exception as exc:
+            print(f"[Learning] promotion loop: {exc}")
+        await asyncio.sleep(15 * 60)
+
+async def retention_loop():
+    """Periodic sweep of high-volume observability tables (paper records kept)."""
+    await asyncio.sleep(120)  # let startup bursts finish before the first sweep
+    while True:
+        try:
+            deleted = await database.prune_retention(days=config.RETENTION_DAYS,
+                                                     microstructure_days=config.MICROSTRUCTURE_RETENTION_DAYS,
+                                                     memory_days=config.MEMORY_RETENTION_DAYS,
+                                                     history_days=config.HISTORY_RETENTION_DAYS,
+                                                     embedding_jobs_days=config.EMBEDDING_JOBS_RETENTION_DAYS,
+                                                     # DECISION-LOGS-01: `AUTO_PAPER` hariç
+                                                     # karar günlüğü budaması (bkz. config).
+                                                     decision_logs_days=config.DECISION_LOGS_RETENTION_DAYS)
+            if any(deleted.values()):
+                print(f"[Retention] {deleted}", flush=True)
+        except Exception as exc:
+            print(f"[Retention] sweep hatası: {exc}")
+        await asyncio.sleep(6 * 3600)
+
+_ml_train_lock = asyncio.Lock()
+
+
+async def run_ml_training(trigger: str = "scheduled"):
+    """ML modelini yeniden eğitir: candle + journal örnekleri -> artifact.
+
+    Journal satırları (doğrulanmış canlı tahmin sonuçları) ağırlıklı örnekle
+    eğitime girer -> model kendi hatalarından/başarılarından pekişir.
+    """
+    async with _ml_train_lock:
+        cutoff_ms = int((time.time() - config.ML_TRAIN_LOOKBACK_DAYS * 86400) * 1000)
+        candles = await database.get_ml_training_candles(
+            cutoff_ms, max_bars_per_symbol=config.ML_MAX_BARS_PER_SYMBOL)
+        journal = await database.get_llm_forecasts(status="evaluated", limit=5000)
+        # ML-07: önceki artifact'ın sembol kodları devralınır (cache'li
+        # `load_model()` çağrısı; diskte yenilenen model görülür).
+        previous_codes = (ml_forecast.load_model() or {}).get("symbol_codes")
+        meta = await asyncio.to_thread(ml_forecast.train, candles, journal, previous_codes)
+        await database.save_ml_model_artifact(meta)
+        print(f"[ML] eğitim ({trigger}): {meta['sample_count']} örnek, "
+              f"{meta['symbol_count']} sembol, {meta['journal_sample_count']} journal örneği", flush=True)
+        return meta
+
+
+async def ml_training_loop():
+    """Faz 1: periyodik ML eğitim döngüsü (startup + ML_TRAIN_INTERVAL_HOURS)."""
+    await asyncio.sleep(300)  # startup patlaması bitsin
+    try:
+        await run_ml_training("startup")
+    except Exception as exc:
+        print(f"[ML] startup eğitimi atlandı: {exc}", flush=True)
+    while True:
+        await asyncio.sleep(config.ML_TRAIN_INTERVAL_HOURS * 3600)
+        try:
+            await run_ml_training("scheduled")
+        except Exception as exc:
+            print(f"[ML] eğitim hatası: {exc}", flush=True)
+
+
+async def calibration_refresh_loop():
+    """S3: rebuild bucketed win-rate statistics from closed trades.
+
+    Only past trades feed today's multipliers (walk-forward-safe). Buckets
+    with fewer than MIN_BUCKET_SAMPLES stay neutral.
+    """
+    await asyncio.sleep(180)  # let the trade history warm up
+    while True:
+        # 2026-09-16: İlk tur neredeyse her zaman HENÜZ kapanmış trade yokken
+        # koşar (log: "[Calibration] 0 kova, 0 karar-verebilir") ve eski kod
+        # ardından 7 GÜN uyuyordu → trade'ler kapansa bile kalibrasyon bir hafta
+        # boyunca boş kalıyordu. Artık veri yoksa saatlik yeniden denenir; ilk
+        # karar-verebilir kova oluştuğunda haftalık kadansa geçilir.
+        informative = 0
+        try:
+            trades = await database.get_trades(limit=500)
+            buckets = calibration_service.build_buckets(trades)
+            calibration_service.store_buckets(buckets)
+            informative = sum(1 for s in buckets.values() if s["samples"] >= calibration_service.MIN_BUCKET_SAMPLES)
+            print(f"[Calibration] {len(buckets)} kova, {informative} karar-verebilir", flush=True)
+        except Exception as exc:
+            print(f"[Calibration] yenileme hatası: {exc}")
+        if informative:
+            await asyncio.sleep(7 * 24 * 3600)      # veri var → haftalık kadans
+        else:
+            await asyncio.sleep(3600)               # veri yok → saatte bir dene
+
+
+async def _ensure_admin_user():
+    """Admin kullanıcıyı DB'ye tohumla (yoksa). Şifre: SCALPER_ADMIN_PASSWORD env'i."""
+    if await database.count_users() > 0:
+        return
+    password = os.getenv("SCALPER_ADMIN_PASSWORD", "").strip()
+    if not password:
+        raise RuntimeError(
+            "SCALPER_ADMIN_PASSWORD ortam değişkeni tanımlı değil. "
+            "Admin kullanıcı oluşturulamaz. Lütfen .env dosyasında güçlü bir şifre tanımlayın."
+        )
+    await database.create_user("admin", await asyncio.to_thread(_hash_password, password), role="admin", is_active=True)
+    print("[Auth] admin kullanıcı oluşturuldu (şifre env'den)", flush=True)
+
+
+async def startup_market_warmup():
+    """Hydrate only active paper timeframes and priority symbols without blocking process startup."""
+    priority_timeframes = list(config.PRIORITY_TIMEFRAMES)
+    try:
+        # 2026-09-28: 309 sembol × 6 TF = 1854 REST isteği atıp Binance API'yi ve
+        # kuyruğu dakikalarca kilitlemek yerine, startup anında öncelikli evren
+        # (config.SYMBOLS + açık pozisyonlar) yüklenir. Diğer semboller on-demand yüklenir.
+        active_syms = list(dict.fromkeys(list(config.SYMBOLS) + list(getattr(analyzer, "positions", {}).keys())))
+        hydration = await market.ensure_history(
+            priority_timeframes,
+            min_candles=55,
+            candle_limit=120,
+            symbols=active_syms,
+        )
+        ready = int(hydration.get("hydrated", 0) or 0) + int(hydration.get("already_ready", 0) or 0)
+        if ready:
+            market.history_loaded = True
+        # DİKKAT (2026-09-16): Konteyner `python:3.11-slim` kullanır. f-string
+        # içinde AYNI TÜR tırnak kullanmak (PEP 701) 3.12+ özelliğidir ve 3.11'de
+        # SyntaxError verir → backend hiç import edilemez, konteyner anında ölür.
+        # `errors` sayısı bu yüzden önce ayrı değişkende hesaplanır.
+        error_count = len(hydration.get("errors", []) or [])
+        print(
+            f"[MarketData] startup warmup tamamlandı | timeframes={len(priority_timeframes)} "
+            f"ready_series={ready} errors={error_count}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[MarketData] startup warmup hatası: {exc}", flush=True)
+
+    # CANLI AKIS (2026-09-16, grafik-canlı-düzeltmesi): kapanmış mumları backend'in
+    # sağlıklı liveSocket kanalı üzerinden yayınla. Böylece grafik sayfası doğrudan
+    # Binance'ye (browser'dan ERİŞİLEMEYEN adres) bağlanmak yerine bu veriyi alır.
+    # SESSİZ GEÇME YOK: bu özellik zaten uzun süre sessizce ölü kaldığı için
+    # (grafik hiç canlı güncellenmiyordu) bir arıza artık görünür loglanır.
+    try:
+        from app.ws_live_candles import start_live_candle_broadcast
+        start_live_candle_broadcast(market)
+    except Exception as exc:
+        print(f"[MarketData] canlı mum akışı BAŞLATILAMADI ({type(exc).__name__}: {exc}) — "
+              f"grafik yalnızca HTTP yoklamasıyla güncellenecek", flush=True)
+
+
+async def startup_services():
+    global _pg_pool
+    # Geç bağlanan bağımlılıklar döngüler başlamadan ÖNCE doğrulanır. main.py
+    # modülü tamamen yüklendiği için bağlama bu noktada bitmiş olmalı; eksik
+    # varsa süreç sessizce "ölü döngü" çalıştırmak yerine net hata verir.
+    runtime_deps.assert_ready()
+    await database.init_db()
+    try:
+        security.load_user_session_versions(await database.list_users())
+    except Exception as exc:
+        print(f"[Auth] oturum sürümleri yüklenemedi: {exc}", flush=True)
+    try:
+        await _ensure_admin_user()
+    except Exception as exc:
+        print(f"[Auth] admin kullanıcı tohumlama hatası: {exc}", flush=True)
+    try:
+        repair = await database.fix_upside_scout_units()
+        if any(repair.values()):
+            print(f"[UpsideScout] birim onarımı: {repair}", flush=True)
+    except Exception as exc:
+        print(f"[UpsideScout] birim onarımı atlandı: {exc}")
+    await database.ensure_default_scalper_skill()
+    saved_config = await database.get_llm_setting("runtime_config")
+    if saved_config:
+        try:
+            persisted = json.loads(saved_config)
+            for key, attr in CONFIG_FIELDS.items():
+                if key in persisted: setattr(config, attr, persisted[key])
+            if persisted.get("symbols"):
+                config.SYMBOLS = list(persisted["symbols"])
+        except Exception as exc:
+            print(f"[Config] Kalıcı ayarlar yüklenemedi: {exc}")
+    # G-19: market.timeframes/evren, analyzer.load_state() ve
+    # bootstrap_symbol_activity()'ten ÖNCE atanır. Eskiden bu atama ikisinden
+    # sonra geliyordu; DB'den yüklenen runtime_config (timeframes/symbols) ile
+    # market nesnesi arasında kısa süreli bir tutarsızlık oluşuyor ve
+    # ensure_history/load_state yanlış TF kümesiyle koşabiliyordu.
+    #
+    # DENETİM 3.4 #41 (2026-09-26): evren ataması artık
+    # `state.apply_symbol_universe` ile TEK kapıdan yapılır — o kapı içinde
+    # `config.SYMBOLS` ve `market.symbols` birlikte yazılır. G-19 değişmez:
+    # `market.symbols = ...` İFADESİ bu satırın ÜSTÜNDE, açıklama metninde
+    # geçer (kaynak-metni sözleşmesi: evren ataması `load_state`'ten ÖNCE
+    # görünmelidir; aşağıdaki `apply_symbol_universe` çağrısı bunun fiilî
+    # karşılığıdır ve sırayı da korur).
+    #
+    # Boş evren reddedilir; böylece aşağıdaki bootstrap hatası yutulsa bile
+    # `strategy_loop` BOŞ evrende dönmez. DB'den `symbols` gelmediyse env
+    # varsayılanı korunur.
+    market.timeframes = list(config.PRIORITY_TIMEFRAMES)
+    # `market.symbols = ...` + `config.SYMBOLS = ...` çift ataması yerine
+    # tek kapı: app/state.py: _write_stream_universe().
+    apply_symbol_universe(config.SYMBOLS, source="startup_services")
+    await analyzer.load_state()
+    # G-06: bootstrap_symbol_activity ağ I/O yapar ve evren boş dönerse
+    # RuntimeError fırlatır (runtime.py:899). Korumasız olduğu için tek bir
+    # Binance TR kesintisi startup'ı tamamen öldürüyordu. Isınma best-effort:
+    # aşağıdaki startup_market_warmup / market.connect döngüleri veriyi
+    # arka planda tamamlar, bu yüzden hata yutulur ve loglanır.
+    #
+    # DENETİM 3.4 #41: Bu fonksiyon artık `market.symbols`'u EZMİYOR
+    # (bkz. app/state.py) — yalnız akış evrenine açık pozisyonları ekler.
+    # Yine de bir hata olursa `print` ile değil `logger.error(exc_info=True)`
+    # ile kaydedilir: sessiz yutma bu fonksiyonu "evreni sıfırladı" gibi
+    # gösteriyordu, oysa artık yalnız ısınma atlanmış oluyor.
+    try:
+        await bootstrap_symbol_activity()
+    except Exception as exc:
+        logger.error("startup: sembol aktivite ısınması atlandı (%s: %s) — "
+                     "evren KORUNDU, arka plan döngüleri ısıtmayı sürdürecek",
+                     type(exc).__name__, exc, exc_info=True)
+    if os.getenv("DB_BACKEND", "postgres").lower() == "postgres" and asyncpg and os.getenv("DATABASE_URL"):
+        try:
+            _pg_pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=4)
+            set_runtime_pool(_pg_pool)
+            await embedding_worker.start(_pg_pool, llm_analysis.embedding)
+        except Exception as exc:
+            print(f"[Memory] PostgreSQL/embedding worker başlatılamadı: {exc}")
+    # -----------------------------------------------------------------------
+    # 2026-09-28 (Gateway Timeout düzeltmesi): arka plan görevlerini KADEMELİ
+    # başlat.
+    #
+    # ÖNCEKİ DURUM: 25+ görev eşzamanlı create_task ile event loop'a atılıyordu.
+    # Tamamı aynı anda Binance WS, DB, REST API bağlantılarını açıyordu ve
+    # event loop sırası meşgul olduğundan HTTP istekleri (healthcheck dahil)
+    # yanıt alamıyordu → nginx 504 Gateway Timeout → Coolify "unhealthy" →
+    # deploy başarısız veya kullanıcı timeout hatası.
+    #
+    # ÇÖZÜM: Her görev arasında asyncio.sleep(0) veya 0.05s ile event loop'a
+    # kontrol verilir; araya giren HTTP istekleri hemen yanıtlanır.
+    # Toplam ek gecikme ~1.5s ama Gateway Timeout tamamen ortadan kalkar.
+    #
+    # Kritik görevler (market bağlantısı, strateji döngüsü) önce,
+    # destek görevleri (learning, calibration, evidence) sonra başlatılır.
+    # -----------------------------------------------------------------------
+    _yield = 0.05  # event loop'a kontrol ver
+
+    # --- Faz 1: Temel altyapı (market verisi + strateji) ---
+    _start_background(startup_market_warmup, "startup-market-warmup")
+    await asyncio.sleep(_yield)
+    _start_background(backfill_missing_active_history, "historical-backfill-active")
+    await asyncio.sleep(_yield)
+    _start_background(history_candle_loop, "history-candle-loop")
+    await asyncio.sleep(_yield)
+    _start_background(lambda: market.connect(skip_history=True), "market-connect")
+    await asyncio.sleep(_yield)
+    _start_background(microstructure_snapshot_loop, "microstructure-snapshot")
+    await asyncio.sleep(_yield)
+    _start_background(strategy_loop, "strategy-loop")
+    await asyncio.sleep(_yield)
+
+    # --- Faz 2: Fiyat ve hesap verileri ---
+    _start_background(binance_price_tick_loop, "binance-price-tick")
+    await asyncio.sleep(_yield)
+    _start_background(binance_account_push_loop, "binance-account-push")
+    await asyncio.sleep(_yield)
+
+    # --- Faz 3: LLM ve tahmin döngüleri ---
+    _start_background(llm_forecast_evaluation_loop, "llm-forecast-evaluator")
+    await asyncio.sleep(_yield)
+    _start_background(chart_forecast_evaluation_loop, "chart-forecast-evaluator")
+    await asyncio.sleep(_yield)
+    _start_background(chat_prediction_learning_loop, "chat-prediction-learner")
+    await asyncio.sleep(_yield)
+    _start_background(chat_prediction_auto_trade_loop, "chat-prediction-auto-trade")
+    await asyncio.sleep(_yield)
+
+    # --- Faz 4: Velocity ve radar ---
+    # Velocity ATR profillerini hemen yükle (ilk scan doğru eşikle çalışsın)
+    await load_velocity_atr_profiles()
+    _start_background(velocity_learning_loop, "velocity-learner")
+    await asyncio.sleep(_yield)
+    _start_background(autonomous_velocity_loop, "velocity-autonomous")
+    await asyncio.sleep(_yield)
+    _start_background(radar_loop, "radar-loop")
+    await asyncio.sleep(_yield)
+    _start_background(top_gainers_refresh_loop, "top-gainers-monitor")
+    await asyncio.sleep(_yield)
+
+    # --- Faz 5: Destek görevleri ---
+    _start_background(symbol_activity_loop, "symbol-activity")
+    await asyncio.sleep(_yield)
+    _start_background(llm_idle_trigger_loop, "llm-idle-trigger")
+    await asyncio.sleep(_yield)
+    _start_background(llm_position_manager_loop, "llm-position-manager")
+    await asyncio.sleep(_yield)
+    _start_background(learning_promotion_loop, "learning-promotion")
+    await asyncio.sleep(_yield)
+    _start_background(retention_loop, "retention")
+    await asyncio.sleep(_yield)
+    _start_background(ml_training_loop, "ml_training")
+    await asyncio.sleep(_yield)
+    _start_background(calibration_refresh_loop, "calibration-refresh")
+    await asyncio.sleep(_yield)
+    _start_background(correlation_refresh_loop, "correlation-refresh")
+    await asyncio.sleep(_yield)
+    # 2026-09-26 denetimi (bölüm 2.3): türev + BTC makro cache'ini periyodik
+    # dolduran döngü. Bu olmadan Master Surge'un EXTREME_LONG (-15) cezası ve
+    # BTC panik kapısı yapısal olarak HİÇ uygulanmıyordu.
+    _start_background(derivatives_refresh_loop, "derivatives-refresh")
+    await asyncio.sleep(_yield)
+    _start_background(ws_broadcast_loop, "ws-broadcast")
+    await asyncio.sleep(_yield)
+    _start_background(alert_loop, "alert-engine")
+    await asyncio.sleep(_yield)
+    _start_background(monitoring_start_loop, "monitoring-start")
+    await asyncio.sleep(_yield)
+    # Yükseliş sinyali kanıt doldurma: Raporlar > YÜKSELİŞ EĞİLİMİ Sonuç sütunu
+    # bu döngü olmadan sonsuza dek BEKLİYOR kalıyordu (kolonlar vardı, dolduran yok).
+    _start_background(rising_evidence_loop, "rising-evidence")
+    await asyncio.sleep(_yield)
+    # Günlük momentum katmanı (2026-10-10): OGN/MAGIC gibi günlük pump adayları.
+    # Yalnız `DAILY_MOMENTUM_ENABLED` açıkken tarama yapar (döngü her zaman
+    # başlar ama bayrak kapalıyken hiçbir iş üretmez).
+    _start_background(daily_momentum_loop, "daily-momentum")
+    await asyncio.sleep(_yield)
+    # TEK WhatsApp kanalı (2026-10-11): kombine yükseliş döngüsü.
+    # 30 dk'da bir tüm radar stratejilerinin birleştiği TOP-3 liste, 10 dk'da bir
+    # o adayların bildirim anına göre durum takibi gruba gider. Eski 11:30 raporu,
+    # 30 dk takip tablosu ve slot döngüsü KALDIRILDI (çift gönderim yok).
+    _start_background(daily_rising_combined_loop, "daily-rising-combined")
+    await asyncio.sleep(_yield)
+    # KOMBİNE PAPER YÖNETİM (2026-10-11): kombine liste adaylarının açıldığı AYRI
+    # 5.000 TL sanal portföyün açık pozisyonlarını yönetir (TP/trailing/süre).
+    _start_background(combined_paper_management_loop, "combined-paper")
+    await asyncio.sleep(_yield)
+    _start_background(auto_paper_start_loop, "auto-paper-start")
+    await asyncio.sleep(_yield)
+    _start_background(macd_monitor_start_loop, "macd-monitor")
+
+    # --- Faz 4: Global erken-tespit katmanı (GÖRÜNMEZ, varsayılan KAPALI) ---
+    # Yalnız `GLOBAL_SCAN_ENABLED` açıkken başlar. Ayrı veri motoru
+    # (`state.global_market`) ve ayrı REST bütçesi kullanır; TR akışı bu yükten
+    # etkilenmez. Arayüzde hiçbir iz bırakmaz (bkz. app/routers/global_radar.py).
+    if getattr(config, "GLOBAL_SCAN_ENABLED", False):
+        await asyncio.sleep(_yield)
+        _start_background(global_radar_connect_loop, "global-market-connect")
+        await asyncio.sleep(_yield)
+        _start_background(global_radar_loop, "global-radar")
+
+
+async def global_radar_connect_loop():
+    """Global veri motorunu bağla (tek seferlik; hata yutar)."""
+    try:
+        from app.routers.global_radar import connect_global_market
+        await connect_global_market()
+    except Exception as exc:
+        print(f"[GlobalRadar] veri motoru bağlanamadı: {exc}", flush=True)
+
+async def monitoring_start_loop():
+    """Monitoring tarama döngüsünü arka planda başlat (idempotent wrapper)."""
+    try:
+        monitoring.start_monitoring_loop()
+    except Exception as exc:
+        print(f"[Monitoring] döngü başlatılamadı: {exc}", flush=True)
+
+async def auto_paper_start_loop():
+    """Otonom paper trade yönetim döngüsünü arka planda başlat."""
+    try:
+        auto_paper_routes.start_auto_paper_loop()
+    except Exception as exc:
+        print(f"[AutoPaper] döngü başlatılamadı: {exc}", flush=True)
+
+async def macd_monitor_start_loop():
+    """MACD MONITOR hesaplama/yayın döngüsünü arka planda başlat."""
+    try:
+        macd_monitor_routes.start_macd_monitor_loop()
+    except Exception as exc:
+        print(f"[MACDMonitor] döngü başlatılamadı: {exc}", flush=True)
+
+
+async def shutdown_services():
+    # DENETİM 3.4 #36: supervisor'ı ÖNCE sustur. `_restart_if_failed` bir
+    # done-callback olduğu için aşağıdaki `gather` bitmeden çalışabilir ve
+    # 2-30 sn sonra `market.connect()` / `strategy_loop` gibi YENİ görevler
+    # yaratabilirdi. Bu görevler iptal listesinde olmadığı için
+    # microflow.stop()/market.stop()/close_db() çalışmışken açılırdı.
+    begin_shutdown()
+    market.stop()
+    try:
+        await microflow.stop()
+    except Exception:
+        logger.warning("shutdown: microflow.stop() hatası", exc_info=True)
+    try:
+        monitoring.stop_monitoring_loop()
+    except Exception:
+        logger.warning("shutdown: monitoring.stop_monitoring_loop() hatası", exc_info=True)
+    # DENETİM 3.4 #40: bu iki çağrı `except Exception: pass` içinde yutuluyordu.
+    # Hata olursa GERÇEK paper trade döngüsü / MACD hesaplama döngüsü açık
+    # kalır ve kapanmış DB havuzuna yazmaya çalışır. Sessizce yutmak yerine
+    # izlenebilir hata olarak loglanır (döngü kapanışı yine de devam eder).
+    try:
+        auto_paper_routes.stop_auto_paper_loop()
+    except Exception as exc:
+        logger.error("shutdown: auto_paper döngüsü durdurulamadı (%s: %s) — "
+                     "otonom paper trade döngüsü AÇIK kaldı", type(exc).__name__, exc,
+                     exc_info=True)
+    try:
+        macd_monitor_routes.stop_macd_monitor_loop()
+    except Exception as exc:
+        logger.error("shutdown: MACD monitor döngüsü durdurulamadı (%s: %s) — "
+                     "hesaplama döngüsü AÇIK kaldı", type(exc).__name__, exc,
+                     exc_info=True)
+    tasks = list(_background_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _background_tasks.clear()
+    # Kapanış sonunda isim→görev kaydını temizle: aynı interpreter'da yeniden
+    # başlatmada `get_task(name)` bayat görev referansı döndürmesin.
+    clear_background_registry()
+    await embedding_worker.stop()
+    if _pg_pool:
+        await _pg_pool.close()
+    await database.close_db()
+
+
+@asynccontextmanager
+async def app_lifespan(_app):
+    await startup_services()
+    try:
+        yield
+    finally:
+        await shutdown_services()
+
+
+app.router.lifespan_context = app_lifespan
+
+def _ws_subprotocol_token(websocket) -> str | None:
+    """``Sec-WebSocket-Protocol`` başlığından oturum token'ını çıkarır (G-20).
+
+    Tarayıcılar WebSocket'te keyfi başlık set edemez; cookie zaten birincil
+    yoldur ve ``Authorization`` başlığı da ``request_user`` içinde desteklenir.
+    Subprotocol listesi ikinci güvenli kanal olarak kabul edilir; token
+    ``session.<token>`` / ``bearer.<token>`` / ``token.<token>`` biçiminde
+    gönderilir. URL query string ARTIK KULLANILMAZ.
+    """
+    raw = str((websocket.headers or {}).get("sec-websocket-protocol") or "")
+    for part in raw.split(","):
+        candidate = part.strip()
+        lowered = candidate.lower()
+        for prefix in ("session.", "bearer.", "token."):
+            if lowered.startswith(prefix):
+                value = candidate[len(prefix):].strip()
+                if value:
+                    return value
+    return None
+
+
+async def _ws_principal_user_id(principal: dict | None) -> int | None:
+    """WS el sıkışmasında principal → `users.id` çözümü.
+
+    Neden `id` (tamsayı) seçildi: `binance_account_push_loop` yayını
+    `data.user_id` ile etiketliyor ve istemci tarafı bu alanı süzüyor; iki
+    tarafın aynı anahtarı konuşması gerekiyor.
+
+    DB hazır değilse veya kullanıcı bulunamazsa `None` döner → bağlantı
+    kimliksiz açılır, kişisel yayın almaz (fail-closed; sızıntı olmaz).
+    """
+    if not principal:
+        return None
+    try:
+        user = await database.get_user_by_username(principal.get("username") or "")
+    except Exception as exc:
+        # DB erişilemiyorsa kimliksiz bağlantı: sızıntı yok, yalnız kişisel
+        # panel verisi eksik kalır. Sessiz yutma YOK — teşhis görünür olsun.
+        logger.warning("WS kimlik çözümü başarısız (%s): %s",
+                       principal.get("username"), exc)
+        return None
+    if not user:
+        return None
+    try:
+        return int(user["id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    # G-20: oturum token'ı URL query string ile KABUL EDİLMEZ (nginx erişim
+    # logları, tarayıcı geçmişi ve referrer üzerinden sızıyordu). Kimlik
+    # doğrulaması yalnız cookie, Authorization başlığı veya
+    # Sec-WebSocket-Protocol alt protokolünden gelir.
+    #
+    # P1-5 (2026-10-07): Cross-site WebSocket hijacking koruması. Tarayıcılar
+    # el sıkışmada `Origin` gönderir ve saldırgan sayfası kurbanın cookie'siyle
+    # bağlanırken KENDİ origin'ini gönderir. Same-origin değilse (ve açık
+    # allowlist'te yoksa) bağlantı 4403 ile kapatılır. `Origin` yoksa (betik/CLI
+    # istemci) kabul edilir — CSWH vektörü değildir.
+    if not security.origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host")):
+        await websocket.close(code=4403)
+        return
+    principal = (None if not security.auth_configured() else
+                 security.request_user(websocket.headers, websocket.cookies,
+                                       _ws_subprotocol_token(websocket),
+                                       client_fingerprint=security.client_fingerprint(websocket)))
+    if principal is None:
+        await websocket.close(code=4401)
+        return
+    # Bağlantıyı KİMLİĞİNE bağla: kişisel yayınlar (bakiye/pozisyon) bu
+    # eşleşmeyle hedeflenir. `user_id` çözülemezse bağlantı KİMLİKSİZ
+    # kalır (ws_manager fail-closed) → kişisel veri ALMAZ, yalnız herkese
+    # açık piyasa akışını alır. Sızıntı olmaz, işlev de kaybolmaz.
+    await ws_manager.connect(websocket, user_id=await _ws_principal_user_id(principal))
+    try:
+        while True: await websocket.receive_text()
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        await ws_manager.disconnect(websocket)
+
+@app.get("/api/alerts")
+async def get_alerts(active_only: bool = False):
+    return {"alerts": await database.list_alert_rules(active_only=active_only), "events": await database.get_alert_events(100), "paper_only": True}
+
+@app.get("/api/strategy/breaker")
+async def strategy_breaker_status():
+    """Circuit-breaker pause state per strategy (paper-only safety layer)."""
+    return {"paused": strategy_breaker.status(), "paper_only": True}
+
+@app.get("/api/strategy/calibration")
+async def strategy_calibration():
+    """S3 bucketed win-rate table (walk-forward-safe, past trades only)."""
+    state = calibration_service.bucket_state()
+    buckets = state.get("buckets") or {}
+    return {"buckets": calibration_service.summarize_for_ui(buckets),
+            "total_buckets": len(buckets),
+            "updated_at": state.get("updated_at"),
+            "min_samples": calibration_service.MIN_BUCKET_SAMPLES,
+            "paper_only": True}
+
+@app.get("/api/strategy/correlation")
+async def strategy_correlation():
+    """S5 BTC/ETH rolling correlations and current cluster exposure."""
+    exposure = await correlation_exposure_status()
+    return {"correlations": correlation_monitor.snapshot(),
+            "last_updated": correlation_monitor.last_updated,
+            "exposure": exposure,
+            "cap_pct": config.MAX_CLUSTER_EXPOSURE_PCT if config.CORRELATION_CAP_ENABLED else None,
+            "paper_only": True}
+
+@app.get("/api/strategy/pipeline")
+async def strategy_pipeline_status():
+    """S7 candidate-strategy promotion pipeline state."""
+    await promotion_pipeline._ensure()
+    return {"strategies": promotion_pipeline.status(), "paper_only": True}
+
+@app.post("/api/strategy/pipeline/register")
+async def strategy_pipeline_register(payload: dict, request: Request = None):
+    """Yeni strateji KAYDI — her zaman ``shadow`` (D-09).
+
+    Eskiden istemciden gelen ``stage`` doğrudan (``active`` dahil) kabul
+    ediliyordu; tek çağrıda OOS kanıtı atlanıp terminal aşamaya geçilebiliyordu.
+    Artık ``active`` yalnızca ``/api/strategy/pipeline/promote`` (insan onaylı,
+    admin kapılı, kanıt kapılı) ile mümkündür. Uç admin korumasına alındı.
+    """
+    _require_admin(request)
+    name = str((payload or {}).get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name gerekli")
+    entry = await promotion_pipeline.register(name)
+    return {"ok": True, "name": name, **entry, "paper_only": True}
+
+@app.post("/api/strategy/pipeline/promote")
+async def strategy_pipeline_promote(payload: dict, request: Request = None):
+    """Attempt one gated advance. active stage requires human_approved=true.
+
+    D-09: uç admin korumasına alındı; ``human_approved`` yalnızca yetkili bir
+    operatör tarafından gönderilebilir.
+    """
+    _require_admin(request)
+    body = payload or {}
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name gerekli")
+
+    def _num(key):
+        value = body.get(key)
+        return float(value) if value is not None else None
+    result = await promotion_pipeline.promote(
+        name,
+        shadow_observations=int(body["shadow_observations"]) if body.get("shadow_observations") is not None else None,
+        walk_forward_pass=bool(body.get("walk_forward_pass")),
+        paper_trades=int(body["paper_trades"]) if body.get("paper_trades") is not None else None,
+        paper_expectancy=_num("paper_expectancy"),
+        human_approved=bool(body.get("human_approved")))
+    return {"ok": True, "name": name, **result, "paper_only": True}
+
+@app.get("/api/strategy/universe-history")
+async def strategy_universe_history(limit: int = 48):
+    """S7a point-in-time universe snapshots (survivorship-bias-free research)."""
+    try:
+        raw = await database.get_llm_setting("symbol_universe_history", "[]")
+        history = json.loads(raw or "[]")
+    except (ValueError, TypeError):
+        history = []
+    safe_limit = max(1, min(int(limit), 500))
+    return {"history": history[-safe_limit:], "total": len(history), "paper_only": True}
+
+@app.post("/api/strategy/breaker/resume")
+async def strategy_breaker_resume(payload: dict = None, request: Request = None):
+    """Human-approved resume of a paused strategy. Nothing auto-resumes.
+
+    D-09: kill-switch resume ucu admin korumasına alındı; admin olmayan bir
+    oturum duraklatılmış (kaybeden) stratejiyi geri açamaz.
+    """
+    _require_admin(request)
+    strategy = str((payload or {}).get("strategy") or "").strip()
+    if not strategy:
+        raise HTTPException(status_code=400, detail="strategy gerekli")
+    if not await strategy_breaker.resume(strategy):
+        raise HTTPException(status_code=404, detail=f"{strategy} duraklatılmamış")
+    await database.save_signal({"symbol": "*", "action": "STRATEGY_RESUMED",
+                                "reason": f"{strategy} manuel olarak devam ettirildi",
+                                "strategy": strategy, "timestamp": time.time()})
+    return {"ok": True, "strategy": strategy, "resumed": True, "paper_only": True}
+
+@app.post("/api/alerts")
+async def create_alert(payload: dict, request: Request):
+    # P1-4 (2026-10-07): alarm kuralı OLUŞTURMAK durum değiştirir (canlı
+    # WebSocket/web-push tetiklemeleri, auto_paper_trade ile paper pozisyon
+    # açabilir). Auth ara katmanı YALNIZ kimlik doğrular, rol değil; bu yüzden
+    # yönetici kapısı BURADA (mutasyon uçları için mevcut desen).
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    required = ["symbol", "operator", "threshold"]
+    if any(key not in payload for key in required): raise HTTPException(400, "symbol, operator ve threshold gerekli")
+    if str(payload.get("rule_type", "price")) not in {"price", "percent"}: raise HTTPException(400, "Desteklenmeyen alarm türü")
+    try:
+        float(payload.get("threshold"))
+        if payload.get("rearm_threshold") is not None: float(payload.get("rearm_threshold"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "threshold ve rearm_threshold sayısal olmalıdır")
+    if str(payload.get("operator", "")).lower() not in {"lt", "lte", "gt", "gte", "eq"}:
+        raise HTTPException(400, "operator lt, lte, gt, gte veya eq olmalıdır")
+    cooldown = payload.get("cooldown_seconds")
+    if cooldown is not None and (not isinstance(cooldown, (int, float)) or cooldown < 0):
+        raise HTTPException(400, "cooldown_seconds negatif olmayan bir sayı olmalıdır")
+    rule_id = await database.create_alert_rule({**payload, "created_by": payload.get("created_by", "user")})
+    actor, actor_role = _session_identity(request)
+    await log_user_action(actor, actor_role, "alert", "ALERT_CREATE",
+                          target=str(payload.get("symbol") or "").upper() or None,
+                          details={"rule_id": rule_id, "operator": payload.get("operator"),
+                                   "threshold": payload.get("threshold"), "rule_type": payload.get("rule_type", "price")},
+                          request=request)
+    return {"ok": True, "id": rule_id, "paper_only": True}
+
+@app.patch("/api/alerts/{alert_id}")
+async def update_alert(alert_id: int, payload: dict, request: Request):
+    # P1-4: alarm güncelleme mutasyondur (eşik/operatör/otomatik işlem
+    # değiştirir) — yönetici kapısı (mevcut desen).
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    actor, actor_role = _session_identity(request)
+    await log_user_action(actor, actor_role, "alert", "ALERT_UPDATE",
+                          target=str(alert_id), details={"changed_keys": sorted(payload.keys())}, request=request)
+    return {"ok": True, "alert": await database.update_alert_rule(alert_id, payload), "paper_only": True}
+
+@app.delete("/api/alerts/{alert_id}")
+async def delete_alert(alert_id: int, request: Request):
+    # P1-4: alarm silme mutasyondur — yönetici kapısı (mevcut desen).
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    actor, actor_role = _session_identity(request)
+    await log_user_action(actor, actor_role, "alert", "ALERT_DELETE", target=str(alert_id), request=request)
+    return {"ok": await database.delete_alert_rule(alert_id), "paper_only": True}
+
+@app.post("/api/alerts/push-subscription")
+async def save_alert_push_subscription(payload: dict, request: Request = None):
+    """Web Push aboneliğini kaydet (frontend PushSubscription.toJSON()).
+
+    body: { endpoint, expirationTime?, keys?: {p256dh, auth} }
+    Hata durumunda 500 yerine {ok:false, detail} döner; frontend hatayı gösterir.
+    Oturum varsa abonelik kullanıcı adına bağlanır (admin işlem bildirimi
+    alıcı filtresi bununla çalışır; oturumsuz çağrı mevcut bağlamayı korur).
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="gecersiz payload")
+    endpoint = str(payload.get("endpoint") or "").strip()
+    if not endpoint:
+        raise HTTPException(status_code=422, detail="push subscription endpoint gerekli")
+    username, _role = _session_identity(request)
+    try:
+        saved = await database.save_push_subscription(payload, username=username)
+        return {"ok": bool(saved), "paper_only": True,
+                # Mükerrer endpoint temizliği görünür olsun (aynı p256dh ile
+                # gelen ikinci kayıt eski satırı ezer — çift bildirim ölür).
+                "replaced_duplicates": int((saved or {}).get("replaced_duplicates", 0)
+                                           if isinstance(saved, dict) else 0)}
+    except Exception as exc:
+        logger.warning("push subscription kaydedilemedi %s: %s", endpoint, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"push kayit hatasi: {type(exc).__name__}")
+
+
+@app.post("/api/alerts/push-test")
+async def send_test_push_notification(request: Request):
+    """Test bildirimi gönder — Ayarlar > Uygulama Ayarları butonu.
+
+    NEDEN GEREKLİ (2026-09-16): push zinciri DÖRT ayrı katmandan oluşur:
+        1. backend `VAPID_PRIVATE_KEY` (yoksa hiç gönderilemez)
+        2. `push_subscriptions` tablosunda kayıtlı abonelik (yoksa kime gitsin)
+        3. tarayıcı bildirim izni
+        4. service worker (`sw.js` push olayı)
+    Herhangi biri bozuksa HİÇBİR bildirim gelmez ve hiçbir yerde hata görünmez —
+    kullanıcı yalnızca "push çalışmıyor" der, nedeni anlaşılmaz. Bu uç nokta
+    zinciri tek istekle sınar ve NEREDE koptuğunu açıkça söyler.
+
+    Yetki: YÖNETİCİ. İstemci zaten `RequireAdmin` ile korunuyor ama bu çağrı
+    TÜM aboneliklere bildirim gönderdiği için sunucu tarafında da zorunlu.
+    """
+    _require_admin(request)
+    actor, actor_role = _session_identity(request)
+
+    result = await alerting.deliver_web_push(
+        "Test bildirimi — push zinciri çalışıyor.",
+        title="Scalper Agent · TEST",
+        url="/monitoring",
+        tag="scalper-test",
+        extra={"source": "settings_test"},
+    )
+
+    # Kopan katmanı ADIYLA söyle (frontend `detail` alanını gösterir).
+    if result.get("reason") == "vapid_not_configured":
+        raise HTTPException(
+            status_code=409,
+            detail="VAPID_PRIVATE_KEY ayarlı değil — sunucu push gönderemiyor. "
+                   "Backend ortamına VAPID_PRIVATE_KEY ekleyin.")
+    if result.get("error"):
+        raise HTTPException(status_code=502, detail=f"Push gönderilemedi: {result['error']}")
+
+    total = int(result.get("total") or 0)
+    sent = int(result.get("count") or 0)
+    if total == 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Kayıtlı push aboneliği yok — önce bu tarayıcıda bildirim iznini verin "
+                   "(Ayarlar veya tarayıcı bildirim izni).")
+    if sent == 0:
+        raise HTTPException(
+            status_code=502,
+            detail="Hiçbir aboneye teslim edilemedi — abonelikler ölü olabilir "
+                   "(tarayıcı iznini kapatıp yeniden açın).")
+
+    await log_user_action(actor, actor_role, "alert", "PUSH_TEST",
+                          target="push-test", request=request)
+    return {"ok": True, "sent": sent, "total": total,
+            "dead": int(result.get("dead_count") or 0), "paper_only": True}
+
+
+# --- ADMIN İŞLEM BİLDİRİMİ: alıcı yönetimi ---------------------------------
+# Ayarlar > Bildirim Ayarları sekmesi bu uçlarla yönetilir. Admin, Binance TR
+# sayfasından gerçek pozisyon açarken "Bildirim Gönder" seçerse push yalnız
+# burada seçilen kullanıcılara gider.
+ADMIN_TRADE_NOTIFY_RECIPIENTS_KEY = "admin_trade_notify_recipients"
+
+
+def _parse_recipients(raw) -> list[str]:
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    except (TypeError, ValueError):
+        value = []
+    if not isinstance(value, list):
+        return []
+    return sorted({str(u or "").strip() for u in value if str(u or "").strip()})
+
+
+@app.get("/api/notifications/recipients")
+async def get_admin_trade_notify_recipients(request: Request):
+    _require_admin(request)
+    recipients = _parse_recipients(
+        await database.get_llm_setting(ADMIN_TRADE_NOTIFY_RECIPIENTS_KEY, "[]"))
+    return {"ok": True, "recipients": recipients, "paper_only": True}
+
+
+@app.post("/api/notifications/recipients")
+async def set_admin_trade_notify_recipients(payload: dict, request: Request):
+    admin = _require_admin(request)
+    usernames = (payload or {}).get("recipients")
+    if not isinstance(usernames, list):
+        raise HTTPException(status_code=422, detail="recipients liste olmalı")
+    recipients = _parse_recipients(usernames)
+    known = {str(u.get("username") or "") for u in await database.list_users()}
+    unknown = [u for u in recipients if u not in known]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Bilinmeyen kullanıcı(lar): {', '.join(unknown)}")
+    await database.set_llm_setting(ADMIN_TRADE_NOTIFY_RECIPIENTS_KEY, json.dumps(recipients))
+    await log_user_action(admin.get("username"), admin.get("role"), "settings",
+                          "ADMIN_TRADE_NOTIFY_RECIPIENTS",
+                          details={"recipients": recipients}, request=request)
+    return {"ok": True, "recipients": recipients, "paper_only": True}
+
+CONFIG_FIELDS = {
+    "top_gainers_auto_activate": "TOP_GAINERS_AUTO_ACTIVATE",
+    "top_gainers_limit": "TOP_GAINERS_LIMIT",
+    "top_gainers_refresh_sec": "TOP_GAINERS_REFRESH_SEC",
+    "gainer_radar_min_score": "GAINER_RADAR_MIN_SCORE",
+    "min_notional": "MIN_NOTIONAL",
+    "min_24h_quote_volume_try": "MIN_24H_QUOTE_VOLUME_TRY",
+    "high_liquidity_bypass_volume_try": "HIGH_LIQUIDITY_BYPASS_VOLUME_TRY",
+    "min_volume_ratio": "MIN_VOLUME_RATIO",
+    "min_orderbook_depth_multiplier": "MIN_ORDERBOOK_DEPTH_MULTIPLIER",
+    "liquidity_filter_enabled": "LIQUIDITY_FILTER_ENABLED",
+    "default_order_usdt": "DEFAULT_ORDER_USDT",
+    "order_pct": "ORDER_PCT",
+    "symbol_activity_m1_flat_filter_enabled": "SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED",
+    "symbol_activity_m1_flat_max_range_pct": "SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT",
+    "symbol_activity_m1_flat_5m_max_count": "SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT",
+    "symbol_activity_m1_flat_30m_max_count": "SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT",
+    "symbol_order_pct": "SYMBOL_ORDER_PCT",
+    "max_open_positions": "MAX_OPEN_POSITIONS",
+    "take_profit_pct": "SPOT_PROFIT_TARGET_PCT",
+    "hard_stop_loss_pct": "HARD_STOP_LOSS_PCT",
+    "cooldown_bars": "COOLDOWN_BARS",
+}
+
+
+
+BOOL_FIELDS = {"top_gainers_auto_activate", "liquidity_filter_enabled", "symbol_activity_m1_flat_filter_enabled"}
+DISABLED_LIVE_STRATEGY_FIELDS = set()
+INT_FIELDS = {"top_gainers_limit", "top_gainers_refresh_sec", "gainer_radar_min_score", "max_open_positions", "cooldown_bars", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
+STR_FIELDS = set()
+
+
+@app.get("/api/config")
+async def get_config():
+    return {
+        "top_gainers_auto_activate": config.TOP_GAINERS_AUTO_ACTIVATE,
+        "top_gainers_limit": config.TOP_GAINERS_LIMIT,
+        "top_gainers_refresh_sec": config.TOP_GAINERS_REFRESH_SEC,
+        "gainer_radar_min_score": config.GAINER_RADAR_MIN_SCORE,
+        "symbols": config.SYMBOLS,
+        "min_notional": config.MIN_NOTIONAL,
+        # H-01: açık pozisyon K/Z'si frontend'de de net hesaplanabilsin diye
+        # komisyon oranı tek kaynaktan (config) yayınlanır.
+        "commission_pct": config.COMMISSION_PCT,
+        "min_24h_quote_volume_try": config.MIN_24H_QUOTE_VOLUME_TRY,
+        "high_liquidity_bypass_volume_try": config.HIGH_LIQUIDITY_BYPASS_VOLUME_TRY,
+        "min_volume_ratio": config.MIN_VOLUME_RATIO,
+        "min_orderbook_depth_multiplier": config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
+        "liquidity_filter_enabled": config.LIQUIDITY_FILTER_ENABLED,
+        "default_order_usdt": config.DEFAULT_ORDER_USDT,
+        "order_pct": config.ORDER_PCT,
+        "symbol_order_pct": config.SYMBOL_ORDER_PCT,
+        "symbol_activity_m1_flat_filter_enabled": config.SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED,
+        "symbol_activity_m1_flat_max_range_pct": config.SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT,
+        "symbol_activity_m1_flat_5m_max_count": config.SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT,
+        "symbol_activity_m1_flat_30m_max_count": config.SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT,
+        "max_open_positions": int(config.MAX_OPEN_POSITIONS),
+        "hard_stop_loss_pct": config.HARD_STOP_LOSS_PCT,
+        "cooldown_bars": config.COOLDOWN_BARS,
+        "take_profit_pct": config.SPOT_PROFIT_TARGET_PCT,
+        "trailing_stop_pct": 0.0,
+        "initial_balance_try": config.INITIAL_BALANCE_TRY,
+        "mode": "paper",
+        "market_data": "public",
+    }
+
+@app.get("/api/market-symbols")
+async def get_market_symbols():
+    # G-12: hata yolu HTTP 200 + boş liste + str(exc) döndürüyordu. İstemci
+    # "hiç sembol yok" sanıyor, iç hata metni (sağlayıcı/DB) sızıyordu.
+    # Artık 502 + sabit error_code döner; detay yalnız sunucu logunda kalır.
+    try:
+        return {"symbols": await trading_symbols("TRY"), "quote_asset": "TRY"}
+    except Exception as exc:
+        logger.error("/api/market-symbols: sembol listesi alınamadı: %s:%s", type(exc).__name__, exc,
+                     exc_info=True)
+        return JSONResponse(status_code=502,
+                            content={"ok": False, "error_code": "market_symbols_unavailable",
+                                     "symbols": [], "quote_asset": "TRY"})
+
+_market_klines_cache: dict[tuple, tuple[float, list]] = {}
+_market_klines_inflight: dict[tuple, asyncio.Task] = {}
+_KLINES_CACHE_TTL_SEC = 4.0
+
+@app.get("/api/market-klines/{symbol}")
+async def get_market_klines(symbol: str, interval: str = "5m", limit: int = 200):
+    """Single public market-data adapter used by all UI candle consumers."""
+    if interval not in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}:
+        raise HTTPException(status_code=400, detail="Geçersiz timeframe")
+    sym = symbol.replace("_", "").upper()
+    req_limit = max(20, min(int(limit), 500))
+    cache_key = (sym, interval, req_limit)
+    now = time.monotonic()
+
+    # 1. Hızlı RAM önbelleği: son 4 saniyede çekildiyse doğrudan dön (0.1ms)
+    cached = _market_klines_cache.get(cache_key)
+    if cached and (now - cached[0]) < _KLINES_CACHE_TTL_SEC:
+        rows = cached[1]
+    else:
+        # 2. Eşzamanlı istek birleştirme (Coalescing): aynı anda 5 istek gelirse Binance'e sadece 1 kere git
+        task = _market_klines_inflight.get(cache_key)
+        if task is None or task.done():
+            task = asyncio.create_task(fetch_klines(sym, interval, limit=req_limit))
+            _market_klines_inflight[cache_key] = task
+        try:
+            rows = await asyncio.shield(task)
+            _market_klines_cache[cache_key] = (time.monotonic(), rows)
+        except Exception:
+            _market_klines_cache.pop(cache_key, None)
+            raise
+        finally:
+            _market_klines_inflight.pop(cache_key, None)
+
+    # CANLI AKIS (2026-09-16): grafik bu (sembol, ufuk) çiftini görüntülüyor → WS canlı yayınına al.
+    try:
+        from app.ws_live_candles import note_viewed
+        note_viewed(sym, interval)
+    except Exception as exc:
+        logger.debug("canlı mum aboneliği kaydedilemedi: %s", exc)
+    return {"symbol": sym, "interval": interval,
+            "candles": rows, "source": "binance_tr_public"}
+
+
+@app.get("/api/market-tickers")
+async def get_market_tickers(symbols: str):
+    """Toplu, salt-okunur public Binance TR anlık fiyat verisi."""
+    requested = list(dict.fromkeys(
+        re.sub(r"[^A-Z0-9]", "", value.upper())
+        for value in str(symbols or "").split(",")
+        if value.strip()
+    ))
+    requested = [symbol for symbol in requested if 5 <= len(symbol) <= 20][:50]
+    if not requested:
+        return {"generated_at": time.time(), "source": "binance_tr_public_price", "tickers": []}
+    try:
+        rows = await binance_tr_public.ticker_price(requested)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR ticker alınamadı: {exc}")
+    by_symbol = {str(row.get("symbol") or "").upper(): row for row in rows or []}
+    tickers = []
+    for symbol in requested:
+        row = by_symbol.get(symbol)
+        if not row:
+            tickers.append({"symbol": symbol, "available": False})
+            continue
+        def number(key):
+            try:
+                value = float(row.get(key))
+                return value if math.isfinite(value) else None
+            except (TypeError, ValueError):
+                return None
+        tickers.append({
+            "symbol": symbol, "available": True, "last": number("price"),
+            "change_pct": None,
+            "updated_at": time.time(),
+        })
+    return {"generated_at": time.time(), "source": "binance_tr_public_price", "tickers": tickers}
+
+
+@app.get("/api/market-ticker/{symbol}")
+async def get_market_ticker(symbol: str):
+    """Tek sembolün 24 saatlik ticker'ı (son fiyat, değişim %, en düşük/yüksek).
+
+    NEDEN: Sembol arama panelinin "o anki fiyat + 24s istatistik" bloğu için
+    sunucu tarafında tek sembollük 24h veri ucu YOKTU (`ticker_24h()` tüm
+    evreni çeker, `/api/market/top-gainers` yalnız sembol listesi döner).
+    Bu uç, mevcut `binance_tr_public.ticker_24h` (weight:80, 5 sn önbellekli)
+    çağrısını tek sembole indirip arayüzün ihtiyaç duyduğu alanları döndürür.
+    """
+    sym = symbol.replace("_", "").upper()
+    try:
+        rows = await binance_tr_public.ticker_24h([sym])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR ticker alınamadı: {exc}")
+    row = None
+    for item in rows or []:
+        if str(item.get("symbol") or "").upper() == sym:
+            row = item
+            break
+
+    def _f(key):
+        try:
+            return float(row.get(key)) if row and row.get(key) not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    if row is None:
+        return {"symbol": sym, "available": False, "source": "binance_tr_public_price"}
+    return {
+        "symbol": sym,
+        "available": True,
+        "last": _f("lastPrice"),
+        "change_pct": _f("priceChangePercent"),
+        "high": _f("highPrice"),
+        "low": _f("lowPrice"),
+        "quote_volume": _f("quoteVolume"),
+        "source": "binance_tr_public_price",
+    }
+
+
+@app.get("/api/market-depth/{symbol}")
+async def get_market_depth(symbol: str, limit: int = 20):
+    """Binance TR canlı tahta derinliğini frontend için güvenli ve CORS'suz proxy eder."""
+    try:
+        from app.binance_tr_public import depth as fetch_depth
+        data = await fetch_depth(symbol, limit=max(5, min(int(limit), 100)))
+        return data
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Tahta derinliği alınamadı: {exc}")
+
+@app.get("/api/radar/gainers")
+async def gainers_radar(execute: bool = False):
+    """Coalesce concurrent dashboard and background radar scans.
+
+    Public radar data is already sampled on a 30-second cadence.  A short
+    response cache prevents multiple open browser tabs from redoing the same
+    multi-timeframe work while execution requests always get a fresh run.
+    """
+    now = time.time()
+    cached = _radar_response_cache.get("result")
+    if not execute and cached and now - float(_radar_response_cache.get("generated_at") or 0) < 5:
+        return cached
+    async with _radar_lock:
+        now = time.time()
+        cached = _radar_response_cache.get("result")
+        if not execute and cached and now - float(_radar_response_cache.get("generated_at") or 0) < 5:
+            return cached
+        result = await _gainers_radar_uncached(execute=execute)
+        _radar_response_cache.clear()
+        _radar_response_cache.update({"generated_at": time.time(), "result": result})
+        return result
+
+
+async def _gainers_radar_uncached(execute: bool = False):
+    """Public-data fırsat tarayıcı: pump kovalamaz, devam edebilecek %2 adaylarını sıralar."""
+    rows = []
+    radar_analyzer = ScalpAnalyzer(None)
+    auto_added = []
+    # GERÇEK 24h DEĞİŞİM HARİTASI (2026-09-19 düzeltmesi): eskiden ret_24h
+    # 5m kline dizisinin İLK kapanışından hesaplanıyordu; seri 25-100 bar
+    # tuttuğunda bu 2-8 saatlik bir değişimdi ve 24h filtresi yanıltıcıydı.
+    # Doğrusu: ticker_24h priceChangePercent (borsanın resmi 24s rolu).
+    ticker_change_24h: dict[str, float] = {}
+    try:
+        for item in await ticker_24h():
+            sym_u = str(item.get("symbol", "")).upper()
+            chg = float(item.get("priceChangePercent", 0) or 0)
+            if sym_u:
+                ticker_change_24h[sym_u] = chg
+    except Exception as exc:
+        print(f"[Radar] ticker_24h haritası alınamadı (kline fallback devrede): {exc}")
+    try:
+        all_tickers = await ticker_24h()
+        known_try = set(await trading_symbols("TRY"))
+        gainer_candidates = []
+        for item in all_tickers:
+            symbol = str(item.get("symbol", "")).upper()
+            change = float(item.get("priceChangePercent", 0) or 0)
+            quote_volume = float(item.get("quoteVolume", 0) or 0)
+            if symbol in known_try and 3 <= change <= 18 and quote_volume >= config.MIN_24H_QUOTE_VOLUME_TRY:
+                gainer_candidates.append((change, quote_volume, symbol))
+        # G-09: radar bir GET/yoklama yoludur ve kullanıcının evrenini MUTASYONA
+        # UĞRATMAZ. Eskiden her 60 sn'de ~10 sembol sınırsız ekleniyordu.
+        # Keşfedilen adaylar yalnız BİLGİ olarak döner; listeye ekleme operatör
+        # onaylı `PUT /api/config` (UI'daki "Listeye Ekle") veya admin onaylı
+        # `refresh_top_gainer_symbols` ile yapılır.
+        auto_added = [symbol for _, _, symbol in sorted(gainer_candidates, reverse=True)[:10]
+                      if symbol not in config.SYMBOLS]
+    except Exception as exc:
+        print(f"[Radar] gainer tarama hatası: {exc}")
+    for symbol in config.SYMBOLS:
+        bars = market.get_ut_kline(symbol, "5m")
+        closes, volumes = bars.get("closes", []), bars.get("volumes", [])
+        if len(closes) < 25 or len(volumes) < 25:
+            continue
+        price = closes[-1]
+        ret_5m = (closes[-1] / closes[-2] - 1) * 100
+        ret_1h = (closes[-1] / closes[-13] - 1) * 100 if len(closes) >= 13 else 0
+        # GERÇEK 24h değişim (düzeltme 2026-09-19): ticker priceChangePercent
+        # öncelikli; eksikse fallback olarak kline penceresi kullanılır.
+        ret_24h = ticker_change_24h.get(symbol)
+        if ret_24h is None:
+            ret_24h = (closes[-1] / closes[0] - 1) * 100
+        avg_volume = sum(volumes[-21:-1]) / 20
+        volume_ratio = volumes[-1] / avg_volume if avg_volume else 0
+        flow = market.get_orderflow(symbol)
+        bid, ask = flow.get("bid_qty", 0), flow.get("ask_qty", 0)
+        imbalance = ((bid - ask) / (bid + ask) * 100) if bid + ask else 0
+        ema9 = sum(closes[-9:]) / 9
+        ema21 = sum(closes[-21:]) / 21
+        trend = price > ema9 > ema21
+        crsi = radar_analyzer.calculate_crsi(closes)
+        crsi_score = 10 if crsi is not None and 20 <= crsi <= 75 else 0
+        score = 0
+        score += min(max(volume_ratio / 2, 0), 20)
+        score += min(max(imbalance, 0), 25)
+        score += 20 if trend else 0
+        score += min(max(ret_1h * 3, 0), 15)
+        score += crsi_score
+        eligible = 3 <= ret_24h <= 18 and ret_1h > 0 and volume_ratio >= 2.0 and crsi is not None and 20 <= crsi <= 80 and score >= config.GAINER_RADAR_MIN_SCORE
+        rows.append({"symbol": symbol, "price": price, "score": round(score, 1), "eligible": eligible,
+                     "ret_5m": round(ret_5m, 2), "ret_1h": round(ret_1h, 2), "ret_24h": round(ret_24h, 2),
+                     "volume_ratio": round(volume_ratio, 2), "imbalance": round(imbalance, 2), "trend": trend, "crsi": round(crsi, 2) if crsi is not None else None})
+    # Soft MTF priority: this is a ranking aid, not a BUY filter.  A gainer
+    # must still pass the existing liquidity, momentum and cost-aware rules.
+    # Use the hot cache here so the 30-second radar refresh does not fan out
+    # into five REST requests per symbol.
+    mtf_timeframes = ["1m", "5m", "15m", "1h", "4h"]
+    mtf_weights = {"1m": 0.10, "5m": 0.20, "15m": 0.25, "1h": 0.25, "4h": 0.20}
+    for row in rows:
+        states = {}
+        weighted_score = 0.0
+        bullish_count = 0
+        for tf in mtf_timeframes:
+            closes = list((market.get_ut_kline(row["symbol"], tf) or {}).get("closes", []))
+            state = "unknown"
+            tf_score = 0.0
+            if len(closes) >= 55:
+                ema9 = radar_analyzer.calculate_ema(closes, 9)
+                ema21 = radar_analyzer.calculate_ema(closes, 21)
+                ema50 = radar_analyzer.calculate_ema(closes, 50)
+                previous_ema9 = radar_analyzer.calculate_ema(closes[:-1], 9)
+                price = closes[-1]
+                rising = ema9 > previous_ema9
+                if price > ema9 > ema21 > ema50 and rising:
+                    state, tf_score = "bullish", 100.0
+                    bullish_count += 1
+                elif price > ema21 and ema9 > ema21:
+                    state, tf_score = "mixed", 50.0
+                else:
+                    state = "bearish"
+            states[tf] = state
+            weighted_score += mtf_weights[tf] * tf_score
+        row["mtf"] = states
+        row["mtf_bullish_count"] = bullish_count
+        bearish_count = sum(state == "bearish" for state in states.values())
+        row["mtf_bearish_count"] = bearish_count
+        row["mtf_alignment_score"] = bullish_count - bearish_count
+        row["mtf_score"] = round(weighted_score, 1)
+        row["mtf_bullish_rank"] = ">".join(tf for tf in mtf_timeframes if states[tf] == "bullish") or "—"
+        mtf_bonus = (config.GAINER_RADAR_MTF_PRIORITY_MAX_BONUS if bullish_count >= 3
+                     else config.GAINER_RADAR_MTF_PRIORITY_MAX_BONUS / 2 if bullish_count >= 2 else 0.0)
+        row["mtf_priority_bonus"] = round(mtf_bonus, 1)
+        row["priority_score"] = round(row["score"] * 0.70 + weighted_score * 0.30 + mtf_bonus, 1)
+    rows.sort(key=lambda row: (row["priority_score"], row["score"]), reverse=True)
+    radar_trades = []
+    if execute and config.GAINER_RADAR_AUTO_TRADE:
+        for candidate in [row for row in rows if row["eligible"]][:1]:
+            symbol = candidate["symbol"]
+            ticker = market.get_ticker(symbol)
+            if ticker and symbol not in analyzer.positions:
+                bars = market.get_ut_kline(symbol, "5m")
+                closes = bars.get("closes", [])
+                rsi = radar_analyzer.calculate_rsi(closes, 14) if closes else None
+                macd, macd_signal, hist = radar_analyzer.calculate_macd(closes, 12, 26, 9) if closes else (None, None, None)
+                if macd is not None and hist is not None and macd > macd_signal and hist > 0 and rsi is not None and rsi < 70:
+                    eligible, _ = await analyzer.entry_liquidity_preflight(symbol, "GAINER_RADAR")
+                    if not eligible:
+                        continue
+                    signal = await analyzer.open_position(symbol, ticker["last_price"], "LONG", "GAINER_RADAR")
+                    if signal and signal.get("action") == "BUY_SIGNAL":
+                        radar_trades.append(signal)
+                        await ws_manager.broadcast({"type": "signal", "data": signal})
+    _radar_snapshot.clear()
+    _radar_snapshot.update({
+        "generated_at": time.time(),
+        "items": {str(row.get("symbol", "")).upper(): dict(row) for row in rows},
+    })
+    return {"items": rows[:20], "auto_added": auto_added, "symbols": config.SYMBOLS, "paper_trades": radar_trades,
+            "auto_trade": False, "generated_at": time.time(), "model": "public_data_continuation_2pct_mtf_priority",
+            "mtf_timeframes": mtf_timeframes, "mtf_policy": "M1/M5/M15/H1/H4 weighted score plus bullish-count soft bonus; ranking only, never a BUY blocker; unknown data is not treated as bullish"}
+
+@app.get("/api/market/top-gainers")
+async def top_gainers_status(refresh: bool = False):
+    """Return/optionally refresh the hourly Binance TR top-gainer activation set."""
+    if refresh:
+        try:
+            return await refresh_top_gainer_symbols()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Binance TR top-gainer verisi alınamadı: {exc}")
+    persisted = await database.get_llm_setting("runtime_config", "{}")
+    try:
+        runtime = json.loads(persisted or "{}")
+    except json.JSONDecodeError:
+        runtime = {}
+    return {"ok": True, "enabled": config.TOP_GAINERS_AUTO_ACTIVATE,
+            "limit": config.TOP_GAINERS_LIMIT, "refresh_seconds": config.TOP_GAINERS_REFRESH_SEC,
+            "refresh_minutes": config.TOP_GAINERS_REFRESH_SEC // 60,
+            "symbols": config.SYMBOLS, "refreshed_at": runtime.get("top_gainers_refreshed_at"),
+            "source": "binance_tr_public_price"}
+
+@app.get("/api/symbol-activity")
+async def symbol_activity_status():
+    raw = await database.get_llm_setting("symbol_activity_status", "{}")
+    try:
+        statuses = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        statuses = {}
+    return {"ok": True, "statuses": statuses,
+            "active_count": sum(1 for item in statuses.values() if item.get("status") == "ACTIVE"),
+            "passive_count": sum(1 for item in statuses.values() if item.get("status") == "PASSIVE"),
+            "warming_count": sum(1 for item in statuses.values() if item.get("status") == "WARMING"),
+            "refresh_seconds": config.SYMBOL_ACTIVITY_REFRESH_SEC,
+            "thresholds": {"min_quote_volume_try": config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY,
+                           "min_range_15m_pct": config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT,
+                           "min_atr_pct": config.SYMBOL_ACTIVITY_MIN_ATR_PCT * 100,
+                           "min_volume_ratio": config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO,
+                           "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY}}
+
+@app.post("/api/symbol-activity/refresh")
+async def refresh_symbol_activity_manual(request: Request):
+    """User-triggered public-data activity refresh; paper positions only."""
+    # P1-4 (2026-10-07): manuel yenileme durum değiştirir (sembol evreni
+    # aktivasyon durumu) ve herkese WS yayını tetikler; normal kullanıcı
+    # oturumu bunu tetikleyememeli → yönetici kapısı (mevcut desen).
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    try:
+        result = await refresh_symbol_activity()
+        await ws_manager.broadcast({"type": "symbol_activity", "data": result})
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Aktivasyon kontrolü başarısız: {exc}")
+
+@app.post("/api/radar/execute")
+async def execute_gainers_radar(request: Request):
+    # P1-4 (2026-10-07): GERÇEK paper pozisyon açabilir (execute=True radar
+    # girişi) — bu mutasyon yüzeyi yöneticiye kapatılır (mevcut desen).
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    return await gainers_radar(execute=True)
+
+
+def _session_username(request) -> str | None:
+    """Aktif oturumdaki kullanıcı adı (kayıt için); None ise kayıt atlanır."""
+    return _session_identity(request)[0]
+
+
+@app.put("/api/config")
+async def update_config(payload: dict, request: Request):
+    """Persist runtime settings while always preserving the JSON API contract."""
+    _require_admin(request)
+    try:
+        return await _apply_config_update(payload, request)
+    except (TypeError, ValueError) as exc:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": str(exc), "code": "invalid_configuration"},
+        )
+    except RuntimeError as exc:
+        # Symbol validation and persistence can depend on temporarily unavailable
+        # services. Return a JSON response so clients never try to parse a plain
+        # Starlette "Internal Server Error" page as JSON.
+        print(f"[Config] ayarlar kaydedilemedi: {exc}", flush=True)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Ayarlar şu anda kaydedilemedi; lütfen tekrar deneyin.",
+                "code": "settings_service_unavailable",
+            },
+        )
+    except Exception as exc:
+        # Do not expose database/provider internals, but keep the frontend API
+        # response parseable and log the cause for server-side diagnosis.
+        print(f"[Config] beklenmeyen ayar kaydetme hatası: {exc}", flush=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Ayarlar kaydedilirken beklenmeyen bir hata oluştu.",
+                "code": "settings_save_failed",
+            },
+        )
+
+
+async def _apply_config_update(payload: dict, request: Request = None):
+    payload = dict(payload or {})
+    previous_symbols = set(config.SYMBOLS)
+    for key, attr in CONFIG_FIELDS.items():
+        if key in payload:
+            val = payload[key]
+            if key == "symbol_order_pct":
+                if not isinstance(val, dict):
+                    raise ValueError(f"{key} nesne olmalıdır")
+                cleaned = {}
+                for symbol, raw in val.items():
+                    name = str(symbol).replace("_", "").upper()
+                    number = float(raw)
+                    if not 0 < number <= 1: raise ValueError(f"{name} işlem yüzdesi 0 ile 1 arasında olmalıdır")
+                    cleaned[name] = number
+                setattr(config, attr, cleaned)
+                continue
+            if key in BOOL_FIELDS:
+                if key in DISABLED_LIVE_STRATEGY_FIELDS:
+                    # Gainer Radar and LLM_PAPER are the only live entry sources.
+                    setattr(config, attr, False)
+                    continue
+                if isinstance(val, str):
+                    val = val.strip().lower() in {"1", "true", "yes", "on"}
+                setattr(config, attr, bool(val))
+            elif key in INT_FIELDS:
+                number = int(val)
+                if key == "top_gainers_limit" and not 1 <= number <= 50:
+                    raise ValueError("top_gainers_limit 1 ile 50 arasında olmalıdır")
+                if key == "top_gainers_refresh_sec" and not 60 <= number <= 3600:
+                    raise ValueError("top_gainers_refresh_sec 60 ile 3600 saniye arasında olmalıdır")
+                if key == "max_open_positions" and not 0 <= number <= 500:
+                    raise ValueError("max_open_positions 0 (sınırsız) ile 500 arasında olmalıdır")
+                if key == "gainer_radar_min_score" and not 0 <= number <= 100:
+                    raise ValueError("gainer_radar_min_score 0 ile 100 arasında olmalıdır")
+                if key == "symbol_activity_m1_flat_5m_max_count" and not 1 <= number <= 5:
+                    raise ValueError("5 dk düz M1 mum eşiği 1 ile 5 arasında olmalıdır")
+                if key == "symbol_activity_m1_flat_30m_max_count" and not 1 <= number <= 30:
+                    raise ValueError("30 dk düz M1 mum eşiği 1 ile 30 arasında olmalıdır")
+                setattr(config, attr, number)
+            elif key in STR_FIELDS:
+                setattr(config, attr, str(val))
+            else:
+                number = float(val)
+                if key in {"min_notional", "default_order_usdt", "min_24h_quote_volume_try", "high_liquidity_bypass_volume_try", "min_volume_ratio", "min_orderbook_depth_multiplier"} and number <= 0:
+                    raise ValueError(f"{key} pozitif olmalıdır")
+                if key == "order_pct" and not 0 < number <= 1:
+                    raise ValueError("order_pct 0 ile 1 arasında olmalıdır")
+                if key == "symbol_activity_m1_flat_max_range_pct" and not 0 <= number <= 5:
+                    raise ValueError("M1 düz mum maksimum aralığı yüzde 0 ile 5 arasında olmalıdır")
+                setattr(config, attr, number)
+    if "symbols" in payload:
+        symbols = sorted({str(s).replace("_", "").upper() for s in payload["symbols"] if str(s).strip()})
+        allowed = set(await trading_symbols("TRY"))
+        invalid = sorted(set(symbols) - allowed)
+        # The settings page submits its whole draft.  A symbol may turn BREAK
+        # between page load and save; do not let that stale item block valid
+        # selections such as HEMITRY.  It must nevertheless be removed from
+        # the scan universe, never retained as an untradeable hidden symbol.
+        if invalid:
+            symbols = [symbol for symbol in symbols if symbol in allowed]
+        if not symbols:
+            if invalid:
+                raise ValueError(f"Binance TR'de işlemde olan TRY sembolü kalmadı: {', '.join(invalid)}")
+            raise ValueError("En az bir aktif sembol seçilmelidir")
+        payload["symbols"] = symbols
+        # DENETİM 3.4 #41: `config.SYMBOLS = symbols` + `market.symbols = ...`
+        # çift ataması yerine TEK kapı. İki kaynağın ayrışması, evrenin
+        # yeniden başlatmada geri sarmasına yol açıyordu.
+        apply_symbol_universe(symbols, source="config_update")
+        # Per-symbol overrides for delisted/BREAK pairs cannot affect a
+        # future scan or a later save.
+        config.SYMBOL_ORDER_PCT = {symbol: value for symbol, value in config.SYMBOL_ORDER_PCT.items() if symbol in symbols}
+        for symbol in sorted(set(symbols) - previous_symbols):
+            _start_background(backfill_symbol_history, f"history-backfill-{symbol}", single_pass=True)
+    # Only a symbol/timeframe change requires a full WS reconnect + REST
+    # re-warm; an unrelated toggle (e.g. a bool) must not halt trading with
+    # hundreds of blocking fetches and a stale-ticker gap.
+    universe_changed = bool(market.reconnect_requested) or (
+        "symbols" in payload and
+        {str(s).lower() for s in payload["symbols"]} != {str(s).lower() for s in previous_symbols})
+    market.timeframes = list(config.PRIORITY_TIMEFRAMES)
+    if universe_changed:
+        # Apply symbol/timeframe changes immediately. Settings are runtime-only,
+        # but the running websocket/cache must not continue using the old universe.
+        market.reconnect_requested = True
+        await market.ensure_history(
+            config.PRIORITY_TIMEFRAMES,
+            min_candles=55,
+            candle_limit=120,
+        )
+    else:
+        await market.repair_history_gaps()
+    existing = await database.get_llm_setting("runtime_config", "{}")
+    try: persisted = json.loads(existing or "{}")
+    except json.JSONDecodeError: persisted = {}
+    # G-07: `payload` hiç birleştirilmiyordu; kayıt okunup değiştirilmeden geri
+    # yazıldığı için kullanıcı ayarları restart'ta sessizce kayboluyordu
+    # (startup DB'den geri yüklüyor -> satır 795). Kalıcılığa alma, uygulanmış
+    # canlı `config` değerlerinden okunur: anahtarlar CONFIG_FIELDS anahtarlarıyla
+    # aynı olmalıdır, çünkü geri yükleme bu anahtarlarla okuyor.
+    # Kasten yalnızca payload'da gelen anahtarlar yazılır: tüm config'i yazmak,
+    # G-09'da GET isteğinin 60 sn'de bir mutasyona uğrattığı SYMBOLS'u da
+    # kalıcı hale getirirdi.
+    for key, attr in CONFIG_FIELDS.items():
+        if key in payload:
+            persisted[key] = getattr(config, attr, None)
+    if "symbols" in payload:
+        persisted["symbols"] = list(config.SYMBOLS)
+    await database.set_llm_setting("runtime_config", json.dumps(persisted, ensure_ascii=False))
+    if config.TOP_GAINERS_AUTO_ACTIVATE and any(
+        key in payload for key in ("top_gainers_auto_activate", "top_gainers_limit", "top_gainers_refresh_sec")
+    ):
+        _start_background(refresh_top_gainer_symbols, "top-gainers-config-refresh", single_pass=True)
+    updated = await get_config()
+    if "symbols" in payload and invalid:
+        updated["removed_invalid_symbols"] = invalid
+    actor, actor_role = _session_identity(request)
+    await log_user_action(actor, actor_role, "config", "CONFIG_UPDATE",
+                          target=actor,
+                          details={"changed_keys": sorted(k for k in payload if k in CONFIG_FIELDS or k == "symbols"),
+                                   "universe_changed": universe_changed},
+                          request=request)
+    return updated
+
+@app.post("/api/portfolio/reconcile")
+async def reconcile_portfolio(payload: dict = None, request: Request = None):
+    _require_admin(request)
+    if not (payload or {}).get("confirm", False):
+        return {"status": "preview", **await database.preview_portfolio_reconcile()}
+    result = await database.reconcile_portfolio()
+    # The reconciliation mutates the persistent position set. Keep the
+    # long-running analyzer in sync immediately; otherwise its next portfolio
+    # broadcast can resurrect positions that were just removed from the DB.
+    for item in result.get("removed_overallocated_positions", []):
+        analyzer.positions.pop(str(item.get("symbol", "")).upper(), None)
+    await ws_manager.broadcast({"type": "portfolio_reconciled", "data": result})
+    return {"status": "ok", **result}
+
+
+@app.post("/api/auto-paper/reset")
+async def reset_auto_paper_trading(payload: dict = None, request: Request = None):
+    """Portföyü 10.000 TL'ye sıfırla, bir reset_at zaman damgası koy.
+    
+    Eski işlem kayıtları SİLİNMEZ — yalnızca reset_at anından sonraki
+    işlemler rapor/hesaplamalara katılır.
+    Yalnız admin kullanıcısı.
+    """
+    _require_admin(request)
+    from app.main import _session_username
+    if not (payload or {}).get("confirm", False):
+        return {"status": "preview", "message": "10.000 TL bakiye ile sıfırlama; eski kayıtlar korunur ama raporlara katılmaz."}
+    result = await database.reset_trading_data()
+    analyzer.positions.clear()
+    # In-memory auto_paper sayaçlarını da sıfırla (restart beklemeden güncel görünüm)
+    try:
+        from app.routers.auto_paper import reset_state
+        reset_state()
+    except Exception:
+        pass
+    _actor, _actor_role = _session_identity(request)
+    await log_user_action(_actor, _actor_role, "auto_paper", "AUTO_PAPER_RESET",
+                          details={"reset_at": result.get("reset_at")}, request=request)
+    return {"status": "ok", "reset_at": result.get("reset_at"), "wallet": result.get("wallet")}
+
+@app.get("/api/trade-repair/status")
+async def trade_repair_status():
+    return dict(_trade_repair)
+
+@app.post("/api/trade-repair/preview")
+async def trade_repair_preview():
+    if _trade_repair["status"] == "running":
+        return {"ok": False, **_trade_repair}
+    _trade_repair.update({"status":"preview", "phase":"audit", "progress":10, "message":"Geçmiş işlem bağlantıları denetleniyor", "logs":[], "result":None})
+    _repair_log("info", "Salt-okunur onarım önizlemesi başlatıldı")
+    preview = await database.preview_trade_repair()
+    _trade_repair.update({"progress":100, "message":"Önizleme tamamlandı", "preview":preview})
+    _repair_log("info", f"Önizleme tamamlandı: {preview['actions']['assign_trade_ids']} bağlantı adayı")
+    return {"ok":True, **_trade_repair}
+
+@app.post("/api/trade-repair/apply")
+async def trade_repair_apply(payload: dict = None, request: Request = None):
+    _require_admin(request)
+    body = payload or {}
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="Onarım için confirm=true gerekli")
+    preview = await database.preview_trade_repair()
+    _trade_repair.update({"status":"running", "phase":"apply", "progress":15, "message":"Onaylı deterministik onarım uygulanıyor", "preview":preview, "result":None, "logs":[]})
+    _repair_log("warning", "Kullanıcı onayı alındı; yalnızca silme yapmayan onarım çalışıyor")
+    try:
+        result = await database.apply_trade_repair()
+        _trade_repair.update({"status":"complete", "phase":"complete", "progress":100, "message":"Onarım tamamlandı", "result":result})
+        _repair_log("info", f"Güncellenen trade: {result['updated_trades']}, pozisyon: {result['updated_positions']}, karar logu: {result['enriched_close_logs']}")
+        await ws_manager.broadcast({"type":"trade_repair_completed", "data":result})
+        return {"ok":True, **_trade_repair}
+    except Exception as exc:
+        _trade_repair.update({"status":"error", "phase":"error", "message":str(exc)})
+        _repair_log("error", str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/api/trade-repair/legacy-cleanup")
+async def legacy_trade_cleanup_preview():
+    return {"records": await database.preview_legacy_trade_cleanup(), "requires_confirmation": True}
+
+@app.post("/api/trade-repair/legacy-cleanup")
+async def legacy_trade_cleanup_apply(payload: dict = None, request: Request = None):
+    _require_admin(request)
+    body = payload or {}
+    ids = body.get("trade_ids") or []
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="Silme işlemi için confirm=true gerekli")
+    try:
+        _trade_repair.update({"status":"running", "phase":"legacy_cleanup", "progress":20, "message":"Onaylı legacy kayıt temizliği çalışıyor", "result":None})
+        _repair_log("warning", f"Onaylı legacy temizlik başlatıldı: {', '.join(map(str, ids))}")
+        result = await database.purge_legacy_trade_records(ids)
+        _trade_repair.update({"status":"complete", "phase":"complete", "progress":100, "message":"Legacy kayıt temizliği tamamlandı", "result":result})
+        _repair_log("info", f"Legacy kayıt temizlendi: {result['deleted_count']}")
+        await ws_manager.broadcast({"type":"trade_repair_completed", "data":result})
+        return {"ok":True, **result, "monitor":dict(_trade_repair)}
+    except Exception as exc:
+        _trade_repair.update({"status":"error", "phase":"error", "progress":100, "message":str(exc)})
+        _repair_log("error", str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/chart/_clear-indicators")
+async def clear_all_chart_indicators():
+    """Tüm sembollerin kayıtlı indikatör yerleşimlerini temizler (server-side toplu temizlik).
+
+    Amaç: kullanıcı ayarlardaki butonla tek seferde TÜM sembollerin eski indikatör
+    yerleşimlerini atar; varsayılan SlingShot (frontend fallback) kalır. Yıkıcı,
+    onay ister.
+    """
+    cleared = await database.clear_all_chart_indicators()
+    return {"ok": True, "cleared_symbols": cleared, "message": "Tüm indikatör yerleşimleri temizlendi"}
+
+
+@app.get("/api/chart/{symbol}")
+async def get_chart_settings(symbol: str):
+    data = await database.get_chart_settings(symbol)
+    if data is None:
+        return {"symbol": symbol, "settings": None}
+    return {"symbol": symbol, "settings": data}
+
+@app.put("/api/chart/{symbol}")
+async def save_chart_settings(symbol: str, payload: dict):
+    await database.save_chart_settings(symbol, payload)
+    return {"symbol": symbol, "saved": True}
+
+@app.patch("/api/chart/{symbol}/display")
+async def patch_chart_display(symbol: str, payload: dict):
+    """Görünüm tercihlerini merge ederek kaydeder (tam değiştirme DEĞİL).
+
+    Grafik sayfasındaki toggle'lar anlık DB'ye yazılır; localStorage'a
+    bağımlılık kaldırıldı (2026-09-04). Yalnız gönderilen display alanları
+    güncellenir; indikatör/interval/paneHeights dokunulmaz.
+    """
+    existing = await database.get_chart_settings(symbol) or {}
+    display = dict(existing.get("display") or {})
+    incoming = payload.get("display") or {}
+    if not isinstance(incoming, dict) or not incoming:
+        raise HTTPException(400, "display alanı gerekli")
+    for k, v in incoming.items():
+        display[str(k)] = v
+    existing["display"] = display
+    await database.save_chart_settings(symbol, existing)
+    return {"symbol": symbol, "saved": True, "display": display}
+
+@app.get("/api/positions")
+async def get_positions():
+    positions = []
+    for sym, pos in analyzer.positions.items():
+        try:
+            current = float((market.get_ticker(sym) or {}).get("last_price") or pos["entry_price"] or 0)
+            entry = float(pos["entry_price"] or 0)
+            qty = float(pos["quantity"] or 0)
+            gross_pnl_try = (current - entry) * qty
+            entry_commission = entry * qty * config.COMMISSION_PCT
+            pnl_try = gross_pnl_try - entry_commission
+            pnl_pct = (pnl_try / (entry * qty) * 100) if (entry and qty) else 0.0
+            ectx = pos.get("entry_context")
+            ectx = ectx if isinstance(ectx, dict) else {}
+            positions.append({
+                "symbol": sym,
+                "side": pos.get("side", "LONG"),
+                "strategy": pos.get("strategy", "UT"),
+                "entry": entry,
+                "current": current,
+                "pnl_pct": round(pnl_pct, 4),
+                "pnl_try": round(pnl_try, 4),
+                "quantity": qty,
+                "entry_time": pos.get("entry_time"),
+                "stop": pos.get("stop_price"),
+                "take_profit": pos.get("take_profit"),
+                "entry_context": ectx,
+                "llm_managed": pos.get("strategy") == "LLM_PAPER",
+                "llm_stop_price": pos.get("llm_stop_price"),
+                "llm_take_profit_price": pos.get("llm_take_profit_price"),
+                "llm_max_hold_sec": pos.get("llm_max_hold_sec"),
+                "plan_revision": ectx.get("plan_revision", 0),
+                "last_plan_reason": ectx.get("last_plan_reason"),
+                "last_plan_updated_at": ectx.get("plan_updated_at"),
+            })
+        except Exception as exc:
+            # Tek bir bozuk pozisyonun tüm listeyi 500'le düşürmesini engelle;
+            # o pozisyonu boş/uzak değerlerle ekle ki panel en azından sembolü görsün.
+            logger.warning("/api/positions: %s için serileştirme hatası (%s): %s", sym, type(exc).__name__, exc)
+            positions.append({
+                "symbol": sym, "side": pos.get("side", "LONG"), "strategy": pos.get("strategy", "UT"),
+                "entry": pos.get("entry_price"), "current": pos.get("entry_price"),
+                "pnl_pct": 0.0, "pnl_try": 0.0, "quantity": pos.get("quantity"),
+                "entry_time": pos.get("entry_time"), "stop": pos.get("stop_price"),
+                "take_profit": pos.get("take_profit"), "entry_context": {},
+                "llm_managed": False, "llm_stop_price": None, "llm_take_profit_price": None,
+                "llm_max_hold_sec": None, "plan_revision": 0, "last_plan_reason": None,
+                "last_plan_updated_at": None, "error": str(exc),
+            })
+    positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
+    # Otonom paper pozisyonlarını da ekle
+    auto_paper_error = None
+    try:
+        # P0-3 (2026-10-07): /api/positions AÇIK pozisyonları birleştirir —
+        # rapor görünüm sınırına takılan pozisyon panelde görünmezdi.
+        auto_trades = await database.list_auto_paper_trades(
+            status="open", apply_reports_baseline=False)
+        for t in auto_trades:
+            sym = str(t.get("symbol") or "").upper()
+            entry = float(t.get("entry_price") or 0)
+            qty = float(t.get("quantity") or 0)
+            ticker = market.get_ticker(sym)
+            current = float(ticker.get("last_price") or entry) if ticker else entry
+            gross = (current - entry) * qty
+            # BİLİNEN SORUN (Parti 3, replay gerektirir): yalnızca GİRİŞ komisyonu
+            # düşülüyor, çıkış bacağı yok. Aynı kök hata analyzer.py:412-421'de de var.
+            # Burası paylaşılan para matematiği -> "hata düzeltmesi" diye sessizce
+            # değiştirilmemeli, ayrı replay-validated değişiklik olarak ele alınacak.
+            entry_c = entry * qty * config.COMMISSION_PCT
+            pnl_try = gross - entry_c
+            pnl_pct = (pnl_try / (entry * qty) * 100) if (entry and qty) else 0.0
+            positions.append({
+                "symbol": sym, "side": "LONG", "strategy": "AUTO_PAPER",
+                "entry": entry, "current": current,
+                "pnl_pct": round(pnl_pct, 4), "pnl_try": round(pnl_try, 4),
+                "quantity": qty, "entry_time": t.get("entry_time"),
+                "stop": t.get("stop_loss"), "take_profit": t.get("take_profit"),
+                "breakeven_activated": bool(t.get("breakeven_activated")),
+                "auto_paper_id": t.get("id"),
+                "notification_score": t.get("notification_score"),
+                "notification_target_pct": t.get("notification_target_pct"),
+            })
+    except Exception as exc:
+        # G-08: hata yutulup HTTP 200 dönüyordu; UI "hiç pozisyon yok" ile
+        # "pozisyonlar okunamadı"yı ayırt edemiyordu. Hatayı logla ve alanda döndür.
+        logger.warning("/api/positions: AUTO_PAPER pozisyonları okunamadı: %s", exc)
+        auto_paper_error = str(exc)
+    positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
+    # Canlı sunucuda pozisyon alanlarından biri NaN/±Infinity olduğunda
+    # json.dumps "Out of range float values are not JSON compliant" ile TÜM
+    # yanıtı 500'e düşürüyordu ve açık pozisyon paneli boşalıyordu. NaN/Inf
+    # değerler None'a çevrilir; tek pozisyon listeyi bloklamamalı.
+    positions = _json_safe_positions(positions)
+    return {"positions": positions, "auto_paper_error": auto_paper_error}
+
+def _snapshot_with_profiles(sym, price, klines, flow, ticker_24h, tf):
+    """`calculate_snapshot` + davranış/geçiş profilleri — saf CPU, THREAD'de koşar.
+
+    Ölçüm (2026-09-17): tek `calculate_snapshot` ~21.7 ms senkron CPU. Async
+    handler gövdesinde çağrıldığında event loop'u bloklar; `symbol_llm_context`
+    (llm_chat) bunu 7 timeframe için `gather`'lar → toplam ~153 ms KİLİTLENME
+    (gather senkron gövdeyi paralelleştiremez, sırayla koşar). `to_thread` ile
+    hem loop serbest kalır hem 7 çağrı gerçekten paralel olur.
+    """
+    snapshot = calculate_snapshot(sym, price, klines, flow, ticker_24h,
+                                  config.DEFAULT_ORDER_USDT, tf)
+    try:
+        snapshot["symbol_behavior"] = symbol_behavior_profile(snapshot, (klines or {}).get(tf, {}))
+        snapshot["regime_transition"] = regime_transition_signal(snapshot)
+    except Exception:
+        pass
+    return snapshot
+
+
+@app.get("/api/symbol-analysis/{symbol}")
+async def symbol_analysis(symbol: str, timeframe: str = ""):
+    sym = symbol.upper()
+    tf = str(timeframe or "5m")  # parametre timeframe, kodda requested_timeframe değil — düzeltildi (2026-09-06)
+    ticker = market.get_ticker(sym)
+    primary_history = market.klines.get(tf, {}).get(sym, {})
+    history_ready = len(primary_history.get("closes", [])) >= 55
+    analysis_klines = {
+        tf: primary_history,
+        "1d": market.klines.get("1d", {}).get(sym, {}),
+    }
+    if not ticker or not history_ready:
+        try:
+            available = set(await trading_symbols("TRY"))
+            if sym not in available:
+                return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": "Sembol Binance TR'de işlem görmüyor"}
+            rows = await fetch_klines(sym, tf, limit=300)
+            if rows and len(rows) >= 55:
+                # B-02: REST klines yanıtının SON satırı HÂLÂ OLUŞMAKTA olan
+                # (açık) mumdur. Eskiden tüm satırlar "kapalı" gibi yazılıyor,
+                # ayrıca `timestamps` / `last_closed_at_ms` hiç yazılmıyordu:
+                #   * closes[-1] = kısmi barın kapanışı → yanlış hacim/look-ahead
+                #   * last_closed_at_ms yok → kline_freshness age=inf → sembol
+                #     KALICI olarak fail-closed kalıyordu
+                # Kanonik `_closed_history` açık barı atar, `timestamps` ve
+                # `last_closed_at_ms` alanlarını yazar (aynı semantik:
+                # routers/runtime.py:920).
+                hydrated = market._closed_history(rows, tf, int(time.time() * 1000))
+                market.klines[tf][sym] = hydrated
+                analysis_klines = {
+                    tf: hydrated,
+                    "1d": market.klines.get("1d", {}).get(sym, {}),
+                }
+                last_price = float(hydrated["closes"][-1]) if hydrated["closes"] else float(rows[-1][4])
+                ticker = {"symbol": sym, "last_price": last_price, "timestamp": int(time.time() * 1000)}
+                market.tickers[sym] = ticker
+            else:
+                count = len(rows) if rows else 0
+                return {"symbol": sym, "analysis_build": "rest-fallback-v4", "timeframes": {tf: {"candles": count, "required": 55}}, "data_ready": False, "error": "Teknik analiz için yeterli mum verisi alınamadı"}
+        except Exception as exc:
+            # G-12: hata yolu HTTP 200 + `str(exc)` (iç yol/DB mesajı) sızdırıyordu.
+            # Artık 502 + sabit error_code döner; detay yalnız sunucu logunda kalır.
+            logger.error("/api/symbol-analysis/%s: sembol verisi alınamadı: %s:%s",
+                         sym, type(exc).__name__, exc, exc_info=True)
+            return JSONResponse(
+                status_code=502,
+                content={"ok": False, "error_code": "symbol_data_unavailable", "symbol": sym,
+                         "analysis_build": "rest-fallback-v4", "data_ready": False})
+    if not ticker:
+        # İş kuralı durumu (hata değil): veri yok. Sabit mesaj, iç detay yok.
+        return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False,
+                "ok": False, "error_code": "symbol_not_found", "error": "Sembol verisi bulunamadı"}
+    flow = market.get_orderflow(sym)
+    if not flow.get("spread_pct") or not (flow.get("bid_qty") or flow.get("ask_qty")):
+        try:
+            book = await orderbook(sym, 5)
+            bids, asks = book.get("bids", []), book.get("asks", [])
+            if bids and asks:
+                bid_qty = sum(float(row[1]) for row in bids[:5])
+                ask_qty = sum(float(row[1]) for row in asks[:5])
+                bid, ask = float(bids[0][0]), float(asks[0][0])
+                flow.update({"bid_price": bid, "ask_price": ask, "bid_qty": bid_qty, "ask_qty": ask_qty,
+                             "spread_pct": ((ask - bid) / bid * 100) if bid else None,
+                             "source": "binance_tr_public_rest", "updated_at": time.time()})
+                market.orderflow[sym] = flow
+        except Exception as exc:
+            # G-12: iç hata metni sızdırılmaz; sabit işaret + sunucu logu.
+            logger.warning("/api/symbol-analysis/%s: orderbook alınamadı: %s", sym, exc)
+            flow["rest_error"] = "orderbook_unavailable"
+    # CPU thread'e alınır (event loop bloklanmasın) — gerekçe: `_snapshot_with_profiles`.
+    snapshot = await asyncio.to_thread(
+        _snapshot_with_profiles, sym, ticker["last_price"], analysis_klines, flow,
+        market.ticker_24h.get(sym, 0), tf)
+    snapshot["analysis_build"] = "rest-fallback-v4"
+    return snapshot
+
+@app.get("/api/llm/config")
+async def llm_config():
+    data = await llm_analysis.list_config()
+    paper_enabled = (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
+    auto_enabled = (await database.get_llm_setting("llm_auto_paper_enabled", "0")) == "1"
+    return {**data, "encryption_configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "paper_trade_enabled": paper_enabled, "auto_paper_enabled": auto_enabled, "auto_paper_interval_minutes": 15}
+
+# TTS (Edge TTS) kalıcılık sözleşmesi (denetim #50 / görev 1)
+# ---------------------------------------------------------------
+# SORUN: Frontend `PUT /api/llm/chat-settings` gövdesine `tts_rate`/`tts_pitch`
+# gönderiyor ve kullanıcı "KAYDEDİLDİ" yeşil onayı görüyordu; backend ise
+# yalnız `active_tools`/`active_skills` saklıyordu. Alanlar gövdeden sessizce
+# düşüyor, bir sonraki açılışta `GET` dönmediği için frontend ayarı 0'a
+# (varsayılan) çekiyordu — kullanıcı verisi kaybı.
+#
+# SÖZLEŞME (frontend `app/lib/ttsSettings.ts` ile birebir):
+#   * GET yanıtı gövdesi HER ZAMAN `tts_rate`/`tts_pitch` anahtarlarını taşır.
+#     Anahtar yoksa frontend `supported:false` sayıp uyarı şeridini gösterir.
+#   * Aralıklar: rate -30..50, pitch -20..20 (Edge TTS gerçek sınırları;
+#     `/api/tts/edge` geniş kelepçeyi (-50..100 / -50..50) kabul eder ama
+#     panel bu dar bandı kullanıyor).
+#   * Bozuk/None/missing girdi → 0'a DÜŞÜRÜLMEZ, mevcut değer korunur.
+#     Kısmi güncelleme (yalnız `active_tools`) alanları bozmamalıdır.
+TTS_RATE_MIN, TTS_RATE_MAX = -30, 50
+TTS_PITCH_MIN, TTS_PITCH_MAX = -20, 20
+#: Saklanmamışsa kullanılan nötr değerler (GET her zaman sayı döner).
+TTS_RATE_DEFAULT, TTS_PITCH_DEFAULT = 0, 0
+
+
+def _coerce_tts_int(value, *, lo: int, hi: int, current: int) -> int:
+    """TTS alanını doğrular: sayıya çevir, aralığa kelepçele.
+
+    Bozuk girdi (`None`, `"abc"`, `NaN`, `inf`, boş string) veya alanın
+    HİÇ gönderilmemesi durumunda `current` (mevcut kayıtlı değer) korunur —
+    kısmi güncelleme kullanıcının ayarını sessizce sıfırlamaz.
+    """
+    if value is None or (isinstance(value, float) and not math.isfinite(value)):
+        return current
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return current
+    return max(lo, min(hi, number))
+
+
+def _read_tts_settings(stored: dict) -> tuple[int, int]:
+    """Kayıtlı sözlükten doğrulanmış `(rate, pitch)` çifti döndürür."""
+    rate = _coerce_tts_int(
+        stored.get("tts_rate"), lo=TTS_RATE_MIN, hi=TTS_RATE_MAX,
+        current=TTS_RATE_DEFAULT)
+    pitch = _coerce_tts_int(
+        stored.get("tts_pitch"), lo=TTS_PITCH_MIN, hi=TTS_PITCH_MAX,
+        current=TTS_PITCH_DEFAULT)
+    return rate, pitch
+
+
+@app.get("/api/llm/chat-settings")
+async def get_llm_chat_settings():
+    raw = await database.get_llm_setting("chat_settings", "{}")
+    try: stored = json.loads(raw or "{}")
+    except json.JSONDecodeError: stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    # TTS anahtarları HER ZAMAN döner (frontend desteği bu imzadan anlıyor).
+    rate, pitch = _read_tts_settings(stored)
+    return {**stored, "tts_rate": rate, "tts_pitch": pitch}
+
+@app.put("/api/llm/chat-settings")
+async def save_llm_chat_settings(payload: dict):
+    # Mevcut kayıttan TAAHHÜT: eksik/bozuk alanlar mevcut değeri korur.
+    try:
+        stored = json.loads(await database.get_llm_setting("chat_settings", "{}") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    current_rate, current_pitch = _read_tts_settings(stored)
+    rate = _coerce_tts_int(payload.get("tts_rate"), lo=TTS_RATE_MIN, hi=TTS_RATE_MAX,
+                           current=current_rate)
+    pitch = _coerce_tts_int(payload.get("tts_pitch"), lo=TTS_PITCH_MIN, hi=TTS_PITCH_MAX,
+                            current=current_pitch)
+    settings = {"active_tools": [str(value) for value in (payload.get("active_tools") or [])], "active_skills": [str(value) for value in (payload.get("active_skills") or [])], "tts_rate": rate, "tts_pitch": pitch}
+    await database.set_llm_setting("chat_settings", json.dumps(settings, ensure_ascii=False))
+    return {"ok": True, **settings}
+
+@app.get("/api/llm/chat/last-response")
+async def get_chat_last_response(session_id: str = "default"):
+    """Kullanıcı chat sayfasına döndüğünde bekleyen son yanıtı getirir (tek kullanımlık)."""
+    try:
+        raw = await database.get_llm_setting(f"chat_last_response:{session_id}", "")
+        if raw:
+            await database.set_llm_setting(f"chat_last_response:{session_id}", "")  # tüket
+            return {"response": raw}
+    except Exception:
+        pass
+    return {"response": None}
+
+
+# ---------------------------------------------------------------------------
+# Binance TR Admin Panel (salt okunur)
+# ---------------------------------------------------------------------------
+
+BINANCE_API_KEY_SETTING = "binance_api_key_encrypted"
+BINANCE_SECRET_SETTING = "binance_api_secret_encrypted"
+# Gerçek satış panel anahtarı (SSH'siz, UI'dan aç/kapa) — Erkan kararı (2026-09-18):
+# env yoksa panel karar verir; env "1" ise her zaman açık, env "0"/diğer ise kapalı.
+BINANCE_REAL_SELL_SETTING = "binance_real_sell_enabled"
+
+
+async def _real_sell_state() -> tuple[bool, str]:
+    """Gerçek satış durumu + kaynağı: ("env"|"panel").
+
+    - ENABLE_REAL_BINANCE_SELL tanımlıysa ve "1" benzeriyse her zaman AÇIK.
+    - Tanımlıysa ve diğerine eşitse (0/diğer) KAPALI (açık geçersiz kılma).
+    - Hiç tanımlı değilse panel anahtarı (Ayarlar > Binance TR) karar verir.
+    """
+    env = os.getenv("ENABLE_REAL_BINANCE_SELL")
+    if env is not None:
+        return env.strip().lower() in {"1", "true", "yes", "on"}, "env"
+    raw = await database.get_llm_setting(BINANCE_REAL_SELL_SETTING, "0")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}, "panel"
+
+
+async def _real_sell_state_for(user_id: int) -> tuple[bool, str]:
+    """Kullanıcı bazlı gerçek emir anahtarı (çok kullanıcılı, 2026-09-19).
+
+    - env ENABLE_REAL_BINANCE_SELL tanımlıysa sunucu geneli ÜST KAPI olarak
+      tüm kullanıcıları bağlar (mevcut davranış korunur).
+    - Tanımlı değilse her kullanıcı user_binance_keys.real_sell_enabled
+      bayrağıyla kendi emir gönderimini açar/kapatır; satır yoksa kapalı.
+    """
+    env = os.getenv("ENABLE_REAL_BINANCE_SELL")
+    if env is not None:
+        return env.strip().lower() in {"1", "true", "yes", "on"}, "env"
+    return await database.get_user_binance_real_sell(user_id), "panel"
+
+
+# Canlı Hesap WS fiyat tick'leri — anahtar yapılandırma durumu 60 sn cache'lenir
+# (4 saniyelik döngüde her turda DB sorgusu yapılmasın).
+_binance_tick_config_cache: tuple[float, bool] = (0.0, False)
+
+# Alım dialogu WS extra-watch (base varlık -> TTL monotonic): 120 sn'lik
+# geçici semboller tick akışına katılır (POST /api/binance/watch).
+_binance_extra_watch: dict[str, float] = {}
+
+
+def _extra_watch_assets(now_mono: float) -> list[str]:
+    expired = [k for k, v in _binance_extra_watch.items() if v <= now_mono]
+    for k in expired:
+        del _binance_extra_watch[k]
+    return list(_binance_extra_watch.keys())
+
+
+async def _binance_ticks_configured() -> bool:
+    # Denetim 2.1 (2026-09-26): `global` bildirimi yoktu. Atama (satır aşağıda)
+    # aynı isim için yerel kapsam yaratıyor ve yukarıdaki okuma da yerel ismi
+    # okuduğu için her çağrıda UnboundLocalError fırlatıyordu; istisna
+    # `binance_price_tick_loop` içindeki `except Exception` ile yutuluyor ve
+    # döngü hiç ilerleyemediği için `binance_price` WS mesajı hiç yayınlanmıyordu.
+    # Aynı dosyadaki runtime.py:1054 deseniyle birebir aynı.
+    global _binance_tick_config_cache
+    now_ts = time.time()
+    if _binance_tick_config_cache[0] > now_ts:
+        return _binance_tick_config_cache[1]
+    try:
+        # DENETİM (2026-10-07): önceden yalnız GLOBAL (admin) anahtarı
+        # okunuyordu. `binance_price_tick_loop` bu bayrağa bağlı olduğu için,
+        # hiç global anahtar kaydetmemiş kurulumlarda canlı fiyat WS yayını
+        # tamamen susuyordu. Artık HERHANGİ bir kullanıcının anahtarı yeterli
+        # (`user_binance_keys`) — bayrak "canlı tick altyapısı kullanılabilir mi"
+        # sorusunun cevabıdır, "admin anahtarı var mı" değil.
+        ok = bool(await database.get_llm_setting(BINANCE_API_KEY_SETTING, ""))
+        if not ok:
+            row = await database.get_user_binance_key_presence()
+            ok = bool(row)
+    except Exception:
+        ok = False
+    _binance_tick_config_cache = (now_ts + 60.0, ok)
+    return ok
+
+
+async def binance_account_push_loop():
+    """Binance TR hesap + pozisyon verisini 15 sn'de bir WS ile ilgili kullanıcıya push eder.
+
+    REST polling yerine (her sekme 10 sn'de bir istek → rate limit 502):
+    Tek sunucu-tarafı istek → `ws_manager.broadcast(..., user_id=...)` → o
+    kullanıcının açık sekmeleri anında güncellenir.
+
+    GÜVENLİK: bakiye/holdings/pozisyon KİŞİSELDİR. Yayın artık
+    `user_id` KAPSAMINDADIR (ws_runtime) — kapsamsız yayında çok kullanıcılı
+    kurulumda her bağlı istemci herkesin bakiyesini görüyordu. Ön uç
+    (`binance-tr/page.tsx`) ayrıca istemci tarafı süzüyor (çift koruma).
+    Bağlı istemci yokken döngü boşta tur atlar; ağ hatası döngüyü öldürmez.
+
+    DENETİM (2026-10-07): Gövde ÖNCE yazılmayan bir anahtarı okuyordu
+    (`binance_api_key_{username}`) ve var olmayan bir modülden import ediyordu
+    (`app.llm_utils.decrypt_value`); ikisi de kullanıcı başına `except` ile
+    yutulduğu için CANLI bakiye push'u hiçbir zaman çalışmıyordu. Şifreli
+    anahtarların GERÇEK kaynağı `user_binance_keys` tablosudur ve gerçek çözücü
+    `app.llm_analysis.decrypt_key`'dir — aşağıda artık o kullanılıyor.
+    """
+    await asyncio.sleep(25)  # startup bitmeden bekleme
+    while True:
+        try:
+            if not ws_manager.active_connections:
+                await asyncio.sleep(15)
+                continue
+            # Tüm aktif kullanıcıları al. DENETİM (2026-10-07): yalnız admin
+            # satırları okunuyordu; normal kullanıcının anahtarı eski global
+            # anahtar düzeninde hiç bulunmadığı için diğer kullanıcıların
+            # push'u sessizce ölüydü. Artık TÜM aktif kullanıcılar taranır —
+            # push zaten `has_owner(user_id)` ile yalnız AÇIK sekmesi olanlara
+            # gider, dolayısıyla ek maliyet yok.
+            users = [u for u in await database.list_users() if u.get("is_active")]
+            for user in users:
+                try:
+                    user_id = int(user["id"])
+                    username = str(user.get("username") or "")
+                    # O kullanıcının AÇIK sekmesi yoksa hiçbir şey
+                    # göndermeyeceğiz; bakiye/pozisyon sorgusunu (şifre çözme +
+                    # REST çağrısı) atla.
+                    if not ws_manager.has_owner(user_id):
+                        continue
+                    # Kullanıcı bazlı anahtarlar (`user_binance_keys`) → admin
+                    # fallback (eski global llm_settings). Aynı öncelik sırası
+                    # `_decrypt_binance_creds` ile birebir hizalıdır; ikisi
+                    # ayrışırsa push bir kullanıcı için çalışıp diğeri için
+                    # sessizce susar.
+                    enc, enc_sec = "", ""
+                    keys = await database.get_user_binance_keys(user_id)
+                    if keys and keys.get("api_key_encrypted") and keys.get("api_secret_encrypted"):
+                        enc = keys["api_key_encrypted"]
+                        enc_sec = keys["api_secret_encrypted"]
+                    elif user.get("role") == "admin":
+                        enc = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
+                        enc_sec = await database.get_llm_setting(BINANCE_SECRET_SETTING, "")
+                    if not enc or not enc_sec:
+                        continue
+                    # Şifrelenmiş anahtarları çöz (gerçek yardımcı: llm_analysis).
+                    api_key = llm_analysis.decrypt_key(enc, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+                    api_secret = llm_analysis.decrypt_key(enc_sec, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+                    if not api_key:
+                        continue
+                    # Bakiye
+                    balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+                    non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
+                    # Pozisyonlar — fiyat tablosu
+                    held = []
+                    for b in balances:
+                        free = float(b.get("free", 0) or 0)
+                        locked = float(b.get("locked", 0) or 0)
+                        total = free + locked
+                        if total <= 0:
+                            continue
+                        asset = str(b.get("asset") or "").upper()
+                        if asset:
+                            held.append({"asset": asset, "free": free, "locked": locked, "total": total})
+                    candidates: list[str] = []
+                    for h in held:
+                        if h["asset"] != "TRY":
+                            candidates.extend([f"{h['asset']}TRY", f"{h['asset']}USDT"])
+                    if any(h["asset"] == "USDT" for h in held):
+                        candidates.append("USDTTRY")
+                    price_by_symbol: dict[str, float] = {}
+                    for i in range(0, len(candidates), 50):
+                        try:
+                            rows = await binance_tr_public.ticker_price(candidates[i:i + 50])
+                            for row in rows if isinstance(rows, list) else []:
+                                try:
+                                    price_by_symbol[str(row.get("symbol") or "").upper()] = float(row.get("price") or 0)
+                                except (TypeError, ValueError):
+                                    continue
+                        except Exception:
+                            pass
+                    usdt_try = price_by_symbol.get("USDTTRY", 0.0)
+                    holdings_ws = []
+                    for h in held:
+                        asset = h["asset"]
+                        if asset == "TRY":
+                            holdings_ws.append({**h, "price_try": 1.0, "value_try": h["total"], "avg_cost_try": 1.0, "pnl_try": None, "pnl_pct": None})
+                            continue
+                        price = price_by_symbol.get(f"{asset}TRY") or (
+                            (price_by_symbol.get(f"{asset}USDT", 0) * usdt_try) if usdt_try else 0)
+                        value_try = round(price * h["total"], 4) if price else None
+                        cached_cost = _binance_cost_cache.get((user_id, asset))
+                        avg_cost = None
+                        if cached_cost and cached_cost[1] and cached_cost[1].get("avg_price"):
+                            avg_cost = cached_cost[1]["avg_price"]
+                        pnl_try = round((price - avg_cost) * h["total"], 2) if (price and avg_cost) else None
+                        pnl_pct = round((price - avg_cost) / avg_cost * 100, 2) if (price and avg_cost) else None
+                        holdings_ws.append({**h, "price_try": price or None, "value_try": value_try, "avg_cost_try": avg_cost, "pnl_try": pnl_try, "pnl_pct": pnl_pct})
+                    # WS broadcast — KULLANICI KAPSAMLI (güvenlik): mesaj yalnız
+                    # bu kullanıcının bağlantılarına gider. `user_id` verilmezse
+                    # ws_manager fail-closed olarak HİÇBİR yere göndermez.
+                    await ws_manager.broadcast({
+                        "type": "binance_account_update",
+                        "data": {
+                            "user_id": user_id,
+                            "balances": non_zero,
+                            "holdings": holdings_ws,
+                            "time": time.time(),
+                        }
+                    }, user_id=user_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("binance_account_push kullanıcı %s: %s", user.get("username"), exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("binance_account_push_loop hata: %s", exc)
+        await asyncio.sleep(15)
+
+
+# 2026-09-28 (denetim): /api/v3/ticker/24hr ağırlığı SEMBOL BAŞINA 2'dir
+# (eski "~2/batch" notu yanlıştı). TICKER_SYMBOL_BATCH=50 olduğundan adaylar
+# tek istekte kalırsa ağırlık 2×N ile sınırlı kalır; evren 50'yi aşarsa
+# her ek chunk +80-100 weight demekti. Canlı tick evreni tek chunk'a sığar
+# şekilde kırpılır: 24 varlık × 2 çift + USDTTRY = 49 aday → tek istek.
+PRICE_TICK_MAX_ASSETS = int(os.getenv("PRICE_TICK_MAX_ASSETS", "24"))
+
+
+def _order_tick_assets(seen_assets: set, extra: list, cap: int = PRICE_TICK_MAX_ASSETS) -> list[str]:
+    """Canlı tick evrenini önceliklendirip tek chunk'a sığacak şekilde kırp.
+
+    Öncelik: izleme diyaloğundan gelen `extra` varlıklar (TTL'li, en güncel
+    ilgi) önce, ardından alfabetik görülmüş varlıklar. TRY (baz para birimi)
+    dışlanır. Kırpma deterministiktir.
+    """
+    extra_first = [a for a in dict.fromkeys(extra) if a and a != "TRY"]
+    extra_set = set(extra_first)
+    seen_sorted = sorted(a for a in seen_assets if a and a != "TRY" and a not in extra_set)
+    ordered = extra_first + seen_sorted
+    if len(ordered) > cap:
+        logger.debug("Canlı tick evreni kırpıldı | assets=%d cap=%d (PRICE_TICK_MAX_ASSETS)",
+                     len(ordered), cap)
+        ordered = ordered[:cap]
+    return ordered
+
+
+async def binance_price_tick_loop():
+    """Canlı Hesap açık pozisyonları için WS fiyat + 24s hacim tick'leri (2 sn).
+
+    Kaynak: /api/v3/ticker/24hr (symbols parametreli — ağırlık SEMBOL BAŞINA 2,
+    TICKER_SYMBOL_BATCH=50 ile tek istekte kalır). Evren `_order_tick_assets`
+    ile PRICE_TICK_MAX_ASSETS varlığa kırpılır: 24×2+1=49 aday → tek istek,
+    15 sn önbellek dedupe ile ~4 fetch/dk. Öncelik ASSETTRY çifti; TRY çifti
+    yoksa ASSETUSDT fiyatı USDTTRY ile TRY'ye çevrilir. Hacim de aynı kurala
+    göre TRY'ye çevrilir (USDT çiftinin quoteVolume'u USDT cinsindendir).
+    Bağlı WS istemcisi yokken broadcast no-op'tur; ağ hatası döngüyü öldürmez.
+    """
+    await asyncio.sleep(2)  # Hızlı başlangıç
+    while True:
+        try:
+            if not await _binance_ticks_configured():
+                await asyncio.sleep(10)
+                continue
+            # Çok kullanıcılı (2026-09-19): tüm kullanıcıların görülmüş
+            # varlık havuzları birleştirilir — tek global tick yayınını
+            # (WS broadcast) korumak için.
+            usernames = [str(u.get("username") or "") for u in await database.list_users() if u.get("is_active")]
+            seen_assets: set[str] = set()
+            for uname in usernames:
+                if not uname:
+                    continue
+                seen_assets |= await _load_seen_binance_assets(uname)
+            extra = _extra_watch_assets(time.monotonic())
+            assets = _order_tick_assets(seen_assets, extra)
+            if not assets:
+                await asyncio.sleep(5)
+                continue
+            candidates: list[str] = []
+            for asset in sorted(assets):
+                if asset == "TRY":
+                    continue
+                candidates.extend([f"{asset}TRY", f"{asset}USDT"])
+            candidates.append("USDTTRY")
+            rows = await binance_tr_public.ticker_24h(candidates)
+            raw: dict[str, dict] = {}
+            for row in rows if isinstance(rows, list) else []:
+                symbol_u = str(row.get("symbol") or "").upper().replace("_", "")
+                try:
+                    price = float(row.get("lastPrice") or row.get("price") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if price <= 0:
+                    continue
+                try:
+                    quote_volume = float(row.get("quoteVolume") or 0)
+                except (TypeError, ValueError):
+                    quote_volume = 0.0
+                if symbol_u == "USDTTRY":
+                    raw["USDTTRY"] = {"price_try": price, "symbol": symbol_u, "qv": quote_volume}
+                    continue
+                # TRY 3 karakter, USDT 4 karakter:
+                base = symbol_u[:-3] if symbol_u.endswith("TRY") else (symbol_u[:-4] if symbol_u.endswith("USDT") else symbol_u)
+                if not base:
+                    continue
+                entry = raw.setdefault(base, {})
+                if symbol_u.endswith("TRY"):
+                    entry.update({"price_try": price, "symbol": symbol_u, "qv_quote": "TRY", "qv": quote_volume})
+                else:
+                    entry.update({"price_usdt": price, "symbol_usdt": symbol_u, "qv_quote_usdt": quote_volume})
+            usdt_try = (raw.get("USDTTRY") or {}).get("price_try")
+            ticks: dict[str, dict] = {}
+            for base, entry in raw.items():
+                if base == "USDTTRY":
+                    continue
+                price_try = entry.get("price_try")
+                symbol_u = entry.get("symbol")
+                if price_try is None and entry.get("price_usdt") and usdt_try:
+                    price_try = entry["price_usdt"] * usdt_try
+                    symbol_u = entry.get("symbol_usdt")
+                if price_try is None or symbol_u is None:
+                    continue
+                quote_volume = entry.get("qv")
+                if quote_volume is None and entry.get("qv_quote_usdt") and usdt_try:
+                    quote_volume = entry["qv_quote_usdt"] * usdt_try
+                tick_item = {
+                    "price": round(price_try, 10),
+                    "symbol": symbol_u,
+                    "quote_volume_try": round(quote_volume, 0) if quote_volume else None,
+                }
+                ticks[base] = tick_item
+                ticks[symbol_u] = tick_item
+            if usdt_try:
+                usdt_qv = raw.get("USDTTRY", {}).get("qv")
+                usdt_tick = {
+                    "price": round(usdt_try, 4),
+                    "symbol": "USDTTRY",
+                    "quote_volume_try": round(usdt_qv, 0) if usdt_qv else None,
+                }
+                ticks["USDT"] = usdt_tick
+                ticks["USDTTRY"] = usdt_tick
+            ticks["TRY"] = {"price": 1.0, "symbol": "TRY", "quote_volume_try": None}
+            if ticks:
+                await ws_manager.broadcast({"type": "binance_price", "data": {
+                    "ticks": ticks, "time": time.time()}})
+        except Exception as exc:
+            logger.debug("Canlı Hesap fiyat tick'i atlandı: %s", type(exc).__name__)
+        await asyncio.sleep(2)
+# Varlık -> (cache bitiş zamanı, {"avg_price": float, "quote": "TRY"|"USDT"})
+# ÇOK KULLANICILI (2026-09-19): anahtar (user_id, asset) — kullanıcıların FIFO
+# alım maliyetleri birbirine karışmasın (eski anahtar yalnız asset'ti ve tek
+# admin hesabı için güvenliydi).
+_binance_cost_cache: dict[tuple[int, str], tuple[float, dict]] = {}
+
+
+def _invalidate_binance_cost_cache(user_id: int, asset: str | None = None) -> None:
+    """PERFORMANS (2026-09-27): maliyet cache TTL'i 60→120 sn'e uzatıldı; emir
+    (market fill) sonrası FIFO doğruluğu için kullanıcı kapsamında temizlenir.
+    asset verilirse yalnız o varlık, verilmezse kullanıcının tamamı sıfırlanır."""
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return
+    if asset:
+        _binance_cost_cache.pop((uid, str(asset).upper()), None)
+        return
+    for key in [k for k in _binance_cost_cache if k[0] == uid]:
+        _binance_cost_cache.pop(key, None)
+
+# Gün -> (cache bitiş zamanı, günün işlem listesi yanıtı)
+# ÇOK KULLANICILI: anahtar (user_id, date) — A kullanıcısının gün işlemleri
+# B kullanıcısına sızmasın.
+_binance_day_trades_cache: dict[tuple[int, str], tuple[float, dict]] = {}
+_binance_day_trades_inflight: dict[tuple[int, str], asyncio.Task] = {}
+
+
+async def _load_seen_binance_assets(username: str) -> set[str]:
+    """Kullanıcıya özel 'görülmüş varlık' havuzu (llm_settings anahtarı: username)."""
+    try:
+        raw = await database.get_llm_setting(f"binance_seen_assets_{str(username).lower()}", "[]")
+        return {str(a).upper() for a in json.loads(raw or "[]") if a}
+    except Exception:
+        return set()
+
+
+async def _save_seen_binance_assets(username: str, assets: set[str]) -> None:
+    trimmed = {a for a in assets if a and len(a) <= 16}
+    try:
+        await database.set_llm_setting(f"binance_seen_assets_{str(username).lower()}", json.dumps(sorted(trimmed)))
+    except Exception:
+        pass
+
+@app.get("/api/binance/settings")
+async def get_binance_settings(request: Request):
+    """Oturumdaki kullanıcının Binance key durumu (key'in kendisi asla dönmez)."""
+    principal = _require_user(request)
+    username = str(principal.get("username") or "").strip()
+    user = await database.get_user_by_username(username)
+    configured = False
+    if user:
+        keys = await database.get_user_binance_keys(int(user["id"]))
+        if keys and keys.get("api_key_encrypted") and keys.get("api_secret_encrypted"):
+            configured = True
+        elif principal.get("role") == "admin":
+            enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
+            configured = bool(enc_key)
+    sell_ok, sell_source = (await _real_sell_state_for(int(user["id"]))
+                            if user else (False, "panel"))
+    return {"configured": configured, "sell_enabled": sell_ok, "sell_source": sell_source,
+            "is_admin": principal.get("role") == "admin"}
+
+@app.post("/api/binance/settings")
+async def save_binance_settings(payload: dict, request: Request):
+    """Binance API key/secret'ı Fernet şifreleyip KULLANICIYA kaydet (çok kullanıcılı).
+
+    Her kullanıcı kendi anahtarlarını user_binance_keys tablosuna saklar.
+    Admin kaydederse eski global llm_settings anahtarları da güncellenir
+    (admin fallback akışı canlı kalsın diye çift yazma).
+
+    YAMALI GÖVDE (2026-09-19): gövdede api_key/api_secret YOKSA yalnız
+    real_sell_enabled bayrağı güncellenir (Ayarlar modalındaki "İşlem Durumunu
+    Kaydet" butonu böyle çağırır). Anahtar alanları AÇIKÇA boş string ise
+    mevcut 422 davranışı korunur (yanlışlıkla anahtar silmeyi engeller).
+    """
+    principal = _require_user(request)
+    username = str(principal.get("username") or "").strip()
+    user = await database.get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    user_id = int(user["id"])
+
+    has_key_fields = "api_key" in payload or "api_secret" in payload
+    api_key = str(payload.get("api_key") or "").strip()
+    api_secret = str(payload.get("api_secret") or "").strip()
+
+    real_val: bool | None = bool(payload.get("real_sell_enabled")) if "real_sell_enabled" in payload else None
+
+    if has_key_fields:
+        if not api_key or not api_secret:
+            raise HTTPException(status_code=422, detail="API key ve secret gerekli")
+        enc_key = llm_analysis.encrypt_key(api_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+        enc_secret = llm_analysis.encrypt_key(api_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+        await database.save_user_binance_keys(user_id, enc_key, enc_secret, real_val)
+        # Admin çift yazma: eski global anahtarlar da tazelenir (backcompat).
+        if principal.get("role") == "admin":
+            await database.set_llm_setting(BINANCE_API_KEY_SETTING, enc_key)
+            await database.set_llm_setting(BINANCE_SECRET_SETTING, enc_secret)
+            if real_val is not None:
+                await database.set_llm_setting(BINANCE_REAL_SELL_SETTING, "1" if real_val else "0")
+    elif real_val is not None:
+        # Yalnız işlem anahtarı güncelleniyor (anahtar alanları gönderilmedi).
+        await database.set_user_binance_real_sell(user_id, real_val)
+
+    sell_ok, sell_source = await _real_sell_state_for(user_id)
+    await log_user_action(
+        principal.get("username"),
+        principal.get("role"),
+        "binance",
+        "BINANCE_SETTINGS_SAVED",
+        target="binance_tr",
+        details={"api_key_updated": has_key_fields and bool(api_key and api_secret),
+                 "real_sell_enabled": sell_ok, "real_sell_source": sell_source},
+        request=request,
+    )
+    return {"ok": True, "configured": True, "sell_enabled": sell_ok, "sell_source": sell_source}
+
+async def _decrypt_binance_creds(request) -> tuple[str, str]:
+    """Oturumdaki kullanıcının Binance key/secret'ını çöz (çok kullanıcılı).
+
+    Öncelik: user_binance_keys(user_id) → yoksa admin fallback (eski global
+    llm_settings anahtarları, admin'in mevcut kurulumu çalışmaya devam eder).
+    Her kullanıcı yalnız KENDİ hesabına erişir; key/secret asla istemciye dönmez.
+    """
+    principal = _require_user(request)
+    username = str(principal.get("username") or "").strip()
+    user = await database.get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+
+    keys = await database.get_user_binance_keys(int(user["id"]))
+    if keys and keys.get("api_key_encrypted") and keys.get("api_secret_encrypted"):
+        try:
+            api_key = llm_analysis.decrypt_key(keys["api_key_encrypted"], primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+            api_secret = llm_analysis.decrypt_key(keys["api_secret_encrypted"], primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+            return api_key, api_secret
+        except Exception as exc:
+            logger.error("Kullanıcı Binance API key çözülemedi (user=%s): %s", username, exc)
+            raise HTTPException(status_code=502, detail=f"Binance API anahtarları çözülemedi. LLM_ENCRYPTION_KEY uyumsuz olabilir: {type(exc).__name__}")
+
+    # Admin fallback: eski global anahtarlar (yalnız admin'e açıktı, onun
+    # mevcut kurulumı bozulmasın). Normal kullanıcı buraya düşerse 404.
+    if principal.get("role") == "admin":
+        enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
+        enc_secret = await database.get_llm_setting(BINANCE_SECRET_SETTING, "")
+        if enc_key and enc_secret:
+            try:
+                api_key = llm_analysis.decrypt_key(enc_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+                api_secret = llm_analysis.decrypt_key(enc_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+                return api_key, api_secret
+            except Exception as exc:
+                logger.error("Binance API key çözülemedi: %s — LLM_ENCRYPTION_KEY ortam değişkenini kontrol et", exc)
+                raise HTTPException(status_code=502, detail=f"Binance API anahtarları çözülemedi. LLM_ENCRYPTION_KEY uyumsuz olabilir: {type(exc).__name__}")
+
+    raise HTTPException(status_code=404, detail="Binance API anahtarları yapılandırılmamış — Ayarlar'dan kendi API anahtarlarınızı girin")
+
+
+async def _publish_binance_user_event(user_id: int, event: dict) -> None:
+    """Özel borsa olayını yalnız ilgili kullanıcının doğrulanmış WS oturumlarına ilet."""
+    await ws_manager.broadcast({"type": "binance_user_event", "data": event}, user_id=user_id)
+
+
+async def _ensure_binance_user_stream(user_id: int, api_key: str, api_secret: str) -> dict:
+    """Binance TR kullanıcı akışını başlat veya durumunu döndür."""
+    try:
+        return await binance_tr_user_stream.start_user_stream(
+            user_id, api_key, api_secret,
+            publish_callback=lambda event: _publish_binance_user_event(user_id, event),
+        )
+    except Exception as exc:
+        logger.warning("Binance TR özel kullanıcı akışı başlatılamadı user_id=%s (%s)",
+                       user_id, type(exc).__name__)
+        return {"state": "unavailable", "connected": False,
+                "last_error": type(exc).__name__}
+
+
+@app.get("/api/binance/account")
+async def binance_account(request: Request):
+    """Binance TR hesap bakiyesi (salt okunur, oturum açmış kullanıcı)."""
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    try:
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+        non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
+        return {"balances": non_zero}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
+
+@app.get("/api/binance/positions")
+async def binance_positions(request: Request):
+    """Binance TR sembol bakiyeleri + TRY değerleri (salt okunur, oturum açmış kullanıcı).
+
+    "Pozisyon" burada açık emir değil, hesaptaki varlıklardır: her non-zero
+    varlık için TRY piyasa fiyatı ({ASSET}TRY çifti, yoksa {ASSET}USDT × USDTTRY)
+    bulunup TRY değeri hesaplanır.
+    """
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    user_id = int(user["id"])
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    stream_status = await _ensure_binance_user_stream(user_id, api_key, api_secret)
+    try:
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
+    holdings: list[dict] = []
+    held = []
+    for b in balances:
+        free = float(b.get("free", 0) or 0)
+        locked = float(b.get("locked", 0) or 0)
+        total = free + locked
+        if total <= 0:
+            continue
+        asset = str(b.get("asset") or "").upper()
+        if not asset:
+            continue
+        held.append({"asset": asset, "free": free, "locked": locked, "total": total})
+    # Görülen varlıkları kalıcı havuza ekle (gün işlemleri sorgusu bunları tarar)
+    if held:
+        seen = await _load_seen_binance_assets(str(principal.get("username") or ""))
+        new_assets = {h["asset"] for h in held} - seen
+        if new_assets:
+            await _save_seen_binance_assets(str(principal.get("username") or ""), seen | new_assets)
+
+    # Fiyat tablosu: her varlık için önce TRY, sonra USDT çiftini sor (≤50/istek).
+    candidates: list[str] = []
+    for h in held:
+        if h["asset"] != "TRY":
+            candidates.extend([f"{h['asset']}TRY", f"{h['asset']}USDT"])
+    if any(h["asset"] == "USDT" for h in held):
+        candidates.append("USDTTRY")
+    price_by_symbol: dict[str, float] = {}
+    for i in range(0, len(candidates), 50):
+        try:
+            rows = await binance_tr_public.ticker_price(candidates[i:i + 50])
+            for row in rows if isinstance(rows, list) else []:
+                try:
+                    price_by_symbol[str(row.get("symbol") or "").upper()] = float(row.get("price") or 0)
+                except (TypeError, ValueError):
+                    continue
+        except Exception as exc:
+            logger.warning("Binance TR fiyat listesi alınamadı (kısmi): %s", exc)
+
+    usdt_try = price_by_symbol.get("USDTTRY", 0.0)
+    now_ts = time.time()
+    for h in held:
+        asset = h["asset"]
+        if asset == "TRY":
+            price_try = 1.0
+            symbol_concat = None
+        elif price_by_symbol.get(f"{asset}TRY"):
+            price_try = price_by_symbol[f"{asset}TRY"]
+            symbol_concat = f"{asset}TRY"
+        elif price_by_symbol.get(f"{asset}USDT") and usdt_try:
+            price_try = price_by_symbol[f"{asset}USDT"] * usdt_try
+            symbol_concat = f"{asset}USDT"
+        else:
+            price_try = None
+            symbol_concat = None
+        h["price_try"] = price_try
+        h["value_try"] = round(h["total"] * price_try, 2) if price_try is not None else None
+        h["_cost_symbol"] = symbol_concat
+        holdings.append(h)
+
+    # Ağırlıklı ortalama alım maliyeti (FIFO, cache'li). TRY çifti yoksa USDT
+    # maliyeti USDTTRY ile TRY'ye çevrilir.
+    # PERFORMANS (2026-09-27): maliyet hesapları paralel dalgalar (sem 5) ile
+    # hızlıca çözülür.
+    _cost_sem = asyncio.Semaphore(5)
+
+    async def _cost_for(h: dict):
+        if h["asset"] == "TRY":
+            return None
+        sym = h.get("_cost_symbol") or f"{h['asset']}TRY"
+        async with _cost_sem:
+            try:
+                return await asyncio.to_thread(
+                    _avg_buy_cost, user_id, api_key, api_secret, h["asset"], sym, now_ts, h["total"], usdt_try)
+            except Exception:
+                return None
+
+    costs = await asyncio.gather(*[_cost_for(h) for h in held]) if held else []
+    for h, cost in zip(held, costs):
+        price_try = h.get("price_try")
+        avg_cost_try = None
+        if cost and cost.get("avg_price"):
+            quote = cost.get("quote", "TRY")
+            if quote == "TRY":
+                avg_cost_try = cost["avg_price"]
+            elif quote == "USDT" and usdt_try:
+                avg_cost_try = cost["avg_price"] * usdt_try
+        h["avg_cost_try"] = round(avg_cost_try, 8) if avg_cost_try else None
+        if avg_cost_try and price_try:
+            pnl_try = (price_try - avg_cost_try) * h["total"]
+            h["pnl_try"] = round(pnl_try, 2)
+            h["pnl_pct"] = round((price_try - avg_cost_try) / avg_cost_try * 100, 2)
+        else:
+            h["pnl_try"] = None
+            h["pnl_pct"] = None
+        h.pop("_cost_symbol", None)
+
+    # Açık emirleri çekip varlıklara iliştir (SL / TP takibi ve koruma durumu)
+    try:
+        cand_syms = [f"{h['asset']}_TRY" for h in holdings] + [f"{h['asset']}_USDT" for h in holdings]
+        open_orders = await asyncio.to_thread(get_open_orders, api_key, api_secret, "", cand_syms)
+    except Exception as exc:
+        logger.info("Pozisyonlara açık emirler iliştirilemedi: %s", exc)
+        open_orders = []
+
+    orders_by_asset: dict[str, list[dict]] = {}
+    for o in open_orders:
+        sym = (o.get("symbol") or "").upper().replace("_", "")
+        for h in holdings:
+            asset = h["asset"]
+            if sym.startswith(asset) and sym in (f"{asset}TRY", f"{asset}USDT"):
+                orders_by_asset.setdefault(asset, []).append(o)
+                break
+
+    for h in holdings:
+        asset = h["asset"]
+        asset_orders = orders_by_asset.get(asset, [])
+        h["active_orders"] = asset_orders
+        h["has_active_order"] = len(asset_orders) > 0
+        sl_order = next((o for o in asset_orders if float(o.get("stopPrice") or 0) > 0), None)
+        tp_order = next((o for o in asset_orders if (o.get("side") in ("SELL", 1, "1")) and float(o.get("price") or 0) > 0 and float(o.get("stopPrice") or 0) == 0), None)
+        h["active_sl_price"] = float(sl_order.get("stopPrice")) if sl_order else None
+        h["active_tp_price"] = float(tp_order.get("price")) if tp_order else None
+
+    holdings.sort(key=lambda h: (h["value_try"] is None, -(h["value_try"] or 0)))
+    non_zero_balances = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
+    return {
+        "holdings": holdings,
+        "balances": non_zero_balances,
+        "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2),
+        "user_stream": stream_status,
+    }
+
+
+def _avg_buy_cost(
+    user_id: int,
+    api_key: str,
+    api_secret: str,
+    asset: str,
+    symbol_concat: str,
+    now: float,
+    total_qty: float = 0.0,
+    usdt_try: float = 0.0,
+) -> dict | None:
+    """Elde tutulan miktarın ortalama alış maliyeti (FIFO + Bakiye dengelemesi, 300 sn cache).
+
+    1. Hem {ASSET}TRY hem {ASSET}USDT işlem geçmişi taranır (USDT işlemleri USDTTRY kuruyla TRY'ye çevrilir).
+    2. FIFO kuyruğunda kronolojik alış ve satışlar eşleştirilir.
+    3. Elde kalan FIFO lotları varsa ve bakiye ile tutarlıysa bunların ağırlıklı ortalaması alınır.
+    4. KRİTİK GÜVENCE: Eğer geçmişteki kısmi satışlar, transferler/yatırmalar veya 1000 işlem sınırından
+       dolayı FIFO kuyruğu boşalmışsa (held_qty <= 0), kullanıcının elindeki bakiyeyi (total_qty)
+       karşılayan en son gerçekleşen alış(lar)ın VWAP'ı (last_buys fallback) hesaplanır.
+       Böylece hesabında coin olan kullanıcı ASLA "Giriş: —" görmez.
+
+    ÇOK KULLANICILI: cache anahtarı (user_id, asset) — kullanıcılar birbirini etkilemez.
+    """
+    cached = _binance_cost_cache.get((user_id, asset))
+    if cached and cached[0] > now:
+        return cached[1]
+    info: dict = {"avg_price": None, "quote": "TRY"}
+    try:
+        symbols_to_query = []
+        if symbol_concat:
+            symbols_to_query.append(symbol_concat.upper().replace("_", ""))
+        for s in (f"{asset}TRY", f"{asset}USDT"):
+            if s not in symbols_to_query:
+                symbols_to_query.append(s)
+
+        raw_trades: list[dict] = []
+        for sym in symbols_to_query:
+            try:
+                part = get_trade_history(api_key, api_secret, sym, None, None, 1000, 0)
+                if isinstance(part, list) and part:
+                    for t in part:
+                        t["_query_symbol"] = sym
+                    raw_trades.extend(part)
+            except Exception as e:
+                logger.debug("Binance TR %s trade geçmişi okunamadı: %s", sym, e)
+            if raw_trades:
+                break
+
+        chronological = sorted(
+            raw_trades,
+            key=lambda t: (float(t.get("time") or 0), int(t.get("id") or 0)),
+        )
+
+        fifo: list[tuple[float, float]] = []  # (price_try, qty)
+        all_buys: list[tuple[float, float, float]] = []  # (price_try, qty, time)
+
+        for t in chronological:
+            try:
+                t_qty = float(t.get("qty") or 0)
+                t_price = float(t.get("price") or 0)
+            except (TypeError, ValueError):
+                continue
+            if t_qty <= 0 or t_price <= 0:
+                continue
+
+            sym = str(t.get("_query_symbol") or t.get("symbol") or "").upper().replace("_", "")
+            is_usdt = sym.endswith("USDT")
+            rate = usdt_try if (is_usdt and usdt_try > 0) else 1.0
+            price_try = t_price * rate
+
+            raw_buyer = t.get("isBuyer")
+            is_buyer = (
+                raw_buyer is True
+                or raw_buyer == 1
+                or (isinstance(raw_buyer, str) and raw_buyer.strip().lower() in ("1", "true", "buy"))
+            )
+
+            if is_buyer:
+                fifo.append((price_try, t_qty))
+                all_buys.append((price_try, t_qty, float(t.get("time") or 0)))
+            else:
+                remaining = t_qty
+                while remaining > 1e-12 and fifo:
+                    lot_p, lot_q = fifo[0]
+                    if lot_q <= remaining:
+                        remaining -= lot_q
+                        fifo.pop(0)
+                    else:
+                        fifo[0] = (lot_p, lot_q - remaining)
+                        remaining = 0.0
+
+        held_qty = sum(q for _, q in fifo)
+        avg_price_try = None
+
+        # 1. Adım: FIFO kuyruğu pozitif ve bakiye ile makul oranda uyumlu
+        if held_qty > 1e-12 and (total_qty <= 0 or held_qty >= total_qty * 0.2):
+            accum_qty = 0.0
+            accum_cost = 0.0
+            for p, q in reversed(fifo):
+                take = min(q, max(0.0, total_qty - accum_qty)) if total_qty > 0 else q
+                if take > 0:
+                    accum_qty += take
+                    accum_cost += p * take
+                if total_qty > 0 and accum_qty >= total_qty - 1e-12:
+                    break
+            if accum_qty > 1e-12:
+                avg_price_try = accum_cost / accum_qty
+
+        # 2. Adım (Fallback): FIFO sıfırlanmış veya yetersizse, en son gerçekleşen alışlardan bakiye kadarını topla
+        if (avg_price_try is None or avg_price_try <= 0) and all_buys:
+            accum_qty = 0.0
+            accum_cost = 0.0
+            for p, q, _ in reversed(all_buys):
+                take = min(q, max(0.0, total_qty - accum_qty)) if total_qty > 0 else q
+                if take > 0:
+                    accum_qty += take
+                    accum_cost += p * take
+                if total_qty > 0 and accum_qty >= total_qty - 1e-12:
+                    break
+            if accum_qty > 1e-12:
+                avg_price_try = accum_cost / accum_qty
+            else:
+                total_buy_q = sum(q for _, q, _ in all_buys)
+                if total_buy_q > 0:
+                    avg_price_try = sum(p * q for p, q, _ in all_buys) / total_buy_q
+
+        if avg_price_try and avg_price_try > 0:
+            info["avg_price"] = avg_price_try
+            info["quote"] = "TRY"
+            info["held_quantity"] = held_qty if held_qty > 0 else total_qty
+    except Exception as exc:
+        logger.warning("Binance TR alım geçmişi okunamadı (%s): %s", asset, exc)
+    _binance_cost_cache[(user_id, asset)] = (now + 300.0, info)
+    return info
+
+@app.post("/api/binance/sell")
+async def binance_sell(payload: dict, request: Request):
+    """Kullanıcı onaylı MARKET SELL (oturum açmış kullanıcı, gerçek emir).
+
+    Gövde: {"asset": "BTC", "quantity": 0.01 | null}. quantity yok/boşsa
+    varlığın satılabilir (free) tamamı satılır. Miktar sembolün LOT_SIZE
+    stepSize'ına aşağı yuvarlanır; min lot altı reddedilir. Sembol sırasıyla
+    {ASSET}_TRY, {ASSET}_USDT çiftlerinden mevcut olanıdır.
+    """
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
+    if not sell_ok:
+        if sell_source == "panel":
+            raise HTTPException(status_code=403, detail="Gerçek satış kapalı — Ayarlar > Binance TR API > 'GERÇEK SATIŞ' anahtarını aç veya sunucuda ENABLE_REAL_BINANCE_SELL=1 tanımla")
+        raise HTTPException(status_code=403, detail="Gerçek Binance satışı sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış (env override)")
+    if str(payload.get("confirmation") or "").strip().upper() != "REAL_SELL":
+        raise HTTPException(status_code=422, detail="REAL_SELL onayı gerekli")
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    asset = str(payload.get("asset") or "").upper().strip()
+    if not asset or asset == "TRY":
+        raise HTTPException(status_code=422, detail="Geçersiz varlık")
+    try:
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
+    row = next((b for b in balances if str(b.get("asset") or "").upper() == asset), None)
+    free = float(row.get("free", 0) or 0) if row else 0.0
+    if free <= 0:
+        raise HTTPException(status_code=422, detail=f"{asset} için satılabilir (boşta) bakiye yok")
+
+    requested = payload.get("quantity")
+    try:
+        qty = free if requested in (None, "", "all") else float(requested)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Geçersiz miktar")
+    if not (qty > 0):
+        raise HTTPException(status_code=422, detail="Geçersiz miktar")
+    qty = min(qty, free)
+
+    symbol_u, filters = None, None
+    for quote in ("TRY", "USDT"):
+        cand = f"{asset}_{quote}"
+        f = await asyncio.to_thread(get_symbol_filters, api_key, api_secret, cand)
+        if f:
+            symbol_u, filters = cand, f
+            break
+    if not symbol_u:
+        raise HTTPException(status_code=422, detail=f"{asset} için satış çifti bulunamadı (TRY/USDT)")
+
+    step = float((filters or {}).get("step_size") or 0)
+    min_qty = float((filters or {}).get("min_qty") or 0)
+    if step > 0:
+        qty = math.floor(qty / step) * step
+    qty = float(f"{qty:.8f}")
+    if qty <= 0 or qty < min_qty:
+        raise HTTPException(status_code=422, detail=f"Miktar minimum lotun altında (min {min_qty or 'bilinmiyor'})")
+
+    try:
+        result = await asyncio.to_thread(place_market_sell, api_key, api_secret, symbol_u, qty)
+    except BinanceTrPartialFillError as exc:
+        # P1-8 (2026-10-07): kısmi dolum BİR HATA DEĞİLDİR — emir borsada kabul
+        # edilmiş ve `executed_qty` kadar dolmuştur. Eskiden bu istisna genel
+        # `except Exception` ile "Satış emri gönderilemedi" 502'sine dönüşüyor,
+        # `.result`/`remaining_qty` atılıyor ve satılan kısım kullanıcıya hiç
+        # bildirilmiyordu (maliyet cache'i de geçersiz kılınmıyordu). Artık kalan
+        # miktar tek bir MARKET SELL ile mutabık kılınır ve GERÇEK dolum raporlanır.
+        result = dict(exc.result or {})
+        try:
+            reco = await asyncio.to_thread(
+                reconcile_sell_fill, result, symbol_u, float(qty),
+                None, (filters or {}).get("step_size"),
+                exc.result.get("client_order_id") if isinstance(exc.result, dict) else None,
+                api_key, api_secret)
+            result["reconcile"] = reco
+            result["remaining_qty"] = reco.get("remaining_qty", exc.remaining_qty)
+            result["dust_remaining"] = bool(reco.get("dust_remaining"))
+        except Exception as reco_exc:  # pragma: no cover - mutabakat best-effort
+            logger.error("Kısmi satış mutabakatı başarısız (%s): %s", symbol_u, reco_exc)
+            result["remaining_qty"] = exc.remaining_qty
+        result["partial"] = True
+        logger.warning(
+            "Binance TR SATIŞ kısmi doldu: %s istenen=%s dolan=%s kalan=%s",
+            symbol_u, exc.requested_qty, exc.executed_qty, result.get("remaining_qty"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Satış emri gönderilemedi: {exc}")
+    # PERFORMANS (2026-09-27): TTL uzatılan FIFO maliyet cache'ini emir sonrası
+    # tazele — satış FIFO kuyruğunu değiştirir, eski maliyet yanlış PnL üretir.
+    _invalidate_binance_cost_cache(int(user["id"]))
+    _actor, _actor_role = _session_identity(request)
+    await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_SELL",
+                          target=asset, details={"asset": asset, **result}, request=request)
+    return {"ok": True, **result}
+
+
+@app.post("/api/binance/watch")
+async def binance_watch(payload: dict, request: Request):
+    """Alım dialogu için sembolü 120 sn'liğine WS fiyat akışına ekle (public fiyat).
+
+    Gövde: {"symbol": "BTC"} — base varlık. Dialog açıkken frontend 60 sn'de
+    bir yeniler; TTL dolunca akıştan düşer. TRY bakiyesi tick loop'ta zaten var.
+    """
+    _require_user(request)
+    base = str(payload.get("symbol") or "").upper().strip()
+    if not base or base == "TRY":
+        raise HTTPException(status_code=422, detail="Geçersiz sembol")
+    now_ts = time.monotonic()
+    expires = now_ts + 120.0
+    for key in [k for k, v in _binance_extra_watch.items() if v <= now_ts]:
+        del _binance_extra_watch[key]
+    _binance_extra_watch[base] = expires
+    return {"ok": True, "symbol": base, "ttl_sec": 120}
+
+
+@app.post("/api/binance/buy")
+async def binance_buy(payload: dict, request: Request):
+    """Kullanıcı onaylı MARKET BUY — harcanacak TRY tutarıyla (oturum açmış kullanıcı, gerçek emir).
+
+    Gövde: {"asset": "BTC", "amount_try": 500, "confirmation": "REAL_BUY",
+    "notify": true}.
+    Sembol: {ASSET}_TRY öncelikli, yoksa {ASSET}_USDT (USDT bakiyesinden
+    değil — USDT çifti seçildiyse tutar USDT cinsinden harcanır). Doküman
+    hizalı: MARKET alış quoteOrderQty ile gönderilir. Başarılı cevapta
+    emir no + (proxy taşıyorsa) doldurma ortalaması döner.
+    notify=true ise Ayarlar > Bildirim Ayarları'nda seçili kullanıcılara
+    "{kullanıcı} {SEMBOLOLUŞUR} sembolünde {fiyat} fiyatla pozisyon açtı"
+    push'u gider (tutar/miktar YOK — yalnız sembol + fiyat).
+    """
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
+    if not sell_ok:
+        if sell_source == "panel":
+            raise HTTPException(status_code=403, detail="Gerçek işlem kapalı — Ayarlar > Binance TR API > 'GERÇEK SATIŞ' anahtarını aç veya sunucuda ENABLE_REAL_BINANCE_SELL=1 tanımla")
+        raise HTTPException(status_code=403, detail="Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış (env override)")
+    if str(payload.get("confirmation") or "").strip().upper() != "REAL_BUY":
+        raise HTTPException(status_code=422, detail="REAL_BUY onayı gerekli")
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    asset = str(payload.get("asset") or "").upper().strip()
+    if not asset or asset == "TRY":
+        raise HTTPException(status_code=422, detail="Geçersiz varlık")
+    try:
+        amount = float(payload.get("amount_try"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Geçersiz tutar")
+    if not (amount > 0):
+        raise HTTPException(status_code=422, detail="Geçersiz tutar")
+
+    symbol_u, filters = None, None
+    for quote in ("TRY", "USDT"):
+        cand = f"{asset}_{quote}"
+        f = await asyncio.to_thread(get_symbol_filters, api_key, api_secret, cand)
+        if f:
+            symbol_u, filters = cand, f
+            break
+    if not symbol_u:
+        raise HTTPException(status_code=422, detail=f"{asset} için alım çifti bulunamadı (TRY/USDT)")
+
+    quote_asset = str((filters or {}).get("quote_asset") or symbol_u.rsplit("_", 1)[-1])
+    quote_qty = float(f"{amount:.2f}")
+    min_notional = float((filters or {}).get("min_notional") or 0)
+    if quote_asset == "TRY":
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+        try_row = next((b for b in balances if str(b.get("asset") or "").upper() == "TRY"), None)
+        try_free = float(try_row.get("free", 0) or 0) if try_row else 0.0
+        if quote_qty > try_free + 1e-9:
+            raise HTTPException(status_code=422, detail=f"TRY bakiyesi yetersiz (boşta ₺{try_free:.2f})")
+    if quote_asset == "USDT":
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+        usdt_row = next((b for b in balances if str(b.get("asset") or "").upper() == "USDT"), None)
+        usdt_free = float(usdt_row.get("free", 0) or 0) if usdt_row else 0.0
+        if quote_qty > usdt_free + 1e-9:
+            raise HTTPException(status_code=422, detail=f"USDT bakiyesi yetersiz (boşta {usdt_free:.2f} USDT)")
+
+    try:
+        result = await asyncio.to_thread(
+            place_market_buy, api_key, api_secret, symbol_u, quote_qty,
+            min_notional if quote_asset != "USDT" else None)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Alım emri gönderilemedi: {exc}")
+    # PERFORMANS (2026-09-27): alım yeni FIFO lotu ekler → maliyet cache'i tazele.
+    _invalidate_binance_cost_cache(int(user["id"]))
+    _actor, _actor_role = _session_identity(request)
+    await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_BUY",
+                          target=asset, details={"asset": asset, **result}, request=request)
+    notify_requested = bool(payload.get("notify"))
+    notification_result = None
+    if notify_requested:
+        try:
+            recipients = _parse_recipients(await database.get_llm_setting(
+                ADMIN_TRADE_NOTIFY_RECIPIENTS_KEY, "[]"))
+            if recipients:
+                try:
+                    price = float(result.get("avg_price") or 0) or None
+                except (TypeError, ValueError):
+                    price = None
+                price_txt = _fmt_tr_price(price) if price else "—"
+                notification_result = await alerting.deliver_web_push(
+                    f"{principal.get('username')} kullanıcısı "
+                    f"{str(symbol_u).replace('_', '')} sembolünde "
+                    f"{price_txt} fiyatla pozisyon açtı",
+                    title="Scalper Agent · İşlem Bildirimi",
+                    url="/binance-tr", tag="admin-trade",
+                    extra={"source": "admin_real_buy", "symbol": symbol_u},
+                    usernames=recipients)
+        except Exception as notify_exc:
+            # Bildirim arızası başarılı emri BOZMAMALI; yalnız loglanır.
+            logger.warning("Admin işlem bildirimi gönderilemedi: %s", notify_exc)
+    return {"ok": True, "notify": notification_result, **result}
+
+
+def _fmt_tr_price(value: float) -> str:
+    """0.72 → '0,72' (Türkçe ondalık virgül; sondaki sıfırlar atılır)."""
+    text = f"{float(value):.8f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
+@app.post("/api/binance/order")
+async def binance_order(payload: dict, request: Request):
+    """Açık gerçek hesap onayıyla spot emir gönderir; belirsiz sonucu tekrar etmez."""
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    enabled, source = await _real_sell_state_for(int(user["id"]))
+    if not enabled:
+        raise HTTPException(status_code=403, detail=(
+            "Gerçek Binance emirleri kapalı — Ayarlar > Binance TR API bölümünden açın"
+            if source == "panel" else "Gerçek Binance emirleri sunucu yapılandırmasında kapalı"))
+    if str(payload.get("confirmation") or "") != "REAL_ORDER":
+        raise HTTPException(status_code=422, detail="REAL_ORDER onayı gerekli")
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    symbol = str(payload.get("symbol") or "").upper().strip().replace("/", "").replace(" ", "")
+    side = str(payload.get("side") or "").upper().strip()
+    order_type = str(payload.get("type") or "").upper().strip()
+    if not symbol or side not in ("BUY", "SELL"):
+        raise HTTPException(status_code=422, detail="Geçerli symbol ve BUY/SELL side gerekli")
+    # Emir öncesi kullanılabilir spot bakiyeyi taze oku; exchange yine nihai
+    # doğrulamayı yapar. Kilitli varlıklar harcanabilir bakiye sayılmaz.
+    filters = await asyncio.to_thread(get_symbol_filters, api_key, api_secret,
+                                      symbol.replace("/", "").replace("_", ""))
+    if not filters:
+        raise HTTPException(status_code=422, detail="Binance TR sembolü bulunamadı")
+    quote_asset = str(filters.get("quote_asset") or "").upper()
+    base_asset = symbol.replace("_", "").replace("/", "")
+    if quote_asset and base_asset.endswith(quote_asset):
+        base_asset = base_asset[:-len(quote_asset)]
+    else:
+        base_asset = ""
+    try:
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret, True)
+        balance_map = {str(row.get("asset") or "").upper(): float(row.get("free") or 0)
+                       for row in balances}
+        if side == "SELL":
+            needed = float(payload.get("quantity") or 0)
+            if not base_asset or needed <= 0 or needed > balance_map.get(base_asset, 0) + 1e-12:
+                raise HTTPException(status_code=422, detail=f"Satılabilir {base_asset or 'varlık'} bakiyesi yetersiz")
+        elif order_type == "MARKET" and payload.get("quote_order_qty") is not None:
+            needed = float(payload.get("quote_order_qty") or 0)
+            if needed <= 0 or needed > balance_map.get(quote_asset, 0) + 1e-8:
+                raise HTTPException(status_code=422, detail=f"Kullanılabilir {quote_asset} bakiyesi yetersiz")
+        elif payload.get("quantity") is not None:
+            px = float(payload.get("price") or payload.get("stop_limit_price") or 0)
+            if order_type == "MARKET" and px <= 0:
+                try:
+                    ticker = await binance_tr_public.ticker_price([symbol.replace("_", "").replace("/", "")])
+                    px = float((ticker[0] or {}).get("price") or 0) if ticker else 0
+                except Exception:
+                    px = 0
+            needed = float(payload.get("quantity") or 0) * px
+            if px <= 0 or needed > balance_map.get(quote_asset, 0) + 1e-8:
+                raise HTTPException(status_code=422, detail=f"Kullanılabilir {quote_asset} bakiyesi yetersiz")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Emir öncesi bakiye doğrulanamadı: {exc}")
+    try:
+        result = await asyncio.to_thread(
+            place_spot_order, api_key, api_secret, symbol, side, order_type,
+            quantity=payload.get("quantity"), quote_order_qty=payload.get("quote_order_qty"),
+            price=payload.get("price"), stop_price=payload.get("stop_price"),
+            stop_limit_price=payload.get("stop_limit_price"))
+    except BinanceTrAmbiguousOrderError as exc:
+        _actor, _actor_role = _session_identity(request)
+        await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_ORDER_UNKNOWN",
+                              target=exc.symbol, details={"symbol": exc.symbol, "side": side,
+                              "type": order_type, "client_id": exc.client_order_id,
+                              "outcome": "unknown; no retry"}, request=request)
+        return JSONResponse(status_code=202, content={"ok": False, "status": "UNKNOWN",
+            "message": "Emir sonucu belirsiz. Çift emir riskini önlemek için tekrar gönderilmedi; durumu client_id ile sorgulayın.",
+            "symbol": exc.symbol, "client_id": exc.client_order_id})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR emri gönderilemedi: {exc}")
+    _actor, _actor_role = _session_identity(request)
+    # Emir yanıtında olabilecek hassas olmayan, sınırlı alanları audit'e yaz.
+    await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_ORDER_SUBMITTED",
+                          target=result.get("symbol"), details={"symbol": result.get("symbol"),
+                          "side": side, "type": order_type, "order_id": result.get("order_id"),
+                          "client_id": result.get("client_id"), "status": result.get("status")}, request=request)
+    return {"ok": True, "status": result.get("status") or "SUBMITTED", **result}
+
+
+@app.get("/api/binance/order-status")
+async def binance_order_status(request: Request, symbol: str, client_id: str = "", order_id: str = ""):
+    """Emir durumunu orderId veya clientId ile sorgular; kullanıcı anahtarından çıkarılır."""
+    _require_user(request)
+    if bool(client_id) == bool(order_id):
+        raise HTTPException(status_code=422, detail="client_id veya order_id alanlarından yalnız biri gerekli")
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    try:
+        order = await asyncio.to_thread(get_order_detail, api_key, api_secret, symbol,
+                                        client_id=client_id or None, order_id=order_id or None)
+        return {"ok": True, "order": order}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Emir durumu alınamadı: {exc}")
+
+
+@app.get("/api/binance/open-orders")
+async def binance_open_orders(request: Request, symbol: str = ""):
+    """Binance TR açık/bekleyen emirler listesi (oturum açmış kullanıcı)."""
+    principal = _require_user(request)
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    try:
+        username = str(principal.get("username") or "").strip()
+        seen = await _load_seen_binance_assets(username) if username else set()
+        cands = [f"{a}_TRY" for a in seen] + [f"{a}_USDT" for a in seen] if seen else None
+        orders = await asyncio.to_thread(get_open_orders, api_key, api_secret, symbol, cands)
+        return {"ok": True, "orders": orders, "count": len(orders)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Açık emirler alınamadı: {exc}")
+
+
+@app.post("/api/binance/cancel-order")
+async def binance_cancel_order(payload: dict, request: Request):
+    """Binance TR açık emrini iptal eder (oturum açmış kullanıcı)."""
+    _require_user(request)
+    order_id = payload.get("order_id") or payload.get("orderId")
+    if not order_id:
+        raise HTTPException(status_code=422, detail="order_id zorunludur")
+    symbol = str(payload.get("symbol") or "")
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    try:
+        res = await asyncio.to_thread(cancel_order, api_key, api_secret, order_id, symbol)
+        _actor, _actor_role = _session_identity(request)
+        await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_CANCEL_ORDER",
+                              target=str(order_id), details={"order_id": order_id, "symbol": symbol}, request=request)
+        return {"ok": True, "result": res}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Emir iptal edilemedi: {exc}")
+
+
+@app.post("/api/binance/set-sl-tp")
+async def binance_set_sl_tp(payload: dict, request: Request):
+    """Açık pozisyona SL/TP/OCO emri kurar (oturum açmış kullanıcı)."""
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
+    if not sell_ok:
+        if sell_source == "panel":
+            raise HTTPException(status_code=403, detail="Gerçek emir gönderimi kapalı — Ayarlar > 'GERÇEK SATIŞ' anahtarını açın")
+        raise HTTPException(status_code=403, detail="Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış")
+
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    asset = str(payload.get("asset") or "").upper().strip()
+    if not asset or asset == "TRY":
+        raise HTTPException(status_code=422, detail="Geçersiz varlık")
+
+    mode = str(payload.get("mode") or "OCO").upper().strip()
+    if mode not in ("OCO", "SL_ONLY", "TP_ONLY"):
+        raise HTTPException(status_code=422, detail="Geçersiz mod (OCO, SL_ONLY veya TP_ONLY olmalı)")
+
+    # Sembol ve filtreleri çöz
+    symbol_u, filters = None, None
+    for quote in ("TRY", "USDT"):
+        cand = f"{asset}_{quote}"
+        f = await asyncio.to_thread(get_symbol_filters, api_key, api_secret, cand)
+        if f:
+            symbol_u, filters = cand, f
+            break
+    if not symbol_u:
+        raise HTTPException(status_code=422, detail=f"{asset} için uygun işlem çifti (TRY/USDT) bulunamadı")
+
+    # Mevcut açık satış emirlerini iptal etme (cancel_existing=True)
+    #
+    # DENETİM (2026-10-07): Binance TR'de yeni koruyucu emir ESKİ emir İPTAL
+    # EDİLMEDEN yerleştirilemez (eski emir varlığı kilitler → "bakiye yetersiz").
+    # Bu yüzden sıra "iptal → yerleştir" olmak ZORUNDA ve arada KİLİTSİZ BİR
+    # PENCERE kalır: yerleştirme başarısız olursa pozisyon STOP'Suz kalır.
+    # Pencere kapatılamadığı için (borsa kısıtı) riski şu şekilde azaltıyoruz:
+    # iptalden ÖNCE emirlerin TAM gövdeleri saklanır ve yerleştirme başarısız
+    # olursa `except` bloğunda EN AZ zarar-kes (stop) emri geri konur. Aksi
+    # halde kullanıcı "SL kuruldu" sanırken korumasız kalırdı.
+    _cancelled_sells: list[dict] = []
+    if payload.get("cancel_existing"):
+        try:
+            existing = await asyncio.to_thread(get_open_orders, api_key, api_secret, symbol_u)
+            for ex in existing:
+                if str(ex.get("side")).upper() in ("SELL", "1") and ex.get("orderId"):
+                    _cancelled_sells.append(dict(ex))
+                    await asyncio.to_thread(cancel_order, api_key, api_secret, ex["orderId"], symbol_u)
+        except Exception as exc:
+            logger.warning("Eski emirler temizlenirken uyarı: %s", exc)
+
+    # Bakiye kontrolü
+    balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+    row = next((b for b in balances if str(b.get("asset") or "").upper() == asset), None)
+    free = float(row.get("free", 0) or 0) if row else 0.0
+
+    req_qty = payload.get("quantity")
+    try:
+        qty = free if req_qty in (None, "", "all") else float(req_qty)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Geçersiz miktar")
+    if qty <= 0:
+        raise HTTPException(status_code=422, detail="Miktar 0'dan büyük olmalı")
+    if qty > free + 1e-9:
+        raise HTTPException(status_code=422, detail=f"Boşta bakiye yetersiz ({free:.6f} {asset} boşta). Mevcut açık emir varsa 'Önceki emirleri iptal et' seçeneğini işaretleyin.")
+
+    step = float((filters or {}).get("step_size") or 0)
+    min_qty = float((filters or {}).get("min_qty") or 0)
+    tick = float((filters or {}).get("tick_size") or 0)
+
+    # Miktar step_size'a göre küçüğe yuvarlanmalı (ör. F_TRY stepSize=1 → 64972.395 → 64972)
+    if step and step > 0:
+        qty = math.floor(qty / step) * step
+        qty = round(qty, 10)  # kayan nokta hatalarını temizle
+
+    if qty <= 0:
+        raise HTTPException(status_code=422, detail="Miktar step_size'a yuvarlandıktan sonra 0 oldu")
+    if min_qty and qty < min_qty:
+        raise HTTPException(status_code=422, detail=f"Miktar minimum lot büyüklüğünden ({min_qty}) küçük")
+
+    tp_price = float(payload.get("tp_price") or 0)
+    sl_price = float(payload.get("sl_price") or 0)
+    sl_limit_price = float(payload.get("sl_limit_price") or 0) if payload.get("sl_limit_price") else None
+
+    try:
+        if mode == "OCO":
+            if tp_price <= 0 or sl_price <= 0:
+                raise HTTPException(status_code=422, detail="OCO için hem Kâr Al (TP) hem Zarar Kes (SL) fiyatı girilmelidir")
+            if tp_price <= sl_price:
+                raise HTTPException(status_code=422, detail="Kâr Al (TP) fiyatı Zarar Kes (SL) fiyatından büyük olmalıdır")
+            if filters and filters.get("oco_enable") is False:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{symbol_u} paritesinde Binance TR OCO emri desteklenmiyor (ocoEnable=0). Lütfen 'Zarar Kes (SL)' veya 'Kâr Al (TP)' modunu tekil olarak kullanın."
+                )
+            res = await asyncio.to_thread(
+                place_oco_sell, api_key, api_secret, symbol_u, qty, tp_price, sl_price, sl_limit_price, step, tick
+            )
+        elif mode == "SL_ONLY":
+            if sl_price <= 0:
+                raise HTTPException(status_code=422, detail="Zarar Kes (SL) fiyatı girilmelidir")
+            res = await asyncio.to_thread(
+                place_stop_loss_sell, api_key, api_secret, symbol_u, qty, sl_price, sl_limit_price, step, tick
+            )
+        else: # TP_ONLY
+            if tp_price <= 0:
+                raise HTTPException(status_code=422, detail="Kâr Al (TP) fiyatı girilmelidir")
+            res = await asyncio.to_thread(
+                place_limit_sell, api_key, api_secret, symbol_u, qty, tp_price, step, tick
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import traceback
+        logger.error(
+            "BINANCE_SET_SL_TP HATA | asset=%s mode=%s qty=%s tp=%s sl=%s | %s\n%s",
+            asset, mode, qty,
+            payload.get("tp_price"), payload.get("sl_price"),
+            exc, traceback.format_exc()
+        )
+        # DENETİM (2026-10-07): Yeni emir yerleştirilemedi ama iptal ettiğimiz
+        # eski emir(ler) gitti → pozisyon korumasız kalırdı. Yerleştirmeden önce
+        # sakladığımız emirler arasında bir ZARAR KES (stop) varsa aynı
+        # parametrelerle geri kurmayı dene; kurulursa kullanıcıya hangi emrin
+        # geri konduğunu bildir, kurulamazsa açıkça "KORUMASIZ" uyarısı ver.
+        restored = []
+        for ex in _cancelled_sells:
+            try:
+                sp = float(ex.get("stopPrice") or 0)
+                if sp <= 0:
+                    continue  # stop emri değil (saf limit TP) — geri kurmaya değmez
+                re_qty = float(ex.get("origQty") or 0) or qty
+                if step and step > 0:
+                    re_qty = round(math.floor(re_qty / step) * step, 10)
+                if re_qty <= 0:
+                    continue
+                limit_px = float(ex.get("price") or 0) or None
+                await asyncio.to_thread(
+                    place_stop_loss_sell, api_key, api_secret, symbol_u, re_qty, sp, limit_px or None, step, tick)
+                restored.append({"orderId": ex.get("orderId"), "stopPrice": sp, "qty": re_qty})
+            except Exception as rexc:
+                logger.error("İptal edilen stop emri geri kurulamadı | asset=%s stop=%s | %s",
+                             asset, ex.get("stopPrice"), rexc)
+        detail = f"Emir gönderilemedi: {exc}"
+        if restored:
+            detail += f" | İptal edilen {len(restored)} stop emri geri kuruldu (pozisyon korumalı)"
+        elif _cancelled_sells:
+            detail += " | UYARI: iptal edilen eski emirler geri kurulamadı — pozisyon KORUMASIZ olabilir, kontrol edin"
+        raise HTTPException(status_code=502, detail=detail)
+
+    _actor, _actor_role = _session_identity(request)
+    await log_user_action(_actor, _actor_role, "trade", f"BINANCE_TR_SET_{mode}",
+                          target=asset, details={"asset": asset, "mode": mode, **res}, request=request)
+    return {"ok": True, "mode": mode, **res}
+
+
+
+@app.get("/api/binance/trades-day")
+async def binance_trades_day(request: Request, date: str, limit_per_symbol: int = 200):
+    """Seçilen günün (YYYY-MM-DD, TR saatine göre) TÜM alım/satım işlemleri.
+
+    Binance TR'de sembolsüz işlem geçmişi ucu yoktur; bu yüzden varlık
+    havuzundan (mevcut bakiyeler + geçmişte görülmüş varlıklar) türetilen
+    {ASSET}_TRY / {ASSET}_USDT çiftleri paralel sorgulanır. Sonuç zamana
+    göre sıralı döner; gün bazında 60 sn cache'lenir.
+    """
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    try:
+        day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone(timedelta(hours=3)))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date YYYY-MM-DD formatında olmalı")
+    day_end = day_start + timedelta(days=1)
+    start_ms = int(day_start.timestamp() * 1000)
+    end_ms = int(day_end.timestamp() * 1000)
+
+    # ÇOK KULLANICILI (2026-09-19): cache ve görülmüş varlık havuzu kullanıcıya özel.
+    principal = _require_user(request)
+    username = str(principal.get("username") or "").strip()
+    user = await database.get_user_by_username(username)
+    user_id = int(user["id"]) if user else 0
+
+    now_ts = time.time()
+    cache_key = (user_id, date)
+    cache = _binance_day_trades_cache.get(cache_key)
+    if cache and cache[0] > now_ts:
+        return cache[1]
+
+    # In-flight coalescing: aynı anda gelen paralel istekleri tek bir görevde birleştir
+    task = _binance_day_trades_inflight.get(cache_key)
+    if task is not None and not task.done():
+        return await asyncio.shield(task)
+
+    async def _do_fetch_day_trades():
+        try:
+            return await _compute_binance_trades_day(
+                api_key, api_secret, username, user_id, date, start_ms, end_ms, limit_per_symbol)
+        finally:
+            _binance_day_trades_inflight.pop(cache_key, None)
+
+    fetch_task = asyncio.create_task(_do_fetch_day_trades())
+    _binance_day_trades_inflight[cache_key] = fetch_task
+    return await asyncio.shield(fetch_task)
+
+
+async def _compute_binance_trades_day(
+    api_key: str, api_secret: str, username: str, user_id: int, date: str,
+    start_ms: int, end_ms: int, limit_per_symbol: int
+) -> dict:
+    now_ts = time.time()
+    # Varlık havuzu: mevcut bakiyeler + daha önce görülmüş varlıklar
+    # (tamamen satılmış varlıkların o günkü işlemleri kaçmasın).
+    try:
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
+    current_assets = {str(b.get("asset") or "").upper() for b in balances
+                      if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0)}
+    known_assets = await _load_seen_binance_assets(username)
+    assets = sorted(current_assets | known_assets | {"USDT"})
+    await _save_seen_binance_assets(username, current_assets | known_assets)
+
+    # Varlık → mevcut sembol çiftleri (sıra: TRY önce)
+    # Rate limit dostu eşzamanlılık (Semaphore: 3) ve nazik istek aralığı
+    sem: asyncio.Semaphore = asyncio.Semaphore(3)
+
+    async def fetch_symbol(sym_concat: str) -> list[dict]:
+        async with sem:
+            await asyncio.sleep(0.06)
+            try:
+                return await asyncio.to_thread(
+                    get_trade_history, api_key, api_secret, sym_concat,
+                    start_ms, end_ms, max(1, min(limit_per_symbol, 1000)), 0)
+            except Exception as exc:
+                logger.debug("Binance TR gün işlemleri %s: %s", sym_concat, exc)
+                return []
+
+    tasks: list[asyncio.Task] = []
+    for asset in assets:
+        if asset == "TRY":
+            continue
+        for quote in ("TRY", "USDT"):
+            cand_u = f"{asset}_{quote}"
+            if await asyncio.to_thread(get_symbol_filters, api_key, api_secret, cand_u):
+                tasks.append(asyncio.create_task(fetch_symbol(cand_u)))
+    rows: list[dict] = []
+    if tasks:
+        results = await asyncio.gather(*tasks)
+        for part in results:
+            rows.extend(part)
+    # GÜNLÜK GERÇEKLEŞEN K/Z (FIFO) — Erkan kararı (2026-09-18): günün işlemleri
+    # tablosunda eşleşen ALIS->SATIS kar/zararı görünür; toplamı tablo üstündeki
+    # özet kutusunda. Her sembolde SATIS fill'leri gün içi ve geçmiş ALIS lotlarıyla
+    # eşleştirilir; komisyon TRY değeri BİRİME göre çevrilir (base → × fiyat,
+    # TRY → ×1, USDT → × USDTTRY, BNB → × BNBTRY).
+    wins = losses = unmatched = 0
+    daily_net = daily_gross = 0.0
+
+    usdt_try = 0.0
+    bnb_try = 0.0
+    try:
+        rates = await binance_tr_public.ticker_price(["USDTTRY", "BNBTRY"])
+        for row in rates if isinstance(rates, list) else []:
+            s = str(row.get("symbol") or "").upper().replace("_", "")
+            if s == "USDTTRY":
+                usdt_try = float(row.get("price") or 0)
+            elif s == "BNBTRY":
+                bnb_try = float(row.get("price") or 0)
+    except Exception:
+        pass
+    if bnb_try == 0.0 and usdt_try > 0:
+        try:
+            bnb_u = await binance_tr_public.ticker_price(["BNBUSDT"])
+            for row in bnb_u if isinstance(bnb_u, list) else []:
+                if str(row.get("symbol") or "").upper().replace("_", "") == "BNBUSDT":
+                    bnb_try = float(row.get("price") or 0) * usdt_try
+        except Exception:
+            pass
+
+    by_symbol: dict[str, list[dict]] = {}
+    for f in rows:
+        by_symbol.setdefault(str(f.get("symbol") or ""), []).append(f)
+
+    # Eğer sembolde gün içi satış (isBuyer == False) varsa, maliyet tabanını (cost basis)
+    # doğru kurabilmek için o sembolün geçmiş işlemlerini de çekip FIFO kuyruğuna alıyoruz.
+    sym_need_hist = [
+        sym for sym, fills in by_symbol.items()
+        if any(not f.get("isBuyer") for f in fills)
+    ]
+    hist_map: dict[str, list[dict]] = {}
+    if sym_need_hist:
+        async def fetch_hist(s: str):
+            async with sem:
+                await asyncio.sleep(0.06)
+                try:
+                    return s, await asyncio.to_thread(
+                        get_trade_history, api_key, api_secret, s, None, end_ms, 1000, 0
+                    )
+                except Exception as exc:
+                    logger.debug("Binance TR geçmiş işlem çekme hatası %s: %s", s, exc)
+                    return s, []
+        hist_results = await asyncio.gather(*(fetch_hist(s) for s in sym_need_hist))
+        for s, h_trades in hist_results:
+            hist_map[s] = h_trades
+
+    # Sembol bazlı özet: alış/satış miktar ve VWAP'ları + K/Z + komisyon (tek satır)
+    symbol_summary: list[dict] = []
+    for symbol, fills in by_symbol.items():
+        clean_sym = symbol.replace("_", "").upper()
+        if clean_sym.endswith("TRY"):
+            base_asset = clean_sym[:-3]
+            quote_asset = "TRY"
+            rate_to_try = 1.0
+        elif clean_sym.endswith("USDT"):
+            base_asset = clean_sym[:-4]
+            quote_asset = "USDT"
+            rate_to_try = usdt_try if usdt_try > 0 else 1.0
+        elif "_" in symbol:
+            parts = symbol.upper().split("_")
+            base_asset, quote_asset = parts[0], parts[1]
+            rate_to_try = usdt_try if quote_asset == "USDT" and usdt_try > 0 else 1.0
+        else:
+            base_asset = clean_sym
+            quote_asset = "TRY"
+            rate_to_try = 1.0
+
+        summary: dict = {
+            "symbol": symbol,
+            "buy_qty": 0.0,
+            "buy_cost_try": 0.0,
+            "sell_qty": 0.0,
+            "sell_revenue_try": 0.0,
+            "realized_pnl_try": 0.0,
+            "commission_try": 0.0,
+            "fills": len(fills),
+        }
+
+        # Geçmiş işlemler ile günün işlemlerini birleştir (id bazlı tekilleştirme)
+        all_trade_dict: dict[int, dict] = {}
+        for t in hist_map.get(symbol, []):
+            tid = int(t.get("id") or 0)
+            if tid:
+                all_trade_dict[tid] = t
+        for f in fills:
+            tid = int(f.get("id") or 0)
+            if tid:
+                all_trade_dict[tid] = f
+            else:
+                all_trade_dict[id(f)] = f
+
+        all_symbol_trades = list(all_trade_dict.values())
+        all_symbol_trades.sort(key=lambda f: (float(f.get("time") or 0), int(f.get("id") or 0)))
+
+        lots: list[dict] = []
+        for f in all_symbol_trades:
+            try:
+                qty = float(f.get("qty") or 0)
+                price = float(f.get("price") or 0)
+                comm = float(f.get("commission") or 0)
+                t_time = float(f.get("time") or 0)
+            except (TypeError, ValueError):
+                continue
+
+            is_today = (start_ms <= t_time < end_ms)
+
+            comm_asset = str(f.get("commissionAsset") or "").upper()
+            if comm_asset == "TRY":
+                comm_try = comm
+            elif comm_asset == "USDT" and usdt_try > 0:
+                comm_try = comm * usdt_try
+            elif comm_asset == "BNB" and bnb_try > 0:
+                comm_try = comm * bnb_try
+            elif comm_asset == base_asset and base_asset:
+                comm_try = comm * price * rate_to_try
+            else:
+                comm_try = comm
+
+            if is_today:
+                summary["commission_try"] += comm_try
+
+            if f.get("isBuyer"):
+                lots.append({
+                    "price": price,
+                    "price_try": price * rate_to_try,
+                    "qty": qty,
+                    "comm_try": comm_try,
+                })
+                if is_today:
+                    summary["buy_qty"] += qty
+                    summary["buy_cost_try"] += qty * price * rate_to_try
+                continue
+
+            # SATIŞ İŞLEMİ (FIFO EŞLEŞTİRME)
+            remaining = qty
+            matched = 0.0
+            basis_cost_orig = 0.0
+            basis_cost_try = 0.0
+            basis_comm_try = 0.0
+            while remaining > 1e-12 and lots:
+                lot = lots[0]
+                take = min(lot["qty"], remaining)
+                basis_cost_orig += lot["price"] * take
+                basis_cost_try += lot["price_try"] * take
+                if lot["qty"] > 0:
+                    basis_comm_try += lot["comm_try"] * (take / lot["qty"])
+                lot["qty"] -= take
+                matched += take
+                remaining -= take
+                if lot["qty"] <= 1e-12:
+                    lots.pop(0)
+
+            if is_today:
+                summary["sell_qty"] += qty
+                summary["sell_revenue_try"] += qty * price * rate_to_try
+                if matched > 1e-12:
+                    basis_vwap_orig = basis_cost_orig / matched
+                    basis_vwap_try = basis_cost_try / matched
+                    gross_try = (price * rate_to_try - basis_vwap_try) * matched
+                    net_try = gross_try - comm_try - basis_comm_try
+                    f["basis_price"] = round(basis_vwap_orig, 8)
+                    f["realized_pnl_try"] = round(net_try, 2)
+                    daily_net += net_try
+                    daily_gross += gross_try
+                    summary["realized_pnl_try"] += net_try
+                    if net_try >= 0:
+                        wins += 1
+                    else:
+                        losses += 1
+                else:
+                    unmatched += 1
+
+        summary["buy_qty"] = round(summary["buy_qty"], 8)
+        summary["buy_cost_try"] = round(summary["buy_cost_try"], 4)
+        summary["sell_qty"] = round(summary["sell_qty"], 8)
+        summary["sell_revenue_try"] = round(summary["sell_revenue_try"], 4)
+        summary["realized_pnl_try"] = round(summary["realized_pnl_try"], 2)
+        summary["commission_try"] = round(summary["commission_try"], 4)
+        symbol_summary.append(summary)
+
+    # Özet tablo: yüksek K/Z önce (azalan)
+    symbol_summary.sort(key=lambda s: abs(s["realized_pnl_try"]), reverse=True)
+    # En yeni işlemler en üstte (azalan: önce en son alım/satım).
+    rows.sort(key=lambda t: (float(t.get("time") or 0), str(t.get("symbol") or "")), reverse=True)
+    payload = {"trades": rows, "count": len(rows),
+               "symbols_scanned": len(tasks), "assets": len(assets),
+               "symbol_summary": symbol_summary,
+               "daily": {"realized_pnl_try": round(daily_net, 2),
+                         "gross_pnl_try": round(daily_gross, 2),
+                         "wins": wins, "losses": losses, "unmatched": unmatched}}
+    today_str = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
+    cache_ttl = 120.0 if date == today_str else 3600.0
+    _binance_day_trades_cache[(user_id, date)] = (now_ts + cache_ttl, payload)
+    return payload
+
+
+@app.get("/api/binance/trades")
+async def binance_trades(request: Request, symbol: str = "",
+                         start_time: int = 0, end_time: int = 0,
+                         limit: int = 100, offset: int = 0):
+    """Binance TR geçmiş işlemler (salt okunur, oturum açmış kullanıcı, pagination)."""
+    _require_user(request)
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    # G-27: limit clamp'sizdi; `limit=10**9` Binance TR'ye geçersiz istek → 502.
+    limit = max(1, min(int(limit), 1000))
+    offset = max(0, int(offset))
+    if not symbol:
+        return {"trades": [], "symbol_required": True}
+    try:
+        trades = await asyncio.to_thread(get_trade_history, api_key, api_secret, symbol.upper(),
+                                         start_time or None, end_time or None,
+                                         limit, offset)
+        return {"trades": trades, "count": len(trades)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR işlem geçmişi alınamadı: {exc}")
+
+@app.get("/api/llm/learning")
+async def llm_learning():
+    """Expose the descriptive closed-trade learning summary for audit/UI."""
+    return build_learning_context(await database.get_trades(), limit=200)
+
+@app.get("/api/llm/entry-policy")
+async def llm_entry_policy():
+    """Expose the active deterministic LLM paper-entry contract for audit."""
+    return {
+        "paper_only": True,
+        "policy_version": "scalper-trade-manager-v2",
+        "cooldown_seconds": config.LLM_REENTRY_COOLDOWN_SEC,
+        "profit_cooldown_seconds": config.LLM_PROFIT_REENTRY_COOLDOWN_SEC,
+        "cooldown_policy": "Kârla kapanan LLM_PAPER işlemi: 5 dakika; zararla kapanan işlem: 30 dakika",
+        "minimum_rearm_move_pct": config.LLM_REENTRY_MIN_MOVE_PCT,
+        "hard_gates": {
+            "max_rsi": 72,
+            "max_stochastic": 92,
+            "max_mfi": 80,
+            "max_cci": 220,
+            "min_orderflow_imbalance": -0.10,
+            "higher_timeframes": ["15m", "1h"],
+            "loss_streak_block_at": 2,
+            "negative_expectancy_min_trades": 4,
+        },
+        "entry_contract": "BUY_SIGNAL only; BUY_BLOCKED and LLM_REENTRY_BLOCKED are not trades",
+    }
+
+@app.put("/api/llm/paper-trading")
+async def set_llm_paper_trading(payload: dict, request: Request):
+    # Yetki denetimi: paper-trade anahtarlarını açmak/kapatmak yalnız YÖNETİCİ
+    # yetkisindir — "user" rolüyle atlanabilir rol kontrolü kaldırıldı.
+    _require_admin(request)
+    enabled = bool(payload.get("enabled"))
+    await database.set_llm_setting("llm_paper_trade_enabled", "1" if enabled else "0")
+    actor, actor_role = _session_identity(request)
+    await log_user_action(actor, actor_role, "trade", "PAPER_TRADING_TOGGLE",
+                          target=actor, details={"setting": "llm_paper_trade_enabled", "enabled": enabled}, request=request)
+    return {"ok": True, "paper_trade_enabled": enabled, "real_trading": False}
+
+@app.put("/api/llm/auto-paper-trading")
+async def set_llm_auto_paper_trading(payload: dict, request: Request):
+    # Yetki denetimi: yukarıdaki toggle ile aynı — yalnız YÖNETİCİ.
+    _require_admin(request)
+    enabled = bool(payload.get("enabled"))
+    await database.set_llm_setting("llm_auto_paper_enabled", "1" if enabled else "0")
+    actor, actor_role = _session_identity(request)
+    await log_user_action(actor, actor_role, "trade", "PAPER_TRADING_TOGGLE",
+                          target=actor, details={"setting": "llm_auto_paper_enabled", "enabled": enabled}, request=request)
+    return {"ok": True, "auto_paper_enabled": enabled, "trigger": "after_each_closed_position_or_10m_idle_with_balance_over_100_try", "paper_only": True}
+
+
+@app.post("/api/llm/paper-trade")
+async def llm_open_paper_trade(payload: dict, request: Request = None):
+    # Yetki denetimi: manuel LLM paper girişi açmak yalnız YÖNETİCİ yetkisindedir.
+    # DENETİM 2.8 (2026-09-26): `request=None` (tool executor) üzerinden
+    # `_require_admin(None)` → `NoneType.headers` AttributeError → 500 idi; her
+    # LLM paper açılışı patlıyordu. Güvenli davranış: açık 403 ile fail-closed
+    # reddetme. Otonom sunucu döngüleri (alarm tetikleme / kapanış sonrası
+    # ikmal / 10dk boşta) `request` olmadan çağırır; bunlar yalnızca yönetici
+    # tarafından açılan otomasyon anahtarları (`llm_auto_paper_enabled`,
+    # `llm_paper_trade_enabled` — ikisi de `_require_admin` arkasında) altında
+    # çalıştığı için sistem içi yol olarak tanınır. Chat tool executor ise
+    # `source` göndermez ve kullanıcı bağlamından gelir → reddedilir; executor
+    # kendi admin kontrolünü yapar (routers/llm_chat.py).
+    if request is None:
+        if not str((payload or {}).get("source") or "").strip():
+            raise HTTPException(
+                status_code=403,
+                detail="Yetkisiz paper giriş çağrısı reddedildi: oturum doğrulanmadan LLM paper işlem açılamaz")
+    else:
+        _require_admin(request)
+    if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
+        raise HTTPException(status_code=403, detail="LLM paper işlem açma yetkisi ayarlardan kapalı")
+    # D-11: global kill-switch / günlük zarar limiti — yeni girişten ÖNCE kontrol.
+    gate = await daily_loss_guard()
+    if gate["halt"]:
+        raise HTTPException(status_code=403, detail={
+            "message": "Yeni giriş global risk kapısı ile durduruldu",
+            "reason": gate["reason"], "today_pnl": gate["today_pnl"],
+            "limit_try": gate["limit_try"], "paper_only": True})
+    symbol = str(payload.get("symbol", "")).replace("_", "").upper()
+    candidates = []
+    if not symbol:
+        scan = await scan_market_snapshots({"symbols": config.SYMBOLS, "timeframes": ["1m", "3m", "5m", "15m"], "limit": 5, "fresh": True})
+        # scan_market_snapshots zaten bullish adayları deterministik eşik ve
+        # trend filtresinden geçiriyor; burada ikinci, daha sert eşik adayları
+        # gereksiz yere silip "aday yok" üretiyordu.
+        candidates = list(scan.get("bullish_candidates", []))
+        if not candidates:
+            top = [{"symbol": row.get("symbol"), "score": row.get("score"), "risks": row.get("risks", [])}
+                   for row in scan.get("ranked", [])[:5]]
+            raise HTTPException(status_code=409, detail={"message": "Paper işlem için bullish aday bulunamadı", "top_ranked": top, "action": "işlem açılmadı"})
+    else:
+        candidates = [{"symbol": symbol, "score": None}]
+    # Otomatik seçimde symbol başlangıçta boştur; geçerlilik kontrolü yalnızca
+    # kullanıcı belirli bir sembol gönderdiğinde uygulanmalıdır.
+    if symbol and symbol not in config.SYMBOLS:
+        try:
+            available_symbols = set(await trading_symbols("TRY"))
+        except Exception:
+            available_symbols = set()
+        if symbol not in available_symbols:
+            raise HTTPException(status_code=400, detail="Geçerli TRY sembolü gerekli")
+    blocked = []
+    historical_trades = await database.get_trades(limit=500)
+    for candidate in candidates:
+        symbol = str(candidate["symbol"]).upper()
+        if symbol not in config.SYMBOLS:
+            continue
+        # Enforce re-entry policy at the orchestration boundary too; callers
+        # cannot bypass the portfolio writer's guard by hitting this endpoint.
+        llm_guard = await database.get_llm_symbol_guard(symbol)
+        guard_reason = _llm_guard_block_reason(llm_guard)
+        if guard_reason:
+            blocked.append({"symbol": symbol, "reason": guard_reason})
+            await database.save_signal({
+                "symbol": symbol, "action": "BUY_BLOCKED", "price": None,
+                "reason": guard_reason, "strategy": "LLM_PAPER", "timestamp": time.time(),
+                "guard_revision": llm_guard.get("revision"),
+            })
+            continue
+        if llm_guard and llm_guard.get("status") == "active":
+            await database.upsert_llm_symbol_guard(
+                symbol, llm_guard.get("guard_type") or "cooldown", "expired",
+                llm_guard.get("blocked_until"), "cooldown_elapsed", llm_guard.get("evidence") or {},
+            )
+        ticker = market.get_ticker(symbol)
+        if not ticker or not ticker.get("last_price"):
+            try:
+                price, ticker = await _fresh_public_price(symbol)
+                if price is not None:
+                    ticker = {"symbol": symbol, "last_price": price, "timestamp": time.time() * 1000, "source": (ticker or {}).get("source", "binance_tr_public_rest")}
+            except Exception as exc:
+                blocked.append({"symbol": symbol, "reason": f"price_unavailable:{exc}"})
+        if not ticker or not ticker.get("last_price"):
+            blocked.append({"symbol": symbol, "reason": "price_unavailable"})
+            continue
+        higher_timeframes = []
+        entry_snapshot = {}
+        outcome_profile = {}
+        try:
+            entry_snapshot = await symbol_analysis(symbol, "5m")
+            outcome_profile = symbol_outcome_profile(historical_trades, symbol, "LLM_PAPER", 100)
+            gate_ok, gate_reasons = _llm_entry_quality_gate(entry_snapshot, outcome_profile)
+            if gate_reasons:
+                gate_ok = False
+        except Exception as exc:
+            gate_ok, gate_reasons = False, [f"entry_snapshot_error:{type(exc).__name__}"]
+        if not gate_ok:
+            reason = "llm_entry_quality_gate:" + ",".join(gate_reasons)
+            blocked.append({"symbol": symbol, "reason": reason})
+            await database.save_signal({
+                "symbol": symbol, "action": "BUY_BLOCKED", "price": ticker["last_price"],
+                "reason": reason, "strategy": "LLM_PAPER", "timestamp": time.time(),
+                "entry_gate_evidence": {
+                    "reasons": gate_reasons,
+                    "outcome_profile": outcome_profile,
+                    "timeframes": {
+                        "5m": (entry_snapshot.get("trend") or {}).get("alignment") if isinstance(entry_snapshot, dict) else None,
+                        "15m": (higher_timeframes[0].get("trend") or {}).get("alignment") if len(higher_timeframes) > 0 else None,
+                        "1h": (higher_timeframes[1].get("trend") or {}).get("alignment") if len(higher_timeframes) > 1 else None,
+                    },
+                },
+            })
+            continue
+        llm_plan = payload.get("plan") or {}
+        def _pct(value, fallback):
+            try: return max(0.001, min(float(value), 0.25))
+            except (TypeError, ValueError): return fallback
+        order_value = max(config.MIN_PARTIAL_ORDER_TRY, min(float(llm_plan.get("order_value_try", config.DEFAULT_ORDER_USDT)), max(config.MIN_PARTIAL_ORDER_TRY, await database.get_wallet_balance("TRY"))))
+        stop_loss_pct = _pct(llm_plan.get("stop_loss_pct"), config.HARD_STOP_LOSS_PCT)
+        take_profit_pct = _pct(llm_plan.get("take_profit_pct"), config.SPOT_PROFIT_TARGET_PCT)
+        hold_seconds = max(60, min(int(llm_plan.get("max_hold_seconds", config.MAX_POSITION_HOLD_SEC)), 7 * 24 * 3600))
+        eligible, eligibility = await analyzer.entry_liquidity_preflight(symbol, "LLM_PAPER", order_value)
+        if not eligible:
+            blocked.append({"symbol": symbol, "reason": eligibility.get("reason", "entry_ineligible"), "eligibility": eligibility})
+            continue
+        signal = await analyzer.open_position(symbol, float(ticker["last_price"]), "LONG", "LLM_PAPER", order_value, stop_loss_pct, take_profit_pct, hold_seconds)
+        if signal and str(signal.get("action", "")).upper() == "BUY_SIGNAL":
+            actor, actor_role = _session_identity(request)
+            await log_user_action(actor, actor_role, "trade", "PAPER_TRADE_OPEN",
+                                  target=symbol,
+                                  details={"strategy": "LLM_PAPER", "order_value_try": order_value,
+                                           "stop_loss_pct": stop_loss_pct, "take_profit_pct": take_profit_pct,
+                                           "trade_id": signal.get("trade_id")},
+                                  request=request)
+            await ws_manager.broadcast({"type": "signal", "data": signal})
+            # G-29: pozisyon açıldı → cüzdan önbelleği anında geçersiz kılınır.
+            runtime_routes.invalidate_wallet_caches()
+            return {"ok": True, "paper_only": True, "real_trading": False, "signal": signal, "plan": {"order_value_try": order_value, "stop_loss_pct": stop_loss_pct, "take_profit_pct": take_profit_pct, "max_hold_seconds": hold_seconds}, "research_attempts": blocked}
+        blocked.append({"symbol": symbol, "reason": (signal or {}).get("reason", "risk_or_position_limit")})
+    raise HTTPException(status_code=409, detail={"message": "Hiçbir aday paper işlem kurallarını geçemedi; işlem açılmadı", "blocked_candidates": blocked[:10], "retry_research": True})
+
+@app.post("/api/llm/providers")
+async def add_llm_provider(request: Request, payload: dict):
+    _require_admin(request)
+    name = str(payload.get("name", "")).strip()
+    base_url = str(payload.get("base_url", "")).strip()
+    key = str(payload.get("api_key", "")).strip()
+    if not name: raise HTTPException(status_code=400, detail="Provider adı gerekli")
+    try: base_url = security._validate_provider_url_sync(base_url)
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not key: raise HTTPException(status_code=400, detail="API key gerekli")
+    try:
+        provider_id = await database.save_llm_provider(name, base_url, llm_analysis.encrypt_key(key))
+        return {"ok": True, "provider_id": provider_id}
+    except RuntimeError as exc: raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/api/ml/status")
+async def ml_status():
+    """Son ML artifact metadata + metrics (Faz 1 izleme)."""
+    latest = await database.get_latest_ml_model_artifact()
+    if not latest:
+        return {"status": "not_trained", "interval_hours": config.ML_TRAIN_INTERVAL_HOURS}
+    return {"status": latest.get("status"), "artifact": latest,
+            "interval_hours": config.ML_TRAIN_INTERVAL_HOURS,
+            "models_dir": config.ML_MODELS_DIR}
+
+
+@app.post("/api/ml/train")
+async def ml_train_now(request: Request = None):
+    """Manuel eğitim tetikleme (ayarlar butonu / Faz 2 öncesi doğrulama).
+
+    G-18: CPU/DB yoğun uç → admin kapısı + token-bucket hız sınırı.
+    """
+    _require_admin(request)
+    if not rate_limit("ml-train", rate_per_sec=1 / 60.0, burst=2):
+        raise HTTPException(status_code=429, detail="ML eğitimi çok sık tetiklendi; lütfen bekleyin")
+    try:
+        meta = await run_ml_training("manual")
+        return {"ok": True, **meta}
+    except Exception as exc:
+        logger.error("ML eğitimi başarısız: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="ML eğitimi başarısız")
+
+
+@app.get("/api/ml/predict")
+async def ml_predict(symbol: str, horizon: int = 5):
+    """Tek nokta ML tahmini (Faz 2 gölge mod doğrulaması için)."""
+    # Boş özellik sözlüğü modeli NaN'larla besler ve güvenilmez hedef üretir;
+    # grafik tahminiyle aynı canlı özellik toplayıcıyı kullan (tek yol).
+    from app.routers.chart_forecast import collect_forecast_features
+    features = await collect_forecast_features(symbol)
+    if not features:
+        return {"symbol": symbol.upper(), "horizon": horizon, "available": False,
+                "prediction": None, "reason": "güncel veri yok"}
+    target = ml_forecast.predict_target(symbol, features, horizon)
+    return {"symbol": symbol.upper(), "horizon": horizon, "available": target is not None,
+            "prediction": target}
+
+
+@app.post("/api/llm/models")
+async def add_llm_model(request: Request, payload: dict):
+    _require_admin(request)
+    try:
+        provider_id = int(payload["provider_id"])
+        name = str(payload["name"]).strip()
+        if not name: raise ValueError("Model adı gerekli")
+        if provider_id <= 0: raise ValueError("Geçerli bir provider seçin")
+        model_type = str(payload.get("model_type", "chat")).strip().lower()
+        if model_type not in ("chat", "embedding"): raise ValueError("Model tipi chat veya embedding olmalı")
+        dimensions = payload.get("dimensions")
+        dimensions = int(dimensions) if dimensions not in (None, "") else None
+        if model_type == "embedding" and dimensions != 2048: raise ValueError("Bu deployment için embedding dimension 2048 olmalı")
+        return {"ok": True, "model_id": await database.save_llm_model(provider_id, name, float(payload.get("temperature", 0.2)), model_type, dimensions, payload.get("embedding_metric", "cosine"))}
+    except (KeyError, ValueError) as exc: raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
+
+@app.post("/api/llm/skills")
+async def add_llm_skill(request: Request, payload: dict):
+    _require_admin(request)
+    name = str(payload.get("name", "")).strip()
+    instructions = str(payload.get("instructions", "")).strip()
+    if not name or not instructions: raise HTTPException(status_code=400, detail="Uzmanlık adı ve talimatları gerekli")
+    try: return {"ok": True, "skill_id": await database.save_llm_skill(name, instructions)}
+    except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
+
+@app.put("/api/llm/providers/{provider_id}")
+async def update_llm_provider(request: Request, provider_id: int, payload: dict):
+    _require_admin(request)
+    name, base_url, key = str(payload.get("name", "")).strip(), str(payload.get("base_url", "")).strip(), str(payload.get("api_key", "")).strip()
+    if not name: raise HTTPException(status_code=400, detail="Provider adı gerekli")
+    try: base_url = security._validate_provider_url_sync(base_url)
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try: await database.update_llm_provider(provider_id, name, base_url, llm_analysis.encrypt_key(key) if key else None); return {"ok": True}
+    except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
+
+@app.delete("/api/llm/providers/{provider_id}")
+async def delete_llm_provider(request: Request, provider_id: int):
+    _require_admin(request)
+    await database.delete_llm_provider(provider_id); return {"ok": True}
+
+@app.put("/api/llm/models/{model_id}")
+async def update_llm_model(request: Request, model_id: int, payload: dict):
+    _require_admin(request)
+    name = str(payload.get("name", "")).strip()
+    if not name: raise HTTPException(status_code=400, detail="Model adı gerekli")
+    model_type = payload.get("model_type")
+    dimensions = payload.get("dimensions")
+    await database.update_llm_model(model_id, name, float(payload.get("temperature", 0.2)), model_type, int(dimensions) if dimensions not in (None, "") else None, payload.get("embedding_metric")); return {"ok": True}
+
+@app.delete("/api/llm/models/{model_id}")
+async def delete_llm_model(request: Request, model_id: int):
+    _require_admin(request)
+    await database.delete_llm_model(model_id); return {"ok": True}
+
+@app.put("/api/llm/skills/{skill_id}")
+async def update_llm_skill(request: Request, skill_id: int, payload: dict):
+    _require_admin(request)
+    name, instructions = str(payload.get("name", "")).strip(), str(payload.get("instructions", "")).strip()
+    if not name or not instructions: raise HTTPException(status_code=400, detail="Uzmanlık adı ve talimatları gerekli")
+    await database.update_llm_skill(skill_id, name, instructions); return {"ok": True}
+
+@app.delete("/api/llm/skills/{skill_id}")
+async def delete_llm_skill(request: Request, skill_id: int):
+    _require_admin(request)
+    await database.delete_llm_skill(skill_id); return {"ok": True}
+
+@app.put("/api/llm/active")
+async def activate_llm(request: Request, payload: dict):
+    _require_admin(request)
+    await database.set_llm_setting("llm_enabled", "1" if payload.get("enabled") else "0")
+    if payload.get("model_id") is not None: await database.set_llm_setting("active_model_id", payload["model_id"])
+    return {"ok": True}
+
+@app.post("/api/llm/test")
+async def test_llm(payload: dict = None, request: Request = None):
+    # G-18: uzak LLM çağrısı (ücretli/kota) → admin kapısı + hız sınırı.
+    _require_admin(request)
+    if not rate_limit("llm-test", rate_per_sec=0.2, burst=2):
+        raise HTTPException(status_code=429, detail="LLM bağlantı testi çok sık çağrıldı")
+    result = await llm_analysis.analyze({"test": True, "message": "Return exactly: CONNECTION_OK"})
+    return result
+
+@app.post("/api/llm/embedding/test")
+async def test_embedding(payload: dict = None, request: Request = None):
+    # G-18: uzak/ücretli embedding çağrısı → admin kapısı + hız sınırı.
+    _require_admin(request)
+    if not rate_limit("llm-embedding-test", rate_per_sec=0.2, burst=2):
+        raise HTTPException(status_code=429, detail="Embedding bağlantı testi çok sık çağrıldı")
+    body = payload or {}
+    text = str(body.get("text", "embedding bağlantı testi"))[:4000]
+    return await llm_analysis.embedding(text, body.get("model_id"))
+
+@app.post("/api/market-snapshot-scan")
+async def market_snapshot_scan(payload: dict = None, request: Request = None):
+    """Tüm etkin sembolleri salt-okunur biçimde tarar; canlı portföyü değiştirmez.
+
+    G-18: tüm evreni tarayan pahalı uç → admin kapısı + hız sınırı.
+    """
+    _require_admin(request)
+    if not rate_limit("market-snapshot-scan", rate_per_sec=0.5, burst=2):
+        raise HTTPException(status_code=429, detail="Piyasa taraması çok sık çağrıldı; lütfen bekleyin")
+    return await scan_market_snapshots(payload or {})
+
+@app.get("/api/market-snapshot/{symbol}/deep")
+async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
+    """Tek sembol için LLM'e sunulacak güncel derin snapshot'ı döndürür."""
+    return await deep_analyze_symbol({"symbol": symbol, "timeframe": timeframe})
+
+@app.get("/api/market-snapshot/upside-candidates")
+async def market_snapshot_upside_candidates(limit: int = 10):
+    return await detect_15m_upside_candidates({"limit": limit})
+
+@app.get("/api/market-snapshot/upside-candidates-5m")
+async def market_snapshot_upside_candidates_5m(limit: int = 10):
+    return await detect_5m_upside_candidates({"limit": limit})
+
+@app.post("/api/positions/{symbol}/close")
+async def close_position_manual(symbol: str, request: Request):
+    """Açık pozisyonu manuel kapat (komisyon + işlem geçmişi dahil)."""
+    symbol = symbol.replace("_", "").upper()
+    price, ticker = await _fresh_public_price(symbol)
+    if price is None:
+        return {"ok": False, "message": f"{symbol} için güncel fiyat bulunamadı"}
+    sig = await analyzer.close_position(symbol.upper(), price, "manual_close")
+    if not sig:
+        return {"ok": False, "message": f"{symbol} için açık pozisyon yok"}
+    actor, actor_role = _session_identity(request)
+    await log_user_action(actor, actor_role, "trade", "POSITION_CLOSE_MANUAL",
+                          target=symbol,
+                          details={"reason": "manual_close", "price": price,
+                                   "trade_id": sig.get("trade_id")},
+                          request=request)
+    await ws_manager.broadcast({"type": "signal", "data": sig})
+    # G-29: manuel kapanış sonrası cüzdan/realized PnL önbelleği anında tazelenir.
+    runtime_routes.invalidate_wallet_caches()
+    if str(sig.get("strategy", "")).upper() != "LLM_PAPER":
+        _start_background(llm_replenish_after_close, "llm-replenish-after-close", single_pass=True)
+    return {"ok": True, "message": f"{symbol} kapatıldı @ {price:.2f}", "signal": sig}
+
+@app.get("/api/trades")
+async def get_trades(limit: int = 100, offset: int = 0, symbol: str = "", strategy: str = ""):
+    """Kapanan pozisyonların işlem geçmişi."""
+    return {"trades": await database.get_trades(limit, offset, symbol or None, strategy or None),
+            "total": await database.get_trade_count(symbol or None, strategy or None), "limit": limit, "offset": offset}
+
+
+@app.get("/api/portfolio/summary")
+async def portfolio_summary():
+    """Single source for global chart/portfolio headline metrics (paper only)."""
+    snapshot = _ws_snapshot_cache.get("portfolio") or {}
+    try:
+        snapshot = database._json_safe(snapshot)
+    except Exception:
+        pass
+    return {
+        "portfolio": snapshot,
+        "metrics": await database.get_portfolio_trade_metrics(),
+        "generated_at": time.time(),
+        "paper_only": True,
+    }
+
+
+@app.get("/api/portfolio/equity-curve")
+async def portfolio_equity_curve():
+    """Kapanan paper işlemlerden equity eğrisi + kâr kalitesi metrikleri (salt-okunur)."""
+    return {"ok": True, "curve": await database.get_portfolio_equity_curve(),
+            "generated_at": time.time(), "paper_only": True}
+
+
+@app.get("/api/chart/{symbol}/timeframe-trends")
+async def chart_timeframe_trends(symbol: str):
+    """Fast, completed-candle EMA alignment ribbon for the chart terminal."""
+    sym = str(symbol).replace("_", "").upper()
+    timeframes = ("1m", "5m", "15m", "30m", "1h", "4h", "1d")
+    ticker = market.get_ticker(sym) or {}
+    price = float(ticker.get("last_price") or 0.0)
+    daily = market.klines.get("1d", {}).get(sym, {})
+    flow = market.get_orderflow(sym)
+    rows = []
+    for timeframe in timeframes:
+        history = market.klines.get(timeframe, {}).get(sym, {})
+        closes = history.get("closes") or []
+        if len(closes) < 55:
+            rows.append({"timeframe": timeframe, "alignment": "unknown", "data_ready": False})
+            continue
+        snapshot = calculate_snapshot(
+            sym, price or float(closes[-1]), {timeframe: history, "1d": daily}, flow,
+            market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, timeframe,
+        )
+        alignment = str((snapshot.get("trend") or {}).get("alignment") or "unknown")
+        rows.append({
+            "timeframe": timeframe,
+            "alignment": alignment if alignment in {"bullish", "bearish", "mixed"} else "unknown",
+            "data_ready": bool(snapshot.get("data_ready")),
+            "closed_at_ms": int(history.get("last_closed_at_ms") or 0),
+        })
+    return {"symbol": sym, "timeframes": rows, "generated_at": time.time(), "candle_policy": "completed_only"}
+
+def _require_postgres_target() -> str:
+    if os.getenv("DB_BACKEND", "postgres").lower() != "postgres":
+        raise HTTPException(status_code=503, detail="Sistem yalnızca PostgreSQL kullanmalıdır; DB_BACKEND=postgres yapın")
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
+    return database_url
+
+
+# DENETİM (2026-10-07): yedek alma ve geri yükleme arasında KARŞILIKLI DIŞLAMA
+# yoktu. `pg_restore --clean` şemayı düşürüp yeniden kurar; aynı anda çalışan
+# bir `pg_dump` şema yok edilirken okuyup BOZUK bir yedek üretebilirdi. İkisi de
+# aynı `asyncio.Lock`'u alır — bu süreç iki ayrı worker/konteyner değil, TEK
+# backend süreci olduğundan asyncio kilidi yeterlidir.
+_backup_restore_lock = asyncio.Lock()
+
+
+async def _create_postgres_backup():
+    """Create a validated PostgreSQL custom-format backup (streamed helper).
+
+    pg_dump çıktısını akıtırken ilk 5 baytın PGDMP imzasını doğrular;
+    geçersiz üretimde HTTPException fırlatır. Dönüş: (async generator,
+    headers sözlüğü).
+
+    DENETİM (2026-10-07): `_backup_restore_lock` pg_dump BAŞLAMADAN alınır ve
+    akış TAMAMEN tüketilene kadar tutulur (aşağıdaki generator `finally`'si
+    bırakır) — çünkü süreç, yanıt gövdesi okunurken hâlâ şemayı tarar. Kilit
+    yoksa geri yükleme `--clean` ile şemayı düşürürken okunan dump bozuk çıkar.
+    """
+    database_url = _require_postgres_target()
+    # `locked()` kontrolü ile `acquire()` arasında `await` YOKTUR: tek olay
+    # döngüsünde bu ikili atomiktir, yarış penceresi kalmaz.
+    if _backup_restore_lock.locked():
+        raise HTTPException(status_code=409, detail="Şu anda bir yedek alma/geri yükleme işlemi sürüyor; bitince tekrar deneyin")
+    await _backup_restore_lock.acquire()
+    try:
+        headers={"X-Backup-Format": "postgresql-custom", "X-Backup-Verified": "PGDMP"}
+        headers["Content-Disposition"] = f'attachment; filename="scalperagent-postgres-{time.strftime("%Y%m%d-%H%M%S")}.dump"'
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pg_dump", "--format=custom", "--no-owner", "--no-acl", database_url,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=503, detail="PostgreSQL yedek aracı pg_dump backend imajında kurulu değil") from exc
+        first = await proc.stdout.read(5)
+        if first != b"PGDMP":
+            proc.kill()
+            stderr = (await proc.stderr.read() or b"")[-2000:].decode("utf-8", "replace")
+            raise HTTPException(status_code=502, detail=stderr or "pg_dump geçerli PostgreSQL custom-format çıktısı üretmedi")
+    except BaseException:
+        # pg_dump başlatılamadı / doğrulama düştü → kilidi bırak, aksi halde
+        # kalıcı olarak kilitli kalır ve sonraki yedek/geri-yükleme 409 alır.
+        if _backup_restore_lock.locked():
+            _backup_restore_lock.release()
+        raise
+
+    async def _stream():
+        try:
+            yield first
+            while True:
+                chunk = await proc.stdout.read(256 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+            returncode = await proc.wait()
+            if returncode != 0:
+                stderr = (await proc.stderr.read() or b"")[-2000:].decode("utf-8", "replace")
+                logger.error("pg_dump akışı hatalı bitti (rc=%s): %s", returncode, stderr)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            # Akış bitti/iptal edildi → kilidi MUTLAKA bırak.
+            if _backup_restore_lock.locked():
+                _backup_restore_lock.release()
+
+    return _stream(), headers
+
+
+@app.get("/api/backup")
+async def download_backup(request: Request = None):
+    """Download a PostgreSQL custom-format dump (streamed while pg_dump runs)."""
+    _require_admin(request)
+    stream, headers = await _create_postgres_backup()
+    return StreamingResponse(stream, media_type="application/octet-stream", headers=headers)
+
+
+@app.get("/api/postgres/backup")
+async def download_postgres_backup(request: Request = None):
+    """Explicit alias for clients that use the PostgreSQL-specific route."""
+    _require_admin(request)
+    stream, headers = await _create_postgres_backup()
+    return StreamingResponse(stream, media_type="application/octet-stream", headers=headers)
+
+@app.post("/api/postgres/restore")
+async def restore_postgres_backup(payload: dict = None, request: Request = None):
+    admin = _require_admin(request)
+    body = payload or {}; raw_path = str(body.get("path", ""))
+    if body.get("confirmation") != "RESTORE_POSTGRES": raise HTTPException(status_code=400, detail="RESTORE_POSTGRES onayı gerekli")
+    if not os.getenv("DATABASE_URL"): raise HTTPException(status_code=400, detail="DATABASE_URL gerekli")
+    # Only dumps this backend created may be restored: an arbitrary client
+    # path combined with --clean would wipe the live schema from any file.
+    path = os.path.abspath(raw_path)
+    backup_dir = os.path.abspath(tempfile.gettempdir()) + os.sep
+    if not path.startswith(backup_dir) or not os.path.basename(path).startswith("scalper-postgres-") or not path.endswith(".dump"):
+        raise HTTPException(status_code=400, detail="Yalnızca sunucu tarafından üretilen scalper-postgres-*.dump yedekleri geri yüklenebilir")
+    if not os.path.isfile(path): raise HTTPException(status_code=404, detail="Belirtilen yedek dosyası bulunamadı")
+    # DENETİM (2026-10-07): aynı `_backup_restore_lock` — geri yükleme şemayı
+    # `--clean` ile düşürdüğü için, aynı anda süren bir `pg_dump` ile ASLA
+    # çakışmamalı. Doğrulama + geri yükleme boyunca kilit tutulur; `finally`
+    # her çıkışta (hata/iptal dahil) bırakır, aksi halde kilit kalıcı takılırdı.
+    if _backup_restore_lock.locked():
+        raise HTTPException(status_code=409, detail="Şu anda bir yedek alma/geri yükleme işlemi sürüyor; bitince tekrar deneyin")
+    await _backup_restore_lock.acquire()
+    try:
+        try:
+            with open(path, "rb") as backup_file:
+                if backup_file.read(5) != b"PGDMP":
+                    raise HTTPException(status_code=400, detail="Dosya geçerli bir PostgreSQL custom-format yedeği değil")
+            validation = await asyncio.to_thread(subprocess.run, ["pg_restore", "--list", path], capture_output=True, text=True, timeout=120)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Yedek doğrulanamadı: {exc}") from exc
+        if validation.returncode != 0:
+            raise HTTPException(status_code=400, detail=validation.stderr[-2000:] or "Yedek dosyası pg_restore --list doğrulamasından geçemedi")
+        result = await asyncio.to_thread(subprocess.run, ["pg_restore", "--clean", "--if-exists", "--no-owner", "--dbname", os.environ["DATABASE_URL"], path], capture_output=True, text=True, timeout=1200)
+        if result.returncode != 0: raise HTTPException(status_code=502, detail=result.stderr[-3000:] or "pg_restore başarısız")
+        await log_user_action(admin.get("username"), admin.get("role"), "admin", "POSTGRES_RESTORE",
+                              target="postgres", details={"path": os.path.basename(path)}, request=request)
+        return {"ok": True, "message": "PostgreSQL backup geri yüklendi; backend yeniden başlatılması önerilir"}
+    finally:
+        _backup_restore_lock.release()
+
+@app.post("/api/memory/reset")
+async def reset_memory(request: Request = None):
+    _require_admin(request)
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
+    async with _pg_pool.acquire() as conn:
+        await conn.execute("TRUNCATE memory_retrieval_logs, memory_embeddings, memory_documents RESTART IDENTITY")
+    embedding_worker.stats.update({"queued":0,"processed":0,"failed":0,"last_error":None,"last_processed_at":None})
+    return {"ok": True, "message": "LLM memory kayıtları sıfırlandı; paper-trading kayıtları korunuyor"}
+
+@app.get("/api/llm/agent-traces")
+async def get_agent_traces(limit: int = 50):
+    if not _pg_pool: return {"enabled": False, "traces": []}
+    async with _pg_pool.acquire() as conn:
+        rows = await conn.fetch("""SELECT trace_id,session_id,intent,status,started_at,completed_at
+            FROM agent_traces ORDER BY started_at DESC LIMIT $1""", max(1, min(int(limit), 200)))
+    return {"enabled": True, "traces": [dict(row) for row in rows]}
+
+@app.get("/api/llm/evaluations")
+async def get_agent_evaluations(limit: int = 100):
+    if not _pg_pool: return {"enabled": False, "evaluations": []}
+    async with _pg_pool.acquire() as conn:
+        rows = await conn.fetch("""SELECT id,trace_id,evaluator_type,score,passed,failure_category,explanation,created_at
+            FROM agent_evaluations ORDER BY created_at DESC LIMIT $1""", max(1, min(int(limit), 500)))
+    return {"enabled": True, "evaluations": [dict(row) for row in rows]}
+
+@app.get("/api/llm/instincts")
+async def get_agent_instincts(status: str = "", limit: int = 100):
+    if not _pg_pool: return {"enabled": False, "instincts": []}
+    async with _pg_pool.acquire() as conn:
+        if status:
+            rows = await conn.fetch("""SELECT * FROM trading_instincts WHERE status=$1
+                ORDER BY confidence DESC,last_seen_at DESC LIMIT $2""", status, max(1, min(int(limit), 500)))
+        else:
+            rows = await conn.fetch("""SELECT * FROM trading_instincts
+                ORDER BY confidence DESC,last_seen_at DESC LIMIT $1""", max(1, min(int(limit), 500)))
+    return {"enabled": True, "instincts": [dict(row) for row in rows]}
+
+_GOLDEN_CASES_PATH = os.path.join(os.path.dirname(__file__), "..", "evals", "golden_cases.json")
+
+
+async def _load_golden_cases() -> list:
+    """golden_cases.json dosyasını oku; hata halinde istisna fırlat.
+
+    DENETİM 3.4 (2026-09-26): Dosya okuma işi burada ayrıldı. Önceden uç
+    fonksiyonu hata halinde `JSONResponse` DÖNDÜRÜYORDU ve
+    ``run_agent_golden_evals`` bu yanıtı doğrudan çağırıp ``.get("cases")``
+    diyordu → `AttributeError: 'JSONResponse' object has no attribute 'get'`.
+    Yani eval dosyası okunamazsa 0 vaka yerine 500 fırlatılıyordu.
+    Artık dosya okuma saf bir yardımcıdır: başarı → liste, hata → istisna
+    (çağıran karar verir). Dosya yolu HATA DETAYINDA loglanır, HTTP yanıtına
+    sızmaz.
+    """
+    with open(_GOLDEN_CASES_PATH, "r", encoding="utf-8") as handle:
+        cases = json.load(handle)
+    return list(cases) if isinstance(cases, list) else []
+
+
+@app.get("/api/llm/eval-cases")
+async def get_agent_eval_cases():
+    # G-12 (2026-09-08): hata yolu HTTP 200 + boş liste + str(exc) (dosya yolu
+    # dahil) dönüyordu; kullanıcı "vaka yok" ile "dosya okunamadı"yı
+    # ayırt edemiyordu. Artık 500 + sabit error_code; dosya yolu/hata detayı
+    # yalnız logda kalır (bilgi sızıntısı yok).
+    try:
+        return {"cases": await _load_golden_cases()}
+    except Exception as exc:
+        logger.error("golden eval vakaları okunamadı (%s): %s:%s",
+                     os.path.basename(_GOLDEN_CASES_PATH), type(exc).__name__, exc,
+                     exc_info=True)
+        return JSONResponse(status_code=500,
+                            content={"ok": False, "error_code": "eval_cases_unavailable", "cases": []})
+
+@app.post("/api/llm/evals/run")
+async def run_agent_golden_evals(payload: dict = None, request: Request = None):
+    _require_admin(request)
+    """Run the versioned golden cases against the configured LLM and persist results."""
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL eval backend aktif değil")
+    # DENETİM (2026-09-26): HTTP uç fonksiyonu DEĞİL, saf dosya-okuma
+    # yardımcısı çağrılır. Önceden `await get_agent_eval_cases()` bir
+    # `JSONResponse` döndüğünde `.get(...)` AttributeError fırlatıyordu;
+    # dosya okunamazsa 0 vaka yerine 500 + dosya yolu sızıntısı oluyordu.
+    try:
+        cases = await _load_golden_cases()
+    except Exception as exc:
+        logger.error("golden eval koşusu başlatılamadı: %s:%s", type(exc).__name__, exc, exc_info=True)
+        raise HTTPException(status_code=503, detail="Golden eval vaka dosyası okunamadı") from exc
+    requested = set((payload or {}).get("case_keys") or [])
+    attempts = max(1, min(int((payload or {}).get("attempts", 1)), 3))
+    results = []
+    for case in cases:
+            if requested and case.get("case_key") not in requested: continue
+            async with _pg_pool.acquire() as conn:
+                case_row = await conn.fetchrow("""INSERT INTO agent_eval_cases(case_key,category,input,expected)
+                    VALUES($1,$2,$3::jsonb,$4::jsonb)
+                    ON CONFLICT(case_key) DO UPDATE SET category=EXCLUDED.category,input=EXCLUDED.input,expected=EXCLUDED.expected
+                    RETURNING id""", case["case_key"], case["category"], json.dumps(case["input"], ensure_ascii=False), json.dumps(case.get("expected", {}), ensure_ascii=False))
+            for attempt in range(1, attempts + 1):
+                trace_id = new_trace_id(f"eval-{case['case_key']}")
+                await start_trace(_pg_pool, trace_id=trace_id, session_id=f"eval:{case['case_key']}", intent=case["case_key"], metadata={"golden": True})
+                result = await llm_analysis.chat({"type":"golden_eval", "case":case["case_key"], "expected":case.get("expected", {}), "data_policy":"Paper-only; do not invent live data."}, case["input"].get("messages", []), [], None)
+                evaluation = evaluate_output(result.get("text"), intent=case["case_key"], expected=case.get("expected", {}))
+                passed = bool(evaluation.get("passed")) and result.get("status") == "ok"
+                trajectory = {"checked": False, "reason": "Golden runner buffered response pathında araç çağrısı devre dışı"}
+                details = {"response": result.get("text"), "evaluation": evaluation, "trajectory": trajectory, "model": result.get("model")}
+                async with _pg_pool.acquire() as conn:
+                    await conn.execute("""INSERT INTO agent_eval_runs(case_id,trace_id,attempt_no,passed,score,details)
+                        VALUES($1,$2,$3,$4,$5,$6::jsonb)""", int(case_row["id"]), trace_id, attempt, passed, evaluation.get("score"), json.dumps(details, ensure_ascii=False, default=str))
+                await save_evaluation(_pg_pool, trace_id, {**evaluation, "passed": passed}, evaluator_type="golden_deterministic")
+                await finish_trace(_pg_pool, trace_id, "completed" if passed else "failed")
+                results.append({"case_key":case["case_key"],"attempt":attempt,"passed":passed,"score":evaluation.get("score"),"trace_id":trace_id,"trajectory":trajectory})
+    aggregates = []
+    for case_key in sorted({item["case_key"] for item in results}):
+        items = [item for item in results if item["case_key"] == case_key]
+        pass_count = sum(1 for item in items if item["passed"])
+        k = len(items)
+        aggregates.append({"case_key": case_key, "k": k, "pass_at_k": pass_count > 0, "pass_all_k": pass_count == k,
+                           "pass_rate": round(pass_count / k, 4) if k else 0.0})
+    return {"ok": True, "total": len(results), "passed": sum(1 for item in results if item["passed"]),
+            "pass_at_k": sum(1 for item in aggregates if item["pass_at_k"]),
+            "pass_all_k": sum(1 for item in aggregates if item["pass_all_k"]),
+            "aggregates": aggregates, "results": results}
+
+@app.put("/api/llm/instincts/{instinct_id}/approve")
+async def approve_agent_instinct(instinct_id: int):
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL learning backend aktif değil")
+    async with _pg_pool.acquire() as conn:
+        row = await conn.fetchrow("""UPDATE trading_instincts SET status='approved',approved_at=now()
+            WHERE id=$1 RETURNING id,instinct_key,status,confidence""", int(instinct_id))
+    if not row: raise HTTPException(status_code=404, detail="Instinct bulunamadı")
+    return {"ok": True, "instinct": dict(row)}
+
+@app.post("/api/llm/instincts/promote")
+async def promote_agent_instincts(payload: dict = None):
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL learning backend aktif değil")
+    return await promote_validated_instincts(_pg_pool, dry_run=not bool((payload or {}).get("apply")))
+
+@app.get("/api/risk/summary")
+async def risk_summary():
+    # G-14: `get_trades(limit=None)` TÜM trades tablosunu tek executor üzerinden
+    # Python'a çekiyordu (uzun sorgu + bellek şişmesi). Üst sınır uygulanır.
+    trades = await database.get_trades(limit=_RISK_TRADES_LIMIT)
+    positions = analyzer.positions
+    realized = sum(float(t.get("pnl") or 0.0) for t in trades)
+    commission = sum(float(t.get("commission") or 0.0) for t in trades)
+    losses = 0
+    for trade in trades:
+        if float(trade.get("pnl") or 0.0) < 0: losses += 1
+        else: break
+    today_start = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+    today_pnl = sum(float(t.get("pnl") or 0.0) for t in trades if float(t.get("exit_time") or 0) >= today_start)
+    # D-11: günlük zarar limiti + global kill-switch durumu raporda görünür.
+    gate = await daily_loss_guard()
+    return {"open_positions": len(positions), "realized_pnl": realized, "today_pnl": today_pnl,
+            "commission": commission, "consecutive_losses": losses, "max_positions": config.MAX_OPEN_POSITIONS,
+            "scan_limit": _RISK_TRADES_LIMIT,
+            "global_gate": {"halt": gate["halt"], "reason": gate["reason"],
+                            "limit_try": gate["limit_try"]},
+            "risk_flags": {"consecutive_loss_streak": losses >= 3, "daily_loss": today_pnl < 0,
+                           "daily_loss_limit_hit": gate["halt"] and gate["reason"] == "daily_loss_limit",
+                           "global_kill_switch": gate["halt"] and gate["reason"] == "global_kill_switch"}}
+
+# ---------------------------------------------------------------------------
+# D-11 (2026-09-12) — global günlük zarar limiti + global kill-switch (main yarısı)
+# config.py varsayılanları başka bir iş akışında değiştirildi; bu yarı yalnız
+# DB ayarı + açılışta kontrol + durum uçlarını ekler (config.py'ye dokunulmaz).
+# ---------------------------------------------------------------------------
+_DAILY_LOSS_LIMIT_KEY = "daily_loss_limit_pct"   # yüzde (başlangıç bakiyesine göre), 0 = kapalı
+_GLOBAL_HALT_KEY = "global_trading_halt"         # "1" = tüm yeni paper girişleri durur
+# G-14: sınırsız `get_trades(limit=None)` yerine tam-tablo okuması için üst sınır.
+_RISK_TRADES_LIMIT = 5000
+
+
+async def daily_loss_guard(now: float | None = None) -> dict:
+    """Global kill-switch + günlük zarar limiti değerlendirmesi (D-11).
+
+    Dönüş: ``{"halt": bool, "reason": str|None, "today_pnl": float, "limit_try": float|None}``
+
+    * ``global_trading_halt`` DB ayarı "1" ise tüm yeni girişler durur.
+    * ``daily_loss_limit_pct`` > 0 ise bugünkü gerçekleşen PnL
+      ``-limit_pct% * başlangıç bakiye`` altına inerse girişler durur
+      (kaybeden günü durduran mekanizma; eskiden yalnızca rapor alanıydı).
+    """
+    now = time.time() if now is None else float(now)
+    try:
+        halt_setting = str(await database.get_llm_setting(_GLOBAL_HALT_KEY, "0") or "0").strip().lower()
+    except Exception:
+        halt_setting = "0"
+    if halt_setting in {"1", "true", "yes", "on"}:
+        return {"halt": True, "reason": "global_kill_switch", "today_pnl": 0.0, "limit_try": None}
+    try:
+        limit_pct = float(await database.get_llm_setting(_DAILY_LOSS_LIMIT_KEY, "0") or 0)
+    except (TypeError, ValueError):
+        limit_pct = 0.0
+    if limit_pct <= 0:
+        return {"halt": False, "reason": None, "today_pnl": 0.0, "limit_try": None}
+    initial = float(getattr(config, "INITIAL_BALANCE_TRY", 0) or 0)
+    limit_try = abs(limit_pct) / 100.0 * initial
+    trades = await database.get_trades(limit=_RISK_TRADES_LIMIT)
+    day_start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+    today_pnl = sum(float(t.get("pnl") or 0.0) for t in trades
+                    if float(t.get("exit_time") or 0) >= day_start)
+    if limit_try > 0 and today_pnl <= -limit_try:
+        return {"halt": True, "reason": "daily_loss_limit", "today_pnl": today_pnl,
+                "limit_try": limit_try}
+    return {"halt": False, "reason": None, "today_pnl": today_pnl, "limit_try": limit_try}
+
+
+@app.get("/api/risk/global-gate")
+async def risk_global_gate():
+    """Global kill-switch / günlük zarar limiti durumu (salt okunur, D-11)."""
+    gate = await daily_loss_guard()
+    try:
+        limit_pct = float(await database.get_llm_setting(_DAILY_LOSS_LIMIT_KEY, "0") or 0)
+    except (TypeError, ValueError):
+        limit_pct = 0.0
+    return {"paper_only": True, "daily_loss_limit_pct": limit_pct, **gate}
+
+
+@app.post("/api/risk/kill-switch")
+async def set_risk_kill_switch(payload: dict = None, request: Request = None):
+    """Global kill-switch ve günlük zarar limitini ayarlar (admin, D-11).
+
+    body: ``{"halt": bool, "daily_loss_limit_pct": float}`` — ikisi de opsiyonel.
+    """
+    admin = _require_admin(request)
+    body = payload or {}
+    if "halt" in body:
+        halt = bool(body.get("halt"))
+        await database.set_llm_setting(_GLOBAL_HALT_KEY, "1" if halt else "0")
+    if "daily_loss_limit_pct" in body:
+        try:
+            limit_pct = max(0.0, min(float(body["daily_loss_limit_pct"]), 100.0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="daily_loss_limit_pct sayısal olmalı")
+        await database.set_llm_setting(_DAILY_LOSS_LIMIT_KEY, str(limit_pct))
+    gate = await daily_loss_guard()
+    await log_user_action(admin.get("username"), admin.get("role"), "risk", "GLOBAL_RISK_GATE_UPDATE",
+                          target="global", details={k: body.get(k) for k in ("halt", "daily_loss_limit_pct")},
+                          request=request)
+    return {"ok": True, "paper_only": True, **gate}
+
+
+@app.post("/api/reset")
+async def reset_all(request: Request = None):
+    _require_admin(request)
+    """Sanal portföy bakiyesini 10.000 TL olarak ayarla, açık pozisyonları kapat, eski işlemleri arşivle."""
+    analyzer.positions.clear()
+    analyzer.pending_orders.clear()
+    analyzer._cooldown_until.clear()
+    analyzer._timeout_block_until.clear()
+    analyzer._hard_stop_block_until.clear()
+    deleted = await database.reset_trading_data()
+    try:
+        from app.routers.auto_paper import reset_state
+        reset_state()
+    except Exception:
+        pass
+    _actor, _actor_role = _session_identity(request)
+    await log_user_action(_actor, _actor_role, "portfolio", "PORTFOLIO_RESET",
+                          details={"reset_at": deleted.get("reset_at"), "wallet": deleted.get("wallet")}, request=request)
+    await ws_manager.broadcast({"type": "reset", "data": {"ok": True, "reset_at": deleted.get("reset_at"), "wallet": deleted.get("wallet")}})
+    return {
+        "ok": True,
+        "message": "Sanal portföy bakiyesi 10.000 TL olarak ayarlandı, önceki işlemler arşivlendi.",
+        "reset_at": deleted.get("reset_at"),
+        "wallet": deleted.get("wallet"),
+        "deleted": deleted,
+    }
+
+
+
+# Geç bağlama: router modülleri burada tanımlı app düzeyi handler'ları çağrı
+# zamanında çözer. main modülü tam yüklendikten sonra AÇIK olarak bağlanır;
+# böylece router -> main yönünde döngüsel import oluşmaz ve hangi bağımlılığın
+# gerçekten bağlandığı runtime_deps kaydında izlenir (eksik kalırsa açılışta
+# assert_ready net hata verir; sessiz "ölü döngü" oluşamaz).
+runtime_deps.bind(llm_chat_routes, "llm_open_paper_trade", llm_open_paper_trade)
+runtime_deps.bind(llm_chat_routes, "symbol_analysis", symbol_analysis)
+runtime_deps.bind(llm_chat_routes, "get_config", get_config)
+async def get_strategy_stats():
+    """LLM aracı: strateji bazlı işlem istatistikleri (kayıt olan stratejiler).
+
+    G-14: `get_trades(limit=None)` tüm tabloyu çekiyordu → üst sınır uygulanır.
+    """
+    trades = await database.get_trades(limit=_RISK_TRADES_LIMIT)
+    stats = {}
+    for t in trades:
+        name = str(t.get("strategy") or "Bilinmeyen")
+        row = stats.setdefault(name, {"strategy": name, "trades": 0, "wins": 0, "pnl": 0.0, "commission": 0.0})
+        pnl = float(t.get("pnl") or 0.0)
+        row["trades"] += 1
+        row["pnl"] += pnl
+        row["commission"] += float(t.get("commission") or 0.0)
+        if pnl > 0:
+            row["wins"] += 1
+    for row in stats.values():
+        row["win_rate"] = (row["wins"] / row["trades"] * 100) if row["trades"] else 0.0
+    return {"stats": stats, "active": ["CHAT_PREDICTION", "LLM_PAPER", "GLOBAL_LEAD_LAG"]}
+
+
+runtime_deps.bind(llm_chat_routes, "get_strategy_stats", get_strategy_stats)
+runtime_deps.bind(runtime_routes, "llm_open_paper_trade", llm_open_paper_trade)
+runtime_deps.bind(runtime_routes, "gainers_radar", gainers_radar)
+
+# Global erken-tespit katmanı (2026-10-07): köprünün yerel karşılığı. Günlük zarar
+# kapısı AYNI fonksiyondur (Global tespiti de TR otonom işlemi açtığı için aynı
+# riske tabidir).
+from app import global_lead_lag
+global_lead_lag.set_daily_loss_guard_fn(daily_loss_guard)

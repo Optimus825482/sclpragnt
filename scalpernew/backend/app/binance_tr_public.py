@@ -1,0 +1,744 @@
+"""Binance TR symbol type 1 public market-data adapter."""
+
+import asyncio
+import os
+import json
+import random
+import threading
+import time
+from email.message import Message
+from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+REST_BASE = "https://api.binance.me"
+# 2026-09-28 (Binance TR resmi doküman güncellemesi):
+# Symbol Type 1 için resmi birincil adres `https://api.binance.me`.
+# Geçici DNS/erişim kesintilerinde otomatik devreye giren yedek havuz:
+REST_BASES = (
+    "https://api.binance.me",
+    "https://api.binance.com",
+    "https://api1.binance.com",
+)
+# WS birincil ve yedek hostlar. Birincil (stream-cloud.binance.tr) canlı
+# Binance TR market-data yayınıdır; bağlantı kurulamazsa stream.binance.me
+# (dokümantasyondaki genel spot market-data yayını) denenir.
+WS_BASE = "wss://stream-cloud.binance.tr"
+WS_BASES = ("wss://stream-cloud.binance.tr", "wss://stream.binance.me", "wss://stream.binance.com:9443")
+
+
+REST_TIMEOUT_SEC = 15.0
+REST_MAX_ATTEMPTS = 4
+REST_BACKOFF_BASE_SEC = 0.35
+REST_BACKOFF_MAX_SEC = 4.0
+REST_RETRY_AFTER_MAX_SEC = 300.0
+REST_BAN_BACKOFF_BASE_SEC = 600.0
+REST_BAN_BACKOFF_MAX_SEC = 3600.0
+REST_MAX_CONCURRENCY = 16
+REST_WEIGHT_SOFT_LIMIT = 950
+REST_WEIGHT_WINDOW_SEC = 60.0
+# 2026-09-28 (denetim): 429/418 yanıtından sonra TÜM isteklerin saygı duyduğu
+# paylaşılan soğuma penceresi. Tavan bilinçli KISA tutuldu: `_get_json`
+# asyncio.to_thread default executor'unda çalışır; saatlerce süren bir global
+# bekleme thread havuzunu tüketip DB/yardımcı işleri de bloke edebilirdi.
+# Tek isteğin kendi ban geri çekilmesi (600-3600 sn) değişmedi — yalnız artık
+# semaphore DIŞINDA uyur, yuvayı bloke etmez.
+GLOBAL_COOLDOWN_MAX_SEC = 60.0
+
+_REQUEST_SEMAPHORE = threading.Semaphore(REST_MAX_CONCURRENCY)
+
+# Kalıcı HTTPS bağlantı havuzu (Keep-Alive Pool).
+# Her istekte TLS el sıkışmasını sıfırdan yapmak yerine bağlantıları canlı tutar;
+# gecikmeyi 300ms'den 30ms'ye indirir ve Uvicorn / Nginx istek sırasını boşaltır.
+try:
+    import urllib3
+    _HTTP_POOL = urllib3.PoolManager(
+        maxsize=32,
+        timeout=urllib3.Timeout(connect=5.0, read=REST_TIMEOUT_SEC),
+        headers={"User-Agent": "scalperagent-v4/binance-tr-public", "Accept": "application/json"}
+    )
+except Exception:
+    _HTTP_POOL = None
+
+# Server-reported used request weight (X-MBX-USED-WEIGHT-1M), tracked per response.
+_rate_limit_used = {"total": 0, "by_endpoint": {}}
+_rate_limit_last_reset = None
+_weight_lock = threading.Lock()
+_weight_reported_at = 0.0
+_cooldown_until = 0.0
+
+# #32 (api-gap-analysis 3.1): /api/v3/exchangeInfo AĞIR bir uçtur (tüm sembol
+# + filtre şeması) ve `trading_symbols` ile `trading_symbols_with_filters`
+# tarafından HER çağrıda yeniden çekiliyordu; ikincisi ayrıca aynı tabloyu
+# ikinci kez istek ediyordu. Modül düzeyinde TEK önbellek kurulur; sembol
+# listesi günlerce değişmediği için 10 dakikalık TTL fazlasıyla yeterli.
+EXCHANGE_INFO_CACHE_TTL_SEC = 600.0
+_exchange_info_cache: dict = {"payload": None, "expires": 0.0}
+_exchange_info_lock = threading.Lock()
+_exchange_info_load_lock = threading.Lock()
+
+# #30 (radar ticker_24h çift çağrısı): /api/v3/ticker/24hr weight:80'dir ve
+# main.py radar_loop içinde iki kez çağrılıyor (60 sn'de bir → saniyede 160
+# weight). main.py'ye dokunmadan çözmek için modül düzeyinde KISA ÖMÜRLÜ bir
+# önbellek: ardışık çağrılar (aynı sembol listesiyle) aynı sonucu döndürür.
+TICKER_24H_CACHE_TTL_SEC = float(os.getenv("TICKER_24H_CACHE_TTL_SEC", "15"))
+_ticker_24h_cache: dict = {"key": None, "rows": None, "expires": 0.0}
+_ticker_24h_lock = threading.Lock()
+_ticker_24h_load_locks: dict[int, asyncio.Lock] = {}
+
+
+def _ticker_24h_loop_lock() -> asyncio.Lock:
+    """Çalışan event loop'a ait yükleme kilidi (döngü başına bir adet)."""
+    loop = asyncio.get_running_loop()
+    lock = _ticker_24h_load_locks.get(id(loop))
+    if lock is None:
+        lock = asyncio.Lock()
+        _ticker_24h_load_locks[id(loop)] = lock
+    return lock
+
+
+class TransientDecodeError(RuntimeError):
+    """Gövde geçici olarak bozuk/eksik — yeniden denenebilir (B-13)."""
+
+
+class PermanentAPIError(RuntimeError):
+    """İş kuralı hatası (code != 0 gövdesi) — YENİDEN DENENMEZ (B-13/W10).
+
+    RuntimeError alt sınıfıdır: `_get_json` çağıranları mevcut yakalama
+    desenlerini korur, yalnız retry makinesi bu hatayı kalıcı sayar.
+    """
+
+
+def _throttle_for_weight() -> None:
+    """B-11: Sunucunun bildirdiği ağırlık tavana yaklaştıysa dinamik pacing uygula."""
+    with _weight_lock:
+        used = int(_rate_limit_used.get("total") or 0)
+        reported_at = _weight_reported_at
+    if used < REST_WEIGHT_SOFT_LIMIT or not reported_at:
+        return
+    now = time.time()
+    age = now - reported_at
+    if used >= 1100:
+        # Acil tavan koruması: pencere sıfırlanana kadar (maks 15s) bekle
+        wait = min(max(1.0, REST_WEIGHT_WINDOW_SEC - age), 15.0)
+        time.sleep(wait)
+    else:
+        # 950-1100 arası: 200-400ms dinamik pacing ile akışı yavaşlat
+        pacing = 0.2 + (0.3 * ((used - REST_WEIGHT_SOFT_LIMIT) / 150.0))
+        time.sleep(pacing)
+
+
+def _note_global_cooldown(delay: float) -> None:
+    """Bir 429/418 yanıtından sonra diğer istekler için soğuma penceresi açar.
+
+    Rate limit IP başına olduğu için tek isteğin aldığı 429/418 tüm arka plan
+    döngülerini de ilgilendirir; pencere tavanı `GLOBAL_COOLDOWN_MAX_SEC` ile
+    kırpılır (thread havuzu korunur). Tek isteğin kendi uzun ban beklemesi
+    etkilenmez.
+    """
+    global _cooldown_until
+    if delay <= 0:
+        return
+    with _weight_lock:
+        _cooldown_until = max(_cooldown_until, time.time() + min(delay, GLOBAL_COOLDOWN_MAX_SEC))
+
+
+def _cooldown_remaining() -> float:
+    with _weight_lock:
+        return max(0.0, _cooldown_until - time.time())
+
+
+def _wait_global_cooldown() -> None:
+    """Soğuma penceresi bitene kadar bekle — semaphore DIŞINDA çağrılır.
+
+    5 sn'lik dilimler halinde bekler ki arada açılan daha uzun bir pencere
+    (yeni bir 429/418) gözden kaçmasın.
+    """
+    while True:
+        remaining = _cooldown_remaining()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 5.0))
+
+
+def _retry_delay(attempt: int, headers: dict | None = None) -> float:
+    """Üstel backoff + jitter, öncelikle sunucunun Retry-After'ı (#31)."""
+    retry_after = headers.get("Retry-After") if headers else None
+    if retry_after is not None:
+        try:
+            return min(REST_RETRY_AFTER_MAX_SEC, max(0.0, float(retry_after)))
+        except (TypeError, ValueError):
+            pass
+    exponential = min(REST_BACKOFF_MAX_SEC, REST_BACKOFF_BASE_SEC * (2 ** (attempt - 1)))
+    return exponential + random.uniform(0.0, exponential * 0.25)
+
+
+def _ban_delay(attempt: int, headers: dict | None = None) -> float:
+    """418 (kademeli IP ban) geri çekilmesi — saniyeler değil, onlarca dakika (#32)."""
+    for header in ("Retry-After", "Ban"):
+        value = headers.get(header) if headers else None
+        if value is not None:
+            try:
+                return min(REST_BAN_BACKOFF_MAX_SEC, max(0.0, float(value)))
+            except (TypeError, ValueError):
+                pass
+    return min(REST_BAN_BACKOFF_MAX_SEC, REST_BAN_BACKOFF_BASE_SEC * (2 ** (attempt - 1)))
+
+
+def _decode_payload(raw: bytes):
+    """Gövdeyi çöz ve zarfla."""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TransientDecodeError("Binance TR public API geçersiz JSON döndürdü") from exc
+    if not isinstance(payload, (dict, list)):
+        raise TransientDecodeError("Binance TR public API beklenmeyen yanıt şeması döndürdü")
+    if isinstance(payload, dict) and payload.get("code") not in (None, 0):
+        raise PermanentAPIError(str(payload.get("msg") or "Binance TR public API hatası"))
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if data is None:
+        raise TransientDecodeError("Binance TR public API boş veri döndürdü")
+    return data
+
+
+def _get_json(path: str, params: dict):
+    query_string = urlencode(params) if params else ""
+    full_path = f"{path}?{query_string}" if query_string else path
+    last_error = None
+
+    for attempt in range(1, REST_MAX_ATTEMPTS + 1):
+        # Denetim 2026-09-28: uzun beklemeler (Retry-After / ban backoff)
+        # semaphore DIŞINDA uyur — tek bir 429/418 isteği 16 yuvayı saatlerce
+        # bloke edemez. Soğuma penceresi her denemeden önce kontrol edilir;
+        # diğer döngüler de aynı pencereye saygı duyar.
+        _wait_global_cooldown()
+        retry_delay = 0.0
+        with _REQUEST_SEMAPHORE:
+            _throttle_for_weight()
+            # Host seçimi: birincil host öncelikli, başarısız denemelerde fallback hostlar
+            host_idx = (attempt - 1) % len(REST_BASES)
+            base_url = REST_BASES[host_idx]
+            url = f"{base_url}{full_path}"
+
+            try:
+                if _HTTP_POOL is not None:
+                    # Hızlı yol: Kalıcı HTTP Keep-Alive havuzu (urllib3)
+                    resp = _HTTP_POOL.request("GET", url, retries=False)
+                    status_code = resp.status
+                    headers = dict(resp.headers)
+                    raw_bytes = resp.data
+                else:
+                    # Yedek yol: urllib.request. urlopen 4xx/5xx yanıtlarını
+                    # HTTPError İSTİSNASI olarak fırlatır; yanıt yine de durum
+                    # kodu + başlıklar (Retry-After / Ban) taşır — aynı durum
+                    # makinesine sokulur, aksi halde #31/#32 sözleşmeleri
+                    # yalnız urllib3 yolunda geçerli olur.
+                    request = Request(url, headers={"User-Agent": "scalperagent-v4", "Accept": "application/json"})
+                    try:
+                        with urlopen(request, timeout=REST_TIMEOUT_SEC) as response:
+                            status_code = response.status
+                            headers = dict(response.headers)
+                            raw_bytes = response.read()
+                    except HTTPError as exc:
+                        status_code = exc.code
+                        headers = dict(exc.headers or {})
+                        raw_bytes = exc.read() if exc.fp else b""
+
+                # Rate limit ağırlık takibi
+                try:
+                    used = int(headers.get("X-MBX-USED-WEIGHT-1M", 0) or 0)
+                    global _rate_limit_last_reset, _weight_reported_at
+                    _rate_limit_used["total"] = used
+                    _rate_limit_used["by_endpoint"][path] = max(
+                        _rate_limit_used["by_endpoint"].get(path, 0), used)
+                    _rate_limit_last_reset = time.time()
+                    _weight_reported_at = _rate_limit_last_reset
+                except (TypeError, ValueError):
+                    pass
+
+                # HTTP durum kodu kontrolleri — yalnızca gecikme hesaplanır,
+                # uyku `with` bloğunun DIŞINDA yapılır.
+                if status_code == 418:
+                    last_error = RuntimeError(f"Binance TR HTTP 418 IP Ban sinyali ({base_url})")
+                    if attempt < REST_MAX_ATTEMPTS:
+                        retry_delay = _ban_delay(attempt, headers)
+                        _note_global_cooldown(retry_delay)
+                elif status_code == 429:
+                    last_error = RuntimeError(f"Binance TR HTTP 429 Rate Limit ({base_url})")
+                    if attempt < REST_MAX_ATTEMPTS:
+                        retry_delay = _retry_delay(attempt, headers)
+                        _note_global_cooldown(retry_delay)
+                elif status_code >= 400:
+                    err_detail = ""
+                    try:
+                        err_json = json.loads(raw_bytes.decode("utf-8", errors="ignore"))
+                        if isinstance(err_json, dict) and "msg" in err_json:
+                            err_detail = f": {err_json['msg']} (kod: {err_json.get('code')})"
+                    except Exception:
+                        pass
+                    last_error = RuntimeError(f"Binance TR public API HTTP {status_code}{err_detail} ({base_url})")
+                    if attempt < REST_MAX_ATTEMPTS:
+                        retry_delay = _retry_delay(attempt, headers)
+                else:
+                    # Başarılı gövde çözümleme
+                    try:
+                        return _decode_payload(raw_bytes)
+                    except TransientDecodeError as exc:
+                        last_error = exc
+                        if attempt < REST_MAX_ATTEMPTS:
+                            retry_delay = _retry_delay(attempt)
+
+            except PermanentAPIError:
+                # İş kuralı hatası kalıcıdır: yeniden denenmez, doğrudan
+                # yükseltilir (W10 sözleşmesi).
+                raise
+            except Exception as exc:
+                last_error = exc
+                if attempt < REST_MAX_ATTEMPTS:
+                    retry_delay = _retry_delay(attempt)
+
+        if retry_delay > 0:
+            time.sleep(retry_delay)
+
+    raise RuntimeError(
+        f"Binance TR public API {REST_MAX_ATTEMPTS} denemede yanıt vermedi: {last_error}"
+    ) from last_error
+
+
+async def klines(symbol: str, interval: str, limit: int = 500, start_time_ms: int | None = None,
+                 end_time_ms: int | None = None):
+    params = {"symbol": symbol.replace("_", "").upper(), "interval": interval, "limit": limit}
+    if start_time_ms is not None:
+        params["startTime"] = start_time_ms
+    if end_time_ms is not None:
+        params["endTime"] = end_time_ms
+    return await asyncio.to_thread(_get_json, "/api/v3/klines", params)
+
+
+async def historical_klines(symbol: str, interval: str, days_back: int, end_time_ms: int | None = None):
+    end = min(int(end_time_ms), int(time.time() * 1000)) if end_time_ms is not None else int(time.time() * 1000)
+    start = end - days_back * 86400 * 1000
+    rows = []
+    cursor = start
+    while True:
+        batch = await klines(symbol, interval, 1000, cursor, end)
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < 1000:
+            break
+        cursor = int(batch[-1][0]) + 1
+        if cursor >= end:
+            break
+    return rows
+
+
+def _exchange_info_payload() -> dict:
+    """`/api/v3/exchangeInfo` gövdesi — 10 dakikalık modül önbelleğiyle (#32).
+
+    Bu uç AĞIR (tüm sembol + filtre şeması). Önceden her iki yardımcı
+    (`trading_symbols`, `trading_symbols_with_filters`) ve dolaylı olarak
+    radar/velocity akışları ayrı ayrı istek atıyordu; aynı önbellek artık
+    ikisini de besler. Yükleme TEK UÇUŞ'tur (eşzamanlı çağrılar sürü hâlinde
+    aynı isteği atmaz).
+    """
+    now = time.monotonic()
+    with _exchange_info_lock:
+        payload = _exchange_info_cache.get("payload")
+        if payload is not None and now < float(_exchange_info_cache.get("expires") or 0.0):
+            return payload
+    with _exchange_info_load_lock:
+        now = time.monotonic()
+        with _exchange_info_lock:
+            payload = _exchange_info_cache.get("payload")
+            if payload is not None and now < float(_exchange_info_cache.get("expires") or 0.0):
+                return payload
+        fetched = _get_json("/api/v3/exchangeInfo", {})
+        with _exchange_info_lock:
+            _exchange_info_cache.update({
+                "payload": fetched,
+                "expires": time.monotonic() + EXCHANGE_INFO_CACHE_TTL_SEC,
+            })
+        return fetched
+
+
+def exchange_info_cache_snapshot() -> dict:
+    """Önbellek durumu (gözlemlenebilirlik)."""
+    now = time.monotonic()
+    expires = float(_exchange_info_cache.get("expires") or 0.0)
+    return {
+        "cached": _exchange_info_cache.get("payload") is not None,
+        "ttl_sec": EXCHANGE_INFO_CACHE_TTL_SEC,
+        "expires_in_sec": max(0.0, expires - now) if expires else 0.0,
+    }
+
+
+async def trading_symbols(quote_asset: str = "TRY"):
+    """Binance TR'de işlem gören, seçilebilir sembolleri public exchangeInfo'dan getirir."""
+    payload = await asyncio.to_thread(_exchange_info_payload)
+    return sorted({
+        str(item["symbol"]).upper()
+        for item in payload.get("symbols", [])
+        if item.get("status") == "TRADING" and item.get("quoteAsset") == quote_asset.upper()
+    })
+
+def _default_filters():
+    """Güncel Binance TR exchangeInfo filtre şeması.
+
+    Eski MIN_NOTIONAL filtre adı kaldırılmıştır; minimum işlem tutarı artık
+    NOTIONAL altında döner. Yalnız gerçekten ilgili filtreler tutulur, tüm
+    alanlar her zaman mevcut olmayabilir (ör. MARKET_LOT_SIZE yalnız market
+    emri olan sembollerde bulunur).
+    """
+    return {
+        "min_price": None, "tick_size": None,
+        "min_qty": None, "step_size": None,
+        "min_notional": None, "max_notional": None,
+        "market_min_qty": None, "market_step_size": None,
+    }
+
+
+async def trading_symbols_with_filters(quote_asset: str = "TRY"):
+    """TRADING sembollerini güncel PRICE/LOT/NOTIONAL/MARKET_LOT_SIZE limitleriyle döndürür.
+
+    #32: bu fonksiyon eskiden exchangeInfo'yu İKİNCİ kez kendi çağırıyordu
+    (biri `trading_symbols`, biri bu). Artık ikisi de aynı modül önbelleğini
+    besler → radar + sembol listesi başına iki yerine TEK ağ isteği.
+    """
+    payload = await asyncio.to_thread(_exchange_info_payload)
+    result = {}
+    for item in payload.get("symbols", []):
+        if item.get("status") != "TRADING" or item.get("quoteAsset") != quote_asset.upper():
+            continue
+        sym = str(item["symbol"]).upper()
+        filters = _default_filters()
+        for f in item.get("filters", []):
+            ft = f.get("filterType")
+            if ft == "PRICE_FILTER":
+                filters["min_price"] = float(f.get("minPrice") or 0)
+                filters["tick_size"] = float(f.get("tickSize") or 0.01)
+            elif ft == "LOT_SIZE":
+                filters["min_qty"] = float(f.get("minQty") or 0)
+                filters["step_size"] = float(f.get("stepSize") or 0)
+            elif ft in ("NOTIONAL", "MIN_NOTIONAL"):
+                filters["min_notional"] = float(f.get("minNotional") or f.get("notional") or 0)
+                filters["max_notional"] = float(f.get("maxNotional") or 0) or None
+            elif ft == "MARKET_LOT_SIZE":
+                filters["market_min_qty"] = float(f.get("minQty") or 0)
+                filters["market_step_size"] = float(f.get("stepSize") or 0)
+            elif ft == "PERCENT_PRICE_BY_SIDE":
+                filters["bid_multiplier_up"] = float(f.get("bidMultiplierUp") or 0)
+                filters["ask_multiplier_down"] = float(f.get("askMultiplierDown") or 0)
+            elif ft == "TRAILING_DELTA":
+                filters["trailing_delta_min"] = float(f.get("minTrailingAboveDelta") or 0)
+        result[sym] = filters
+    return result
+
+
+# Binance TR tek istekte sınırlı sayıda sembol kabul eder; istemci tarafında
+# dilimleyip sonuçları BİRLEŞTİRİRİZ. Eskiden fazlası sessizce ATILIYORDU.
+TICKER_SYMBOL_BATCH = 50
+
+
+def _chunked(items, size: int = TICKER_SYMBOL_BATCH):
+    items = list(items or [])
+    for index in range(0, len(items), size):
+        yield items[index:index + size]
+
+
+def _ticker_params(symbols: list | None) -> dict:
+    """Binance TR symbol filtresi: ["BTCTRY","ETHTRY"] → {"symbols":"[""BTCTRY"",""ETHTRY""]"}
+
+    B-04: dilimleme BURADA yapılmaz (eskiden `symbols[:50]` evreni sessizce
+    kesiyordu). Çağıranlar `_chunked` ile bölüp sonuçları birleştirir.
+    """
+    if not symbols:
+        return {}
+    quoted = ",".join(f'"{s}"' for s in symbols)
+    return {"symbols": f"[{quoted}]"}
+
+
+async def _ticker_paged(path: str, symbols: list | None):
+    """Sembol listesini dilimleyip her dilimi ayrı istekle çeker ve birleştirir.
+
+    `symbols` verilmezse tek istekte tüm tablo alınır. Bir dilim başarısız olursa
+    istisna YUKARI ÇIKAR — sessiz kısmi sonuç üretilmez (çağıran loglar ve
+    sağlık ucu hatayı gösterir).
+    """
+    if not symbols:
+        return await asyncio.to_thread(_get_json, path, {})
+
+    # Önbellekteki geçerli sembollerle filtrele (delisted/hatalı sembollerin tüm grubu 400 yapmasını önle)
+    with _exchange_info_lock:
+        cached_info = _exchange_info_cache.get("payload")
+    if isinstance(cached_info, dict) and cached_info.get("symbols"):
+        valid_symbols = {
+            str(item.get("symbol", "")).upper()
+            for item in cached_info.get("symbols", [])
+            if item.get("status") == "TRADING"
+        }
+        if valid_symbols:
+            filtered = [s for s in symbols if str(s).upper() in valid_symbols]
+            if filtered:
+                symbols = filtered
+
+    merged: list = []
+    for batch in _chunked(symbols):
+        try:
+            rows = await asyncio.to_thread(_get_json, path, _ticker_params(batch))
+            if isinstance(rows, list):
+                merged.extend(rows)
+        except RuntimeError as exc:
+            # Toplu pakette geçersiz bir sembol (HTTP 400 Invalid symbol) varsa tek tek kurtar
+            if "HTTP 400" in str(exc) and len(batch) > 1:
+                for single in batch:
+                    try:
+                        single_rows = await asyncio.to_thread(_get_json, path, _ticker_params([single]))
+                        if isinstance(single_rows, list):
+                            merged.extend(single_rows)
+                    except Exception:
+                        pass
+            else:
+                raise
+    return merged
+
+
+async def ticker_24h(symbols: list | None = None):
+    """24 saatlik ticker satırları — weight:80.
+
+    #30: radar döngüsü bu ucu ARDIŞIK iki kez çağırıyor (biri top-gainers,
+    biri aktif-mover havuzu) → 60 sn'de 160 weight, yani saniyede 160'a
+    çıkan bir istek hızı. main.py'ye dokunmadan çözmek için 5 saniyelik bir
+    modül önbelleği: aynı sembol listesiyle gelen ikinci çağrı ağa gitmez.
+    TTL radar periyodundan (60 sn) kısadır, yani 24h verisi bayatlamaz.
+    """
+    key = tuple(symbols) if symbols else None
+    now = time.monotonic()
+    with _ticker_24h_lock:
+        if (_ticker_24h_cache.get("key") == key
+                and _ticker_24h_cache.get("rows") is not None
+                and now < float(_ticker_24h_cache.get("expires") or 0.0)):
+            # Önbelleklenen satırlar paylaşılır; çağıran listeyi DEĞİŞTİRMEZ.
+            return list(_ticker_24h_cache["rows"])
+    # Yükleme kilidi asyncio.Lock: await sırasında BEKLEYENLER loop'u
+    # bloklamaz (bkz. yukarıdaki py-spy notu). `_ticker_24h_lock` ise
+    # yalnızca await'sız hızlı yol ve önbellek yazımı için kullanılır.
+    async with _ticker_24h_loop_lock():
+        now = time.monotonic()
+        with _ticker_24h_lock:
+            if (_ticker_24h_cache.get("key") == key
+                    and _ticker_24h_cache.get("rows") is not None
+                    and now < float(_ticker_24h_cache.get("expires") or 0.0)):
+                return list(_ticker_24h_cache["rows"])
+        rows = await _ticker_paged("/api/v3/ticker/24hr", symbols)
+        with _ticker_24h_lock:
+            _ticker_24h_cache.update({
+                "key": key, "rows": list(rows or []),
+                "expires": time.monotonic() + TICKER_24H_CACHE_TTL_SEC,
+            })
+        return rows
+
+
+def ticker_24h_cache_snapshot() -> dict:
+    """Kısa ömürlü ticker önbelleğinin durumu (gözlemlenebilirlik)."""
+    now = time.monotonic()
+    expires = float(_ticker_24h_cache.get("expires") or 0.0)
+    return {
+        "cached": _ticker_24h_cache.get("rows") is not None,
+        "ttl_sec": TICKER_24H_CACHE_TTL_SEC,
+        "expires_in_sec": max(0.0, expires - now) if expires else 0.0,
+    }
+
+
+async def ticker_price(symbols: list | None = None):
+    """Son fiyat listesi (symbols verilmezse tüm semboller). Weight: 2-4."""
+    return await _ticker_paged("/api/v3/ticker/price", symbols)
+
+
+async def book_tickers(symbols: list | None = None):
+    """Tüm (veya seçili) semboller için best-bid/ask. Weight: 2-4."""
+    return await _ticker_paged("/api/v3/ticker/bookTicker", symbols)
+
+# Web'deki https://www.binance.tr/en/markets/overview?tab=top-gaining listesiyle
+# aynı kaynak: /api/v3/ticker/24hr, priceChangePercent'e göre azalan sıralama.
+# quoteVolume tabanlı minimum hacim, ince/alakasız çiftleri elemek içindir.
+# 2026-09-26 (denetim #8): taban para birimi başına tanımlı — eski sabit
+# 5_000_000 değeri USDT çiftine genişletilseydi 5M USDT (~17 kat sıkı) olarak
+# yorumlanıp havuzu sessizce boşaltırdı. Oran: 5M TRY ≈ 120K USDT (kurs ~42).
+_MIN_QUOTE_VOLUME = {"TRY": 5_000_000.0, "USDT": 120_000.0}
+
+
+def _min_quote_volume(quote_asset: str) -> float:
+    """Verilen quote para birimi için minimum 24h quoteVolume tabanı."""
+    return _MIN_QUOTE_VOLUME.get(str(quote_asset).upper(), _MIN_QUOTE_VOLUME["TRY"])
+
+async def top_gainers(symbol_count: int = 20, *, quote_asset: str = "TRY",
+                      min_quote_volume: float | None = None,
+                      _ticker_rows: list | None = None):
+    """Top-gaining TRY pairs, 24h change descending, volume-filtered.
+
+    Mirrors the website's top-gaining tab; the returned rows keep
+    priceChangePercent and quoteVolume so callers can justify the pool.
+    Delisted/suspended symbols are excluded: the 24h ticker still lists
+    dead pairs with stale closes (BAKETRY kept trading data a year after
+    delisting), so the pool is intersected with current TRADING symbols.
+
+    ``_ticker_rows`` zaten elinde tüm 24h satırları olan çağıranların ikinci
+    kez weight:80 istek atmasını önler. Verilmezse modül düzeyindeki 5 sn'lik
+    önbellek devreye girer, böylece `active_movers_pool`'un hemen ardından
+    gelen çağrısı ağa gitmez (#30).
+    """
+    rows = list(_ticker_rows) if _ticker_rows else await ticker_24h()
+    info = await trading_symbols(quote_asset)
+    trading = set(info)
+    floor = (_min_quote_volume(quote_asset) if min_quote_volume is None
+             else float(min_quote_volume))
+    suffix = quote_asset.upper()
+    candidates = []
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol.endswith(suffix) or symbol not in trading:
+            continue
+        try:
+            change = float(row.get("priceChangePercent") or 0)
+            quote_volume = float(row.get("quoteVolume") or 0)
+        except (TypeError, ValueError):
+            continue
+        if quote_volume < floor:
+            continue
+        candidates.append({"symbol": symbol, "priceChangePercent": change,
+                           "quoteVolume": quote_volume, "lastPrice": row.get("lastPrice")})
+    candidates.sort(key=lambda item: item["priceChangePercent"], reverse=True)
+    return candidates[:max(1, min(int(symbol_count), 50))]
+
+
+async def active_movers_pool(symbol_count: int = 15, *, quote_asset: str = "TRY",
+                             min_quote_volume: float | None = None,
+                             _ticker_rows: list | None = None):
+    """Aktif, akışı olan ve gün içi yükseliş/volatilite gösteren TRY çiftleri.
+
+    H-01 / T-01: Yalnızca 24h net değişime bakıldığında sabah düşüp son 1-2 saatte
+    patlayan veya günün zirvesine doğru güçlü atak yapan semboller kaçırılıyordu.
+    Bu fonksiyon; işlem sayısı (trade count), gün içi zirveye yakınlık (range position),
+    volatilite aralığı ve hacim akışını birleştirerek durağan olmayan aktif sembolleri seçer.
+    """
+    rows = list(_ticker_rows) if _ticker_rows else await ticker_24h()
+    info = await trading_symbols(quote_asset)
+    trading = set(info)
+    floor = (_min_quote_volume(quote_asset) * 0.5 if min_quote_volume is None
+             else float(min_quote_volume))
+    suffix = quote_asset.upper()
+    movers = []
+
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol.endswith(suffix) or symbol not in trading:
+            continue
+        try:
+            last_p = float(row.get("lastPrice") or 0)
+            high_p = float(row.get("highPrice") or 0)
+            low_p = float(row.get("lowPrice") or 0)
+            q_vol = float(row.get("quoteVolume") or 0)
+            trades = float(row.get("count") or 0)
+            change = float(row.get("priceChangePercent") or 0)
+        except (TypeError, ValueError):
+            continue
+
+        if q_vol < floor or last_p <= 0 or high_p <= low_p:
+            continue
+
+        # Gün içi konum: 0.0 (günün dibi) -> 1.0 (günün zirvesi)
+        range_pos = (last_p - low_p) / (high_p - low_p)
+        # Gün içi dalgalanma yüzdesi
+        day_range_pct = ((high_p - low_p) / low_p) * 100.0
+
+        # Durağan coinleri ele: gün içi aralık en az %1.0 ve zirveye göre en az %40 yukarıda olmalı
+        if day_range_pct < 1.0 or range_pos < 0.40:
+            continue
+
+        # İntraday aktivite & yükseliş ivmesi skoru
+        # Zirveye yakınlık + işlem adedi akışı + hacim çarpanı
+        activity_score = (
+            (range_pos * 40.0) +
+            (min(1.0, q_vol / (_min_quote_volume(quote_asset) * 5.0)) * 30.0) +
+            (min(1.0, trades / 5_000.0) * 30.0)
+        ) * (1.0 + min(1.0, day_range_pct / 10.0))
+
+        movers.append({
+            "symbol": symbol,
+            "activity_score": round(activity_score, 2),
+            "range_pos": round(range_pos, 3),
+            "day_range_pct": round(day_range_pct, 2),
+            "priceChangePercent": change,
+            "quoteVolume": q_vol,
+            "trades": trades,
+            "lastPrice": last_p
+        })
+
+    movers.sort(key=lambda item: item["activity_score"], reverse=True)
+    return movers[:max(1, min(int(symbol_count), 50))]
+
+async def orderbook(symbol: str, limit: int = 5):
+    """Read-only best bid/ask depth from Binance TR public API."""
+    normalized = symbol.replace("_", "").upper()
+    # Liquidity is evaluated against the same top-five levels whether the
+    # snapshot came from REST or the depth5 WebSocket stream.
+    payload = await asyncio.to_thread(_get_json, "/api/v3/depth", {
+        "symbol": normalized, "limit": min(5, max(1, int(limit)))
+    })
+    if not isinstance(payload, dict):
+        raise RuntimeError("Binance TR order-book yanıtı nesne değil")
+    bids = payload.get("bids")
+    asks = payload.get("asks")
+    if not isinstance(bids, list) or not isinstance(asks, list):
+        raise RuntimeError("Binance TR order-book bid/ask alanları eksik")
+    return {**payload, "symbol": normalized, "bids": bids[:5], "asks": asks[:5],
+            "source": "binance_tr_public_rest", "received_at": time.time()}
+
+
+async def depth(symbol: str, limit: int = 5):
+    """Read-only top-``limit`` order-book levels (all returned, not top-5 capped).
+
+    The legacy ``orderbook`` adapter truncates to the top five levels even when
+    a wider snapshot is requested; ``depth`` preserves the full returned depth
+    so callers can measure wall size / ladder asymmetry from the same public
+    REST endpoint. Same weight, same rate-limit headers as ``orderbook``.
+    """
+    normalized = symbol.replace("_", "").upper()
+    payload = await asyncio.to_thread(_get_json, "/api/v3/depth", {
+        "symbol": normalized, "limit": min(1000, max(1, int(limit)))
+    })
+    if not isinstance(payload, dict):
+        raise RuntimeError("Binance TR order-book yanıtı nesne değil")
+    bids = payload.get("bids")
+    asks = payload.get("asks")
+    if not isinstance(bids, list) or not isinstance(asks, list):
+        raise RuntimeError("Binance TR order-book bid/ask alanları eksik")
+    return {**payload, "symbol": normalized, "bids": bids, "asks": asks,
+            "source": "binance_tr_public_rest", "received_at": time.time()}
+
+
+
+def rate_limit_snapshot():
+    """Public API rate-limit kullanım anlık görüntüsü."""
+    return {
+        "total_weight_used": _rate_limit_used["total"],
+        "by_endpoint": dict(_rate_limit_used["by_endpoint"]),
+        "last_reset_at": _rate_limit_last_reset,
+        # B-11: istemci tarafı koruma sınırları da raporlanır (gözlemlenebilirlik).
+        "soft_limit": REST_WEIGHT_SOFT_LIMIT,
+        "max_concurrency": REST_MAX_CONCURRENCY,
+        "weight_reported_at": _weight_reported_at,
+        # #31/#32: sunucunun Retry-After değeri artık kırpılmıyor; 418
+        # geri çekilmesi dakikalar ölçeğinde. Tavanlar gözlemlenebilirlik
+        # için raporlanır (davranış değişikliği değil, teşhis kolaylığı).
+        "retry_after_max_sec": REST_RETRY_AFTER_MAX_SEC,
+        "ban_backoff_max_sec": REST_BAN_BACKOFF_MAX_SEC,
+        # 2026-09-28: paylaşılan soğuma penceresi (429/418 sonrası) ve
+        # şu an yuvayı bekleyen istek sayısı — fren durumunun gözlemlenmesi.
+        "global_cooldown_remaining_sec": round(_cooldown_remaining(), 1),
+        "global_cooldown_max_sec": GLOBAL_COOLDOWN_MAX_SEC,
+        # #32: exchangeInfo / ticker_24h önbellekleri.
+        "exchange_info_cache": exchange_info_cache_snapshot(),
+        "ticker_24h_cache": ticker_24h_cache_snapshot(),
+    }

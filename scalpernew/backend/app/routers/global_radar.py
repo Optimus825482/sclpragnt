@@ -1,0 +1,227 @@
+"""Global arka plan tarama döngüsü — GÖRÜNMEZ erken-tespit katmanı (2026-10-07).
+
+NE YAPAR:
+    Binance Global (USDT) spot piyasasını, TR taramasıyla AYNI dedektör
+    (`velocity.detect_velocity_candidates`) üzerinden tarar. Global daha likit
+    olduğu için TR'de de listeli bir sembolün yükselişini BİRKAÇ SANİYE/DAKİKA
+    ERKEN gösterir. Yakalanan her hareket `app/global_lead_lag.py`'ye verilir;
+    orada normal bir **TR bildirimi** ve **TR otonom paper işlemi**ne dönüşür.
+
+NE YAPMAZ (kullanıcı direktifi — bağlayıcı):
+    * İkinci bir venue DEĞİLDİR. Arayüzde Global'e dair hiçbir şey görünmez;
+      bu döngü hiçbir UI/API ucu yayınlamaz, durumu yalnız `logger.info` ile
+      bırakır (teşhis) ve `get_status()` içsel denetim içindir.
+    * Emir yolu YOKTUR. Global tarama salt-okunurdur; gerçek emir yalnız TR
+      tarafında ve yalnız TR özel anahtarlarıyla verilir.
+    * Global gözlemleri TR kalibrasyon tablolarına YAZMAZ (`journal_enabled=
+      False`) — TR kalibrasyon popülasyonu TR (TRY) gözlemlerinden oluşmalıdır.
+
+BAYRAK:
+    Yalnız `config.GLOBAL_SCAN_ENABLED` açıkken başlar (varsayılan kapalı) →
+    açılmadan üretim davranışı birebir aynı kalır, hiçbir Global bağlantısı
+    kurulmaz.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+
+from app.config import config
+
+logger = logging.getLogger("scalper.global_radar")
+
+# Döngü sağlığı — UI'ya YAYINLANMAZ, yalnız günlük/teşhis.
+_status: dict = {
+    "started_at": None,
+    "last_scan_at": None,
+    "scan_count": 0,
+    "detections": 0,
+    "last_error": None,
+    "last_candidates": 0,
+}
+
+
+def get_status() -> dict:
+    """İçsel durum (teşhis). Arayüzde gösterilmez."""
+    return dict(_status)
+
+
+def _leadlag_panel_score(residual) -> float:
+    """Residual (%, GL−β·TR) → PANEL skoru (0-100), monoton ve sınırlı.
+
+    Eşleme (kalibre): 0.35→~50 (asgari sinyal), 1.0→~72, 2.5→~92, >=4→~99.
+    Böylece admin eşiği (ör. 85) lead-lag adaylarını da AMAÇLANDIĞI gibi süzer;
+    eski sabit 60 eşiği anlamsız kılıyordu (her aday eşik altı/sabit)."""
+    try:
+        r = float(residual or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if r <= 0:
+        return 0.0
+    # 100 * log1p(r/0.35) / log1p(4/0.35): r=0.35→~50 değil ama monoton; log ölçek
+    import math
+    return round(min(99.0, 100.0 * math.log1p(r / 0.35) / math.log1p(4.0 / 0.35)), 1)
+
+
+async def _scan_once() -> int:
+    """Tek Global tarama turu; işlenen tespit sayısını döndürür."""
+    from app.state import global_market
+    from app import binance_public as global_adapter
+    from app.routers.velocity import detect_velocity_candidates
+    from app import global_lead_lag
+
+    if global_market is None:
+        return 0
+
+    # TR taramasıyla AYNI dedektör. Borsa parametreleri açıkça geçilir:
+    # `adapter` Global public modülü, evren Global USDT sembolleri, quote USDT.
+    # `journal_enabled=False` → TR velocity journal'ına ve microflow akışına
+    # YAZMAZ (TR kalibrasyonu kirlenmesin).
+    cache: dict = {}
+    try:
+        scan5 = await detect_velocity_candidates(
+            {"limit": 10}, horizon_minutes=5,
+            market=global_market, adapter=global_adapter, quote_asset="USDT",
+            universe_symbols=config.GLOBAL_SYMBOLS, journal_enabled=False,
+            kline_cache=cache)
+        scan15 = await detect_velocity_candidates(
+            {"limit": 10}, horizon_minutes=15,
+            market=global_market, adapter=global_adapter, quote_asset="USDT",
+            universe_symbols=config.GLOBAL_SYMBOLS, journal_enabled=False,
+            kline_cache=cache)
+    except Exception as exc:
+        _status["last_error"] = f"{type(exc).__name__}: {exc}"
+        logger.warning("global_radar: tarama hatası: %s", exc)
+        return 0
+
+    # 15dk profili daha geniş ufuk taşır; 5dk önce işlenir ki erken tespit
+    # avantajı korunsun, aynı sembol iki profilde de varsa cooldown ikinciyi
+    # (aynı signal_type) bastırır.
+    detections_seen: set[str] = set()
+    processed = 0
+    rows = list(scan5.get("candidates") or []) + list(scan15.get("candidates") or [])
+
+    # RESIDUAL LEAD-LAG (2026-10-12): düz momentum yerine Global'in TRY'nin henüz
+    # yansıtmadığı kısmını (residual) sinyal olarak EKLE. `signal_type="lead_lag"`
+    # → cooldown velocity'den AYRI tutulur (aynı sembol iki kaynaktan işlenebilir).
+    # SKOR (2026-10-13 düzeltmesi): sabit 60 YERİNE residual büyüklüğünden PANEL
+    # skoru (0-100) türetilir — böylece admin eşiği (ör. 85) lead-lag için de
+    # anlamlı çalışır. Eşleme: residual 0.35→~50, 1.0→~72, 2.5→~92 (monoton).
+    try:
+        from app import lead_lag_signal
+        ll = await lead_lag_signal.detect_leadlag_candidates(
+            adapter=global_adapter, symbols=config.GLOBAL_SYMBOLS, limit=5)
+        for c in ll:
+            rows.append({"symbol": c["symbol"], "signal_type": "lead_lag",
+                         "score": _leadlag_panel_score(c.get("residual")),
+                         "target_pct": 2.0, "horizon_minutes": 15,
+                         "_lead_lag": c})
+    except Exception as exc:
+        logger.debug("global_radar: lead-lag taraması atlandı: %s", exc)
+
+    _status["last_candidates"] = len(rows)
+    for cand in rows:
+        symbol = str(cand.get("symbol") or "").upper()
+        if not symbol or symbol in detections_seen:
+            continue
+        detections_seen.add(symbol)
+        stype = str(cand.get("signal_type") or "velocity")
+        # Faz 3.4 GEÇ FAZ KORUMASI (2026-10-14, docs/radar-improvement-analysis.md):
+        # Global parite 24s'te çoktan parabolikse (≥ GLOBAL_LATE_PHASE_CHANGE_PCT)
+        # hareket olgunlaşmıştır — TR'ye "yeni sinyal" olarak taşımak geç giren
+        # alıcı üretir. Böyle tespitler işlenmez (lead-lag teyidi zaten residual
+        # >0.35% ile yalnız yansımayan hareketi alır; bu kapı velocity tespitlerini
+        # korur). Bayat ticker verisi korumayı atlar (fail-open, bilgi eksiği).
+        try:
+            _chg = float((cand.get("radar") or {}).get("change_24h")
+                         if isinstance(cand.get("radar"), dict) else None)
+        except (TypeError, ValueError):
+            _chg = None
+        if _chg is None:
+            _chg = cand.get("change_24h")
+        try:
+            if _chg is not None and float(_chg) >= float(
+                    getattr(config, "GLOBAL_LATE_PHASE_CHANGE_PCT", 25.0)):
+                logger.debug("global_radar: geç faz atlandı %s (24s %%%.1f)", symbol, float(_chg))
+                continue
+        except (TypeError, ValueError):
+            pass
+        # SKOR ÖLÇEĞİ (2026-10-13 düzeltmesi): `handle_global_detection` artık
+        # PANEL (0-100) skoru bekler (eşik kapısı panel ölçeğinde). Velocity
+        # adayının `velocity_score`'u HAM ölçektedir → panel'e çevrilir. lead_lag
+        # adayının skoru zaten panel (yukarıda türetildi).
+        if stype == "lead_lag":
+            panel_score = float(cand.get("score") or 0.0)
+        else:
+            raw_vs = float(cand.get("velocity_score") or cand.get("score") or 0.0)
+            from app.routers.monitoring import normalize_score
+            panel_score = float(normalize_score(raw_vs))
+        try:
+            res = await global_lead_lag.handle_global_detection({
+                "global_symbol": symbol,
+                "signal_type": stype,
+                "score": panel_score,
+                "target_pct": cand.get("target_pct") or 2.0,
+                "horizon_minutes": int(cand.get("horizon_minutes") or 5),
+                "mode": cand.get("mode"),
+                "price": cand.get("price"),
+                "atr_pct": cand.get("atr_pct"),
+                "lead_lag": cand.get("_lead_lag"),
+            })
+            if res.get("status") == "processed":
+                processed += 1
+            elif res.get("status") in ("rejected", "cooldown"):
+                logger.debug("global_radar: tespit işlenmedi (%s): %s",
+                             symbol, res.get("reason") or res.get("status"))
+        except Exception as exc:
+            logger.warning("global_radar: tespit işleme hatası (%s): %s", symbol, exc)
+    _status["detections"] += processed
+    return processed
+
+
+async def global_radar_loop() -> None:
+    """Sürekli Global tarama döngüsü (yalnız bayrak açıkken başlatılır)."""
+    interval = max(15, int(getattr(config, "GLOBAL_SCAN_INTERVAL_SEC", 30) or 30))
+    _status["started_at"] = time.time()
+    logger.info("Global erken-tespit tarama döngüsü başladı (aralık %ds)", interval)
+
+    # Bağlantı ve ilk mumların dolması için kısa bir ısınma beklemesi.
+    await asyncio.sleep(20)
+    while True:
+        try:
+            processed = await _scan_once()
+            _status["scan_count"] += 1
+            _status["last_scan_at"] = time.time()
+            if processed:
+                logger.info("global_radar: %d erken tespit → TR bildirimi/işlemine "
+                            "dönüştürüldü", processed)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _status["last_error"] = f"{type(exc).__name__}: {exc}"
+            logger.warning("global_radar döngü hatası: %s", exc)
+        await asyncio.sleep(interval)
+
+
+async def connect_global_market() -> None:
+    """Global akışını bağla (geçmiş mumlar + WS). Hata fırlatmaz.
+
+    ÖNEMLİ: ``MarketData.connect`` SONSUZ bir WS süpervizör döngüsüdür; onu
+    burada await etmek çağrıyı asla döndürmez (TR tarafında da ayrı bir arka
+    plan görevi olarak başlatılır). Bu yüzden connect ayrı bir göreve verilir;
+    geçmiş mum yüklemesi (sonlu) burada await edilir ki ilk tarama boş
+    serilerle başlamasın.
+    """
+    from app.state import global_market
+
+    if global_market is None:
+        return
+    try:
+        await global_market.ensure_history(list(config.PRIORITY_TIMEFRAMES)[:3])
+    except Exception as exc:
+        logger.warning("global_radar: geçmiş mum yüklemesi: %s", exc)
+    try:
+        asyncio.create_task(global_market.connect(skip_history=True))
+    except Exception as exc:
+        logger.warning("global_radar: WS görevi başlatılamadı: %s", exc)

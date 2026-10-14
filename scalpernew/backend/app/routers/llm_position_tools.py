@@ -1,0 +1,12 @@
+"""LLM paper-position & symbol-guard tool definitions.
+
+Independent part of the LLM paper-trading control surface, split out of the
+chat router so position-management tools live in one place.
+"""
+
+LLM_POSITION_CONTEXT_TOOL = {"type": "function", "function": {"name": "get_llm_open_position", "description": "Acik LLM paper pozisyonunun guncel state ve planini getirir.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}}
+LLM_UPDATE_POSITION_TOOL = {"type": "function", "function": {"name": "update_llm_position_plan", "description": "LLM paper pozisyonunun TP, SL veya maksimum bekleme planını günceller; gerçek emir göndermez.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}, "changes": {"type": "object", "properties": {"stop_loss_pct": {"type": "number"}, "take_profit_pct": {"type": "number"}, "max_hold_seconds": {"type": "integer"}}}, "reason": {"type": "string"}, "evidence": {"type": "object"}}, "required": ["symbol", "changes", "reason"]}}}
+LLM_CLOSE_POSITION_TOOL = {"type": "function", "function": {"name": "close_llm_position", "description": "Güncel fiyatla LLM paper pozisyonunu kapatır; gerçek emir göndermez.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}, "reason": {"type": "string"}}, "required": ["symbol", "reason"]}}}
+LLM_SET_SYMBOL_GUARD_TOOL = {"type":"function","function":{"name":"set_llm_symbol_guard","description":"LLM’nin kendi oluşturduğu sembol bazlı BUY guard’ını oluşturur veya günceller. Paper execution guard’ıdır; strateji parametresi değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"guard_type":{"type":"string","enum":["cooldown","symbol_block","min_movement"]},"blocked_until":{"type":"number","description":"Unix timestamp; boşsa süresiz blok"},"reason":{"type":"string"},"evidence":{"type":"object"}},"required":["symbol","guard_type","reason"]}}}
+LLM_REMOVE_SYMBOL_GUARD_TOOL = {"type":"function","function":{"name":"remove_llm_symbol_guard","description":"LLM’nin daha önce oluşturduğu sembol BUY guard’ını kaldırır.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"reason":{"type":"string"}},"required":["symbol","reason"]}}}
+LLM_LIST_SYMBOL_GUARDS_TOOL = {"type":"function","function":{"name":"list_llm_symbol_guards","description":"Aktif ve geçmiş LLM sembol guard’larını getirir.","parameters":{"type":"object","properties":{"active_only":{"type":"boolean"}},"required":[]}}}

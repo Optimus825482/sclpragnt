@@ -1,0 +1,1050 @@
+import math
+import time
+import numpy as np
+
+
+def _ema(values, period):
+    if len(values) < period:
+        return None
+    alpha = 2 / (period + 1)
+    value = float(np.mean(values[:period]))
+    for item in values[period:]:
+        value = alpha * float(item) + (1 - alpha) * value
+    return value
+
+
+def _rsi_from_averages(avg_gain: float, avg_loss: float) -> float:
+    """Terminal RSI mapping shared by the scalar and series paths.
+
+    Kept separate so ``_rsi`` and ``_rsi_series`` can never drift apart.
+    """
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
+    return float(100 - (100 / (1 + rs)))
+
+
+def _rsi_series(closes, period=14):
+    """Wilder-smoothed RSI for every closed bar, single O(n) pass.
+
+    C-12: ``_stoch_rsi`` used to call ``_rsi`` on every prefix of the series,
+    which is O(n^2) (127 ms at n=600, ~6 snapshots per symbol). One pass here
+    reproduces those prefix values **exactly** (same arithmetic, same order),
+    so the indicator values are unchanged — only the cost drops.
+    Element ``i`` is the RSI of ``closes[:period + 1 + i]``.
+    """
+    array = np.asarray(closes, dtype=float)
+    if len(array) < period + 1:
+        return []
+    deltas = np.diff(array)
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    avg_gain = float(np.mean(gains[:period]))
+    avg_loss = float(np.mean(losses[:period]))
+    series = [_rsi_from_averages(avg_gain, avg_loss)]
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        series.append(_rsi_from_averages(avg_gain, avg_loss))
+    return series
+
+
+def _rsi(closes, period=14):
+    """Wilder-smoothed RSI over the full series (kanonik kaynak)."""
+    series = _rsi_series(closes, period)
+    return series[-1] if series else None
+
+
+def _atr(highs, lows, closes, period=14):
+    if len(closes) < period + 1: return None
+    h, l, prev = np.asarray(highs[-period:], float), np.asarray(lows[-period:], float), np.asarray(closes[-period-1:-1], float)
+    return float(np.mean(np.maximum(h - l, np.maximum(abs(h - prev), abs(l - prev)))))
+
+def _macd(closes, fast=12, slow=26, signal=9):
+    """MACD hesapla — O(n) optimizasyon: _ema_series kullanır, her adımda baştan hesaplamaz."""
+    if len(closes) < slow + signal:
+        return None
+    closes_arr = np.asarray(closes, dtype=float)
+    ema_fast = _ema_series(closes_arr, fast)
+    ema_slow = _ema_series(closes_arr, slow)
+    # MACD line: ema_fast - ema_slow (sadece geçerli indeksler)
+    macd_line_full = []
+    for i in range(len(closes_arr)):
+        if ema_fast[i] is not None and ema_slow[i] is not None:
+            macd_line_full.append(ema_fast[i] - ema_slow[i])
+        else:
+            macd_line_full.append(None)
+    # MACD line serisinin son geçerli değeri
+    line = None
+    for i in range(len(macd_line_full) - 1, -1, -1):
+        if macd_line_full[i] is not None:
+            line = float(macd_line_full[i])
+            break
+    if line is None:
+        return None
+    # Signal line: MACD line'ın signal periyotlu EMA'sı
+    macd_valid = [v for v in macd_line_full if v is not None]
+    if len(macd_valid) < signal:
+        return None
+    sig = _ema(macd_valid, signal)
+    if sig is None:
+        return None
+    return {"line": line, "signal": float(sig), "histogram": float(line - sig)}
+
+def _bollinger(closes, period=20, std_mult=2.0):
+    if len(closes) < period: return None
+    window = np.asarray(closes[-period:], dtype=float); mid = float(np.mean(window)); std = float(np.std(window))
+    upper, lower = mid + std_mult * std, mid - std_mult * std
+    return {"upper": upper, "middle": mid, "lower": lower, "width_pct": (upper - lower) / mid if mid else None, "position": (closes[-1] - lower) / (upper - lower) if upper != lower else None}
+
+def _stochastic(highs, lows, closes, period=14, smooth=3):
+    if len(closes) < period + smooth - 1: return None
+    values = []
+    for i in range(period - 1, len(closes)):
+        hi, lo = max(highs[i-period+1:i+1]), min(lows[i-period+1:i+1])
+        values.append((closes[i] - lo) / (hi - lo) * 100 if hi != lo else 50.0)
+    # C-04: %K = SMA(raw, smooth), %D = SMA(%K, smooth) — aynı kural
+    # ``_stoch_rsi`` içinde de kullanılıyor (kanonik tanım). Eski kod %D'yi
+    # ``values[-6:-3]`` (ham serinin gecikmeli bir penceresi) ile alıyordu:
+    # referansa göre ~10-26 puan sapma üretiyor ve K ile D'yi karıştırıyordu.
+    k_values = [float(np.mean(values[i-smooth+1:i+1])) for i in range(smooth - 1, len(values))]
+    if not k_values:
+        return None
+    return {"k": k_values[-1], "d": float(np.mean(k_values[-smooth:]))}
+
+def _stoch_rsi(closes, rsi_period=14, stoch_period=14, k_period=3, d_period=3):
+    if len(closes) < rsi_period + stoch_period + k_period + d_period:
+        return None
+    # C-12: tek geçişte O(n) RSI serisi (eski hâl: her prefix için ayrı _rsi = O(n^2)).
+    values = _rsi_series(closes, rsi_period)
+    raw = []
+    for i in range(stoch_period - 1, len(values)):
+        window = values[i - stoch_period + 1:i + 1]; lo, hi = min(window), max(window)
+        raw.append((values[i] - lo) / (hi - lo) * 100 if hi != lo else 50.0)
+    if len(raw) < k_period + d_period - 1: return None
+    k_values = [float(np.mean(raw[i-k_period+1:i+1])) for i in range(k_period - 1, len(raw))]
+    return {"k": k_values[-1], "d": float(np.mean(k_values[-d_period:]))}
+
+def _cmo(closes, period=9):
+    if len(closes) < period + 1: return None
+    changes = np.diff(np.asarray(closes[-period - 1:], dtype=float))
+    gains, losses = float(np.sum(np.maximum(changes, 0))), float(np.sum(np.maximum(-changes, 0)))
+    return float(100 * (gains - losses) / (gains + losses)) if gains + losses else 0.0
+
+def _crsi(closes, rsi_period=3, streak_period=2, rank_period=100):
+    if len(closes) < rank_period + rsi_period + 2: return None
+    streaks = [0]
+    for current, previous in zip(closes[1:], closes[:-1]):
+        streaks.append(max(1, streaks[-1] + 1) if current > previous and streaks[-1] > 0 else 1 if current > previous else min(-1, streaks[-1] - 1) if current < previous and streaks[-1] < 0 else -1 if current < previous else 0)
+    recent = np.asarray(streaks[-streak_period:], dtype=float)
+    up, down = float(np.sum(np.maximum(recent, 0))), float(np.sum(np.maximum(-recent, 0)))
+    streak_rsi = 100.0 if down == 0 and up else 50.0 if down == 0 else 100 - 100 / (1 + up / down)
+    window = closes[-rank_period - 1:-1]
+    rank = 100.0 * float(sum(1 for x in window if x < closes[-1])) / len(window) if window else None
+    return float((_rsi(closes, rsi_period) + streak_rsi + rank) / 3) if rank is not None else None
+
+def _obv(closes, volumes):
+    if len(closes) < 2: return None
+    obv = 0.0
+    values = []
+    for i in range(1, len(closes)):
+        obv += volumes[i] if closes[i] > closes[i-1] else -volumes[i] if closes[i] < closes[i-1] else 0
+        values.append(obv)
+    return {"value": float(obv), "slope": float(obv - values[-min(5, len(values))]) if values else 0.0}
+
+def _fisher_transform(highs, lows, length=9):
+    """Closed-candle Fisher Transform with its trigger and cross state."""
+    if len(highs) < length + 1 or len(lows) < length + 1:
+        return None
+    value = 0.0; previous_fisher = 0.0; series = []
+    for index in range(len(highs)):
+        if index + 1 < length:
+            series.append((None, None)); continue
+        mids = [(float(highs[i]) + float(lows[i])) / 2 for i in range(index - length + 1, index + 1)]
+        hi, lo = max(mids), min(mids); midpoint = (float(highs[index]) + float(lows[index])) / 2
+        ratio = (midpoint - lo) / (hi - lo) - 0.5 if hi != lo else 0.0
+        # C-22: burada kullanılmayan bir `prior` ataması vardı (ölü değişken,
+        # hiçbir yerde okunmuyordu). Fisher'ın önceki değeri zaten
+        # `previous_fisher` ile taşınıyor; kaldırıldı.
+        value = max(-0.999, min(0.999, 0.66 * ratio + 0.67 * value))
+        fisher = 0.5 * np.log((1 + value) / (1 - value)) + 0.5 * previous_fisher
+        series.append((float(fisher), float(previous_fisher)))
+        previous_fisher = float(fisher)
+    current, trigger = series[-1]
+    previous, previous_trigger = series[-2]
+    return {"value": current, "trigger": trigger,
+            "cross_up": bool(current is not None and trigger is not None and previous is not None and previous_trigger is not None and current > trigger and previous <= previous_trigger),
+            "cross_down": bool(current is not None and trigger is not None and previous is not None and previous_trigger is not None and current < trigger and previous >= previous_trigger),
+            "length": length, "source": "closed_ohlc"}
+
+def _ema_series(values, period):
+    output = [None] * len(values)
+    if len(values) < period: return output
+    current = float(np.mean(values[:period])); output[period - 1] = current
+    alpha = 2 / (period + 1)
+    for index in range(period, len(values)):
+        current = alpha * float(values[index]) + (1 - alpha) * current
+        output[index] = current
+    return output
+
+def _wavetrend(highs, lows, closes, channel_length=7, average_length=1, signal_length=4):
+    """WaveTrend oscillator and WT1/WT2 cross from closed OHLC candles."""
+    if len(closes) < channel_length + signal_length + 2:
+        return None
+    typical = [(float(h) + float(l) + float(c)) / 3 for h, l, c in zip(highs, lows, closes)]
+    esa = _ema_series(typical, channel_length)
+    deviation_input = [abs(price - base) if base is not None else 0.0 for price, base in zip(typical, esa)]
+    deviation = _ema_series(deviation_input, channel_length)
+    ci = [0.0 if base is None or dev in (None, 0) else (price - base) / (0.015 * dev) for price, base, dev in zip(typical, esa, deviation)]
+    wt1 = _ema_series(ci, average_length)
+    wt2 = [None if index < signal_length - 1 or any(value is None for value in wt1[index - signal_length + 1:index + 1]) else float(np.mean(wt1[index - signal_length + 1:index + 1])) for index in range(len(wt1))]
+    current, signal = wt1[-1], wt2[-1]; previous, previous_signal = wt1[-2], wt2[-2]
+    return {"wt1": current, "wt2": signal, "difference": current - signal if current is not None and signal is not None else None,
+            "cross_up": bool(current is not None and signal is not None and previous is not None and previous_signal is not None and current > signal and previous <= previous_signal),
+            "cross_down": bool(current is not None and signal is not None and previous is not None and previous_signal is not None and current < signal and previous >= previous_signal),
+            "channel_length": channel_length, "average_length": average_length, "signal_length": signal_length,
+            "source": "closed_ohlc"}
+
+def _mfi(highs, lows, closes, volumes, period=14):
+    """Pine-compatible MFI: sum exactly ``period`` typical-price changes."""
+    if len(closes) < period + 1: return None
+    typical = (np.asarray(highs) + np.asarray(lows) + np.asarray(closes)) / 3
+    flow = typical * np.asarray(volumes)
+    pos = neg = 0.0
+    for i in range(len(typical) - period, len(typical)):
+        if typical[i] > typical[i-1]: pos += flow[i]
+        elif typical[i] < typical[i-1]: neg += flow[i]
+    # MFI düzeltmesi: pos == 0 ve neg == 0 (tüm hacimler 0 / düz tipik fiyat)
+    # durumunda nötr 50.0 dön — "aşırı alım 100" yanlış sinyal veriyordu.
+    # 100 yalnızca pos > 0 ve neg == 0 iken anlamlıdır.
+    if neg:
+        return float(100 - (100 / (1 + pos / neg)))
+    return 100.0 if pos > 0 else 50.0
+
+def _wilder_series(values, period):
+    """Wilder smoothing series: first = SMA of first `period`, then recursive."""
+    if len(values) < period:
+        return []
+    out = [sum(values[:period]) / period]
+    for v in values[period:]:
+        out.append((out[-1] * (period - 1) + v) / period)
+    return out
+
+
+def _adx(highs, lows, closes, period=14):
+    """Canonical ADX: Wilder-smoothed +DI/-DI, DX series, then Wilder-smoothed ADX.
+
+    Previously this returned the raw (unsmoothed) DX, which is much noisier and
+    caused the `>= 25 / >= 20` regime splits to trigger far too often.
+    """
+    if len(closes) < period * 2 + 1: return None
+    tr, plus, minus = [], [], []
+    for i in range(1, len(closes)):
+        tr.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
+        up, down = highs[i]-highs[i-1], lows[i-1]-lows[i]
+        plus.append(up if up > down and up > 0 else 0.0); minus.append(down if down > up and down > 0 else 0.0)
+    tr_w, plus_w, minus_w = _wilder_series(tr, period), _wilder_series(plus, period), _wilder_series(minus, period)
+    if not tr_w:
+        return None
+    dx_series = []
+    for a, p, m in zip(tr_w, plus_w, minus_w):
+        pdi = 100 * p / a if a else 0.0
+        mdi = 100 * m / a if a else 0.0
+        dx_series.append(100 * abs(pdi - mdi) / (pdi + mdi) if (pdi + mdi) else 0.0)
+    adx_series = _wilder_series(dx_series, period)
+    adx_val = adx_series[-1] if adx_series else dx_series[-1]
+    pdi_last = 100 * plus_w[-1] / tr_w[-1] if tr_w[-1] else 0.0
+    mdi_last = 100 * minus_w[-1] / tr_w[-1] if tr_w[-1] else 0.0
+    return {"adx": float(adx_val), "plus_di": float(pdi_last), "minus_di": float(mdi_last)}
+
+def _sma(values, period):
+    return float(np.mean(values[-period:])) if len(values) >= period else None
+
+def _rolling_vwma(values, volumes, period=20):
+    """Son ``period`` barın hacim-ağırlıklı ortalaması (tek kaynak).
+
+    C-17: ``moving_averages["vwma_20"]`` (kapanış ağırlıklı) ve
+    ``volume["vwap"]`` (tipik fiyat ağırlıklı) aynı kayan-hacim mantığının iki
+    bağımsız kopyasıydı. İkisi de bu yardımcıdan türetilir; ``vwap`` adı
+    yanıltıcıydı (seans başından kümülatif değil, 20 barlık kayandır) → yanına
+    açıkça adlandırılmış ``volume["vwap_rolling_20"]`` alanı eklendi.
+    """
+    if len(values) < period or len(volumes) < period:
+        return None
+    weight = float(np.sum(np.asarray(volumes[-period:], dtype=float)))
+    if not weight:
+        return None
+    return float(np.dot(np.asarray(values[-period:], dtype=float),
+                        np.asarray(volumes[-period:], dtype=float)) / weight)
+
+def _cci(highs, lows, closes, period=20):
+    if len(closes) < period: return None
+    typical = (np.asarray(highs[-period:]) + np.asarray(lows[-period:]) + np.asarray(closes[-period:])) / 3
+    mean = float(np.mean(typical)); deviation = float(np.mean(np.abs(typical - mean)))
+    return float((typical[-1] - mean) / (0.015 * deviation)) if deviation else 0.0
+
+def _awesome_oscillator(highs, lows, fast=5, slow=34):
+    median = ((np.asarray(highs) + np.asarray(lows)) / 2).tolist()
+    fast_value, slow_value = _sma(median, fast), _sma(median, slow)
+    return float(fast_value - slow_value) if fast_value is not None and slow_value is not None else None
+
+# C-09: bars per calendar day, used as the volatility annualizer. Crypto runs
+# 24/7, so one day is always 1440 minutes; the multiplier is sqrt(bars/day).
+# A hardcoded sqrt(1440) assumes 1-minute bars and inflates the value by
+# sqrt(5) = 2.236x (+123.6%) when the primary timeframe is 5m, which is what
+# the snapshot loop actually feeds in.
+TIMEFRAME_MINUTES = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+                     "1h": 60, "2h": 120, "4h": 240, "6h": 360, "8h": 480,
+                     "12h": 720, "1d": 1440, "3d": 4320, "1w": 10080}
+DEFAULT_TIMEFRAME = "5m"   # system-wide primary timeframe (calculate_snapshot)
+
+
+def _periods_per_day(timeframe):
+    """Bars in one calendar day for a Binance-style interval string.
+
+    Returns None when the interval cannot be parsed, so callers choose the
+    fallback explicitly instead of silently inheriting a 1-minute assumption.
+    """
+    if timeframe is None:
+        return None
+    text = str(timeframe).strip().lower()
+    minutes = TIMEFRAME_MINUTES.get(text)
+    if minutes is None:
+        # Fall back to parsing "45m" / "2h" style intervals.
+        try:
+            amount = float(text[:-1])
+            minutes = amount * {"m": 1.0, "h": 60.0, "d": 1440.0, "w": 10080.0}.get(text[-1], 0.0)
+        except (ValueError, IndexError):
+            return None
+    if not minutes or minutes <= 0:
+        return None
+    per_day = 1440.0 / minutes
+    return int(round(per_day)) if per_day >= 1 else None
+
+
+def _historical_volatility(closes, bars_per_day, period=20):
+    """Annualised close-to-close volatility in PERCENT for the bar interval in use.
+
+    ``bars_per_day`` must come from ``_periods_per_day(<primary_timeframe>)``;
+    passing 1440 for 5m bars is exactly the bug this helper replaces.
+    """
+    if not bars_per_day or len(closes) < period + 1:
+        return None
+    window = np.asarray(closes[-period - 1:], dtype=float)
+    if float(np.min(window)) <= 0:
+        return None
+    return float(np.std(np.diff(np.log(window))) * math.sqrt(bars_per_day) * 100)
+
+
+def _williams_r(highs, lows, closes, period=14):
+    if len(closes) < period: return None
+    hi, lo = max(highs[-period:]), min(lows[-period:])
+    return float((hi - closes[-1]) / (hi - lo) * -100) if hi != lo else -50.0
+
+def _bull_bear_power(highs, lows, closes, period=13):
+    ema = _ema(closes, period)
+    return {"bull": float(highs[-1] - ema), "bear": float(lows[-1] - ema)} if ema is not None else None
+
+def _ultimate_oscillator(highs, lows, closes, periods=(7, 14, 28)):
+    if len(closes) < max(periods) + 1: return None
+    bp, tr = [], []
+    for i in range(1, len(closes)):
+        bp.append(closes[i] - min(lows[i], closes[i-1]))
+        tr.append(max(highs[i], closes[i-1]) - min(lows[i], closes[i-1]))
+    averages = [sum(bp[-p:]) / sum(tr[-p:]) if sum(tr[-p:]) else 0.5 for p in periods]
+    return float(100 * (4 * averages[0] + 2 * averages[1] + averages[2]) / 7)
+
+def _wma(values, period):
+    if len(values) < period: return None
+    weights = np.arange(1, period + 1, dtype=float)
+    return float(np.dot(np.asarray(values[-period:], dtype=float), weights) / weights.sum())
+
+def _alma(values, period=20, offset=0.85, sigma=6.0):
+    if len(values) < period: return None
+    window = np.asarray(values[-period:], dtype=float)
+    center = offset * (period - 1); scale = period / sigma
+    weights = np.exp(-((np.arange(period) - center) ** 2) / (2 * scale * scale))
+    return float(np.dot(window, weights) / weights.sum())
+
+def _dema(closes, period=20):
+    ema = _ema(closes, period)
+    series = _ema_series(closes, period)
+    second = _ema([value for value in series if value is not None], period)
+    return float(2 * ema - second) if ema is not None and second is not None else None
+
+def _tema(closes, period=20):
+    first = _ema(closes, period)
+    first_series = [value for value in _ema_series(closes, period) if value is not None]
+    second = _ema(first_series, period)
+    second_series = [value for value in _ema_series(first_series, period) if value is not None]
+    third = _ema(second_series, period)
+    return float(3 * first - 3 * second + third) if first is not None and second is not None and third is not None else None
+
+def _hma(closes, period=16):
+    half, root = max(1, period // 2), max(1, int(math.sqrt(period)))
+    if len(closes) < period + root: return None
+    values = []
+    for end in range(period, len(closes) + 1):
+        window = closes[:end]
+        first, second = _wma(window, half), _wma(window, period)
+        if first is not None and second is not None: values.append(2 * first - second)
+    return _wma(values, root)
+
+def _aroon(highs, lows, period=25):
+    """Aroon Up/Down (periyot 25 = sistem geneli ``aroon_25``).
+
+    Standart tanım: son ``period+1`` bar taranır, ``period+1`` nokta ``period``
+    aralığı temsil eder; böylece değer aralığı tam 0..100 olur (``period`` bar
+    kullanmak alt sınırı 100/period'a yükseltir ve aralığı kırpar).
+
+    Eşit değerlerde (özellikle düşük fiyatlı/stablecoin sembollerinde çok sık)
+    **son** oluşum esas alınır: sembol zirveyi tekrar test ediyorsa "zirveden
+    geçen bar" 0'dır. İlk oluşumu almak (``list.index``/``np.argmax``) Aroon'u
+    yanlış hesaplar — bu davranış velocity taramasında da bilinçli olarak
+    seçilmiştir; tek kanonik kaynak bu fonksiyondur.
+    """
+    if len(highs) < period + 1: return None
+    high_window = np.asarray(highs[-(period + 1):], dtype=np.float64)
+    low_window = np.asarray(lows[-(period + 1):], dtype=np.float64)
+    # Ters dizide argmax = sondan kaçıncı bar; bu doğrudan "zirveden geçen bar"dır.
+    high_bars = int(np.argmax(high_window[::-1]))
+    low_bars = int(np.argmin(low_window[::-1]))
+    up, down = 100 * (period - high_bars) / period, 100 * (period - low_bars) / period
+    return {"up": float(up), "down": float(down), "oscillator": float(up - down), "bullish": bool(up > down)}
+
+
+def _linreg_slope_pct(closes, period=10):
+    """Son ``period`` barın doğrusal regresyon eğimi, ortalamaya göre YÜZDE/bar.
+
+    Kanonik ML özelliği tanımı (``linreg_slope10_pct``): eğim = cov(x, y)/var(x),
+    x = 0..period-1; sonuç ortalama fiyata bölünür ve yüzdeye çevrilir. Eğitim
+    tarafındaki vektörel eşleniği ``ml_forecast.build_symbol_dataset``'tedir ve
+    ikisi birebir aynı sonucu vermelidir (parity testi ile korunur).
+    """
+    if len(closes) < period:
+        return None
+    ys = np.asarray(closes[-period:], dtype=np.float64)
+    mean_y = float(ys.mean())
+    if mean_y == 0:
+        return None
+    xs = np.arange(period, dtype=np.float64)
+    x_centered = xs - xs.mean()
+    slope = float((x_centered * (ys - mean_y)).sum() / (x_centered ** 2).sum())
+    return slope / mean_y * 100.0
+
+def _vortex(highs, lows, closes, period=14):
+    if len(closes) < period + 1: return None
+    tr, vm_plus, vm_minus = [], [], []
+    for i in range(1, len(closes)):
+        tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
+        vm_plus.append(abs(highs[i] - lows[i-1])); vm_minus.append(abs(lows[i] - highs[i-1]))
+    tr_sum = sum(tr[-period:])
+    if not tr_sum: return None
+    plus, minus = sum(vm_plus[-period:]) / tr_sum, sum(vm_minus[-period:]) / tr_sum
+    return {"plus": float(plus), "minus": float(minus), "bullish": bool(plus > minus)}
+
+def _choppiness(highs, lows, closes, period=14):
+    if len(closes) < period + 1: return None
+    ranges = [max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])) for i in range(1, len(closes))]
+    total = sum(ranges[-period:]); price_range = max(highs[-period:]) - min(lows[-period:])
+    if total <= 0 or price_range <= 0: return None
+    return float(100 * math.log10(total / price_range) / math.log10(period))
+
+def _trix(closes, period=15):
+    first = [value for value in _ema_series(closes, period) if value is not None]
+    second = [value for value in _ema_series(first, period) if value is not None]
+    triple = [value for value in _ema_series(second, period) if value is not None]
+    if len(triple) < 2 or triple[-2] == 0: return None
+    return float((triple[-1] - triple[-2]) / abs(triple[-2]) * 100)
+
+def _tsi(closes, long=25, short=13):
+    if len(closes) < long + short + 2: return None
+    momentum = np.diff(np.asarray(closes, dtype=float)).tolist()
+    abs_momentum = [abs(value) for value in momentum]
+    smoothed = [value for value in _ema_series(momentum, short) if value is not None]
+    smoothed_abs = [value for value in _ema_series(abs_momentum, short) if value is not None]
+    double = _ema(smoothed, long); double_abs = _ema(smoothed_abs, long)
+    return float(100 * double / double_abs) if double is not None and double_abs else None
+
+def _adl(highs, lows, closes, volumes):
+    if len(closes) < 2: return None
+    value = 0.0
+    for high, low, close, volume in zip(highs, lows, closes, volumes):
+        value += ((2 * close - high - low) / (high - low) * volume) if high != low else 0.0
+    return float(value)
+
+def _cmf(highs, lows, closes, volumes, period=20):
+    if len(closes) < period: return None
+    mfv, vol = [], []
+    for high, low, close, volume in zip(highs[-period:], lows[-period:], closes[-period:], volumes[-period:]):
+        mfv.append(((2 * close - high - low) / (high - low) * volume) if high != low else 0.0); vol.append(volume)
+    return float(sum(mfv) / sum(vol)) if sum(vol) else None
+
+def _pvt(closes, volumes):
+    if len(closes) < 2: return None
+    value = 0.0
+    for current, previous, volume in zip(closes[1:], closes[:-1], volumes[1:]):
+        if previous: value += (current - previous) / previous * volume
+    return float(value)
+
+def _volume_oscillator(volumes, fast=5, slow=20):
+    fast_value, slow_value = _ema(volumes, fast), _ema(volumes, slow)
+    return float((fast_value - slow_value) / slow_value * 100) if fast_value is not None and slow_value else None
+
+def _supertrend(highs, lows, closes, period=10, factor=3.0):
+    if len(closes) < period + 1: return None
+    atr_values = []
+    for i in range(len(closes)):
+        start = max(1, i - period + 1)
+        trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j-1]), abs(lows[j] - closes[j-1])) for j in range(start, i + 1)]
+        atr_values.append(float(np.mean(trs)) if len(trs) >= period else None)
+    direction, line = 1, None
+    for i, atr in enumerate(atr_values):
+        if atr is None: continue
+        midpoint = (highs[i] + lows[i]) / 2; upper, lower = midpoint + factor * atr, midpoint - factor * atr
+        direction = 1 if closes[i] >= (line if line is not None else lower) else -1
+        line = max(lower, line) if direction == 1 and line is not None else min(upper, line) if direction == -1 and line is not None else lower if direction == 1 else upper
+    return {"line": float(line), "direction": int(direction), "bullish": bool(direction == 1), "factor": factor, "atr_period": period}
+
+def _ichimoku(highs, lows, closes, conversion=9, base=26, span=52):
+    if len(closes) < span: return None
+    midpoint = lambda length: (max(highs[-length:]) + min(lows[-length:])) / 2
+    tenkan, kijun = midpoint(conversion), midpoint(base)
+    span_a, span_b = (tenkan + kijun) / 2, midpoint(span)
+    return {"tenkan": float(tenkan), "kijun": float(kijun), "span_a": float(span_a), "span_b": float(span_b),
+            "above_cloud": bool(closes[-1] > max(span_a, span_b)), "conversion_period": conversion, "base_period": base, "span_period": span}
+
+def _linear_regression(closes, period=20):
+    if len(closes) < period: return None
+    x = np.arange(period, dtype=float); y = np.asarray(closes[-period:], dtype=float)
+    slope, intercept = np.polyfit(x, y, 1); fitted = slope * (period - 1) + intercept
+    mean_y = float(np.mean(y)); last_y = float(y[-1])
+    # C-15: Aynı modülde iki farklı eğim yüzdesi vardı — burada son kapanışa
+    # bölünüyordu, kanonik ML özelliği `_linreg_slope_pct` ise ortalamaya böler.
+    # `slope_pct` artık kanonik (ortalama tabanlı) tanıma hizalandı; eski
+    # son-kapanış tabanı yanıltıcı olmasın diye açıkça adlandırıldı.
+    return {"slope": float(slope),
+            "slope_pct": float(slope / mean_y * 100) if mean_y else None,
+            "slope_pct_vs_last": float(slope / last_y * 100) if last_y else None,
+            "value": float(fitted), "period": period}
+
+def _signal(value, buy, strong_buy, sell, strong_sell):
+    if value is None: return "unknown"
+    if value >= strong_buy: return "strong_buy"
+    if value >= buy: return "buy"
+    if value <= strong_sell: return "strong_sell"
+    if value <= sell: return "sell"
+    return "neutral"
+
+def _pivots(high, low, close):
+    """Classic floor-trader pivots from the previous bar's H/L/C.
+
+    C-01: R3 = H + 2(P-L) = 2P - 2L + H and S3 = L - 2(H-P) = 2P - 2H + L.
+    The old code dropped the trailing ``+high`` / ``+low`` term, so with
+    H=105/L=95/C=100 it produced R3=10.0 (correct 115.0) and S3=-10.0
+    (correct 85.0) — R3 fell *below* R2 and S3 below the price, i.e. an
+    impossible, out-of-order level ladder.
+    """
+    p = (high + low + close) / 3
+    return {"R3": 2*p - 2*low + high, "R2": p + (high-low), "R1": 2*p-low, "P": p,
+            "S1": 2*p-high, "S2": p-(high-low), "S3": 2*p-2*high + low,
+            "F_R3": p + 1.0*(high-low), "F_R2": p + 0.618*(high-low), "F_R1": p + 0.382*(high-low),
+            "F_S1": p - 0.382*(high-low), "F_S2": p - 0.618*(high-low), "F_S3": p - 1.0*(high-low)}
+
+def _methodology_analysis(opens, highs, lows, closes, volumes, adx=None, alignment="mixed"):
+    """Deterministic, explainable methodology layer; never uses future candles."""
+    if len(closes) < 55:
+        return {"regime": {"name": "unknown", "confidence": 0.0}, "elliott": {"structure": "insufficient_data", "confidence": 0.0}, "wyckoff": {"phase": "unknown", "confidence": 0.0}, "turtle": {"breakout": "none"}, "fibonacci": {"0.236": None, "0.786": None}, "confluence": {"score": 0.0, "label": "unknown", "components": {"trend": 0.0, "turtle": 0.0, "wyckoff": 0.0, "elliott": 0.0}}, "methodology_version": "methodology-v1"}
+    price = float(closes[-1]); atr = _atr(highs, lows, closes, 14) or 0.0
+    atr_pct = atr / price if price else 0.0
+    adx_value = float((adx or {}).get("adx") or 0.0); plus = float((adx or {}).get("plus_di") or 0.0); minus = float((adx or {}).get("minus_di") or 0.0)
+    volume_avg = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else 0.0
+    volume_ratio = float(volumes[-1] / volume_avg) if volume_avg else None
+    recent_return = closes[-1] / closes[-21] - 1 if len(closes) >= 22 and closes[-21] else 0.0
+    vol_change = (np.std(np.diff(np.log(np.asarray(closes[-30:], dtype=float)))) if len(closes) >= 30 else 0.0)
+    if abs(recent_return) > max(atr_pct * 8, 0.03) and atr_pct > 0.01:
+        regime_name = "bull_volatile" if recent_return > 0 else "bear_volatile"
+    elif adx_value >= 25 and plus > minus:
+        regime_name = "bull_quiet"
+    elif adx_value >= 25 and minus > plus:
+        regime_name = "bear_quiet"
+    elif volume_ratio is not None and volume_ratio > 1.8 and abs(recent_return) < max(atr_pct * 2, 0.01):
+        regime_name = "distribution" if price >= max(closes[-55:]) * 0.96 else "accumulation"
+    else:
+        regime_name = "range_transition"
+    regime_confidence = min(0.95, max(0.35, 0.45 + min(adx_value, 50) / 100 + (0.1 if volume_ratio and volume_ratio > 1.2 else 0)))
+    fib_high, fib_low = max(highs[-55:]), min(lows[-55:]); span = fib_high - fib_low
+    fib = {"0.236": fib_high - span * 0.236, "0.382": fib_high - span * 0.382, "0.5": fib_high - span * 0.5, "0.618": fib_high - span * 0.618, "0.786": fib_high - span * 0.786, "swing_high": fib_high, "swing_low": fib_low}
+    turtle = {"entry_high_20": max(highs[-20:]), "entry_low_20": min(lows[-20:]), "exit_high_10": max(highs[-10:]), "exit_low_10": min(lows[-10:]), "entry_high_55": max(highs[-55:]), "entry_low_55": min(lows[-55:])}
+    turtle["breakout"] = "up_20" if price > turtle["entry_high_20"] else "down_20" if price < turtle["entry_low_20"] else "none"
+    body = abs(closes[-1] - opens[-1]); range_value = max(highs[-1] - lows[-1], 1e-12); close_location = (closes[-1] - lows[-1]) / range_value
+    effort = (volume_ratio or 1.0); wyckoff_event = "none"
+    if price <= fib_high - span * 0.786 and close_location > 0.7 and effort > 1.2: wyckoff_event = "spring_candidate"
+    elif price >= fib_low + span * 0.786 and close_location < 0.3 and effort > 1.2: wyckoff_event = "upthrust_candidate"
+    elif turtle["breakout"] == "up_20" and effort > 1.2: wyckoff_event = "sign_of_strength_candidate"
+    elif turtle["breakout"] == "down_20" and effort > 1.2: wyckoff_event = "sign_of_weakness_candidate"
+    wyckoff = {"phase": "accumulation" if regime_name == "accumulation" else "distribution" if regime_name == "distribution" else "unknown", "event": wyckoff_event, "volume_confirmation": bool(volume_ratio and volume_ratio >= 1.2), "confidence": min(0.9, 0.4 + (0.2 if wyckoff_event != "none" else 0) + (0.15 if volume_ratio and volume_ratio > 1.2 else 0))}
+    # C-10: `swing_down = 8 - swing_up` EŞİT barları düşüş sayıyordu; tamamen
+    # yatay bir seri 8 "düşüş" üretip `impulse_candidate` + maksimum güven
+    # veriyordu. Her yön ayrı sayılır, eşit barlar iki tarafa da yazılmaz.
+    _swing_start = max(1, len(closes) - 8)
+    swing_up = sum(1 for i in range(_swing_start, len(closes)) if closes[i] > closes[i - 1])
+    swing_down = sum(1 for i in range(_swing_start, len(closes)) if closes[i] < closes[i - 1])
+    elliott_structure = "impulse_candidate" if swing_up >= 6 or swing_down >= 6 else "correction_or_range"
+    elliott = {"structure": elliott_structure, "wave_hint": "possible_wave_3" if swing_up >= 6 else "possible_wave_c" if swing_down >= 6 else "unconfirmed", "confidence": round(min(0.7, 0.35 + abs(swing_up - swing_down) * 0.05), 3), "confirmed": False}
+    trend_score = 0.8 if alignment == "bullish" else 0.2 if alignment == "bearish" else 0.5
+    turtle_score = 0.9 if turtle["breakout"] == "up_20" else 0.1 if turtle["breakout"] == "down_20" else 0.5
+    wyckoff_score = 0.75 if wyckoff_event in {"spring_candidate", "sign_of_strength_candidate"} else 0.25 if wyckoff_event in {"upthrust_candidate", "sign_of_weakness_candidate"} else 0.5
+    # C-18: `elliott["confidence"]` üst sınırı 0.7 olduğu için 0.10 ağırlıklı
+    # bileşen en fazla 0.07'ye ulaşabiliyordu (ağırlık hiç gerçekleşmiyordu) ve
+    # `components` içinde diğer üç bileşen [0,1] iken elliott [0,0.7] kalıyordu.
+    # Güven [0,1] sinyale normalize edilir; ham güven `elliott` altında korunur.
+    elliott_signal = min(1.0, elliott["confidence"] / 0.7)
+    score = round(0.25 * trend_score + 0.15 * min(1, adx_value / 40) + 0.15 * min(1, (volume_ratio or 0) / 2) + 0.15 * turtle_score + 0.15 * wyckoff_score + 0.10 * elliott_signal + 0.05 * (1 if regime_name in {"bull_quiet", "accumulation"} else 0.5), 4)
+    return {"regime": {"name": regime_name, "confidence": round(regime_confidence, 3), "method": "deterministic_v1", "atr_pct": atr_pct, "volatility_change": vol_change}, "elliott": elliott, "wyckoff": wyckoff, "fibonacci": fib, "turtle": turtle, "confluence": {"score": score, "label": "high" if score >= 0.7 else "moderate" if score >= 0.4 else "low", "components": {"trend": trend_score, "turtle": turtle_score, "wyckoff": wyckoff_score, "elliott": elliott_signal}}, "methodology_version": "methodology-v1"}
+
+def _candlestick_patterns(opens, highs, lows, closes):
+    """Detect high-confidence formations on the *last confirmed* candle.
+
+    Callers pass closed OHLCV history only.  This deliberately reports fewer
+    labels than a permissive pattern scanner: a chart marker should be a
+    reproducible observation, not a prediction or a trade instruction.
+    """
+    size = min(len(opens), len(highs), len(lows), len(closes))
+    if size < 3:
+        return ["none"]
+    opens, highs, lows, closes = ([float(value) for value in list(values)[-size:]] for values in (opens, highs, lows, closes))
+    bodies = [abs(close - open_) for open_, close in zip(opens, closes)]
+    ranges = [max(high - low, 1e-12) for high, low in zip(highs, lows)]
+    avg_body = float(np.mean(bodies[-min(size, 20):])) or 1e-12
+    patterns = []
+
+    def direction(index):
+        return 1 if closes[index] > opens[index] else -1 if closes[index] < opens[index] else 0
+
+    def material(index, ratio=0.20):
+        return bodies[index] >= max(ranges[index] * 0.10, avg_body * ratio)
+
+    def downtrend(before_index):
+        """Require a real decline before a bullish reversal pattern."""
+        start = max(0, before_index - 3)
+        return before_index - start >= 1 and closes[before_index] < closes[start]
+
+    def uptrend(before_index):
+        """Require a real advance before a bearish reversal pattern."""
+        start = max(0, before_index - 3)
+        return before_index - start >= 1 and closes[before_index] > closes[start]
+
+    current, previous = size - 1, size - 2
+    o, h, l, c = opens[current], highs[current], lows[current], closes[current]
+    po, pc = opens[previous], closes[previous]
+    body, previous_body, rng = bodies[current], bodies[previous], ranges[current]
+    upper, lower = h - max(o, c), min(o, c) - l
+    current_material, previous_material = material(current), material(previous)
+    prior_downtrend, prior_uptrend = downtrend(previous), uptrend(previous)
+
+    # Single-candle reversals share a shape; trend gives each one its meaning.
+    is_doji = body / rng <= 0.10
+    lower_pin = not is_doji and current_material and lower >= max(body * 2, rng * 0.45) and upper <= max(body * .75, rng * .10)
+    upper_pin = not is_doji and current_material and upper >= max(body * 2, rng * 0.45) and lower <= max(body * .75, rng * .10)
+    if lower_pin and prior_downtrend:
+        patterns.append("hammer")
+    if lower_pin and prior_uptrend:
+        patterns.append("hanging_man")
+    if upper_pin and prior_uptrend:
+        patterns.append("shooting_star")
+    if upper_pin and prior_downtrend:
+        patterns.append("inverted_hammer")
+
+    if previous_material and current_material and prior_downtrend and direction(previous) < 0 and direction(current) > 0 and o <= pc and c >= po and body > previous_body:
+        patterns.append("bullish_engulfing")
+    if previous_material and current_material and prior_uptrend and direction(previous) > 0 and direction(current) < 0 and o >= pc and c <= po and body > previous_body:
+        patterns.append("bearish_engulfing")
+
+    # Harami uses real bodies, not candle shadows. Strict containment avoids
+    # calling an overlap a harami on volatile five-minute data.
+    inside_previous_body = max(o, c) < max(po, pc) and min(o, c) > min(po, pc)
+    if previous_material and current_material and body <= previous_body * .60 and inside_previous_body:
+        if prior_downtrend and direction(previous) < 0 and direction(current) > 0:
+            patterns.append("bullish_harami")
+        if prior_uptrend and direction(previous) > 0 and direction(current) < 0:
+            patterns.append("bearish_harami")
+
+    previous_mid = (po + pc) / 2
+    if previous_material and current_material and prior_downtrend and direction(previous) < 0 and direction(current) > 0 and o <= pc and previous_mid < c < po:
+        patterns.append("piercing_line")
+    if previous_material and current_material and prior_uptrend and direction(previous) > 0 and direction(current) < 0 and o >= pc and po < c < previous_mid:
+        patterns.append("dark_cloud_cover")
+
+    # The final candle confirms these three-candle formations. A short market
+    # history is deliberately insufficient because the preceding trend matters.
+    first = size - 3
+    if first >= 2:
+        first_body, middle_body = bodies[first], bodies[first + 1]
+        middle_inside_first = (max(opens[first + 1], closes[first + 1]) < max(opens[first], closes[first])
+                               and min(opens[first + 1], closes[first + 1]) > min(opens[first], closes[first]))
+        if downtrend(first) and direction(first) < 0 and direction(first + 1) > 0 and direction(current) > 0 and first_body >= avg_body and middle_body <= first_body * .60 and middle_inside_first and c > opens[first]:
+            patterns.append("three_inside_up")
+        if uptrend(first) and direction(first) > 0 and direction(first + 1) < 0 and direction(current) < 0 and first_body >= avg_body and middle_body <= first_body * .60 and middle_inside_first and c < opens[first]:
+            patterns.append("three_inside_down")
+        middle_small = middle_body <= first_body * .45
+        if downtrend(first) and direction(first) < 0 and direction(current) > 0 and first_body >= avg_body and middle_small and body >= first_body * .60 and c > (opens[first] + closes[first]) / 2:
+            patterns.append("morning_star")
+        if uptrend(first) and direction(first) > 0 and direction(current) < 0 and first_body >= avg_body and middle_small and body >= first_body * .60 and c < (opens[first] + closes[first]) / 2:
+            patterns.append("evening_star")
+    return patterns or ["none"]
+
+def _price_action_setup(opens, highs, lows, closes):
+    """Conservative, non-repainting price-action labels from closed candles."""
+    if len(closes) < 4:
+        return {"setup": "none", "direction": "neutral", "confirmed": False, "reason": "insufficient_data"}
+    # C-08: `MarketData` geçmişi YALNIZCA kapanmış mumları taşır
+    # (`market_data._closed_history` açık barı atar), bu yüzden `closes[-1]`
+    # zaten son onaylanmış mumdur — aynı modüldeki `_candlestick_patterns`
+    # `size - 1` kullanır. Eski `len(closes) - 2` gerçek bir barı atlıyordu.
+    i = len(closes) - 1
+    o, h, l, c = map(float, (opens[i], highs[i], lows[i], closes[i]))
+    rng = max(h - l, 1e-12); body = abs(c - o)
+    upper = h - max(o, c); lower = min(o, c) - l
+    direction = "bullish" if c > o else "bearish" if c < o else "neutral"
+    setup = "none"; reason = "no_confirmed_setup"
+    if lower >= body * 2 and lower >= upper * 1.5 and c >= l + rng * .6:
+        setup, reason = "bullish_pin_bar", "closed candle rejected lower prices"
+    elif upper >= body * 2 and upper >= lower * 1.5 and c <= l + rng * .4:
+        setup, direction, reason = "bearish_pin_bar", "bearish", "closed candle rejected higher prices"
+    mother_range = highs[i-1] - lows[i-1]
+    inside = highs[i] < highs[i-1] and lows[i] > lows[i-1] if mother_range > 0 else False
+    if inside:
+        setup, reason = "inside_bar", "closed candle compressed inside the prior candle"
+    # Fakey: prior inside bar, then the confirmed candle breaks and closes back
+    # inside the mother range. This is a setup label, not an entry signal.
+    if i >= 2 and highs[i-1] < highs[i-2] and lows[i-1] > lows[i-2]:
+        if highs[i] > highs[i-2] and c < highs[i-2]:
+            setup, direction, reason = "bearish_fakey", "bearish", "false upside break returned below mother high"
+        elif lows[i] < lows[i-2] and c > lows[i-2]:
+            setup, direction, reason = "bullish_fakey", "bullish", "false downside break returned above mother low"
+    return {"setup": setup, "direction": direction, "confirmed": setup != "none",
+            "candle_index": i, "entry_confirmation_required": setup != "none", "reason": reason,
+            "data_policy": "confirmed candle only; no future bars"}
+
+
+def _td9_sequence(closes, lookback=4):
+    """Return a closed-bar TD9-style exhaustion count, not a trade signal."""
+    # A TD9 state needs only its recent run. Bounding it keeps large historical
+    # snapshot arrays from turning a display feature into an O(history) cost.
+    closes = list(closes)[-32:]
+    if len(closes) <= lookback:
+        return {"ready": False, "bullish_count": 0, "bearish_count": 0, "exhaustion": "none"}
+    up = down = 0
+    for index in range(lookback, len(closes)):
+        if closes[index] > closes[index - lookback]:
+            up, down = up + 1, 0
+        elif closes[index] < closes[index - lookback]:
+            down, up = down + 1, 0
+        else:
+            up = down = 0
+    exhaustion = "uptrend_9" if up >= 9 else "downtrend_9" if down >= 9 else "none"
+    return {"ready": True, "lookback": lookback, "bullish_count": up, "bearish_count": down,
+            "exhaustion": exhaustion, "data_policy": "closed candles only; sequential observation, not entry"}
+
+
+def _confirmed_structure(highs, lows, closes, volumes, pivot_length=3):
+    """Causal swing/BOS and order-block context.
+
+    A swing is emitted only after ``pivot_length`` later, already-known bars.
+    This intentionally delays labels instead of placing a pivot back in time as
+    though it was known at the turning candle.
+    """
+    # Recent active structure is what can invalidate or confirm a current
+    # setup. Keep the scan bounded for the market-wide snapshot loop.
+    size = min(len(highs), len(lows), len(closes), len(volumes), 180)
+    if size < pivot_length * 2 + 3:
+        return {"ready": False, "reason": "insufficient_confirmed_swing_history"}
+    highs, lows, closes, volumes = ([float(x) for x in values[-size:]] for values in (highs, lows, closes, volumes))
+    pivots_high, pivots_low = [], []
+    # The last usable centre is deliberately before the last `pivot_length`
+    # bars, which is the confirmation delay.
+    for index in range(pivot_length, size - pivot_length):
+        high_window = highs[index - pivot_length:index + pivot_length + 1]
+        low_window = lows[index - pivot_length:index + pivot_length + 1]
+        if highs[index] == max(high_window) and high_window.count(highs[index]) == 1:
+            pivots_high.append({"index": index, "price": highs[index], "confirmed_at": index + pivot_length})
+        if lows[index] == min(low_window) and low_window.count(lows[index]) == 1:
+            pivots_low.append({"index": index, "price": lows[index], "confirmed_at": index + pivot_length})
+    last_high = pivots_high[-1] if pivots_high else None
+    last_low = pivots_low[-1] if pivots_low else None
+    # A level needs to have been confirmed before the current candle to count
+    # as a causal structure break.
+    current = size - 1
+    usable_high = next((p for p in reversed(pivots_high) if p["confirmed_at"] < current), None)
+    usable_low = next((p for p in reversed(pivots_low) if p["confirmed_at"] < current), None)
+    bos = "bullish" if usable_high and closes[-1] > usable_high["price"] else "bearish" if usable_low and closes[-1] < usable_low["price"] else "none"
+    avg_volume = float(np.mean(volumes[-21:-1])) if size >= 21 else None
+    volume_ratio = volumes[-1] / avg_volume if avg_volume else None
+    order_block = None
+    if bos == "bullish" and usable_high:
+        start = max(0, usable_high["index"])
+        candidate = next((i for i in range(current - 1, max(1, start) - 1, -1) if closes[i] < closes[i - 1]), None)
+        if candidate is not None:
+            order_block = {"side": "bullish", "index": candidate, "low": lows[candidate], "high": highs[candidate],
+                           "status": "new", "definition": "last bearish candle before confirmed bullish BOS"}
+    elif bos == "bearish" and usable_low:
+        start = max(0, usable_low["index"])
+        candidate = next((i for i in range(current - 1, max(1, start) - 1, -1) if closes[i] > closes[i - 1]), None)
+        if candidate is not None:
+            order_block = {"side": "bearish", "index": candidate, "low": lows[candidate], "high": highs[candidate],
+                           "status": "new", "definition": "last bullish candle before confirmed bearish BOS"}
+    return {"ready": True, "pivot_length": pivot_length, "last_confirmed_high": last_high,
+            "last_confirmed_low": last_low, "break_of_structure": bos,
+            "volume_ratio_20": volume_ratio, "volume_confirmed": bool(volume_ratio and volume_ratio >= 1.2),
+            "order_block": order_block,
+            "data_policy": "pivots require right-side closed-bar confirmation; no look-ahead labels"}
+
+
+def _fair_value_gap(highs, lows, closes, atr=None, min_atr_multiple=0.25):
+    """Detect the latest three-candle FVG with a volatility floor."""
+    if min(len(highs), len(lows), len(closes)) < 3:
+        return {"ready": False, "reason": "insufficient_candles"}
+    high0, low0, close0 = float(highs[-3]), float(lows[-3]), float(closes[-1])
+    high2, low2 = float(highs[-1]), float(lows[-1])
+    floor = max(float(atr or 0) * min_atr_multiple, 0.0)
+    if low2 - high0 > floor:
+        return {"ready": True, "side": "bullish", "lower": high0, "upper": low2,
+                "size": low2 - high0, "midpoint": (high0 + low2) / 2, "filled": close0 <= high0,
+                "minimum_size": floor, "data_policy": "three completed candles; gap is context, not a fill forecast"}
+    if low0 - high2 > floor:
+        return {"ready": True, "side": "bearish", "lower": high2, "upper": low0,
+                "size": low0 - high2, "midpoint": (high2 + low0) / 2, "filled": close0 >= low0,
+                "minimum_size": floor, "data_policy": "three completed candles; gap is context, not a fill forecast"}
+    return {"ready": True, "side": "none", "minimum_size": floor,
+            "data_policy": "three completed candles; no gap detected"}
+
+
+def _wick_rejection_zscore(opens, highs, lows, closes, lookback=20):
+    """Measure an unusual closed-bar rejection wick without predicting reversal."""
+    size = min(len(opens), len(highs), len(lows), len(closes))
+    if size < lookback + 1:
+        return {"ready": False, "reason": "insufficient_wick_history"}
+    upper_ratios, lower_ratios = [], []
+    for open_, high, low, close in zip(opens[-lookback - 1:-1], highs[-lookback - 1:-1], lows[-lookback - 1:-1], closes[-lookback - 1:-1]):
+        span = max(float(high) - float(low), 1e-12)
+        upper_ratios.append((float(high) - max(float(open_), float(close))) / span)
+        lower_ratios.append((min(float(open_), float(close)) - float(low)) / span)
+    open_, high, low, close = map(float, (opens[-1], highs[-1], lows[-1], closes[-1]))
+    span = max(high - low, 1e-12)
+    upper = (high - max(open_, close)) / span
+    lower = (min(open_, close) - low) / span
+    def zscore(value, samples):
+        std = float(np.std(samples))
+        return (value - float(np.mean(samples))) / std if std > 1e-12 else 0.0
+    upper_z, lower_z = zscore(upper, upper_ratios), zscore(lower, lower_ratios)
+    signal = "bearish_rejection" if upper_z >= 1.5 and close <= low + span * .45 else "bullish_rejection" if lower_z >= 1.5 and close >= low + span * .55 else "none"
+    return {"ready": True, "lookback": lookback, "upper_wick_ratio": upper, "lower_wick_ratio": lower,
+            "upper_zscore": upper_z, "lower_zscore": lower_z, "signal": signal,
+            "data_policy": "closed-candle statistical outlier; confirmation required"}
+
+
+def _volume_profile_proxy(highs, lows, closes, volumes, lookback=48, bins=16):
+    """Bounded OHLCV proxy for POC/value context, explicitly not a footprint."""
+    size = min(len(highs), len(lows), len(closes), len(volumes))
+    if size < min(lookback, 12):
+        return {"ready": False, "reason": "insufficient_ohlcv_history"}
+    highs, lows, closes, volumes = ([float(x) for x in values[-min(size, lookback):]] for values in (highs, lows, closes, volumes))
+    floor, ceiling = min(lows), max(highs)
+    if ceiling <= floor:
+        return {"ready": False, "reason": "zero_price_range"}
+    bucket_size = (ceiling - floor) / bins
+    buckets = [0.0] * bins
+    for high, low, close, volume in zip(highs, lows, closes, volumes):
+        typical = (high + low + close) / 3
+        index = min(bins - 1, max(0, int((typical - floor) / bucket_size)))
+        buckets[index] += max(volume, 0.0)
+    poc_index = int(np.argmax(buckets)); total = sum(buckets)
+    target = total * .70
+    selected = {poc_index}; accumulated = buckets[poc_index]; left, right = poc_index - 1, poc_index + 1
+    while accumulated < target and (left >= 0 or right < bins):
+        left_volume = buckets[left] if left >= 0 else -1.0
+        right_volume = buckets[right] if right < bins else -1.0
+        if right_volume > left_volume:
+            selected.add(right); accumulated += right_volume; right += 1
+        else:
+            selected.add(left); accumulated += left_volume; left -= 1
+    return {"ready": True, "lookback": min(size, lookback), "bins": bins,
+            "poc": floor + (poc_index + .5) * bucket_size,
+            "value_area_low": floor + min(selected) * bucket_size,
+            "value_area_high": floor + (max(selected) + 1) * bucket_size,
+            "method": "typical_price_ohlcv_proxy", "data_policy": "not exchange price-level volume or footprint; contextual S/R only"}
+
+CANDLESTICK_PATTERN_INFO = {
+    "bullish_engulfing": {"direction": "bullish", "strength": "strong", "tr": "Güçlü boğa yutan formasyonu; alıcı baskısında artış."},
+    "bearish_engulfing": {"direction": "bearish", "strength": "strong", "tr": "Güçlü ayı yutan formasyonu; satıcı baskısında artış."},
+    "bullish_harami": {"direction": "bullish", "strength": "medium", "tr": "Boğa haramisi; düşüş momentumunda yavaşlama."},
+    "bearish_harami": {"direction": "bearish", "strength": "medium", "tr": "Ayı haramisi; yükseliş momentumunda yavaşlama."},
+    "hammer": {"direction": "bullish", "strength": "medium", "tr": "Çekiç; düşüş sonrası alt fiyatların reddedildiğini gösterir."},
+    "hanging_man": {"direction": "bearish", "strength": "medium", "tr": "Asılı adam; yükseliş sonrası alt fiyat baskısı uyarısı."},
+    "shooting_star": {"direction": "bearish", "strength": "medium", "tr": "Kayan yıldız; yükseliş sonrası üst fiyatların reddedildiğini gösterir."},
+    "inverted_hammer": {"direction": "bullish", "strength": "medium", "tr": "Ters çekiç; düşüş sonrası üst fiyat denemesini gösterir."},
+    "piercing_line": {"direction": "bullish", "strength": "medium", "tr": "Delici çizgi; düşüş sonrası boğa toparlanması."},
+    "dark_cloud_cover": {"direction": "bearish", "strength": "medium", "tr": "Kara bulut örtüsü; yükseliş sonrası satıcı baskısı."},
+    "three_inside_up": {"direction": "bullish", "strength": "strong", "tr": "Üç içeride yukarı; harami sonrası boğa teyidi."},
+    "three_inside_down": {"direction": "bearish", "strength": "strong", "tr": "Üç içeride aşağı; harami sonrası ayı teyidi."},
+    "morning_star": {"direction": "bullish", "strength": "strong", "tr": "Üç mumlu boğa dönüşü; düşüş momentumunun zayıfladığına işaret eder."},
+    "evening_star": {"direction": "bearish", "strength": "strong", "tr": "Üç mumlu ayı dönüşü; yükseliş momentumunun zayıfladığına işaret eder."},
+}
+
+
+def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, order_value=500, primary_timeframe="5m"):
+    """Calculate explainable, public-OHLCV technical context for one symbol."""
+    flow = orderflow or {}; result = {"symbol": symbol, "price": price, "timeframes": {}, "data_ready": False,
+                                     "generated_at": time.time()}
+    primary = klines.get(primary_timeframe, {})
+    observed_ms = primary.get("last_closed_at_ms") or ((primary.get("timestamps") or [None])[-1])
+    result["observation_timestamp"] = float(observed_ms) / 1000 if observed_ms else None
+    opens = primary.get("opens", []); closes = primary.get("closes", []); highs = primary.get("highs", []); lows = primary.get("lows", []); volumes = primary.get("volumes", [])
+    result["timeframes"] = {primary_timeframe: {"candles": len(closes), "required": 55}}
+    if len(closes) < 55:
+        result["error"] = f"{primary_timeframe} timeframe için {len(closes)}/55 mum hazır"
+        return result
+    def ret(n): return float(closes[-1] / closes[-n-1] - 1) if len(closes) > n else None
+    ema9, ema21, ema50, ema20 = _ema(closes, 9), _ema(closes, 21), _ema(closes, 50), _ema(closes, 20)
+    atr = _atr(highs, lows, closes)
+    macd = _macd(closes); bollinger = _bollinger(closes); stochastic = _stochastic(highs, lows, closes); stoch_rsi = _stoch_rsi(closes); cmo = _cmo(closes); crsi = _crsi(closes)
+    adx = _adx(highs, lows, closes); obv = _obv(closes, volumes); mfi = _mfi(highs, lows, closes, volumes)
+    fisher = _fisher_transform(highs, lows, 9)
+    fisher_11 = _fisher_transform(highs, lows, 11)
+    wavetrend = _wavetrend(highs, lows, closes, 7, 1, 4)
+    trend_indicators = {"alma_20": _alma(closes, 20), "dema_20": _dema(closes, 20), "tema_20": _tema(closes, 20),
+                        "hma_16": _hma(closes, 16), "aroon_25": _aroon(highs, lows, 25), "supertrend_10_3": _supertrend(highs, lows, closes, 10, 3.0),
+                        "ichimoku_9_26_52": _ichimoku(highs, lows, closes, 9, 26, 52), "vortex_14": _vortex(highs, lows, closes, 14),
+                        "linear_regression_20": _linear_regression(closes, 20)}
+    momentum_indicators = {"roc_5": ret(5), "roc_10": ret(10), "roc_21": ret(21), "trix_15": _trix(closes, 15), "tsi_25_13": _tsi(closes, 25, 13)}
+    flow_indicators = {"adl": _adl(highs, lows, closes, volumes), "cmf_20": _cmf(highs, lows, closes, volumes, 20),
+                       "pvt": _pvt(closes, volumes), "volume_oscillator_5_20": _volume_oscillator(volumes, 5, 20)}
+    # C-09: annualizer follows the bar interval actually fed in (5m -> 288/day).
+    bars_per_day = _periods_per_day(primary_timeframe) or _periods_per_day(DEFAULT_TIMEFRAME)
+    volatility_indicators = {"stddev_20": float(np.std(closes[-20:])) if len(closes) >= 20 else None,
+                             "historical_volatility_20": _historical_volatility(closes, bars_per_day, 20),
+                             "historical_volatility_bars_per_day": bars_per_day,
+                             "choppiness_14": _choppiness(highs, lows, closes, 14)}
+    cci = _cci(highs, lows, closes); ao = _awesome_oscillator(highs, lows); williams = _williams_r(highs, lows, closes)
+    bull_bear = _bull_bear_power(highs, lows, closes); ultimate = _ultimate_oscillator(highs, lows, closes)
+    moving_averages = {}
+    for period in (10, 20, 30, 50, 100, 200):
+        moving_averages[f"ema_{period}"] = _ema(closes, period)
+        moving_averages[f"sma_{period}"] = _sma(closes, period)
+    moving_averages["ichimoku_base"] = (max(highs[-26:]) + min(lows[-26:])) / 2 if len(closes) >= 26 else None
+    # C-17: `vwma_20` ve aşağıdaki `volume.vwap` aynı kayan-hacim mantığının iki
+    # kopyasıydı. İkisi de tek kaynaktan (`_rolling_vwma`) türetilir.
+    moving_averages["vwma_20"] = _rolling_vwma(closes, volumes, 20)
+    # C-13: anahtar `hma_9` idi ama değer `_sma` idi — LLM/UI'ya yanlış
+    # özellik anlamı taşıyordu. Modülün kendi kanonik `_hma`'sı kullanılır.
+    moving_averages["hma_9"] = _hma(closes, 9)
+    oscillator_values = {"rsi_14": _rsi(closes), "stochastic_k": stochastic.get("k") if stochastic else None, "stochastic_d": stochastic.get("d") if stochastic else None, "cci_20": cci, "adx_14": adx.get("adx") if adx else None, "awesome": ao, "momentum_10": ret(10), "macd_histogram": macd.get("histogram") if macd else None, "stoch_rsi_fast": stoch_rsi.get("k") if stoch_rsi else None, "stoch_rsi_signal": stoch_rsi.get("d") if stoch_rsi else None, "cmo_9": cmo, "crsi": crsi, "williams_r": williams, "bull_bear": bull_bear.get("bull") if bull_bear else None, "ultimate": ultimate, "mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend}
+    oscillator_signals = {"rsi_14": _signal(oscillator_values["rsi_14"], 50, 70, 30, 20), "stochastic_k": _signal(oscillator_values["stochastic_k"], 50, 80, 20, 10), "cci_20": _signal(cci, 0, 100, -100, -200), "adx_14": "neutral" if adx is None else ("buy" if adx["plus_di"] > adx["minus_di"] else "sell"), "awesome": "buy" if (ao or 0) > 0 else "sell", "momentum_10": "buy" if (ret(10) or 0) > 0 else "sell", "macd": "buy" if macd and macd["histogram"] > 0 else "sell",
+        # C-02: %R lives in [-100, 0] where -10 is *overbought*. `_signal`
+        # reads ascending values, so negate it and use positive thresholds:
+        # -10 -> 10 -> strong_sell, -90 -> 90 -> strong_buy. Bands mirror the
+        # classic -20/-80 (strong) and -40/-60 (mild) %R lines. The old call
+        # passed the raw value with negative thresholds and had the whole
+        # ladder backwards (an overbought print was labelled "strong_buy").
+        "williams_r": _signal(None if williams is None else -williams, 60, 80, 40, 20), "ultimate": _signal(ultimate, 50, 70, 30, 20)}
+    daily = klines.get("1d", {}); dclose, dhigh, dlow = daily.get("closes", []), daily.get("highs", []), daily.get("lows", [])
+    adr = None
+    if len(dclose) >= 15:
+        ranges = [(h-l)/c for h,l,c in zip(dhigh[-15:-1], dlow[-15:-1], dclose[-15:-1]) if c]
+        adr = float(np.mean(ranges)) if ranges else None
+    vavg = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else None
+    spread = flow.get("spread_pct"); depth = ((flow.get("bid_qty", 0) or 0) + (flow.get("ask_qty", 0) or 0)) * price
+    candle_patterns = _candlestick_patterns(opens, highs, lows, closes)
+    alignment = "bullish" if ema9 and ema21 and ema50 and ema9 > ema21 > ema50 else "bearish" if ema9 and ema21 and ema50 and ema9 < ema21 < ema50 else "mixed"
+    methodologies = _methodology_analysis(opens, highs, lows, closes, volumes, adx, alignment)
+    typical_prices = ((np.asarray(highs, dtype=float) + np.asarray(lows, dtype=float) + np.asarray(closes, dtype=float)) / 3.0)
+    # C-17: `volume.vwap` (tipik fiyat) ve `moving_averages.vwma_20` (kapanış) aynı
+    # kayan-hacim mantığının iki kopyasıydı. Tek kaynak `_rolling_vwma`; isim
+    # yanıltıcı olduğu için (`vwap` seans-başı kümülatif değil, 20-bar kayandır)
+    # açıkça adlandırılmış `vwap_rolling_20` alanı eklendi; `vwap` geriye dönük
+    # alias olarak korundu (araştırma betikleri `volume.vwap` okur).
+    vwap_rolling_20 = _rolling_vwma(typical_prices, volumes, 20)
+    # C-16: `adr_14_pct` / `day_range_used_pct` / `remaining_capacity_pct` değerleri
+    # KESİR taşır (adr=(h-l)/c, used=max/min-1, remaining=adr-used) — `atr_pct` ile
+    # aynı sözleşme. İsim-sözleşme uyuşmazlığı için yanlarına açıkça adlandırılmış
+    # `*_ratio` ikizleri eklendi; `*_pct` anahtarları geriye dönük uyumluluk için
+    # korundu (frontend `remaining_capacity_pct`'yi `percent()` ile kesir okur).
+    # UNIT CONTRACT — deliberate, do NOT "fix": `volatility.atr_pct` is a
+    # FRACTION in [0, 1] (atr / price), not a percentage, despite the name.
+    # Rescaling it here would desync the ML feature pipeline (train/inference
+    # parity is the deadliest bug class in this repo) and every stored
+    # downstream threshold; that rescaling belongs to its own workstream.
+    # `_methodology_analysis` uses the identical atr / price scale.
+    result.update({"timeframe": primary_timeframe, "data_ready": True, "trend": {"ema_9": ema9, "ema_21": ema21, "ema_50": ema50, "alignment": alignment, "adx": adx}, "trend_indicators": trend_indicators, "momentum": {"return_5m": ret(1), "return_15m": ret(3), "return_1h": ret(12), "rsi_14": _rsi(closes), "roc_21": ret(21), "macd": macd, "stochastic": stochastic, "mfi_14": mfi}, "momentum_indicators": momentum_indicators, "oscillators": {"values": oscillator_values, "signals": oscillator_signals}, "moving_averages": moving_averages, "candlestick_patterns": _candlestick_patterns(opens, highs, lows, closes), "channels": {"bollinger": bollinger, "donchian": {"upper": max(highs[-20:]), "middle": _sma(closes, 20), "lower": min(lows[-20:])} if len(closes) >= 20 else None, "keltner": {"middle": ema20, "upper": ema20 + 2*atr if ema20 and atr else None, "lower": ema20 - 2*atr if ema20 and atr else None}}, "volatility": {"atr_14": atr, "atr_pct": atr / price if atr and price else None, "adr_14_pct": adr, "adr_14_ratio": adr, "adr_basis": "1d", "bollinger": bollinger, "day_range_used_pct": None, "day_range_used_ratio": None, "adr_utilization": None, "remaining_capacity_pct": None, "remaining_capacity_ratio": None}, "volatility_indicators": volatility_indicators, "volume": {"volume_ratio_20": volumes[-1] / vavg if vavg else None, "volume_quality": "insufficient_history" if len(volumes) < 21 else "low_volume" if vavg and volumes[-1] / vavg < 0.2 else "valid", "volume_timeframe": primary_timeframe, "vwap": vwap_rolling_20, "vwap_rolling_20": vwap_rolling_20, "obv": obv}, "flow_indicators": flow_indicators, "pivots": _pivots(dhigh[-1], dlow[-1], dclose[-1]) if len(dclose) else None, "liquidity": {"quote_volume_24h": ticker_24h, "spread_pct": spread, "best_bid_price": flow.get("bid_price"), "best_ask_price": flow.get("ask_price"), "bid_qty": flow.get("bid_qty"), "ask_qty": flow.get("ask_qty"), "orderbook_depth_try": depth, "depth_multiplier": depth / order_value if order_value else None, "orderflow_imbalance": ((flow.get("bid_qty", 0) - flow.get("ask_qty", 0)) / (flow.get("bid_qty", 0) + flow.get("ask_qty", 0))) if (flow.get("bid_qty", 0) + flow.get("ask_qty", 0)) else None, "scope": "realtime_market", "timeframe_independent": True, "source": flow.get("source", "binance_tr_public_websocket"), "updated_at": flow.get("updated_at")}, "methodologies": methodologies})
+    result["candlestick_patterns"] = candle_patterns
+    result["momentum"]["cmo_9"] = cmo
+    result["momentum"]["crsi"] = crsi
+    result["oscillators"]["values"]["cmo_9"] = cmo
+    result["oscillators"]["values"]["crsi"] = crsi
+    result["price_action"] = _price_action_setup(opens, highs, lows, closes)
+    # Realtime microstructure is derived from the same WS/REST depth + aggTrade
+    # streams the rest of the system uses. Every value is public market data;
+    # nothing here implies order-book or position truth. The block stays
+    # additive so snapshot consumers that do not need it are unaffected.
+    microstructure = _microstructure_block(flow, price)
+    if microstructure:
+        result["microstructure"] = microstructure
+    # These features are research observations only. They are deliberately not
+    # consumed by `ScalpAnalyzer` entry strategies until a fee-aware OOS and
+    # forward evaluation creates an explicit candidate definition.
+    result["research_features"] = {
+        "version": "research-features-v1",
+        "paper_only": True,
+        "td9": _td9_sequence(closes),
+        "market_structure": _confirmed_structure(highs, lows, closes, volumes),
+        "fair_value_gap": _fair_value_gap(highs, lows, closes, atr),
+        "wick_rejection_zscore": _wick_rejection_zscore(opens, highs, lows, closes),
+        "volume_profile": _volume_profile_proxy(highs, lows, closes, volumes),
+        "indicators": {"mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend},
+        "unavailable_without_trade_level_data": ["footprint", "true_cvd", "aggressor_side_orderflow", "actual_liquidation_levels"],
+        "not_implemented_without_separate_validation": ["lorentzian_classifier", "supertrend_ml_clustering"],
+    }
+    result["candlestick_pattern_details"] = [CANDLESTICK_PATTERN_INFO.get(name, {"direction": "neutral", "strength": "info", "tr": name}) for name in candle_patterns]
+    result["candlestick_pattern_status"] = "calculated_no_pattern" if candle_patterns == ["none"] else "detected"
+    if adr and len(dclose) and dclose[-1]:
+        day_open = daily.get("opens", [])[-1] if daily.get("opens") else dclose[-1]
+        used = max(price, day_open) / min(price, day_open) - 1 if price > 0 and day_open > 0 else 0
+        result["volatility"].update({"day_range_used_pct": used, "day_range_used_ratio": used, "adr_utilization": used / adr, "remaining_capacity_pct": adr - used, "remaining_capacity_ratio": adr - used})
+    result["summary"] = "bullish" if result["trend"]["alignment"] == "bullish" and (result["momentum"]["rsi_14"] or 0) >= 50 else "mixed"
+    return result
+
+
+def _microstructure_block(flow: dict, price: float) -> dict:
+    """Additive realtime microstructure block for one snapshot.
+
+    Consumes the same top-of-book depth/aggTrade fields the live feed already
+    carries. Returns {} when the feed has not delivered depth yet, so callers
+    that treat missing microstructure as 'unknown' stay unchanged.
+    """
+    if not flow or not isinstance(flow, dict):
+        return {}
+    bid = flow.get("bid_price")
+    ask = flow.get("ask_price")
+    bid_qty = float(flow.get("bid_qty") or 0)
+    ask_qty = float(flow.get("ask_qty") or 0)
+    book_total = bid_qty + ask_qty
+    if not bid or not ask or book_total <= 0:
+        return {}
+    spread_pct = flow.get("spread_pct")
+    if spread_pct is None and bid > 0:
+        spread_pct = (ask - bid) / bid * 100
+    mid = (bid + ask) / 2
+    block = {
+        "scope": "realtime_market",
+        "best_bid_price": bid,
+        "best_ask_price": ask,
+        "spread_pct": round(float(spread_pct), 6) if spread_pct is not None else None,
+        "orderbook_depth_try": round(book_total * mid, 2),
+        "depth_imbalance": round((bid_qty - ask_qty) / book_total, 4),
+        "last_trade_side": flow.get("last_trade_side"),
+        "last_trade_qty": flow.get("last_trade_qty"),
+        "source": flow.get("source") or "binance_tr_public_ws",
+        "updated_at": flow.get("updated_at"),
+    }
+    return block
