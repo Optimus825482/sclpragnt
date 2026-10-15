@@ -6,7 +6,7 @@ import uuid
 from app.config import config
 from app.technical_analysis import calculate_snapshot, _adx, _stochastic, _macd, _mfi, _ema, _rsi, _crsi, _cmo, _atr
 from app.binance_tr_public import orderbook
-from app import database
+from app import database, paper_ledger
 from app import agent_learning
 from app import calibration as calibration_service
 from app.circuit_breaker import breaker as strategy_breaker
@@ -819,8 +819,7 @@ class ScalpAnalyzer:
         # ÜZERİNE uygulanır; iki ayrı kavramdır. Tek kaynak:
         # config.ESTIMATED_SLIPPAGE_PCT (config.min_net_exit_pct da aynı sabiti
         # kullanır); yeni formül uydurulmaz.
-        exit_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
-        fill_price = price * (1.0 - exit_slip)
+        fill_price = paper_ledger.sell_fill(price)
         sell_value = pos["quantity"] * fill_price
         commission = sell_value * config.COMMISSION_PCT
         try_balance = await database.get_wallet_balance("TRY")
@@ -1505,8 +1504,7 @@ class ScalpAnalyzer:
         # görüntüleri (entry_context.technical / mtf_snapshots) HAM piyasa
         # fiyatını kullanır — maliyet tabanıyla karışmaması için reassignment
         # burada (snapshot'lardan SONRA) yapılır.
-        entry_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
-        entry_price = entry_price * (1.0 + entry_slip)
+        entry_price = paper_ledger.entry_fill(entry_price)
         quantity = order_value / entry_price
         commission = order_value * config.COMMISSION_PCT
 
