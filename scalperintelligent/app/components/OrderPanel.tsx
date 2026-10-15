@@ -7,6 +7,7 @@ import { usePoll } from "../lib/hooks";
 import { useLiveMessages } from "../lib/liveSocket";
 import { formatCompact, formatPct, formatPrice, formatTL } from "../lib/format";
 import { sound } from "../lib/sound";
+import { useModalA11y } from "../lib/useModalA11y";
 import type { BinancePositions, BinanceSettings, MarketSymbols, MarketTicker } from "../lib/types";
 import type { OpportunityView } from "../lib/opportunity";
 import { Badge, Button, Card } from "./ui";
@@ -14,6 +15,7 @@ import SymbolSelect from "./SymbolSelect";
 import OrderBook from "./OrderBook";
 
 type SlTpMode = "OCO" | "SL_ONLY" | "TP_ONLY";
+const USER_EVENT_TYPES = ["binance_user_event"] as const;
 
 type OrderKind = "MARKET" | "LIMIT" | "STOP_LIMIT";
 type OrderReceipt = {
@@ -27,6 +29,45 @@ type OrderReceipt = {
   acceptedAt?: string;
   lastEventTimeMs?: number;
 };
+
+/**
+ * Onay penceresi açıldığı anda DONDURULAN emir görüntüsü (denetim P0-1b/P0-2).
+ * Modal açıkken tarama yenilemesi, ticker tick'i veya prop değişimi panelin
+ * sembol/tutarını değiştirse bile borsaya giden şey bu anlık görüntüdür.
+ * `clientOrderId` pencere başına tek üretilir: zaman aşımında aynı anahtarla
+ * tekrar gönderilirse backend ikinci emri açmaz (idempotency).
+ */
+type OrderSnapshot = {
+  clientOrderId: string;
+  symbol: string;
+  base: string;
+  quoteAsset: string;
+  side: "BUY" | "SELL";
+  kind: OrderKind;
+  amount: number;
+  limitPrice: number | null;
+  stopPrice: number | null;
+  stopLimitPrice: number | null;
+  /** Onay anındaki referans fiyat (piyasa son fiyatı ya da girilen limit). */
+  referencePrice: number | null;
+  estimatedQuote: number;
+  openedAt: number;
+};
+
+/** Emir POST'u için toplam bekleme; aşılırsa sonuç BELİRSİZ sayılır, tekrar gönderilmez. */
+const ORDER_TIMEOUT_MS = 20_000;
+
+function newClientOrderId(): string {
+  const cryptoApi = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+  if (cryptoApi && typeof cryptoApi.randomUUID === "function") return cryptoApi.randomUUID();
+  // Çok eski tarayıcı: zaman + rastgele; Binance TR clientId üst sınırı 36 karakter.
+  return `ui${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`.slice(0, 36);
+}
+
+/** Ağ kesintisi / zaman aşımı: istek borsaya ulaşmış OLABİLİR, sonuç bilinmez. */
+function isNetworkFailure(reason: unknown) {
+  return (reason instanceof DOMException && reason.name === "AbortError") || reason instanceof TypeError;
+}
 
 function normalizeOrderStatus(status?: string | number) {
   const raw = status == null ? "" : String(status).toUpperCase();
@@ -87,7 +128,12 @@ export default function OrderPanel({
   const [stopPrice, setStopPrice] = useState("");
   const [stopLimitPrice, setStopLimitPrice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [reviewOpen, setReviewOpen] = useState(false);
+  const [review, setReview] = useState<OrderSnapshot | null>(null);
+  const reviewOpen = review !== null;
+  const reviewRef = useRef(reviewOpen);
+  reviewRef.current = reviewOpen;
+  const closeReview = () => { if (!busy) setReview(null); };
+  const reviewA11y = useModalA11y(reviewOpen, closeReview, "Gerçek Binance TR emri onayı");
   const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState<{ tone: "gain" | "loss" | "warn"; text: string } | null>(null);
   const [receipt, setReceipt] = useState<OrderReceipt | null>(null);
@@ -144,10 +190,13 @@ export default function OrderPanel({
       return next;
     });
     balances.reload();
-  });
+  }, USER_EVENT_TYPES);
 
-  useEffect(() => { if (initialSymbol) setSymbol(initialSymbol); }, [initialSymbol]);
+  // Prop senkronu onay penceresi AÇIKKEN DONAR (denetim P0-1b): kullanıcı
+  // gözden geçirirken tarama yenilemesi sembolü/tutarı değiştiremez.
+  useEffect(() => { if (initialSymbol && !reviewRef.current) setSymbol(initialSymbol); }, [initialSymbol]);
   useEffect(() => {
+    if (reviewRef.current) return;
     setAmount(initialAmount == null || initialAmount === "" ? "" : String(initialAmount));
   }, [initialAmount, initialSymbol]);
   const activeSymbol = symbol || initialSymbol || null;
@@ -164,7 +213,6 @@ export default function OrderPanel({
   const estimatedQuote = kind === "MARKET" && side === "BUY"
     ? Number(amount || 0)
     : Number(amount || 0) * Number(priceForEstimate || 0);
-  const orderTypeLabel = kind === "STOP_LIMIT" ? "Stop-Limit" : kind === "LIMIT" ? "Limit" : "Piyasa";
   const avgCost = balances.data?.holdings?.find((h) => h.asset === base)?.avg_cost_try ?? null;
   const currentPrice = ticker.data?.last ?? null;
 
@@ -255,55 +303,84 @@ export default function OrderPanel({
     }
   }
 
-  async function submitOrder() {
+  /** Girdileri doğrular, anlık görüntüyü dondurur ve onay penceresini açar. EMİR GÖNDERMEZ. */
+  function openReview() {
     if (!activeSymbol) return;
     const value = Number(amount);
     if (!Number.isFinite(value) || value <= 0) {
       setMessage({ tone: "loss", text: "Geçerli bir tutar veya miktar girin." });
       return;
     }
-    const requiresLimit = kind === "LIMIT" || kind === "STOP_LIMIT";
-    if (requiresLimit && (!Number.isFinite(Number(limitPrice || (kind === "STOP_LIMIT" ? stopLimitPrice : ""))) || Number(limitPrice || stopLimitPrice) <= 0)) {
+    const limit = kind === "LIMIT" ? Number(limitPrice) : kind === "STOP_LIMIT" ? Number(stopLimitPrice) : null;
+    if ((kind === "LIMIT" || kind === "STOP_LIMIT") && (!Number.isFinite(Number(limit)) || Number(limit) <= 0)) {
       setMessage({ tone: "loss", text: "Geçerli bir limit fiyatı girin." });
       return;
     }
-    if (kind === "STOP_LIMIT" && (!Number.isFinite(Number(stopPrice)) || Number(stopPrice) <= 0)) {
+    const stop = kind === "STOP_LIMIT" ? Number(stopPrice) : null;
+    if (kind === "STOP_LIMIT" && (!Number.isFinite(Number(stop)) || Number(stop) <= 0)) {
       setMessage({ tone: "loss", text: "Geçerli bir tetikleme fiyatı girin." });
       return;
     }
+    const reference = kind === "MARKET" ? (ticker.data?.last ?? null) : limit;
+    setMessage(null);
+    setReview({
+      clientOrderId: newClientOrderId(),
+      symbol: activeSymbol,
+      base,
+      quoteAsset,
+      side,
+      kind,
+      amount: value,
+      limitPrice: kind === "LIMIT" ? limit : null,
+      stopPrice: stop,
+      stopLimitPrice: kind === "STOP_LIMIT" ? limit : null,
+      referencePrice: reference,
+      estimatedQuote: kind === "MARKET" && side === "BUY" ? value : value * Number(reference || 0),
+      openedAt: Date.now(),
+    });
+  }
+
+  async function submitOrder() {
+    const snapshot = review;
+    if (!snapshot || busy) return;
     setBusy(true);
-    setReviewOpen(false);
     setMessage(null);
     setReceipt(null);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), ORDER_TIMEOUT_MS);
     try {
       const payload: Record<string, string> = {
-        symbol: activeSymbol,
-        side,
-        type: kind === "STOP_LIMIT" ? "STOP_LOSS_LIMIT" : kind,
+        symbol: snapshot.symbol,
+        side: snapshot.side,
+        type: snapshot.kind === "STOP_LIMIT" ? "STOP_LOSS_LIMIT" : snapshot.kind,
         confirmation: "REAL_ORDER",
+        client_order_id: snapshot.clientOrderId,
       };
-      if (kind === "MARKET" && side === "BUY") payload.quote_order_qty = String(value);
-      else payload.quantity = String(value);
-      if (kind === "LIMIT") payload.price = String(Number(limitPrice));
-      if (kind === "STOP_LIMIT") {
-        payload.stop_price = String(Number(stopPrice));
-        payload.stop_limit_price = String(Number(stopLimitPrice));
+      if (snapshot.kind === "MARKET" && snapshot.side === "BUY") payload.quote_order_qty = String(snapshot.amount);
+      else payload.quantity = String(snapshot.amount);
+      if (snapshot.kind === "LIMIT") payload.price = String(snapshot.limitPrice);
+      if (snapshot.kind === "STOP_LIMIT") {
+        payload.stop_price = String(snapshot.stopPrice);
+        payload.stop_limit_price = String(snapshot.stopLimitPrice);
       }
 
       const response = await apiRequest(`${API_BASE}/api/binance/order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(responseDetail(body) || `Binance emri gönderilemedi (${response.status})`);
 
-      const nextReceipt = mergeReceipt(body, activeSymbol);
+      const nextReceipt = mergeReceipt(body, snapshot.symbol);
+      if (!nextReceipt.clientId) nextReceipt.clientId = snapshot.clientOrderId;
       setReceipt(nextReceipt);
+      setReview(null);
       sound.playSuccessTone();
       const normalizedStatus = normalizeOrderStatus(nextReceipt.status);
       setMessage(normalizedStatus === "UNKNOWN"
-        ? { tone: "warn", text: "Emrin sonucu belirsiz. Yinelenen emir oluşmaması için yeniden göndermeyin; emir durumunu sorgulayın." }
+        ? { tone: "warn", text: "Emrin sonucu belirsiz. Yinelenen emir oluşmaması için yeniden göndermeyin; \"Durumu sorgula\" ile kontrol edin." }
         : {
           tone: normalizedStatus === "FILLED" ? "gain" : "warn",
           text: normalizedStatus === "FILLED"
@@ -314,8 +391,18 @@ export default function OrderPanel({
       onTraded?.();
       balances.reload();
     } catch (reason) {
-      setMessage({ tone: "loss", text: reason instanceof Error ? reason.message : "Binance emri gönderilemedi" });
+      setReview(null);
+      if (isNetworkFailure(reason)) {
+        // Zaman aşımı / ağ hatası: emir borsaya ulaşmış OLABİLİR. Otomatik tekrar
+        // YOK; kullanıcı client_order_id ile durumu sorgular. Aynı anahtarla
+        // elle tekrar gönderilse bile backend ikinci emri açmaz.
+        setReceipt({ symbol: snapshot.symbol, clientId: snapshot.clientOrderId, status: "UNKNOWN" });
+        setMessage({ tone: "warn", text: "Durum belirsiz: sunucudan yanıt alınamadı. Emir iletilmiş olabilir; yeniden GÖNDERMEYİN, \"Durumu sorgula\" ile kontrol edin." });
+      } else {
+        setMessage({ tone: "loss", text: reason instanceof Error ? reason.message : "Binance emri gönderilemedi" });
+      }
     } finally {
+      window.clearTimeout(timer);
       setBusy(false);
     }
   }
@@ -328,7 +415,11 @@ export default function OrderPanel({
     <Card className="p-4">
       <div className="flex items-center justify-between">
         <p className="odak-kicker">Binance TR İşlem Paneli</p>
-        <Badge tone={binance.data?.configured ? "gain" : "warn"}>{binance.data?.configured ? "GERÇEK HESAP" : "BAĞLI DEĞİL"}</Badge>
+        <span role="status">
+          <Badge tone={binance.data?.configured ? "gain" : "warn"}>
+            {binance.data?.configured ? "GERÇEK HESAP" : binance.error && !binance.data ? "AYAR ALINAMADI" : binance.loading ? "KONTROL EDİLİYOR" : "BAĞLI DEĞİL"}
+          </Badge>
+        </span>
       </div>
       {binance.data?.configured && <p className={`mt-1 text-[10px] ${balances.data?.user_stream?.connected ? "text-gain" : "text-ink-400"}`} role="status">
         {balances.data?.user_stream?.connected ? "Özel emir ve bakiye akışı bağlı" : `Özel akış: ${balances.data?.user_stream?.state || "bağlanıyor"} · REST durum sorgusu kullanılabilir`}
@@ -410,7 +501,7 @@ export default function OrderPanel({
         </div>
         <p className="mt-1 text-right text-[11px] text-ink-400">Tahmini tutar: {amount ? quoteAsset === "TRY" ? formatTL(estimatedQuote) : `${estimatedQuote.toLocaleString("tr-TR", { maximumFractionDigits: 4 })} USDT` : "—"}</p>
 
-        <Button variant={side === "BUY" ? "success" : "danger"} className="mt-3 w-full" disabled={busy || !activeSymbol || !Number(amount) || !enabled || (kind === "LIMIT" && !Number(limitPrice)) || (kind === "STOP_LIMIT" && (!Number(stopPrice) || !Number(stopLimitPrice)))} onClick={() => { setMessage(null); setReviewOpen(true); }}
+        <Button variant={side === "BUY" ? "success" : "danger"} className="mt-3 w-full" disabled={busy || !activeSymbol || !Number(amount) || !enabled || (kind === "LIMIT" && !Number(limitPrice)) || (kind === "STOP_LIMIT" && (!Number(stopPrice) || !Number(stopLimitPrice)))} onClick={openReview}
           title={!binance.data?.configured ? "Önce Ayarlar'dan Binance TR API anahtarını kaydet" : !binance.data?.sell_enabled ? "Ayarlar'da gerçek işlem kapısını aç" : `Gerçek Binance TR ${kind} emri gönder`}>
           {busy ? "Gönderiliyor…" : `${side === "BUY" ? "ALIM" : "SATIM"} ${kind === "STOP_LIMIT" ? "STOP-LIMIT" : kind === "LIMIT" ? "LİMİT" : "PİYASA"} EMRİNİ GÖZDEN GEÇİR`}
         </Button>
@@ -419,7 +510,7 @@ export default function OrderPanel({
         {message && <p role="status" className={`mt-2 text-center text-[11px] ${message.tone === "gain" ? "text-gain" : message.tone === "loss" ? "text-loss" : "text-ink-500"}`}>{message.text}</p>}
         {receipt && <div className="mt-3 rounded-lg border border-line bg-slate-50 p-3 text-[11px]">
           <div className="flex items-center justify-between gap-2"><span className="font-semibold text-ink-800">Emir: {orderStatusLabel(receipt.status)}</span>
-            {receipt.clientId && !["FILLED", "CANCELED", "REJECTED", "EXPIRED"].includes(status || "") && <button type="button" disabled={refreshing} onClick={() => refreshOrderStatus()} className="shrink-0 rounded-md border border-line px-2 py-1 text-accent disabled:opacity-50">{refreshing ? "Yenileniyor…" : "Durumu yenile"}</button>}
+            {receipt.clientId && !["FILLED", "CANCELED", "REJECTED", "EXPIRED"].includes(status || "") && <button type="button" disabled={refreshing} onClick={() => refreshOrderStatus()} className="shrink-0 rounded-md border border-line px-2 py-1 text-accent disabled:opacity-50">{refreshing ? "Sorgulanıyor…" : "Durumu sorgula"}</button>}
           </div>
           <div className="mt-1 space-y-0.5 text-ink-500">
             {receipt.orderId != null && <p>Borsa emir no: <span className="font-mono">{receipt.orderId}</span></p>}
@@ -488,28 +579,30 @@ export default function OrderPanel({
           </div>
         )}
       </>}
-      {reviewOpen && activeSymbol && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReviewOpen(false); }}>
-        <section role="dialog" aria-modal="true" aria-labelledby="order-review-title" className="w-full max-w-md rounded-2xl border border-line bg-white p-5 shadow-2xl">
+      {review && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeReview(); }}>
+        <section ref={reviewA11y.ref} tabIndex={-1} onKeyDown={reviewA11y.onKeyDown} role="dialog" aria-modal="true" aria-labelledby="order-review-title" aria-describedby="order-review-desc" className="w-full max-w-md rounded-2xl border border-line bg-white p-5 shadow-2xl outline-none">
           <div className="flex items-start justify-between gap-4">
             <div><p className="odak-kicker">Gerçek Binance TR emri</p><h2 id="order-review-title" className="mt-1 text-lg font-bold text-ink-900">Emri onayla</h2></div>
-            <button type="button" onClick={() => setReviewOpen(false)} className="rounded-md px-2 py-1 text-ink-500 hover:bg-slate-100" aria-label="Onay penceresini kapat">✕</button>
+            <button type="button" disabled={busy} onClick={closeReview} className="rounded-md px-2 py-1 text-ink-500 hover:bg-slate-100 disabled:opacity-50" aria-label="Onay penceresini kapat">✕</button>
           </div>
-          <p className="mt-2 text-sm text-ink-500">Onayladığınızda emir gerçek hesabınıza gönderilir. Gönderim kabul edilmesi dolum garantisi vermez.</p>
+          <p id="order-review-desc" className="mt-2 text-sm text-ink-500">Onayladığınızda emir gerçek hesabınıza gönderilir. Gönderim kabul edilmesi dolum garantisi vermez. Aşağıdaki değerler pencere açıldığı anda donduruldu.</p>
           <dl className="mt-4 space-y-2 rounded-xl bg-slate-50 p-3 text-sm">
-            <div className="flex justify-between gap-3"><dt className="text-ink-500">Sembol</dt><dd className="font-semibold text-ink-900">{activeSymbol}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-ink-500">Yön</dt><dd className={`font-semibold ${side === "BUY" ? "text-gain" : "text-loss"}`}>{side === "BUY" ? "ALIM" : "SATIM"}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-ink-500">Emir türü</dt><dd className="font-semibold text-ink-900">{orderTypeLabel}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-ink-500">{kind === "MARKET" && side === "BUY" ? "Harcanacak tutar" : "Miktar"}</dt><dd className="font-mono font-semibold text-ink-900">{Number(amount || 0).toLocaleString("tr-TR", { maximumFractionDigits: 8 })} {kind === "MARKET" && side === "BUY" ? quoteAsset : base}</dd></div>
-            {kind === "LIMIT" && <div className="flex justify-between gap-3"><dt className="text-ink-500">Limit fiyatı</dt><dd className="font-mono font-semibold text-ink-900">{Number(limitPrice || 0).toLocaleString("tr-TR", { maximumFractionDigits: 8 })} {quoteAsset}</dd></div>}
-            {kind === "STOP_LIMIT" && <>
-              <div className="flex justify-between gap-3"><dt className="text-ink-500">Tetikleme fiyatı</dt><dd className="font-mono font-semibold text-ink-900">{Number(stopPrice || 0).toLocaleString("tr-TR", { maximumFractionDigits: 8 })} {quoteAsset}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-ink-500">Limit fiyatı</dt><dd className="font-mono font-semibold text-ink-900">{Number(stopLimitPrice || 0).toLocaleString("tr-TR", { maximumFractionDigits: 8 })} {quoteAsset}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-ink-500">Sembol</dt><dd className="font-semibold text-ink-900">{review.symbol}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-ink-500">Yön</dt><dd className={`font-semibold ${review.side === "BUY" ? "text-gain" : "text-loss"}`}>{review.side === "BUY" ? "ALIM" : "SATIM"}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-ink-500">Emir türü</dt><dd className="font-semibold text-ink-900">{review.kind === "STOP_LIMIT" ? "Stop-Limit" : review.kind === "LIMIT" ? "Limit" : "Piyasa"}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-ink-500">{review.kind === "MARKET" && review.side === "BUY" ? "Harcanacak tutar" : "Miktar"}</dt><dd className="font-mono font-semibold text-ink-900">{review.amount.toLocaleString("tr-TR", { maximumFractionDigits: 8 })} {review.kind === "MARKET" && review.side === "BUY" ? review.quoteAsset : review.base}</dd></div>
+            {review.kind === "LIMIT" && <div className="flex justify-between gap-3"><dt className="text-ink-500">Limit fiyatı</dt><dd className="font-mono font-semibold text-ink-900">{Number(review.limitPrice || 0).toLocaleString("tr-TR", { maximumFractionDigits: 8 })} {review.quoteAsset}</dd></div>}
+            {review.kind === "STOP_LIMIT" && <>
+              <div className="flex justify-between gap-3"><dt className="text-ink-500">Tetikleme fiyatı</dt><dd className="font-mono font-semibold text-ink-900">{Number(review.stopPrice || 0).toLocaleString("tr-TR", { maximumFractionDigits: 8 })} {review.quoteAsset}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-ink-500">Limit fiyatı</dt><dd className="font-mono font-semibold text-ink-900">{Number(review.stopLimitPrice || 0).toLocaleString("tr-TR", { maximumFractionDigits: 8 })} {review.quoteAsset}</dd></div>
             </>}
-            <div className="flex justify-between gap-3 border-t border-line pt-2"><dt className="text-ink-500">Yaklaşık emir tutarı</dt><dd className="font-mono font-semibold text-ink-900">{quoteAsset === "TRY" ? formatTL(estimatedQuote) : `${estimatedQuote.toLocaleString("tr-TR", { maximumFractionDigits: 4 })} USDT`}</dd></div>
+            {review.kind === "MARKET" && <div className="flex justify-between gap-3"><dt className="text-ink-500">Referans fiyat (onay anı)</dt><dd className="font-mono text-ink-700">{review.referencePrice != null ? formatPrice(review.referencePrice) : "—"}</dd></div>}
+            <div className="flex justify-between gap-3 border-t border-line pt-2"><dt className="text-ink-500">Yaklaşık emir tutarı</dt><dd className="font-mono font-semibold text-ink-900">{review.quoteAsset === "TRY" ? formatTL(review.estimatedQuote) : `${review.estimatedQuote.toLocaleString("tr-TR", { maximumFractionDigits: 4 })} USDT`}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-ink-500">İstemci emir no</dt><dd className="font-mono text-[11px] text-ink-500">{review.clientOrderId}</dd></div>
           </dl>
           <div className="mt-4 grid grid-cols-2 gap-2">
-            <button type="button" disabled={busy} onClick={() => setReviewOpen(false)} className="rounded-lg border border-line px-3 py-2 text-sm font-semibold text-ink-600 disabled:opacity-50">Geri dön</button>
-            <Button variant={side === "BUY" ? "success" : "danger"} disabled={busy} onClick={submitOrder}>{busy ? "Gönderiliyor…" : "Gerçek emri onayla"}</Button>
+            <button type="button" disabled={busy} onClick={closeReview} className="rounded-lg border border-line px-3 py-2 text-sm font-semibold text-ink-600 disabled:opacity-50">Geri dön</button>
+            <Button variant={review.side === "BUY" ? "success" : "danger"} disabled={busy} onClick={submitOrder}>{busy ? "Gönderiliyor…" : "Gerçek emri onayla"}</Button>
           </div>
         </section>
       </div>}

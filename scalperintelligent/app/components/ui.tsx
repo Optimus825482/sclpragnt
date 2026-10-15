@@ -1,6 +1,6 @@
 "use client";
 
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { sourceLabel } from "../lib/sources";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "success";
@@ -219,6 +219,29 @@ export function EmptyState({ title, hint, tone = "neutral" }: { title: string; h
 /** İskelet yükleme bloğu. */
 export function Skeleton({ className = "" }: { className?: string }) {
   return <div className={`animate-pulse rounded-lg bg-canvas ${className}`} />;
+}
+
+/**
+ * Poll hata bandı (denetim P2): eldeki liste gösterilmeye devam ederken
+ * "yenilenemedi · son güncelleme X sn önce" uyarısı. Renk tek başına taşıyıcı
+ * değildir; metin ve role="status" ile duyurulur.
+ */
+export function PollStatusBand({ error, updatedAt, label = "Veri" }: { error: string | null; updatedAt: number | null; label?: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!error) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [error]);
+  if (!error) return null;
+  const age = updatedAt == null ? null : Math.max(0, Math.round((now - updatedAt) / 1000));
+  return (
+    <div role="status" className="rounded-lg border border-warn/30 bg-warn-soft/60 px-3 py-1.5 text-[11px] text-warn">
+      <span className="font-semibold">{label} yenilenemedi</span>
+      <span> · {age == null ? "henüz başarılı yanıt yok" : `son güncelleme ${age} sn önce`}</span>
+      <span className="text-warn/80"> · {error}</span>
+    </div>
+  );
 }
 
 /** Aç/kapat anahtarı (erişilebilir switch). */

@@ -11,18 +11,35 @@ const UNCONSUMED: ReadonlySet<string> = new Set(["tickers", "trade_repair_comple
 
 type MessageListener = (message: LiveMessage) => void;
 type StatusListener = (status: LiveStatus) => void;
+/** Dinleyicinin ilgilendiği mesaj tipleri; `null` = hepsi (filtre yok). */
+type Subscription = { listener: MessageListener; types: ReadonlySet<string> | null };
 
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let status: LiveStatus = "closed";
-const messageListeners = new Set<MessageListener>();
+const subscriptions = new Set<Subscription>();
 const statusListeners = new Set<StatusListener>();
 
 const HEARTBEAT_CHECK_MS = 15_000;
 const STALE_AFTER_MS = 45_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let lastMessageAt = 0;
+
+/** Ham JSON metninden `"type":"..."` değerini parse etmeden çıkarır (ucuz ön filtre). */
+const TYPE_PATTERN = /"type"\s*:\s*"([^"]*)"/;
+function peekType(raw: string): string | null {
+  const match = TYPE_PATTERN.exec(raw);
+  return match ? match[1] : null;
+}
+
+/** Herhangi bir abonenin ilgilendiği tip mi? Filtresiz abone varsa her tip geçer. */
+function wanted(type: string): boolean {
+  for (const subscription of subscriptions) {
+    if (subscription.types === null || subscription.types.has(type)) return true;
+  }
+  return false;
+}
 
 function stopHeartbeat() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -43,7 +60,7 @@ function setStatus(next: LiveStatus) {
   statusListeners.forEach((listener) => listener(next));
 }
 function connect() {
-  if (typeof window === "undefined" || socket || messageListeners.size === 0) return;
+  if (typeof window === "undefined" || socket || subscriptions.size === 0) return;
   setStatus("connecting");
   const instance = new WebSocket(WS_URL);
   socket = instance;
@@ -57,12 +74,18 @@ function connect() {
   instance.onmessage = (event) => {
     if (socket !== instance) return;
     const raw = typeof event.data === "string" ? event.data : "";
-    if (raw.includes('"type":"tickers"') || raw.includes('"type": "tickers"')) return;
+    // Her mesaj canlılık kanıtıdır; elenen tipler de kalp atışını besler.
     lastMessageAt = Date.now();
+    // JSON.parse ÖNCESİ ucuz eleme: `binance_price` gibi saniyelik, tüm
+    // piyasayı taşıyan mesajlar yalnız bir abonesi varsa parse edilir.
+    const type = peekType(raw);
+    if (type !== null && (UNCONSUMED.has(type) || !wanted(type))) return;
     try {
-      const message = JSON.parse(event.data) as LiveMessage;
-      if (UNCONSUMED.has(message?.type)) return;
-      if (message?.type) messageListeners.forEach((listener) => listener(message));
+      const message = JSON.parse(raw) as LiveMessage;
+      if (!message?.type || UNCONSUMED.has(message.type)) return;
+      subscriptions.forEach((subscription) => {
+        if (subscription.types === null || subscription.types.has(message.type)) subscription.listener(message);
+      });
     } catch {
       /* bozuk mesaj kanalı düşürmesin */
     }
@@ -78,16 +101,17 @@ function connect() {
     }
     const delay = Math.min(30_000, 2_000 * 2 ** Math.min(reconnectAttempt, 4)) + Math.random() * 1_000;
     reconnectAttempt += 1;
-    if (messageListeners.size > 0) reconnectTimer = setTimeout(connect, delay);
+    if (subscriptions.size > 0) reconnectTimer = setTimeout(connect, delay);
   };
   instance.onerror = () => instance.close();
 }
-function subscribeLive(listener: MessageListener) {
-  messageListeners.add(listener);
+function subscribeLive(listener: MessageListener, types?: readonly string[]) {
+  const subscription: Subscription = { listener, types: types ? new Set(types) : null };
+  subscriptions.add(subscription);
   connect();
   return () => {
-    messageListeners.delete(listener);
-    if (messageListeners.size === 0) {
+    subscriptions.delete(subscription);
+    if (subscriptions.size === 0) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = null;
       stopHeartbeat();
@@ -114,8 +138,26 @@ export function useLiveStatus() {
   return current;
 }
 
-export function useLiveMessages(listener: MessageListener) {
+/**
+ * Canlı mesaj aboneliği. `types` verilirse yalnız o tipler iletilir ve diğer
+ * tipler parse bile edilmez (bkz. onmessage). Tip listesi sabit olmalı; her
+ * render'da yeni dizi üretilirse abonelik yeniden kurulur.
+ */
+export function useLiveMessages(listener: MessageListener, types?: readonly string[]) {
   const listenerRef = useRef(listener);
   useEffect(() => { listenerRef.current = listener; }, [listener]);
-  useEffect(() => subscribeLive((message) => listenerRef.current(message)), []);
+  const typesKey = types ? types.join("|") : "";
+  useEffect(
+    () => subscribeLive((message) => listenerRef.current(message), typesKey ? typesKey.split("|") : undefined),
+    [typesKey],
+  );
+}
+
+/**
+ * Kabuk seviyesinde KALICI bağlantı (denetim P1-5): WS yalnız `subscribeLive`
+ * çağıran sayfalarda açılıyordu; diğer sayfalarda rozet "KOPUK" kalıyordu.
+ * AppShell bunu bir kez bağlar; boş tip kümesi hiçbir mesajı parse ettirmez.
+ */
+export function useLiveConnection() {
+  useEffect(() => subscribeLive(() => undefined, []), []);
 }

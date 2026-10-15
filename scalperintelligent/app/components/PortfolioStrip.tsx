@@ -36,7 +36,14 @@ export default function PortfolioStrip() {
   })();
   const totalValue = realPositions.data?.total_value_try ?? null;
   const realizedToday = today.data?.daily?.realized_pnl_try;
-  const openPnl = realPositions.data?.holdings?.reduce((sum, h) => sum + Number(h.pnl_try || 0), 0);
+  // "Veri yok ≠ 0" (denetim P2): K/Z'si bilinmeyen varlık toplamda 0 sayılmaz;
+  // bilinenler toplanır ve eksik olduğu açıkça yazılır. Hiçbiri bilinmiyorsa null.
+  const holdingRows = (realPositions.data?.holdings ?? []).filter((h) => h.asset !== "TRY" && Number(h.total) > 0);
+  const knownPnl = holdingRows.filter((h) => h.pnl_try != null && Number.isFinite(Number(h.pnl_try)));
+  const missingPnlCount = holdingRows.length - knownPnl.length;
+  const openPnl = realPositions.data == null || (holdingRows.length > 0 && knownPnl.length === 0)
+    ? null
+    : knownPnl.reduce((sum, h) => sum + Number(h.pnl_try), 0);
   const dailyPnl = realizedToday == null || openPnl == null ? null : Number(realizedToday) + openPnl;
   const dailyPct = totalValue && dailyPnl != null
     ? (Number(dailyPnl) / Number(totalValue)) * 100
@@ -58,7 +65,9 @@ export default function PortfolioStrip() {
     {
       label: "Bugünkü K/Z",
       value: dailyPnl == null ? "—" : `${dailyPnl >= 0 ? "+" : ""}${formatTL(dailyPnl)}`,
-      detail: dailyPct == null ? "Gerçekleşen + açık K/Z yükleniyor" : `${formatPct(dailyPct, 2, true)} · gerçekleşen + açık K/Z`,
+      detail: dailyPct == null
+        ? (realPositions.error || today.error ? "Gerçekleşen + açık K/Z alınamadı" : "Gerçekleşen + açık K/Z yükleniyor")
+        : `${formatPct(dailyPct, 2, true)} · gerçekleşen + açık K/Z${missingPnlCount > 0 ? ` · ${missingPnlCount} varlığın K/Z'si yok` : ""}`,
       valueTone: dailyPnl == null ? "text-ink-900" : dailyPnl > 0 ? "text-gain" : dailyPnl < 0 ? "text-loss" : "text-ink-900",
     },
   ];

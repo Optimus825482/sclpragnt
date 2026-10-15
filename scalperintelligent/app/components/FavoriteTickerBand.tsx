@@ -40,16 +40,17 @@ export default function FavoriteTickerBand({ favorites }: Props) {
         const next = Array.isArray(body?.tickers) ? body.tickers as FavoriteTicker[] : [];
         const previousBySymbol = new Map(previousTickers.current.map((ticker) => [ticker.symbol, ticker]));
         const movement: Record<string, "up" | "down" | "flat"> = {};
-        const enriched = next.map((ticker) => {
+        // Yön (renk) iki poll arası fiyat farkından; yüzde ise SUNUCUNUN 24s
+        // change_pct değeri (denetim P2: eskiden poll farkı 24s değişimi gibi basılıyordu).
+        next.forEach((ticker) => {
           const before = previousBySymbol.get(ticker.symbol)?.last;
           const after = ticker.last;
-          const change = before != null && before > 0 && after != null ? ((after - before) / before) * 100 : null;
-          movement[ticker.symbol] = change == null || change === 0 ? "flat" : change > 0 ? "up" : "down";
-          return { ...ticker, change_pct: change };
+          const delta = before != null && before > 0 && after != null ? after - before : null;
+          movement[ticker.symbol] = delta == null || delta === 0 ? "flat" : delta > 0 ? "up" : "down";
         });
-        previousTickers.current = enriched;
+        previousTickers.current = next;
         setDirections(movement);
-        setTickers(enriched);
+        setTickers(next);
         setCheckedAt(Number(body?.generated_at) || Date.now() / 1000);
         setError(false);
       } catch {
@@ -88,7 +89,7 @@ export default function FavoriteTickerBand({ favorites }: Props) {
               <div key={symbol} role="listitem" className={`flex shrink-0 items-center gap-1.5 rounded-md bg-white/5 px-2 py-1 font-mono text-[11px] ${color}`}>
                 <span className="font-semibold">{symbol}</span>
                 <span>{ticker?.available && ticker.last != null ? ticker.last.toLocaleString("tr-TR", { maximumSignificantDigits: 8 }) : "—"}</span>
-                <span>{change == null ? "(—)" : `(${change >= 0 ? "+" : ""}${change.toFixed(2)}%)`}</span>
+                <span title="24 saatlik değişim">{change == null ? "(—)" : `(${change >= 0 ? "+" : ""}${change.toFixed(2)}%)`}</span>
                 {itemStale && <span className="rounded bg-amber-400/15 px-1 text-[9px] text-amber-300">ESKİ</span>}
               </div>
             );

@@ -6,7 +6,7 @@ import { usePoll } from "../lib/hooks";
 import { fmtDateTime, formatFixed, formatPrice } from "../lib/format";
 import { baseAsset } from "../lib/opportunity";
 import type { BinanceSettings } from "../lib/types";
-import { Badge, Card, EmptyState, SectionHeader, Skeleton } from "../components/ui";
+import { Badge, Card, EmptyState, PollStatusBand, SectionHeader, Skeleton } from "../components/ui";
 
 export type OpenOrder = {
   orderId: number;
@@ -59,6 +59,7 @@ export default function EmirlerPage() {
   }
 
   if (settings.loading) return <Skeleton className="h-64" />;
+  if (settings.error && !settings.data) return <EmptyState title="Binance TR hesap durumu alınamadı" hint={settings.error} tone="loss" />;
   if (!settings.data?.configured) return <EmptyState title="Binance TR hesabı bağlı değil" hint="Açık emirleri görüntülemek için Ayarlar'dan hesabınızı bağlayın." />;
 
   const list = orders.data?.orders || [];
@@ -72,6 +73,8 @@ export default function EmirlerPage() {
     />
 
     {message && <div role="status" className={`rounded-xl border p-3 text-sm ${message.tone === "gain" ? "border-gain/30 bg-gain-soft/40 text-gain" : "border-loss/30 bg-loss-soft/40 text-loss"}`}>{message.text}</div>}
+
+    {orders.data && <PollStatusBand error={orders.error} updatedAt={orders.updatedAt} label="Açık emir listesi" />}
 
     {orders.loading && !orders.data ? <Skeleton className="h-48" /> : orders.error && !orders.data ? (
       <EmptyState title="Açık emirler alınamadı" hint={orders.error} tone="loss" />

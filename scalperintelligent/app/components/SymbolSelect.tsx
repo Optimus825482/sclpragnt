@@ -90,6 +90,7 @@ export default function SymbolSelect({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={placeholder}
+            aria-label="Sembol ara"
             className="w-full border-b border-line px-3 py-2 text-sm outline-none"
           />
           <ul role="listbox" className="max-h-64 overflow-y-auto py-1">
@@ -123,6 +124,8 @@ export default function SymbolSelect({
                       }}
                       className={`p-1 text-xs ${fav ? "text-amber-500" : "text-ink-300 hover:text-amber-500"}`}
                       title={fav ? "Favoriden çıkar" : "Favoriye ekle"}
+                      aria-label={`${s} ${fav ? "favoriden çıkar" : "favoriye ekle"}`}
+                      aria-pressed={fav}
                     >
                       {fav ? "★" : "☆"}
                     </button>

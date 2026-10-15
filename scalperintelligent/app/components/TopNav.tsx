@@ -30,6 +30,7 @@ export default function TopNav() {
 
   const isAdmin = role === "admin";
   const initial = (username || "?").charAt(0).toUpperCase();
+  const liveLabel = liveStatus === "open" ? "CANLI" : liveStatus === "connecting" ? "BAĞLANIYOR" : "KOPUK";
 
   useEffect(() => {
     try {
@@ -115,14 +116,22 @@ export default function TopNav() {
                 : "border-line bg-canvas text-ink-400 hover:text-ink-700"
             }`}
             title={soundActive ? "Sinyal sesi açık (kapatmak için tıkla)" : "Sinyal sesi kapalı (açmak için tıkla)"}
+            aria-label={soundActive ? "Sinyal sesini kapat" : "Sinyal sesini aç"}
+            aria-pressed={soundActive}
           >
             <span>{soundActive ? "🔔" : "🔕"}</span>
             <span className="hidden lg:inline">{soundActive ? "Ses Açık" : "Sessiz"}</span>
           </button>
 
-          {/* Canlı Bağlantı Rozeti */}
-          <div className="flex items-center gap-1.5">
+          {/* Canlı Bağlantı Rozeti — durum yalnız renkle değil metinle de taşınır */}
+          <div
+            className="flex items-center gap-1.5"
+            role="status"
+            aria-live="polite"
+            title={`Canlı veri bağlantısı: ${liveLabel}`}
+          >
             <span
+              aria-hidden="true"
               className={`h-2 w-2 rounded-full ${
                 liveStatus === "open"
                   ? "bg-gain odak-live-dot"
@@ -131,8 +140,9 @@ export default function TopNav() {
                   : "bg-loss"
               }`}
             />
-            <span className="hidden sm:inline font-mono text-[11px] font-semibold uppercase text-ink-500">
-              {liveStatus === "open" ? "CANLI" : liveStatus === "connecting" ? "BAĞLANIYOR" : "KOPUK"}
+            <span className="font-mono text-[11px] font-semibold uppercase text-ink-500">
+              <span className="sm:hidden" aria-hidden="true">{liveStatus === "open" ? "●" : liveStatus === "connecting" ? "…" : "✕"}</span>
+              <span className="sr-only sm:not-sr-only">{liveLabel}</span>
             </span>
           </div>
 
@@ -148,10 +158,13 @@ export default function TopNav() {
               <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-soft text-xs font-bold text-accent">
                 {initial}
               </span>
+              {/* Mobilde de erişilebilir: ikon + sr-only metin (denetim P2 a11y) */}
               <Button
                 variant="ghost"
-                className="hidden min-h-0 px-2 py-1 text-xs sm:inline-flex"
+                className="min-h-0 px-2 py-1 text-xs"
                 disabled={busy}
+                aria-label="Oturumu kapat"
+                title="Oturumu kapat"
                 onClick={async () => {
                   setBusy(true);
                   try {
@@ -161,7 +174,8 @@ export default function TopNav() {
                   }
                 }}
               >
-                {busy ? "…" : "Çıkış"}
+                <span className="sm:hidden" aria-hidden="true">{busy ? "…" : "⎋"}</span>
+                <span className="hidden sm:inline">{busy ? "…" : "Çıkış"}</span>
               </Button>
             </div>
           )}

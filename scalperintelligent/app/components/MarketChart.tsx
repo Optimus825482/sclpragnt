@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
+
+const KLINE_TYPES = ["kline"] as const;
 import { apiRequest } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import { useAuth } from "../lib/auth";
@@ -162,6 +164,14 @@ export function MarketChart({ initialSymbol = "BTCUSDT", initialInterval = "5m",
   const tickAtRef = useRef<number | null>(tickAt);
   socketStatusRef.current = socketStatus;
   tickAtRef.current = tickAt;
+  // Denetim P1-7: her kline tick'inde setData+fitContent zoom/pan'ı sıfırlıyordu.
+  // Tam yeniden çizim yalnız REST yükleme / gösterge değişiminde; fitContent
+  // yalnız ilk yükleme ve sembol/aralık değişiminde; tick'te series.update().
+  const needsFullSetRef = useRef(true);
+  const needsFitRef = useRef(true);
+  const lastRenderedTimeRef = useRef<number | null>(null);
+  const loadSequenceRef = useRef(0);
+  const loadAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => { setSymbol(normalizeSymbol(initialSymbol)); }, [initialSymbol]);
   useEffect(() => { setInterval(INTERVALS.includes(initialInterval as typeof INTERVALS[number]) ? initialInterval : "5m"); }, [initialInterval]);
@@ -173,22 +183,46 @@ export function MarketChart({ initialSymbol = "BTCUSDT", initialInterval = "5m",
   }, [config, configStorageKey, loadedConfigKey]);
 
   const load = useCallback(async () => {
+    // İstek kimliği: sembol değişince geç gelen eski yanıt yeni sembolün grafiğine karışmaz.
+    const id = ++loadSequenceRef.current;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     try {
-      const response = await apiRequest(`/api/market-klines/${encodeURIComponent(symbol)}?interval=${interval}&limit=300`, { cache: "no-store" });
+      const response = await apiRequest(`/api/market-klines/${encodeURIComponent(symbol)}?interval=${interval}&limit=300`, { cache: "no-store", signal: controller.signal });
+      if (id !== loadSequenceRef.current) return;
       if (!response.ok) throw new Error(`Grafik verisi alınamadı (${response.status})`);
       const body = await response.json();
+      if (id !== loadSequenceRef.current) return;
       const rows = Array.isArray(body?.candles) ? body.candles.map(readCandle).filter(Boolean) as Candle[] : [];
-      if (rows.length) setCandles((current) => {
-        const live = current.filter((candle) => tickAtRef.current != null && candle.time === current[current.length - 1]?.time && Date.now() - tickAtRef.current < 60_000);
-        const merged = new Map(rows.map((candle) => [candle.time, candle]));
-        live.forEach((candle) => merged.set(candle.time, candle));
-        return Array.from(merged.values()).sort((left, right) => left.time - right.time).slice(-300);
-      });
+      if (rows.length) {
+        needsFullSetRef.current = true;
+        setCandles((current) => {
+          const live = current.filter((candle) => tickAtRef.current != null && candle.time === current[current.length - 1]?.time && Date.now() - tickAtRef.current < 60_000);
+          const merged = new Map(rows.map((candle) => [candle.time, candle]));
+          live.forEach((candle) => merged.set(candle.time, candle));
+          return Array.from(merged.values()).sort((left, right) => left.time - right.time).slice(-300);
+        });
+      }
       setRestAt(Date.now());
       setError(rows.length ? "" : "Bu sembol ve zaman aralığı için mum verisi yok.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Grafik verisi alınamadı"); }
+    } catch (reason) {
+      if (id !== loadSequenceRef.current || (reason instanceof DOMException && reason.name === "AbortError")) return;
+      setError(reason instanceof Error ? reason.message : "Grafik verisi alınamadı");
+    } finally {
+      if (loadAbortRef.current === controller) loadAbortRef.current = null;
+    }
   }, [interval, symbol]);
-  useEffect(() => { setTickAt(null); void load(); }, [load]);
+  useEffect(() => {
+    // Sembol/aralık değişti: eski mumları gösterme, tam çizim + fitContent.
+    setTickAt(null);
+    setCandles([]);
+    needsFullSetRef.current = true;
+    needsFitRef.current = true;
+    lastRenderedTimeRef.current = null;
+    void load();
+    return () => { loadAbortRef.current?.abort(); };
+  }, [load]);
   useLiveMessages((message) => {
     if (message.type !== "kline" || !message.data || typeof message.data !== "object") return;
     const bar = message.data as Record<string, unknown>;
@@ -203,7 +237,7 @@ export function MarketChart({ initialSymbol = "BTCUSDT", initialInterval = "5m",
       if (index < 0) return [...current.slice(-299), candle];
       const next = current.slice(); next[index] = candle; return next;
     });
-  });
+  }, KLINE_TYPES);
   useEffect(() => {
     const timer = window.setInterval(() => {
       setClock(Date.now());
@@ -251,23 +285,53 @@ export function MarketChart({ initialSymbol = "BTCUSDT", initialInterval = "5m",
   }, [compact]);
 
   const values = useMemo(() => calculate(candles, config.periods), [candles, config.periods]);
+  // Gösterge seti/periyodu değişince seriler baştan kurulur (kapatılan gösterge temizlenmeli).
+  useEffect(() => { needsFullSetRef.current = true; }, [config.enabled, config.periods]);
+  // Grafik yeniden oluşturulunca (compact değişimi) her şey baştan.
+  useEffect(() => { if (ready) { needsFullSetRef.current = true; lastRenderedTimeRef.current = null; } }, [ready]);
   useEffect(() => {
     if (!ready || !candleSeriesRef.current || !chartRef.current || !subChartRef.current) return;
     const toTime = (value: number) => value as UTCTimestamp;
-    const lineData = (input: Array<number | null>) => candles.flatMap((candle, index) => input[index] == null ? [] : [{ time: toTime(candle.time), value: input[index] as number }]);
     const enabled = new Set(config.enabled);
+    const volumeColor = (candle: Candle) => candle.close >= candle.open ? "rgba(8,166,106,.45)" : "rgba(226,71,85,.45)";
+    const lineKeys = ["sma", "ema", "upper", "lower", "vwap", "rsi", "adx", "atr"] as const;
+    const lineEnabled: Record<typeof lineKeys[number], boolean> = {
+      sma: enabled.has("sma"), ema: enabled.has("ema"), upper: enabled.has("bollinger"), lower: enabled.has("bollinger"),
+      vwap: enabled.has("vwap"), rsi: enabled.has("rsi"), adx: enabled.has("adx"), atr: enabled.has("atr"),
+    };
+    const last = candles[candles.length - 1];
+    const incremental = !needsFullSetRef.current && last != null && lastRenderedTimeRef.current != null && last.time >= lastRenderedTimeRef.current;
+
+    if (incremental) {
+      // Canlı tick: yalnız son mum güncellenir; zoom/pan korunur.
+      const index = candles.length - 1;
+      const time = toTime(last.time);
+      candleSeriesRef.current.update({ time, open: last.open, high: last.high, low: last.low, close: last.close });
+      if (enabled.has("volume")) seriesRef.current.volume?.update({ time, value: last.volume, color: volumeColor(last) });
+      for (const key of lineKeys) {
+        if (!lineEnabled[key]) continue;
+        const value = values[key][index];
+        seriesRef.current[key]?.update(value == null ? { time } : { time, value });
+      }
+      if (enabled.has("macd")) {
+        const histogram = values.histogram[index];
+        seriesRef.current.macd?.update(histogram == null ? { time } : { time, value: histogram, color: histogram >= 0 ? "#08a66a" : "#e24755" });
+      }
+      lastRenderedTimeRef.current = last.time;
+      return;
+    }
+
+    const lineData = (input: Array<number | null>) => candles.flatMap((candle, index) => input[index] == null ? [] : [{ time: toTime(candle.time), value: input[index] as number }]);
     candleSeriesRef.current.setData(candles.map((candle) => ({ time: toTime(candle.time), open: candle.open, high: candle.high, low: candle.low, close: candle.close })));
-    seriesRef.current.volume?.setData(enabled.has("volume") ? candles.map((candle) => ({ time: toTime(candle.time), value: candle.volume, color: candle.close >= candle.open ? "rgba(8,166,106,.45)" : "rgba(226,71,85,.45)" })) : []);
-    seriesRef.current.sma?.setData(enabled.has("sma") ? lineData(values.sma) : []);
-    seriesRef.current.ema?.setData(enabled.has("ema") ? lineData(values.ema) : []);
-    seriesRef.current.upper?.setData(enabled.has("bollinger") ? lineData(values.upper) : []);
-    seriesRef.current.lower?.setData(enabled.has("bollinger") ? lineData(values.lower) : []);
-    seriesRef.current.vwap?.setData(enabled.has("vwap") ? lineData(values.vwap) : []);
-    seriesRef.current.rsi?.setData(enabled.has("rsi") ? lineData(values.rsi) : []);
-    seriesRef.current.adx?.setData(enabled.has("adx") ? lineData(values.adx) : []);
-    seriesRef.current.atr?.setData(enabled.has("atr") ? lineData(values.atr) : []);
+    seriesRef.current.volume?.setData(enabled.has("volume") ? candles.map((candle) => ({ time: toTime(candle.time), value: candle.volume, color: volumeColor(candle) })) : []);
+    for (const key of lineKeys) seriesRef.current[key]?.setData(lineEnabled[key] ? lineData(values[key]) : []);
     seriesRef.current.macd?.setData(enabled.has("macd") ? candles.flatMap((candle, index) => values.histogram[index] == null ? [] : [{ time: toTime(candle.time), value: values.histogram[index] as number, color: (values.histogram[index] as number) >= 0 ? "#08a66a" : "#e24755" }]) : []);
-    chartRef.current.timeScale().fitContent(); subChartRef.current.timeScale().fitContent();
+    needsFullSetRef.current = false;
+    lastRenderedTimeRef.current = last?.time ?? null;
+    if (needsFitRef.current && candles.length) {
+      chartRef.current.timeScale().fitContent(); subChartRef.current.timeScale().fitContent();
+      needsFitRef.current = false;
+    }
   }, [candles, config.enabled, ready, values]);
 
   const filteredSymbols = useMemo(() => {

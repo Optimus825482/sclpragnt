@@ -5,7 +5,7 @@ import { usePoll } from "../lib/hooks";
 import { formatFixed, formatPct, formatPrice, formatSignedTL } from "../lib/format";
 import type { BinancePositions, BinanceSettings } from "../lib/types";
 import { useWatchlist } from "../lib/watchlist";
-import { Badge, EmptyState, Skeleton } from "./ui";
+import { Badge, EmptyState, PollStatusBand, Skeleton } from "./ui";
 
 /** Binance TR gerçek hesabındaki elde tutulan coinleri ve anlık maliyet farkını gösterir. */
 export default function ActiveTradesTable({
@@ -23,6 +23,10 @@ export default function ActiveTradesTable({
 
   const holdings = (account.data?.holdings || []).filter((h) => h.asset !== "TRY" && Number(h.total) > 0).slice(0, limit);
 
+  // Ayar isteği HATA verdiyse "bağlı değil" demek yanıltıcı olur (denetim P2):
+  // hesap bağlı olabilir, yalnız durum alınamamıştır.
+  if (settings.error && !settings.data)
+    return <EmptyState title="Binance TR hesap durumu alınamadı" hint={settings.error} tone="loss" />;
   if (!settings.data?.configured && !settings.loading)
     return (
       <EmptyState
@@ -33,10 +37,16 @@ export default function ActiveTradesTable({
   if (settings.loading || (account.loading && !account.data)) return <Skeleton className="h-40" />;
   if (account.error && !account.data) return <EmptyState title="Binance TR varlıkları alınamadı" hint={account.error} tone="loss" />;
   if (holdings.length === 0)
-    return <EmptyState title="Açık varlık yok" hint="Bağlı Binance TR hesabında takip edilecek coin bakiyesi bulunmuyor." />;
+    return (
+      <div className="space-y-2">
+        <PollStatusBand error={account.error} updatedAt={account.updatedAt} label="Varlık listesi" />
+        <EmptyState title="Açık varlık yok" hint="Bağlı Binance TR hesabında takip edilecek coin bakiyesi bulunmuyor." />
+      </div>
+    );
 
   return (
     <div className="odak-scroll">
+      <PollStatusBand error={account.error} updatedAt={account.updatedAt} label="Varlık listesi" />
       <table className="w-full min-w-[760px] border-collapse text-sm">
         <thead>
           <tr className="text-left text-[11px] uppercase tracking-wide text-ink-400">
@@ -67,6 +77,8 @@ export default function ActiveTradesTable({
                     onClick={() => toggleFavorite(symbol)}
                     className={`text-sm ${fav ? "text-amber-500" : "text-ink-300 hover:text-amber-500"}`}
                     title={fav ? "Favoriden çıkar" : "Favoriye ekle"}
+                    aria-label={`${symbol} ${fav ? "favoriden çıkar" : "favoriye ekle"}`}
+                    aria-pressed={fav}
                   >
                     {fav ? "★" : "☆"}
                   </button>
@@ -90,10 +102,10 @@ export default function ActiveTradesTable({
                   {formatFixed(holding.total, 4)}
                 </td>
                 <td className={`py-2.5 pr-2 text-right font-mono ${tone}`}>
-                  {formatSignedTL(pnl)}
+                  {pnl == null ? <span title="K/Z hesaplanamadı (maliyet veya fiyat yok)">—</span> : formatSignedTL(pnl)}
                 </td>
                 <td className={`py-2.5 pr-2 text-right font-mono ${tone}`}>
-                  {formatPct(pct, 2, true)}
+                  {pct == null ? "—" : formatPct(pct, 2, true)}
                 </td>
                 <td className="py-2.5 text-right">
                   <div className="flex items-center justify-end gap-1.5">
@@ -107,6 +119,8 @@ export default function ActiveTradesTable({
                       type="button"
                       onClick={() => onSelectSymbol?.(symbol)}
                       className="rounded bg-accent/10 px-2 py-1 text-[11px] font-semibold text-accent hover:bg-accent hover:text-white transition-colors"
+                      title="Sembolü emir paneline taşır; emir göndermez"
+                      aria-label={`${symbol} sembolünü emir paneline taşı`}
                     >
                       İşlem Yap
                     </button>

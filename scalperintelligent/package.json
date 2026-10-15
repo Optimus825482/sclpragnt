@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start -p 3055",
     "start:standalone": "node .next/standalone/server.js",
-    "typecheck": "next typegen && tsc --noEmit --incremental false"
+    "typecheck": "next typegen && tsc --noEmit --incremental false",
+    "lint": "eslint ."
   },
   "dependencies": {
     "lightweight-charts": "^5.2.1",
@@ -21,6 +22,8 @@
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "autoprefixer": "^10",
+    "eslint": "^9.39.0",
+    "eslint-config-next": "16.3.0",
     "postcss": "8.5.26",
     "tailwindcss": "^3.4.0",
     "typescript": "^5"

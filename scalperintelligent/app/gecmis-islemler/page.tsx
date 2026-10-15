@@ -6,7 +6,7 @@ import { usePoll } from "../lib/hooks";
 import { fmtDateTime, formatFixed, formatPrice, formatSignedTL } from "../lib/format";
 import { baseAsset } from "../lib/opportunity";
 import type { BinanceSettings } from "../lib/types";
-import { Badge, Card, EmptyState, SectionHeader, Skeleton } from "../components/ui";
+import { Badge, Card, EmptyState, PollStatusBand, SectionHeader, Skeleton } from "../components/ui";
 import { downloadCsv, toCsv } from "../lib/csv";
 
 type BinanceFill = {
@@ -50,7 +50,9 @@ export default function GecmisIslemlerPage() {
   const visible = trades.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
 
   if (settings.loading) return <Skeleton className="h-64" />;
+  if (settings.error && !settings.data) return <EmptyState title="Binance TR hesap durumu alınamadı" hint={settings.error} tone="loss" />;
   if (!settings.data?.configured) return <EmptyState title="Binance TR hesabı bağlı değil" hint="Gerçek alım/satım geçmişini görüntülemek için Ayarlar'dan hesabınızı bağlayın." />;
+  const realizedToday = result.data?.daily?.realized_pnl_try;
 
   return <div className="space-y-5">
     <SectionHeader eyebrow="Geçmiş İşlemler" title="Binance TR işlem geçmişi" description="Seçilen günde gerçekleşen gerçek spot alım ve satım dolumları." actions={
@@ -59,10 +61,12 @@ export default function GecmisIslemlerPage() {
       </label>
     } />
 
+    {result.data && <PollStatusBand error={result.error} updatedAt={result.updatedAt} label="İşlem geçmişi" />}
+
     {result.loading && !result.data ? <Skeleton className="h-64" /> : result.error && !result.data ? <EmptyState title="Binance geçmişi alınamadı" hint={result.error} tone="loss" /> : trades.length === 0 ? <EmptyState title="Bu günde işlem yok" hint="Seçilen tarihte Binance TR hesabında gerçekleşmiş dolum bulunmuyor." /> : <Card className="p-4">
       <div className="mb-3 grid gap-3 sm:grid-cols-3">
         <div className="rounded-lg bg-canvas p-3"><p className="odak-kicker">Dolum</p><p className="mt-1 font-mono font-semibold text-ink-900">{result.data?.count ?? trades.length}</p></div>
-        <div className="rounded-lg bg-canvas p-3"><p className="odak-kicker">Günlük Gerçekleşen Net K/Z</p><p className={`mt-1 font-mono font-semibold ${(result.data?.daily?.realized_pnl_try || 0) >= 0 ? "text-gain" : "text-loss"}`}>{formatSignedTL(result.data?.daily?.realized_pnl_try)}</p></div>
+        <div className="rounded-lg bg-canvas p-3"><p className="odak-kicker">Günlük Gerçekleşen Net K/Z</p><p className={`mt-1 font-mono font-semibold ${realizedToday == null ? "text-ink-500" : realizedToday > 0 ? "text-gain" : realizedToday < 0 ? "text-loss" : "text-ink-900"}`}>{realizedToday == null ? "—" : formatSignedTL(realizedToday)}</p></div>
         <div className="rounded-lg bg-canvas p-3"><p className="odak-kicker">Sonuç</p><p className="mt-1 font-mono font-semibold text-ink-900">{result.data?.daily?.wins ?? 0} kâr · {result.data?.daily?.losses ?? 0} zarar</p></div>
       </div>
       <div className="odak-scroll"><table className="w-full min-w-[900px] border-collapse text-sm">

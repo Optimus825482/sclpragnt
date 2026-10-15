@@ -10,6 +10,17 @@
  *      backend'in `Set-Cookie`'si aynı yoldan geri iletilir → giriş çalışır.
  * Ayrıntı: scalperintelligent/README.md.
  */
+/*
+ * BACKEND_ORIGIN — BUILD-TIME değerdir (denetim P2, 2026-10-15, bilinçli olarak
+ * bırakıldı): `output: "standalone"` ile Next.js `rewrites()` sonucunu derleme
+ * sırasında `.next/routes-manifest.json` içine gömer; `async rewrites()` içinde
+ * `process.env` okumak da yalnız derleme anında çalışır, `next start`/standalone
+ * sunucu manifesti yeniden üretmez. Çalışma zamanında farklı backend adresi
+ * gerekiyorsa seçenekler: (a) imajı hedef ortamın BACKEND_ORIGIN'i ile derlemek
+ * (Dockerfile ARG), (b) rewrite yerine `app/api/[...path]/route.ts` ile
+ * çalışma zamanı proxy yazmak (cookie/Set-Cookie ve streaming'i elle taşımak
+ * gerekir). Bağımlılık eklemeden (b) bu denetim kapsamına alınmadı.
+ */
 const BACKEND_ORIGIN = process.env.BACKEND_ORIGIN || "http://127.0.0.1:8004";
 
 /** @type {import('next').NextConfig} */

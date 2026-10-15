@@ -220,6 +220,8 @@ function LiveFeed({
                       onClick={() => toggleFavorite(view.symbol)}
                       className={`text-sm ${fav ? "text-amber-500" : "text-ink-300 hover:text-amber-500"}`}
                       title={fav ? "Favorilerden çıkar" : "Favoriye ekle"}
+                      aria-label={`${view.symbol} ${fav ? "favorilerden çıkar" : "favoriye ekle"}`}
+                      aria-pressed={fav}
                     >
                       {fav ? "★" : "☆"}
                     </button>
@@ -515,6 +517,8 @@ function HistorySection({
                         onClick={() => toggleFavorite(sym)}
                         className={`text-sm ${fav ? "text-amber-500" : "text-ink-300 hover:text-amber-500"}`}
                         title={fav ? "Favorilerden çıkar" : "Favoriye ekle"}
+                        aria-label={`${sym} ${fav ? "favorilerden çıkar" : "favoriye ekle"}`}
+                        aria-pressed={fav}
                       >
                         {fav ? "★" : "☆"}
                       </button>

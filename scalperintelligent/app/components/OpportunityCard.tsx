@@ -246,6 +246,8 @@ export default function OpportunityCard({
                   type="button"
                   onClick={() => toggleFavorite(item.symbol)}
                   className={`text-lg ${favorited ? "text-amber-500" : "text-ink-400 hover:text-amber-500"}`}
+                  aria-label={`${item.symbol} ${favorited ? "favorilerden çıkar" : "favoriye ekle"}`}
+                  aria-pressed={favorited}
                 >
                   {favorited ? "★" : "☆"}
                 </button>

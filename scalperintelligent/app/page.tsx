@@ -7,13 +7,14 @@ import { usePoll } from "./lib/hooks";
 import { toOpportunityView, type OpportunityView } from "./lib/opportunity";
 import { useWatchlist } from "./lib/watchlist";
 import { fmtDateTime } from "./lib/format";
+import { useModalA11y } from "./lib/useModalA11y";
+import { SELECT_SYMBOL_QUERY, useSymbolSelectionRequest } from "./lib/uiEvents";
 import type { ManualUnifiedScanResponse, UnifiedScanResponse, UnifiedScanRun } from "./lib/types";
 import { Badge, Card, SectionHeader, Tabs } from "./components/ui";
 import PortfolioStrip from "./components/PortfolioStrip";
 import OpportunityCard from "./components/OpportunityCard";
 import ActiveTradesTable from "./components/ActiveTradesTable";
 import OrderPanel from "./components/OrderPanel";
-import LiveNotificationToast from "./components/LiveNotificationToast";
 
 type HorizonFilter = "all" | "favorites" | "5" | "15";
 
@@ -25,6 +26,23 @@ function isTypingTarget(target: EventTarget | null) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || element.isContentEditable;
 }
 
+/**
+ * Kısayol hedefi buton/bağlantı/diyalog/menü içindeyse yok sayılır (denetim P0-1):
+ * odak "Gerçek emri onayla" butonundayken Enter, kısayol değil tıklamadır.
+ */
+function isInteractiveTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null;
+  if (!element || typeof element.closest !== "function") return false;
+  return Boolean(element.closest("button, a, [role='dialog'], [role='listbox'], [role='menu'], [role='option']"));
+}
+
+/** Ekranda herhangi bir modal (onay penceresi, grafik, yardım) açık mı? */
+function anyModalOpen() {
+  return typeof document !== "undefined" && Boolean(document.querySelector("[aria-modal='true']"));
+}
+
+const candidateKey = (item: OpportunityView) => `${item.symbol}:${item.horizonMinutes ?? "unknown"}`;
+
 export default function Home() {
   const [horizon, setHorizon] = useState<HorizonFilter>("all");
   const [selected, setSelected] = useState<string | null>(null);
@@ -33,14 +51,29 @@ export default function Home() {
   const [scanBusy, setScanBusy] = useState(false);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  // Aday listesi dışından (toast, aktif varlıklar, ?symbol=) panele taşınan sembol.
+  const [externalSymbol, setExternalSymbol] = useState<string | null>(null);
   const { favorites, isFavorite, toggleFavorite } = useWatchlist();
   const scan = usePoll<UnifiedScanResponse>("/api/unified-scan/latest", 20_000, 30_000);
+  const shortcutsA11y = useModalA11y(showShortcuts, () => setShowShortcuts(false), "Klavye kısayolları");
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("filter") === "favorites") {
-      setHorizon("favorites");
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("filter") === "favorites") setHorizon("favorites");
+    const symbol = String(query.get(SELECT_SYMBOL_QUERY) || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (symbol) {
+      setExternalSymbol(symbol);
+      setSelected(symbol);
+      setQuickAmount(1000);
     }
   }, []);
+
+  // Kabuk seviyesindeki toast "Panele Aktar" dediğinde (emir göndermez).
+  useSymbolSelectionRequest(({ symbol, amount }) => {
+    setExternalSymbol(symbol);
+    setSelected(symbol);
+    setQuickAmount(amount ?? 1000);
+  });
 
   const latestRun = scan.data?.run ?? null;
   const latestRunAt = Number(latestRun?.completed_at ?? latestRun?.generated_at ?? 0);
@@ -67,37 +100,37 @@ export default function Home() {
     return views.filter((item) => item.horizonMinutes === Number(horizon));
   }, [views, horizon, isFavorite]);
 
+  // YALNIZ açık kullanıcı seçimi (denetim P0-1). Eskiden `?? filtered[0]`
+  // vardı: 20 sn'lik tarama yenilemesi sıralamayı değiştirince emir panelindeki
+  // sembol kullanıcıdan habersiz değişiyordu. Seçim yoksa panel boş kalır.
   const selectedView = useMemo(
-    () => filtered.find((item) => `${item.symbol}:${item.horizonMinutes ?? "unknown"}` === selected || item.symbol === selected) ?? filtered[0] ?? null,
+    () => (selected ? filtered.find((item) => candidateKey(item) === selected || item.symbol === selected) ?? null : null),
     [filtered, selected],
   );
+  const panelSymbol = selectedView?.symbol ?? externalSymbol ?? null;
 
   const generatedAt = Number(run?.completed_at ?? run?.generated_at ?? 0);
   const stale = generatedAt > 0 && Date.now() / 1000 - generatedAt > 120;
   const loadingFirst = scan.loading && !run;
 
-  useEffect(() => {
-    if (selected && !filtered.some((item) => `${item.symbol}:${item.horizonMinutes ?? "unknown"}` === selected || item.symbol === selected)) {
-      setSelected(null);
-    }
-  }, [filtered, selected]);
-
   // KLAVYE KISAYOLLARI (TradingView tarzı): j/k aday gezinme, Enter panele aktarım,
-  // f favori, m manuel tarama, ? yardım. Metin alanlarında devre dışıdır.
-  const selectedKey = selectedView ? `${selectedView.symbol}:${selectedView.horizonMinutes ?? "unknown"}` : null;
+  // f favori, m manuel tarama, ? yardım. Metin alanlarında, buton/diyalog
+  // hedeflerinde ve herhangi bir modal açıkken devre dışıdır.
+  const selectedKey = selectedView ? candidateKey(selectedView) : null;
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (isTypingTarget(event.target)) return;
       const key = event.key;
-      if (key === "?") { event.preventDefault(); setShowShortcuts((open) => !open); return; }
       if (key === "Escape") { setShowShortcuts(false); return; }
+      if (key === "?" && !anyModalOpen()) { event.preventDefault(); setShowShortcuts(true); return; }
+      if (anyModalOpen() || isInteractiveTarget(event.target)) return;
       if (key === "m" && !scanBusy) { event.preventDefault(); handleManualScan(); return; }
       if (!filtered.length) return;
-      const index = selectedKey ? filtered.findIndex((item) => `${item.symbol}:${item.horizonMinutes ?? "unknown"}` === selectedKey) : -1;
+      const index = selectedKey ? filtered.findIndex((item) => candidateKey(item) === selectedKey) : -1;
       const moveTo = (next: number) => {
         const target = filtered[Math.max(0, Math.min(filtered.length - 1, next))];
-        if (target) { setSelected(`${target.symbol}:${target.horizonMinutes ?? "unknown"}`); setQuickAmount(null); }
+        if (target) { setSelected(candidateKey(target)); setQuickAmount(null); }
       };
       if (key === "j" || key === "ArrowDown") { event.preventDefault(); moveTo(index + 1); }
       else if (key === "k" || key === "ArrowUp") { event.preventDefault(); moveTo(index - 1); }
@@ -144,13 +177,6 @@ export default function Home() {
 
   return (
     <div className="space-y-5">
-      <LiveNotificationToast
-        onSelectSymbol={(symbol) => {
-          setSelected(symbol);
-          setQuickAmount(1000);
-        }}
-      />
-
       <PortfolioStrip />
 
       {scan.error && !run && (
@@ -220,16 +246,16 @@ export default function Home() {
             <div className="mt-4 grid gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
               {filtered.slice(0, 12).map((item, index) => (
                 <OpportunityCard
-                  key={`${item.symbol}:${item.horizonMinutes ?? "unknown"}`}
+                  key={candidateKey(item)}
                   rank={index + 1}
                   item={item}
                   selected={selectedView?.symbol === item.symbol && selectedView?.horizonMinutes === item.horizonMinutes}
                   onSelect={() => {
-                    setSelected(`${item.symbol}:${item.horizonMinutes ?? "unknown"}`);
+                    setSelected(candidateKey(item));
                     setQuickAmount(null);
                   }}
-                  onQuickBuy={(symbol, amount) => {
-                    setSelected(`${symbol}:${item.horizonMinutes ?? "unknown"}`);
+                  onQuickBuy={(_symbol, amount) => {
+                    setSelected(candidateKey(item));
                     setQuickAmount(amount ?? 1000);
                   }}
                 />
@@ -241,7 +267,7 @@ export default function Home() {
 
         <div id="islem-paneli" className="scroll-mt-24 lg:sticky lg:top-20 lg:self-start">
           <OrderPanel
-            initialSymbol={selectedView?.symbol ?? null}
+            initialSymbol={panelSymbol}
             initialAmount={quickAmount}
             initialCandidate={selectedView}
             onTraded={() => scan.reload()}
@@ -258,13 +284,23 @@ export default function Home() {
             description="Cüzdandaki açık coin bakiyeleri, anlık kâr/zarar ve maliyet durumu."
             actions={<Link href="/gecmis-islemler" className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-accent hover:bg-accent-soft">İşlem Geçmişi →</Link>}
           />
-          <div className="mt-4"><ActiveTradesTable limit={10} /></div>
+          <div className="mt-4">
+            <ActiveTradesTable
+              limit={10}
+              onSelectSymbol={(symbol) => {
+                setExternalSymbol(symbol);
+                setSelected(symbol);
+                setQuickAmount(null);
+                document.getElementById("islem-paneli")?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+            />
+          </div>
         </div>
       </Card>
 
       {showShortcuts && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowShortcuts(false); }}>
-          <section role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" className="w-full max-w-sm rounded-2xl border border-line bg-white p-5 shadow-2xl">
+          <section ref={shortcutsA11y.ref} tabIndex={-1} onKeyDown={shortcutsA11y.onKeyDown} role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" className="w-full max-w-sm rounded-2xl border border-line bg-white p-5 shadow-2xl outline-none">
             <div className="flex items-start justify-between gap-4">
               <h2 id="shortcuts-title" className="text-lg font-bold text-ink-900">Klavye Kısayolları</h2>
               <button type="button" onClick={() => setShowShortcuts(false)} className="rounded-md px-2 py-1 text-ink-500 hover:bg-slate-100" aria-label="Yardım penceresini kapat">✕</button>
