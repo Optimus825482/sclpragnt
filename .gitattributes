@@ -1,0 +1,8 @@
+# 2026-10-15 (denetim düzeltmesi, §5 P2): satır sonu politikası.
+# backend/entrypoint.sh CRLF ile commit edilmişti → Linux konteynerde
+# "exec format error" / "bad interpreter" (#!/bin/sh^M). Shell betikleri
+# HER platformda LF; PowerShell betikleri CRLF; geri kalan metin için git
+# otomatik normalizasyon (depoda LF, checkout platforma göre).
+* text=auto
+*.sh text eol=lf
+*.ps1 text eol=crlf

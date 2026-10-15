@@ -1,31 +1,48 @@
 # ScalperAgent WhatsApp köprüsü (Baileys) — üretim imajı.
-# Node 20 slim: Baileys saf JS; native derleme gerekmez.
-FROM node:20-slim
+#
+# 2026-10-15 (denetim düzeltmesi, §5 P2): tek aşamalı node:20-slim + root +
+# imajda git/openssh → çok aşamalı node:22-alpine + `USER node`. git YALNIZ
+# bağımlılık kurulumunda gerekir (`@whiskeysockets/baileys` → `libsignal`
+# git+https bağımlılığı; package-lock'ta commit'e sabitlenmiş); çalışma
+# imajına git/ssh KOPYALANMAZ. Baileys saf JS (WhatsApp Web protokolü);
+# whatsapp-web.js gibi Chromium/Puppeteer GEREKMEZ, sistem paketi yok.
+# Tek isteğe bağlı native bağımlılık `sharp` (Baileys medya önizlemesi):
+# lockfile'da `@img/sharp-linuxmusl-x64` önceden derlenmiş paketi var →
+# Alpine'da derleyici gerekmez. sha256 digest sabitlemesi ağ olmadan yapılamadı.
 
+# --- Aşama 1: bağımlılıklar (git burada kalır) --------------------------
+FROM node:22-alpine AS deps
 WORKDIR /app
-
-# git GEREKLİ: Baileys'in bağımlılığı `@whiskeysockets/libsignal-node`
-# bir git bağımlılığıdır (git+ssh://git@github.com/...). node:20-slim'de git
-# YOKTUR → `npm install` "syscall spawn git / enoent" ile patlar (deploy hatası).
-# ca-certificates: git+ssh/https çekimi için TLS kök sertifikaları.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
-    && rm -rf /var/lib/apt/lists/* \
+# git: libsignal git bağımlılığı için (clone). ssh anahtarı YOK → git+ssh
+# URL'leri https'e yönlendirilir (lock zaten git+https; npm bazı sürümlerde
+# package.json'daki ssh biçimine düşebiliyor, insteadOf iki biçimi de kapsar).
+RUN apk add --no-cache git ca-certificates \
     && git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/" \
     && git config --global --add url."https://github.com/".insteadOf "git+ssh://git@github.com/"
-
-# Önce bağımlılıklar (katman önbelleği için). Lockfile varsa `npm ci` (reproducible);
-# lockfile sürüm uyuşmazlığında güvenli fallback `npm install`.
-COPY package.json package-lock.json* ./
-RUN (npm ci --omit=dev --no-audit --no-fund \
-     || npm install --omit=dev --no-audit --no-fund) \
+COPY package.json package-lock.json ./
+# Lockfile var → `npm ci` (reproducible). Eski `|| npm install` geri düşüşü
+# kaldırıldı: lock uyuşmazlığı build'i KIRMALI, sessizce sürüm kaydırmamalı.
+RUN npm ci --omit=dev --no-audit --no-fund \
     && npm cache clean --force
 
-# Uygulama kodu.
-COPY index.js ./
+# --- Aşama 2: çalışma imajı (git/ssh yok, non-root) ---------------------
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json index.js ./
 
 # Oturum dosyaları (QR sonrası) buraya yazılır; compose'da VOLUME ile kalıcıdır.
+# Dizin node (uid 1000) sahipliğinde oluşturulur: YENİ bir named volume ilk
+# mount'ta bu sahipliği devralır.
+# ⚠️ MEVCUT KURULUM YÜKSELTMESİ: `whatsapp_auth` volume'u eski ROOT konteyner
+# tarafından doldurulduysa dosyalar root sahipliğindedir ve uid 1000 yazamaz
+# (oturum yenilenemez → QR tekrar istenir / kayıt hatası). Tek seferlik düzeltme:
+#   docker run --rm -v whatsapp_auth:/app/auth alpine chown -R 1000:1000 /app/auth
 ENV AUTH_DIR=/app/auth
+RUN mkdir -p /app/auth && chown -R node:node /app
+USER node
+
 # Coolify/docker-compose ortamında env verilir; varsayılan port.
 ENV PORT=3001
 EXPOSE 3001

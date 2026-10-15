@@ -1,3 +1,5 @@
+> **ARŞİV (2026-10-15, denetim düzeltmesi):** Bu talimat BAŞKA bir projeye (`scalperagent_global`) aittir; bu repoda uygulanmaz. Yalnızca tarihsel referans için `docs/archive/` altında tutulur.
+
 # GLOBAL PROJESİ İÇİN COOLIFY TRAEFIK HEALTHCHECK GÜNCELLEME TALİMATI
 
 **Tarih:** 2026-09-28  

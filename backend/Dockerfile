@@ -1,10 +1,26 @@
-FROM python:3.11-slim
+# 2026-10-15 (denetim düzeltmesi, §5 P2): taban imaj Debian sürümüne
+# sabitlendi (`python:3.11-slim` bir sonraki Debian'a sessizce kayabilir;
+# PGDG deposu dağıtım adına bağlıdır). sha256 digest sabitlemesi ağ
+# erişimi olmadan yapılamadı — tag sabitleme ile yetinildi.
+FROM python:3.11-slim-bookworm
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY requirements.txt .
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-client \
+# 2026-10-15 (denetim düzeltmesi, §5 P2): Debian bookworm'un kendi
+# `postgresql-client` paketi PostgreSQL 15'tir; stack'teki sunucu ise
+# pg17 (`pgvector/pgvector:pg17-bookworm`). pg_dump sunucudan ESKİ sürümde
+# "server version mismatch" ile reddeder → /api/system/backup (main.py)
+# ve database.py'deki pg_dump yolu kırılırdı. PGDG (apt.postgresql.org)
+# deposundan `postgresql-client-17` kurulur. İmza anahtarı ASCII-armored
+# olarak `signed-by` ile verilir (apt ≥ 1.4 destekler; gnupg/curl kurmaya
+# gerek yok — indirme imajdaki Python ile yapılır, ca-certificates hazır).
+RUN install -d -m 0755 /etc/apt/keyrings \
+    && python -c "import urllib.request; urllib.request.urlretrieve('https://www.postgresql.org/media/keys/ACCC4CF8.asc', '/etc/apt/keyrings/postgresql.asc')" \
+    && echo "deb [signed-by=/etc/apt/keyrings/postgresql.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-17 \
     && rm -rf /var/lib/apt/lists/* \
+    && pg_dump --version \
     && pip install --no-cache-dir -r requirements.txt \
     && python -c "import edge_tts; print('edge-tts hazır')"
 COPY app ./app
@@ -40,6 +56,14 @@ EXPOSE 8004
 # --backlog=4096 startup sırasında biriken bağlantı kuyruğunu genişletir
 # (varsayılan 2048 yetersiz kalabilir; kabul bekleyen istekler düşer → 502).
 ENTRYPOINT ["/app/entrypoint.sh"]
+# 2026-10-15 (denetim düzeltmesi, §5 P1/P2): imaj düzeyinde HEALTHCHECK —
+# docker-compose.yaml'daki backend healthcheck'i ile BİREBİR aynı değerler
+# (compose tanımı varsa onu ezer; `docker run` ile tek başına çalışırken de
+# aynı sözleşme geçerli olsun). timeout (12) ≥ urlopen timeout (10).
+# /health döngü kaydına bakar ve 503 dönebilir; urlopen 503'te HTTPError
+# fırlatır → çıkış kodu 1 → unhealthy (bkz. routers/system.py).
+HEALTHCHECK --interval=20s --timeout=12s --start-period=60s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=10)"
 # 2026-10-14 (RAM/performans optimizasyonu):
 #  * --loop uvloop: uvicorn[standard] zaten uvloop içerir; libuv tabanlı
 #    event loop istek/WS fanout'ta asyncio varsayılanından belirgin hızlıdır.

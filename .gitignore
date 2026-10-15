@@ -83,3 +83,13 @@ $null
 # Ekran görüntüsü kırpıntıları — YALNIZCA repo kökü (frontend/public/*.png
 # gibi gerçek varlıklar etkilenmez; kök ekran görüntüleri araştırma artığı)
 /*.png
+# 2026-10-15 (denetim düzeltmesi, §5 P2): harici ajan araç çıktıları
+# (.zcode plan dosyaları, .workbuddy-ai hafıza notları) ve kök dizine
+# düşen araştırma CSV'leri izleniyordu → `git rm --cached` ile çıkarıldı.
+# `/*.csv` YALNIZ repo kökü (backend/scripts CSV kuralları ayrıca yukarıda).
+.zcode/
+.workbuddy-ai/
+/*.csv
+
+# Python sanal ortamlari
+.venv/

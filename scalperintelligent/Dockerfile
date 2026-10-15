@@ -1,7 +1,11 @@
+# 2026-10-15 (denetim düzeltmesi, §5 P2): `npm install` → `npm ci` (lockfile
+# var; `install` lock'u sessizce yeniden yazıp sürüm kaydırabiliyordu),
+# runner aşaması ROOT çalışıyordu → `USER node`. frontend/Dockerfile ile
+# aynı desen. sha256 digest sabitlemesi ağ erişimi olmadan yapılamadı.
 FROM node:22-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm install --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 FROM node:22-alpine AS builder
 WORKDIR /app
@@ -22,5 +26,9 @@ ENV HOSTNAME=0.0.0.0 PORT=3055
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+# Next standalone sunucusu build çıktısını yalnızca OKUR; imaja gömülü `node`
+# kullanıcısı (uid 1000) en az ayrıcalıklı seçenektir (bkz. frontend/Dockerfile).
+RUN chown -R node:node /app
+USER node
 EXPOSE 3055
 CMD ["node", "server.js"]

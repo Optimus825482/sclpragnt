@@ -203,11 +203,62 @@ services:
       # Yine de WS bağlantıları + sembol evreni kurulumu zaman alıyor;
       # hızlı tanıtmayı koruyup erken iptal riskini almamak için bırakıldı.
       start_period: 60s
-      interval: 5s
-      # probe komutunun kendi 10 sn timeout'ı ile eşleşir; probe `timeout`
-      # bundan kısa kalırsa komut iptal edilip TimeoutError yazılır.
-      timeout: 8s
-      retries: 12
+      # 2026-10-15 (denetim düzeltmesi, §5 P2): interval 5s → 20s. Her probe
+      # ayrı bir Python süreci açıyordu (2 CPU limitinde gereksiz yük);
+      # /health artık döngü kaydına bakıp 503 döndürebildiği için (bkz.
+      # routers/system.py) 20 sn × 3 deneme = ~1 dk içinde "unhealthy".
+      interval: 20s
+      # 2026-10-15 (denetim düzeltmesi): timeout 8s < urlopen(timeout=10) idi —
+      # Docker probe'u komuttan ÖNCE öldürüp "timed out" yazıyordu. Probe
+      # timeout'u komutun kendi zaman aşımından BÜYÜK olmalıdır (12 ≥ 10).
+      timeout: 12s
+      retries: 3
+    labels:
+      - "traefik.enable=false"
+      # 2026-10-15 (denetim düzeltmesi, §5 P1): Docker "unhealthy" konteyneri
+      # KENDİLİĞİNDEN yeniden başlatmaz. Aşağıdaki `autoheal` sidecar'ı bu
+      # etiketi taşıyan konteynerleri unhealthy'ye düşünce restart eder.
+      - "autoheal=true"
+    logging: *default-logging
+
+  # 2026-10-15 (denetim düzeltmesi, §5 P1): unhealthy → otomatik restart.
+  # Docker Engine healthcheck sonucunu yalnızca RAPORLAR; `restart:` politikası
+  # yalnız süreç ÇIKARSA devreye girer. Event loop kilitlenen ama süreci
+  # yaşayan backend bu yüzden "unhealthy" olarak sonsuza dek kalıyordu.
+  # `willfarrell/autoheal` docker socket üzerinden `autoheal=true` etiketli
+  # unhealthy konteynerleri restart eder. Socket SALT-OKUNUR mount edilir
+  # (yine de socket erişimi host'ta root-eşdeğeridir; imaj 1.2.0 tag'ine
+  # sabitlendi, dış ağa ihtiyacı yok → `network_mode: none`).
+  #
+  # Coolify alternatifi: Coolify kendi başına unhealthy konteyneri restart
+  # ETMEZ (yalnız panelde gösterir). Bu sidecar istenmiyorsa seçenekler:
+  #   (a) host cron'u: `docker ps -f health=unhealthy -q | xargs -r docker restart`
+  #   (b) Docker Swarm'a geçiş (swarm unhealthy task'ı kendisi yeniler).
+  # NOT: autoheal'ın yaptığı restart docker-engine düzeyindedir; compose'un
+  # `depends_on … restart: true` zinciri (gateway) bu yoldan TETİKLENMEZ.
+  # Aynı konteyner yeniden başladığı için IP'si normalde korunur; IP değişirse
+  # gateway'i elle `docker compose restart gateway` ile tazeleyin.
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    restart: unless-stopped
+    network_mode: none
+    mem_limit: 64m
+    cpus: 0.1
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.1"
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "15"
+      # backend start_period (60s) ile uyumlu: açılışta unhealthy sayılmasın.
+      AUTOHEAL_START_PERIOD: "60"
+      # backend stop_grace_period (10s) + pay.
+      AUTOHEAL_DEFAULT_STOP_TIMEOUT: "15"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    exclude_from_hc: true
     labels:
       - "traefik.enable=false"
     logging: *default-logging
@@ -304,13 +355,25 @@ services:
         limits:
           memory: 256M
           cpus: "0.5"
+    # 2026-10-15 (denetim düzeltmesi, §5 P1): nginx `upstream` bloklarındaki
+    # `backend:8004` vb. adlar YALNIZ nginx açılışında çözülür (OSS'de
+    # `resolve` parametresi yok; `resolver` yalnız değişkenli proxy_pass'te
+    # işler — bkz. nginx/default.conf). Backend/frontend yeniden yaratılıp IP
+    # değiştirdiğinde gateway eski IP'ye proxy'liyor ve 502/503 üretiyordu.
+    # Çözüm: upstream'lerden biri (yeniden) başlatıldığında gateway de
+    # yeniden başlar (`restart: true`, Compose v2.17+). `service_healthy`:
+    # gateway ancak upstream'ler gerçekten yanıt verirken ayağa kalkar
+    # (frontend/si healthcheck'leri 20 sn start_period ile hızlıdır).
     depends_on:
       frontend:
-        condition: service_started
+        condition: service_healthy
+        restart: true
       scalperintelligent:
-        condition: service_started
+        condition: service_healthy
+        restart: true
       backend:
         condition: service_healthy
+        restart: true
     expose:
       - "80"
     # Traefik (coolify-proxy) yalnızca kendi ağında bulduğu konteynerlere
@@ -356,12 +419,50 @@ services:
       - "traefik.http.services.gateway.loadbalancer.healthcheck.interval=10s"
       - "traefik.http.services.gateway.loadbalancer.healthcheck.timeout=3s"
     logging: *default-logging
-  # 2026-10-07: Otomatik `db-backup` servisi KALDIRILDI (ürün sahibi kararı —
-  # "yedeklemeye gerek yok"). pg_dump/retention/offbox/remote-cmd bloğunun
-  # tamamı silindi. Deploy öncesi elle yedek almak isterseniz:
-  #   docker exec <postgres> pg_dump -U scalper -d scalper -Fc -f /tmp/bak.dump
-  #   docker cp <postgres>:/tmp/bak.dump ./bak.dump
-  # Geri yükleme: pg_restore (psql DEĞİL — custom format `-Fc`).
+  # 2026-10-07: Otomatik `db-backup` servisi kaldırılmıştı (ürün sahibi
+  # kararı). 2026-10-15 (denetim düzeltmesi, §5 P1): GERİ GETİRİLDİ —
+  # `scalper_postgres_data` tek kopyaydı (işlem geçmişi, öğrenme, kalibrasyon);
+  # volume bozulursa/yanlışlıkla silinirse geri dönüş yoktu. Sade sürüm:
+  # postgres ile AYNI imaj (pg_dump sürümü sunucuyla birebir eşleşir),
+  # günde bir `pg_dump -Fc` → `scalper_pg_backups` volume'u, son 14 dosya
+  # tutulur (scripts/pg_backup.sh). Off-box kopya için host cron'u ile
+  # volume dizinini (docker volume inspect scalper_pg_backups) rsync edin.
+  # Geri yükleme: README "Production deployment" bölümündeki pg_restore satırı.
+  db-backup:
+    image: pgvector/pgvector:pg17-bookworm
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 256m
+    cpus: 0.25
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.25"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-scalper}
+      PGUSER: ${POSTGRES_USER:-scalper}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      TZ: ${TZ:-Europe/Istanbul}
+    # Script repo'dan salt-okunur bind-mount edilir (Coolify göreli yolu
+    # kendi checkout dizinine çevirir). Konteyner root çalışır: /backups
+    # volume'u boş oluşturulur ve root sahipliğindedir; non-root için
+    # `user: postgres` + volume chown gerekir (ayrı adım).
+    volumes:
+      - ./scripts/pg_backup.sh:/scripts/pg_backup.sh:ro
+      - scalper_pg_backups:/backups
+    command: ["sh", "-c", "while true; do sh /scripts/pg_backup.sh; sleep 86400; done"]
+    exclude_from_hc: true
+    labels:
+      - "traefik.enable=false"
+    logging: *default-logging
 
   # WhatsApp köprüsü (Baileys) — 11:30 raporu + saat başı takip tablosunu
   # gruba iletir. Backend iç ağdan (http://whatsapp-bridge:3001) çağırır.
@@ -397,6 +498,8 @@ services:
 volumes:
   scalper_data:
   scalper_postgres_data:
+  # 2026-10-15 (denetim düzeltmesi): günlük pg_dump çıktıları (db-backup).
+  scalper_pg_backups:
   whatsapp_auth:
 
 # Coolify proxy (Traefik) ağı — compose dışında tanımlı external ağ.

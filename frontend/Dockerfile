@@ -1,9 +1,13 @@
-FROM node:20-alpine AS deps
+# 2026-10-15 (denetim düzeltmesi, §5 P2): node:20 → node:22-alpine. Node 20
+# Nisan 2026'da EOL; üç Node imajı (frontend, scalperintelligent,
+# whatsapp-bridge) artık aynı tabanda. sha256 digest sabitlemesi ağ erişimi
+# olmadan yapılamadı — tag sabitleme ile yetinildi.
+FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -13,7 +17,7 @@ ENV NEXT_PUBLIC_WS_URL=
 ENV NEXT_PUBLIC_VAPID_PUBLIC_KEY=${NEXT_PUBLIC_VAPID_PUBLIC_KEY}
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production PORT=3004
 # Next.js yalnızca $HOSTNAME değerine bağlanıyor; varsayılanda container

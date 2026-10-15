@@ -6,11 +6,13 @@ import logging
 from functools import partial
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from app.config import config
 from app import database
 from app.state import market, analyzer
 from app.api_common import _start_background, _background_tasks, rate_limit
+from app.api_common import loop_health, get_task, is_shutting_down
 from app import memory_service
 from app import migration_monitor
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
@@ -30,6 +32,63 @@ router = APIRouter()
 _embedding_backfill = {"status": "idle", "queued": 0, "message": None}
 _embedding_repair = {"status": "idle", "queued": 0, "message": None}
 
+# 2026-10-15 (denetim düzeltmesi, §5 P1): /health sabit "alive" dönüyordu —
+# event loop kilitlense ya da strateji döngüsü kalıcı olarak düşse bile
+# konteyner "healthy" kalıyordu ("canlı ama ölü"). Artık uç, süpervizörün
+# döngü kaydına (`api_common.loop_health` + `get_task`) ve market akışının
+# son olay zamanına bakar; aşağıdaki durumlardan biri varsa 503 döner:
+#   * kritik bir döngü `MAX_BACKGROUND_RESTARTS` sonrası KALICI "failed",
+#   * kritik bir döngünün görevi bitmiş/ölmüş (respawn edilmemiş),
+#   * market akışı çalışıyor görünürken son olay `SCALPER_HEALTH_STALE_SEC`
+#     saniyeden eski (varsayılan 120; 0 → bu kontrol kapalı).
+# Ucuz kalır: sembol taraması/DB sorgusu YOK; yalnızca sözlük okumaları.
+# Kritik döngü listesi env ile değiştirilebilir (virgülle ayrılmış isimler).
+_HEALTH_CRITICAL_LOOPS_DEFAULT = ("market-connect", "strategy-loop", "ws-broadcast")
+
+
+def _health_stale_sec() -> float:
+    try:
+        return max(0.0, float(os.getenv("SCALPER_HEALTH_STALE_SEC", "120") or 0))
+    except (TypeError, ValueError):
+        return 120.0
+
+
+def _health_critical_loops() -> tuple[str, ...]:
+    raw = os.getenv("SCALPER_HEALTH_CRITICAL_LOOPS", "").strip()
+    if not raw:
+        return _HEALTH_CRITICAL_LOOPS_DEFAULT
+    return tuple(name.strip() for name in raw.split(",") if name.strip())
+
+
+def _health_loop_states() -> tuple[dict, list[str]]:
+    """Kritik döngülerin durumunu ve 503 gerektiren sebepleri döndür.
+
+    Durumlar: ``running`` / ``starting`` (henüz kaydedilmedi — açılış
+    sürüyor, ceza YOK) / ``failed`` (süpervizör vazgeçti) / ``dead`` (görev
+    bitmiş ama respawn yok) / ``stopping`` (kapanış sırasında normal).
+    """
+    snapshot = loop_health()
+    failed = snapshot.get("failed", {}) or {}
+    counters = snapshot.get("restart_counters", {}) or {}
+    shutting_down = is_shutting_down()
+    states: dict = {}
+    reasons: list[str] = []
+    for name in _health_critical_loops():
+        task = get_task(name)
+        if name in failed:
+            state = "failed"
+        elif task is None:
+            state = "starting"
+        elif task.done():
+            state = "stopping" if shutting_down else "dead"
+        else:
+            state = "running"
+        states[name] = {"state": state, "restarts": int(counters.get(name, 0) or 0)}
+        if state in ("failed", "dead"):
+            reasons.append(f"loop:{name}:{state}")
+    return states, reasons
+
+
 @router.get("/health")
 async def health():
     # 2026-09-26 (deploy düzeltmesi): bu uç container healthcheck'inin
@@ -46,17 +105,49 @@ async def health():
     # (kimlik doğrulamalı) ile `market.data_freshness` üzerinden verilir.
     # Liveness, tazelik KOŞULU üzerinden karar verirse, veri geciktiğinde
     # yeniden başlatma tetiklenir — bu da aracın kurtarılmasını engeller.
-    return {
-        "status": "alive",
+    #
+    # 2026-10-15 (denetim düzeltmesi, §5 P1): "sembol başına tazelik" hâlâ
+    # readiness'tedir; burada eklenen YALNIZ süreç-içi döngü canlılığı
+    # (süpervizör kaydı) ve market akışının TEK bir "son olay" zaman damgası
+    # (`market.last_event_at`, WS ∪ REST). Akış `running` iken 120 sn boyunca
+    # hiç olay gelmemesi "döngü kilitli/ölü" demektir; yeniden başlatma bu
+    # durumda kurtarmanın ta kendisidir. Gövde biçimi geriye uyumlu: 200'de
+    # eski anahtarlar aynen kalır, `loops` ayrıntısı EKLENİR; 503'te aynı
+    # gövde `status: "unhealthy"` + `reasons` ile döner.
+    loop_states, reasons = _health_loop_states()
+    stale_sec = _health_stale_sec()
+    last_event_at = getattr(market, "last_event_at", None)
+    market_running = bool(getattr(market, "running", False))
+    heartbeat_age = None
+    if last_event_at:
+        try:
+            heartbeat_age = max(0.0, time.time() - float(last_event_at))
+        except (TypeError, ValueError):
+            heartbeat_age = None
+    if (stale_sec > 0 and market_running and heartbeat_age is not None
+            and heartbeat_age > stale_sec and not is_shutting_down()):
+        reasons.append(f"market_heartbeat_stale:{heartbeat_age:.0f}s>{stale_sec:.0f}s")
+    body = {
+        "status": "unhealthy" if reasons else "alive",
         "mode": "paper", "market_data": "binance_tr_public",
-        "market_running": bool(getattr(market, "running", False)),
+        "market_running": market_running,
         "history_loaded": bool(getattr(market, "history_loaded", False)),
         "tracked_symbols": len(getattr(market, "symbols", ()) or ()),
         # G-30: /health kimlik doğrulamasız bir yoldur; açık pozisyon sembolleri
         # (hangi sembollerde pozisyon var) sızdırılmamalı. Yalnız sayı verilir;
         # sembol listesi kimlik doğrulamalı /api/positions'tan alınır.
         "open_position_count": len(getattr(analyzer, "positions", {}) or {}),
+        "loops": {
+            "critical": loop_states,
+            "failed": sorted((loop_health().get("failed") or {}).keys()),
+            "market_heartbeat_age_sec": None if heartbeat_age is None else round(heartbeat_age, 1),
+            "stale_threshold_sec": stale_sec,
+        },
     }
+    if reasons:
+        body["reasons"] = reasons
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 @router.get("/api/system/health")
 async def system_health():

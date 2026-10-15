@@ -1,0 +1,6 @@
+# 2026-10-15 (denetim düzeltmesi): build context yalnız Dockerfile + default.conf.
+.git
+.gitignore
+.dockerignore
+*.md
+*.log

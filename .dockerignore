@@ -7,3 +7,12 @@ backend/scalper_db_v4.sqlite*
 frontend/node_modules
 frontend/.next
 *.pyc
+
+# 2026-10-15 (denetim düzeltmesi): kök .dockerignore yalnız kök context
+# ile build edilirse anlamlıdır (compose her servisi kendi alt dizininden
+# build eder); yine de .venv/node_modules/.next sızmasın.
+backend/.venv
+scalperintelligent/node_modules
+scalperintelligent/.next
+whatsapp-bridge/node_modules
+.git

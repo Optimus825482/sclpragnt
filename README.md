@@ -26,7 +26,7 @@ main.py (app kurulumu + lifecycle + WS) ──► WebSocket /ws üzerinden front
 
 ### Modüler API yapısı
 
-Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **13** modül dosyası vardır; bunların **11**'i `APIRouter` tanımlar ve `main.py` içinde **11** adet `include_router` kaydı yapılır (2026-10-07 doğrulaması; aşağıdaki tablo eksiksizdir). `runtime.py` ve `llm_position_tools.py` `APIRouter` **kullanmaz**: ilki uzun-ömürlü döngüleri ve yardımcıları taşır (fonksiyonları `main.py` tarafından doğrudan import edilir), ikincisi yalnız LLM araç (tool) şema tanımlarını sağlar.
+Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **15** modül dosyası vardır; bunların **12**'si `APIRouter` tanımlar ve `main.py` içinde **12** adet `include_router` kaydı yapılır (2026-10-15 doğrulaması; aşağıdaki tablo eksiksizdir ve `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır). `runtime.py`, `global_radar.py` ve `llm_position_tools.py` `APIRouter` **kullanmaz**: `runtime.py` uzun-ömürlü döngüleri ve yardımcıları taşır (fonksiyonları `main.py` tarafından doğrudan import edilir), `global_radar.py` Binance Global arka plan tarama döngüsünü çalıştırır, `llm_position_tools.py` yalnız LLM araç (tool) şema tanımlarını sağlar.
 
 | Modül | Sorumluluk |
 |---|---|
@@ -44,8 +44,10 @@ Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. 
 | `app/routers/maintenance.py` | Backfill, replay-parity, strateji replay işleri |
 | `app/routers/system.py` | Sağlık, memory, migration sistem rotaları |
 | `app/routers/reports.py` | Salt-okunur rapor endpoint'leri |
-| `app/routers/bridge.py` | Binance Global → TR öncü-artçı (lead-lag) sinyal köprüsü; `/api/bridge` uç noktaları |
+| `app/routers/global_radar.py` | Binance Global (USDT) spot piyasasını TR ile aynı velocity dedektöründen tarayan görünmez erken-tespit döngüsü (`APIRouter` yok; `main.py` döngüyü başlatır) |
 | `app/routers/snapback.py` | Snapback Dip Avcısı (`/api/signals/snapback`) ve makro rejim kalkanı (`/api/signals/macro-regime`) |
+| `app/routers/user_prefs.py` | Kullanıcı başına bildirim tercihleri (uygulama-içi, ses, WhatsApp) ve maskeli WhatsApp telefon numarası |
+| `app/routers/journal.py` | Kullanıcıya özel işlem günlüğü (scalping disiplin notları, strateji etiketi); salt-not, emir/pozisyon değiştirmez |
 
 Frontend'de `frontend/app/charts/` altında grafik mantığı `chartShared.ts` (format/yerleşim sabitleri) ve `signals.ts` (gösterge/strateji sinyal matematiği) olarak ayrılmıştır.
 
@@ -113,7 +115,31 @@ Kaynaklı araştırma ve uygulama eşlemesi: [`docs/SCALPER_RESEARCH_EVIDENCE.md
 Varsayılan çalışma modunda sistem yalnızca paper trading yapar; sanal cüzdanda işlem yapar ve API anahtarı gerektirmez. Gerçek satış yalnız kullanıcı tarafından bilinçli olarak açılan üç katmanlı bir kapının arkasındadır — bkz. [Gerçek satış kapısı](#-gerçek-satış-kapısı-2026-09-26-düzeltmesi).
 ## Production deployment (Coolify / Docker Compose)
 
-The repository is deployable as three containers: `frontend`, `backend`, and an Nginx gateway. The gateway serves the frontend and proxies `/api`, `/health`, and `/ws` to the backend. Persistent runtime data is stored in PostgreSQL; the named `scalper_data` volume is reserved for paper/runtime artifacts.
+`docker-compose.yaml` sekiz servis tanımlar (2026-10-15 denetim düzeltmesi — eski metin "üç konteyner" diyordu):
+
+| Servis | Görev | Not |
+|--------|-------|-----|
+| `postgres` | PostgreSQL 17 + pgvector; tüm kalıcı veri (`scalper_postgres_data`) | `pg_isready` healthcheck |
+| `backend` | FastAPI + tarayıcı/strateji döngüleri (port 8004, yalnız iç ağ) | `/health` döngü kaydına bakar, kritik döngü ölü/bayat ise **503** (`SCALPER_HEALTH_STALE_SEC`, varsayılan 120); `autoheal=true` etiketi |
+| `frontend` | Eski Next.js arayüzü (3004) | |
+| `scalperintelligent` | Yeni Next.js arayüzü, `/yeni-arayuz` altında (3055) | |
+| `gateway` | nginx: `/api`, `/health`, `/ws` → backend; `/` → frontend; `/yeni-arayuz` → scalperintelligent; rate-limit, güvenlik başlıkları, gerçek istemci IP'si (`set_real_ip_from`) | Tek dışa açık servis (Traefik → :80). Upstream'ler yeniden başlayınca `depends_on … restart: true` ile kendisi de yeniden başlar |
+| `whatsapp-bridge` | Baileys WhatsApp köprüsü (3001, yalnız iç ağ) | Oturum `whatsapp_auth` volume'unda |
+| `db-backup` | Günde bir `pg_dump -Fc` → `scalper_pg_backups` volume'u, son 14 dosya (`scripts/pg_backup.sh`) | Postgres ile aynı imaj |
+| `autoheal` | `autoheal=true` etiketli unhealthy konteyneri yeniden başlatır (docker socket salt-okunur) | Docker tek başına unhealthy'yi restart ETMEZ |
+
+Hiçbir servis host portu yayımlamaz; `scalper_data` volume'u paper/runtime artefaktları içindir.
+
+**Yedekten geri yükleme** (custom format → `pg_restore`, `psql` DEĞİL; önce backend'i durdurun ki açık bağlantı/yazma olmasın):
+
+```bash
+docker compose stop backend
+docker compose exec -T db-backup sh -c 'ls -1 /backups'      # dosya adını seç
+docker compose exec -T db-backup sh -c 'pg_restore --clean --if-exists --no-owner --no-acl -d "$PGDATABASE" /backups/scalper_<YYYYMMDD_HHMMSS>.dump'
+docker compose start backend
+```
+
+Off-box kopya için host'ta `docker volume inspect scalper_pg_backups` ile mountpoint'i bulup cron/rsync ile dışarı alın.
 
 ### Otomatik top-gainer sembol aktivasyonu
 
