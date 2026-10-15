@@ -15,6 +15,8 @@ import { useUiMode } from "./lib/ui-mode";
 import { useVisibleInterval } from "./lib/useVisibleInterval";
 import { formatPrice, formatSignedTL, formatTL, toMs } from "./lib/format";
 import { netOpenPnlPct, netOpenPnlTry } from "./lib/pnl";
+import { isUserRole } from "./lib/userUi";
+import UserHome from "./components/user/UserHome";
 
 /* ============== TİPLER ============== */
 type DashboardSummary = {
@@ -50,7 +52,12 @@ function MetricCard({ label, value, hint, tone = "" }: { label: string; value: s
 }
 
 /* ============== SAYFA ============== */
-export default function Home() {
+export default function Page() {
+  const { role } = useAuth();
+  return isUserRole(role) ? <UserHome /> : <AdminHome />;
+}
+
+function AdminHome() {
   const { username } = useAuth();
   const liveStatus = useLiveStatus();
   const [mode, toggleMode] = useUiMode();
