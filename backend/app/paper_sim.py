@@ -63,13 +63,22 @@ def simulate_exit(bars, entry: float, *, entry_time: float = 0.0,
                   trail_trigger_pct: float = 2.0, trail_gap_pct: float = 1.0,
                   cancel_tp_on_trail: bool = True, no_profit_min: float = 30.0,
                   max_hold_min: float = 120.0, commission_pct: float = 0.0015,
-                  slippage_pct: float = 0.0, bar_seconds: float = _5M_SEC) -> dict:
+                  slippage_pct: float = 0.0, bar_seconds: float = _5M_SEC,
+                  # 2026-10-15 (radar iyileştirme): zaman-durdurma (time-stop).
+                  # Süre dolunca kâr < min_profit_pct ise bar KAPANIŞINDA kapat.
+                  time_stop_min: float | None = None,
+                  time_stop_min_profit_pct: float = 0.0) -> dict:
     """Adayı otonom paper kurallarıyla mum-mum oynat; gerçekleşebilir net% ver.
 
     `bars`: ARTAN zaman sıralı, her biri {"open_time": sn, "high","low","close"}.
     `entry_time`: pozisyonun açıldığı epoch (sn) — süre kuralları buna göre.
     `bar_seconds`: bir mumun süresi (sn) — tutma süresi bundan türetilir
       (varsayılan 5m; kalibrasyon 1m ile koşarsa 60 verir).
+    `time_stop_min` (2026-10-15, radar iyileştirme): None ise kapalı. Doluysa
+      hold_min >= time_stop_min iken bar kapanışındaki kâr% < time_stop_min_profit_pct
+      ise bar kapanışından `reason="time_stop"` ile çıkılır. TP/SL/trailing aynı
+      mumda önce değerlendirilir (onlar kazanır). Kâr, brüt (komisyonsuz) kapanış
+      getirisidir; komisyon/kayma `_finish` ile net% içinde düşülür.
     Dönen: {"sim_pct": float|None, "reason": str, "exit_price": float|None}.
     Çıkış olmazsa (pozisyon hâlâ açık) son kapanışa göre işaretlenir (`reason="open"`).
     """
@@ -129,6 +138,11 @@ def simulate_exit(bars, entry: float, *, entry_time: float = 0.0,
         # 3) TP — trailing aktifken iptal (kullanıcı kararı 2026-10-12).
         if tp_price is not None and high >= tp_price and not (cancel_tp_on_trail and trailing_active):
             return _finish(tp_price, "take_profit", entry, commission_pct, slippage_pct)
+
+        # 3b) 2026-10-15 (radar iyileştirme): zaman-durdurma — TP/SL/trailing'den SONRA.
+        if time_stop_min is not None and entry_time > 0 and hold_min >= time_stop_min:
+            if (close / entry - 1.0) * 100.0 < time_stop_min_profit_pct:
+                return _finish(close, "time_stop", entry, commission_pct, slippage_pct)
 
         # 4) Kârsız süre doldu: kâra geçmediyse (peak<=entry) kapat.
         if no_profit_min > 0 and hold_min >= no_profit_min and peak <= entry:

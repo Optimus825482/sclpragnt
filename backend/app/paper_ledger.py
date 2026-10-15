@@ -26,7 +26,7 @@ from app.config import config
 TRIGGER_EXITS = frozenset({"take_profit", "stop_loss", "breakeven_stop", "trailing_stop"})
 #: Piyasa çıkışları: anlık (son bilinen) fiyattan dolar.
 MARKET_EXITS = frozenset({"max_duration", "no_profit_timeout", "symbol_deactivated",
-                          "stale_force_close"})
+                          "stale_force_close", "time_stop"})
 
 
 def slippage_pct() -> float:

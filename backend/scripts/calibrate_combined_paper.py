@@ -150,7 +150,10 @@ def _simulate_population(cands: list[dict], bars_by_sym: dict, cfg: dict,
                           sl_pct=cfg["sl_pct"], trail_trigger_pct=cfg["trail_trigger_pct"],
                           trail_gap_pct=cfg["trail_gap_pct"], cancel_tp_on_trail=True,
                           no_profit_min=cfg["no_profit_min"], max_hold_min=cfg["max_hold_min"],
-                          commission_pct=commission_pct, slippage_pct=slippage_pct)
+                          commission_pct=commission_pct, slippage_pct=slippage_pct,
+                          # 2026-10-15 (radar iyileştirme): time-stop konfigten gelir (yoksa kapalı).
+                          time_stop_min=cfg.get("time_stop_min"),
+                          time_stop_min_profit_pct=cfg.get("time_stop_min_profit_pct", 0.0))
         if r.get("sim_pct") is None:
             continue
         res.append({"symbol": c["symbol"], "ts": c["ts"], "net_pct": r["sim_pct"],
@@ -196,7 +199,18 @@ def _grid(base: dict) -> list[dict]:
                           (2.0, 1.0), (2.5, 1.0), (3.0, 1.0)):
             out.append({**base, "sl_pct": sl, "trail_trigger_pct": trig,
                         "trail_gap_pct": gap})
+    # 2026-10-15 (radar iyileştirme): zaman-durdurma varyantları — taban geometri
+    # (DEFAULT_CFG) + "T dk sonra kâr < P% ise kapat". Aynı tabloda raporlanır.
+    out.append({**base, "name": "time_stop_15",
+                "time_stop_min": 15.0, "time_stop_min_profit_pct": 0.3})
+    out.append({**base, "name": "time_stop_20",
+                "time_stop_min": 20.0, "time_stop_min_profit_pct": 0.5})
     return out
+
+
+def _tag(cfg: dict) -> str:
+    """Tabloda varyant adı (yalnız adlandırılmış varyantlar için)."""
+    return f" [{cfg['name']}]" if cfg.get("name") else ""
 
 
 def _pctile(vals: list[float], p: float) -> float:
@@ -205,7 +219,8 @@ def _pctile(vals: list[float], p: float) -> float:
 
 
 def _entry_scan(train: list[dict], test: list[dict], bars: dict, *,
-                commission_pct: float, slippage_pct: float) -> dict:
+                commission_pct: float, slippage_pct: float,
+                base_cfg: dict | None = None) -> dict:
     """GİRİŞ SEÇİCİSİ taraması (2026-10-12).
 
     Çıkış kalibrasyonu SL'i düzeltip kaybı azalttı ama portföy pozitife
@@ -214,7 +229,7 @@ def _entry_scan(train: list[dict], test: list[dict], bars: dict, *,
     başına top-N) eğitimde eşikleyip SINAVDA ölçer. Amaç: pozitife dönen bir
     bölge var mı? Yoksa bulgu "edge giriş sinyalinde yok" olarak raporlanır.
     """
-    cfg = dict(DEFAULT_CFG)
+    cfg = dict(base_cfg or DEFAULT_CFG)
     def ev(pop, filt=None):
         sel = [c for c in pop if (filt(c) if filt else True)]
         return _metrics(_simulate_population(sel, bars, cfg,
@@ -273,7 +288,15 @@ async def main() -> int:
     ap.add_argument("--commission", type=float, default=0.0015)
     ap.add_argument("--slippage", type=float, default=0.00025)
     ap.add_argument("--out", default="work/combined_paper_calibration.json")
+    # 2026-10-15 (radar iyileştirme): zaman-durdurma ölçümü. Verilmezse (None) eski davranış.
+    ap.add_argument("--time-stop-min", type=float, default=None,
+                    help="bu dk sonra kâr eşiğin altındaysa kapat (boş = kapalı)")
+    ap.add_argument("--time-stop-min-profit-pct", type=float, default=0.0,
+                    help="time-stop için minimum kâr %% (varsayılan 0.0)")
     args = ap.parse_args()
+    # Taban konfig: CLI time-stop'u tüm (grid dışı) varyantlara taşır.
+    base_cfg = {**DEFAULT_CFG, "time_stop_min": args.time_stop_min,
+                "time_stop_min_profit_pct": args.time_stop_min_profit_pct}
 
     print("=== OTONOM PAPER KALİBRASYON ===")
     cands = _load_candidates(args.hours)
@@ -311,7 +334,8 @@ async def main() -> int:
     if args.entry_scan:
         print("\n=== GİRİŞ SEÇİCİSİ TARAMASI (walk-forward) ===")
         scan = _entry_scan(train, test, bars_by_sym,
-                           commission_pct=args.commission, slippage_pct=args.slippage)
+                           commission_pct=args.commission, slippage_pct=args.slippage,
+                           base_cfg=base_cfg)
         print(f"  baz (filtresiz) SINAV: {scan['baseline_test']}")
         print("  tek-değişkenli filtreler (SINAV EV):")
         for s in scan["single"]:
@@ -329,25 +353,32 @@ async def main() -> int:
         return 0
 
     print("\n-- varsayılan (canlı) --")
-    base_tr = _metrics(_simulate_population(train, bars_by_sym, DEFAULT_CFG,
+    base_tr = _metrics(_simulate_population(train, bars_by_sym, base_cfg,
                                             commission_pct=args.commission, slippage_pct=args.slippage))
-    base_te = _metrics(_simulate_population(test, bars_by_sym, DEFAULT_CFG,
+    base_te = _metrics(_simulate_population(test, bars_by_sym, base_cfg,
                                             commission_pct=args.commission, slippage_pct=args.slippage))
     print("  eğitim:", base_tr)
     print("  sınav :", base_te)
 
-    grid = _grid(DEFAULT_CFG)
+    grid = _grid(base_cfg)
     print(f"\n-- grid: {len(grid)} konfig, eğitim kümesinde --")
     scored = []
+    named_train = []  # 2026-10-15 (radar iyileştirme): zaman-durdurma varyantları, sıralamadan bağımsız
     for cfg in grid:
         m = _metrics(_simulate_population(train, bars_by_sym, cfg,
                                           commission_pct=args.commission, slippage_pct=args.slippage))
         scored.append((cfg, m))
+        if cfg.get("name"):
+            named_train.append((cfg, m))
     scored = [x for x in scored if x[1]["n"] >= 50]
     scored.sort(key=lambda x: (x[1]["ev_pct"] or -999), reverse=True)
     print("  en iyi 5 (eğitim):")
     for cfg, m in scored[:5]:
         print(f"    sl={cfg['sl_pct']} trig={cfg['trail_trigger_pct']} gap={cfg['trail_gap_pct']}"
+              f"{_tag(cfg)} → EV {m['ev_pct']}% win {m['win_rate']}% payoff {m['payoff']} n={m['n']}")
+    print("  zaman-durdurma varyantları (eğitim):")
+    for cfg, m in named_train:
+        print(f"    {cfg['name']} (T={cfg['time_stop_min']}dk, kâr<{cfg['time_stop_min_profit_pct']}%)"
               f" → EV {m['ev_pct']}% win {m['win_rate']}% payoff {m['payoff']} n={m['n']}")
 
     # Seçilen konfigi SINAV kümesinde doğrula.
@@ -359,7 +390,7 @@ async def main() -> int:
         ok = (m_te["ev_pct"] is not None and m_te["ev_pct"] > 0)
         results.append({"cfg": cfg, "train": m_tr, "test": m_te, "test_positive": ok})
         print(f"    sl={cfg['sl_pct']} trig={cfg['trail_trigger_pct']} gap={cfg['trail_gap_pct']}"
-              f" → TEST EV {m_te['ev_pct']}% win {m_te['win_rate']}% payoff {m_te['payoff']}"
+              f"{_tag(cfg)} → TEST EV {m_te['ev_pct']}% win {m_te['win_rate']}% payoff {m_te['payoff']}"
               f" {'✓' if ok else '✗'}")
 
     # Kazanan: teste göre EV>0 olanlar arasından test EV en yüksek.

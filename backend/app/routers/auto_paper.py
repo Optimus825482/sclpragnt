@@ -18,6 +18,7 @@ transaction'dır (advisory lock ile yarış koruması).
 import asyncio
 import json
 import logging
+import os
 import time
 import math
 
@@ -55,6 +56,11 @@ _LOOP_STARTUP_DELAY_SEC = float(getattr(config, "AUTO_PAPER_LOOP_STARTUP_DELAY_S
 _TRAILING_GAP_FALLBACK_PCT = 0.3
 #: Madde 1: REST de başarısızken zorla kapanış için max_hold çarpanı.
 _STALE_FORCE_CLOSE_FACTOR = float(getattr(config, "AUTO_PAPER_STALE_FORCE_CLOSE_FACTOR", 1.5))
+# 2026-10-15 (radar iyileştirme): zaman-durdurma (time-stop) — VARSAYILAN KAPALI (0).
+# AUTO_PAPER_TIME_STOP_MIN dk sonra kâr, AUTO_PAPER_TIME_STOP_MIN_PROFIT_PCT'in
+# altındaysa pozisyon kapatılır (reason="time_stop"). Önce simülatörde ölçülür.
+AUTO_PAPER_TIME_STOP_MIN = float(os.getenv("AUTO_PAPER_TIME_STOP_MIN", "0"))
+AUTO_PAPER_TIME_STOP_MIN_PROFIT_PCT = float(os.getenv("AUTO_PAPER_TIME_STOP_MIN_PROFIT_PCT", "0.3"))
 
 
 def _effective_sl_pct(sl_pct: float, atr_pct: float, cap_pct: float | None = None) -> float:
@@ -1101,6 +1107,21 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         await _close_trade(trade_id, symbol, paper_ledger.exit_fill("stale_force_close", last_known_price),
                            now, "stale_force_close")
         return
+    # 2026-10-15 (radar iyileştirme): ZAMAN-DURDURMA — max_hold'dan ÖNCE. Süre
+    # `hold_minutes` (yukarıdaki) ile, kâr canlı `gross_pnl_pct` ile AYNI formülle
+    # (brüt, komisyonsuz) ölçülür. Taze fiyat yoksa bu tur ertelenir (D-02).
+    # Flag 0 iken bu blok hiç çalışmaz (davranış değişmez).
+    if (AUTO_PAPER_TIME_STOP_MIN > 0 and price_is_fresh and current_price > 0
+            and hold_minutes >= AUTO_PAPER_TIME_STOP_MIN):
+        _ts_gross_pct = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
+        if _ts_gross_pct < AUTO_PAPER_TIME_STOP_MIN_PROFIT_PCT:
+            logger.info("auto_paper %s: ZAMAN-DURDURMA (%.1f dk >= %.1f dk, kâr %+.2f%% < %.2f%%) — pozisyon kapatılıyor (çıkış=%.6f)",
+                        symbol, hold_minutes, AUTO_PAPER_TIME_STOP_MIN, _ts_gross_pct,
+                        AUTO_PAPER_TIME_STOP_MIN_PROFIT_PCT, current_price)
+            # Piyasa çıkışı: anlık fiyattan dolar. `paper_ledger.exit_fill` burada
+            # KULLANILMAZ — "time_stop" MARKET_EXITS'te tanımlı değil (ValueError).
+            await _close_trade(trade_id, symbol, float(current_price), now, "time_stop")
+            return
     if max_hold_minutes > 0 and hold_minutes >= max_hold_minutes:
         # D-02: bayat/eksik fiyatla KAPANMA YAPILMAZ. Pozisyon bir sonraki
         # tazelik turunda kapatılır (gerekirse peak_price fallback'i ile

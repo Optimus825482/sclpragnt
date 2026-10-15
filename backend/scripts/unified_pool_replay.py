@@ -78,8 +78,14 @@ def _load_prices(syms: set[str]) -> dict:
 
 
 def _simulate(bars: list, entry: float, target_pct: float, horizon_min: float,
-              cost_pct: float) -> dict | None:
-    """Basit ama gerçekçi çıkış: TP / SL(%3) / ufuk sonu. Bar-içi kötümser (SL önce)."""
+              cost_pct: float, *, time_stop_min: float | None = None,
+              time_stop_min_profit_pct: float = 0.0, entry_ts: float = 0.0) -> dict | None:
+    """Basit ama gerçekçi çıkış: TP / SL(%3) / ufuk sonu. Bar-içi kötümser (SL önce).
+
+    2026-10-15 (radar iyileştirme): `time_stop_min` verilirse, TP'den SONRA, bar
+    kapanış süresi `entry_ts + time_stop_min*60`'a ulaştığında kâr% < eşik ise
+    bar kapanışından `reason="time_stop"` ile çıkılır. None iken davranış aynıdır.
+    """
     if not bars or entry <= 0:
         return None
     tp = entry * (1 + target_pct / 100.0)
@@ -96,6 +102,11 @@ def _simulate(bars: list, entry: float, target_pct: float, horizon_min: float,
         peak = max(peak, hi)
         if hi >= tp:
             exit_px, reason = tp, "take_profit"; break
+        # 2026-10-15 (radar iyileştirme): zaman-durdurma (5m mum kapanışı = ot + 300 sn).
+        if (time_stop_min is not None and entry_ts > 0
+                and (ot + 300.0 - entry_ts) >= time_stop_min * 60.0
+                and (cl / entry - 1.0) * 100.0 < time_stop_min_profit_pct):
+            exit_px, reason = cl, "time_stop"; break
         exit_px = cl
     if exit_px is None:
         return None
@@ -133,6 +144,11 @@ def main() -> int:
     # 2026-10-15 (denetim düzeltmesi): sabit DB kimlik bilgisi kaldırıldı; DATABASE_URL zorunlu.
     ap.add_argument("--db-url", default=os.getenv("DATABASE_URL", "").strip())
     ap.add_argument("--out", default="work/unified_pool_replay.json")
+    # 2026-10-15 (radar iyileştirme): zaman-durdurma ölçümü. Verilmezse (None) eski davranış.
+    ap.add_argument("--time-stop-min", type=float, default=None,
+                    help="bu dk sonra kâr eşiğin altındaysa kapat (boş = kapalı)")
+    ap.add_argument("--time-stop-min-profit-pct", type=float, default=0.0,
+                    help="time-stop için minimum kâr %% (varsayılan 0.0)")
     args = ap.parse_args()
     if not args.db_url:
         sys.exit("HATA: --db-url verilmedi ve DATABASE_URL ortam değişkeni tanımlı değil")
@@ -167,7 +183,10 @@ def main() -> int:
                 continue
             i = bisect.bisect_left([b[0] for b in bars], c["ts"])
             win = [b for b in bars[i:i + 40] if b[0] <= c["ts"] + c["h"] * 60 + 300]
-            r = _simulate(win, c["price"], c["target"], c["h"], cost)
+            r = _simulate(win, c["price"], c["target"], c["h"], cost,
+                          time_stop_min=args.time_stop_min,
+                          time_stop_min_profit_pct=args.time_stop_min_profit_pct,
+                          entry_ts=c["ts"])
             if r is None:
                 continue
             r["ts"] = c["ts"]; r["sym"] = c["sym"]
