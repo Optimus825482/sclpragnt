@@ -7,9 +7,9 @@ import time
 from app.config import config
 from app import database
 from app.correlation import cluster_exposure
-from app.binance_tr_public import orderbook, ticker_price
-from app.binance_tr_public import klines as fetch_klines
+from app.binance_tr_public import orderbook
 from app.state import market, analyzer
+from app import price_service
 
 logger = logging.getLogger("scalper.api_common")
 
@@ -309,40 +309,24 @@ def _start_background(coro_factory, name, single_pass=False):
     return task
 
 async def _fresh_public_price(symbol: str):
-    """Return a fresh public price, repairing stale websocket state via REST.
+    """Geriye dönük sarmalayıcı: `price_service.get_price` + eski önbellek onarımı.
 
-    Public price endpoint (``/ticker/price``) weight:2 olmasına rağmen 1m
-    kline'tan daha yüksek frekanslı ve doğrudan güncel fiyatı döndürür;
-    kline yerine tercih edilir. Erişilemezse en son kapanıştan geriye dönülür.
+    Fiyat okuma kuralları (taze WS → REST ticker → REST 1m kline) artık
+    `app.price_service` içinde. Bu sarmalayıcı yalnız eski çağıranların beklediği
+    yan etkiyi korur: REST'ten gelen fiyat `market.tickers` önbelleğine yazılır.
+    Yeni çağıranlar doğrudan `price_service.get_price` kullanmalı (önbellek yazmaz).
     """
-    normalized = str(symbol or "").replace("_", "").upper()
-    now_ms = time.time() * 1000
-    ticker = market.get_ticker(normalized) or {}
-    price = float(ticker.get("last_price") or 0)
-    timestamp = float(ticker.get("timestamp") or 0)
-    if price > 0 and timestamp > 0 and now_ms - timestamp <= config.MAX_TICKER_AGE_SEC * 1000:
-        return price, {**ticker, "source": ticker.get("source", "binance_tr_public_websocket")}
-    try:
-        rows = await ticker_price([normalized])
-        row = next((r for r in rows if str(r.get("symbol", "")).upper() == normalized), None)
-        price = float((row or {}).get("price") or 0)
-        if price > 0:
-            repaired = {"symbol": normalized, "last_price": price, "timestamp": int(now_ms),
-                        "source": "binance_tr_public_rest_ticker_price"}
-            market.tickers[normalized] = repaired
-            return price, repaired
-    except Exception as exc:
-        print(f"[Public price fallback] {normalized}: {exc}")
-    try:
-        latest = await fetch_klines(normalized, "1m", 2)
-        if latest:
-            price = float(latest[-1][4])
-            repaired = {"symbol": normalized, "last_price": price, "timestamp": int(now_ms), "source": "binance_tr_public_rest_kline"}
-            market.tickers[normalized] = repaired
-            return price, repaired
-    except Exception as exc:
-        print(f"[Public price final kline fallback] {normalized}: {exc}")
-    return None, None
+    price, _age, source = await price_service.get_price(symbol, market_obj=market)
+    if not price:
+        return None, None
+    normalized = price_service.normalize(symbol)
+    if source == price_service.SOURCE_WS:
+        ticker = market.get_ticker(normalized) or {}
+        return price, {**ticker, "source": source}
+    repaired = {"symbol": normalized, "last_price": price, "timestamp": int(time.time() * 1000),
+                "source": source}
+    market.tickers[normalized] = repaired
+    return price, repaired
 
 def _json_safe_positions(value):
     """Recursively replace NaN/±Infinity floats with None (JSON-safe)."""

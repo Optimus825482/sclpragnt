@@ -24,7 +24,7 @@ import math
 from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
-from app import database, security
+from app import database, paper_ledger, price_service, security
 from app.api_common import log_user_action, _background_tasks, _start_background, _fresh_public_price
 # R3-06: likidite + korelasyon küme kapıları (velocity-auto ile aynı kaynak)
 # için analyzer örneği kullanılır (state'ten; market ile aynı yaşam döngüsü).
@@ -474,16 +474,14 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         # anlık REST ticker ile hafızayı güncelle:
         if not bool(freshness.get("fresh")):
             try:
-                from app.binance_tr_public import ticker_price as _fetch_ticker_price
-                price_rows = await _fetch_ticker_price([symbol])
-                row = next((r for r in (price_rows or []) if str(r.get("symbol", "")).upper() == symbol), None)
-                if row and float(row.get("price") or 0) > 0:
-                    # 2026-10-15 (denetim düzeltmesi, madde 3): REST fiyatı
-                    # paylaşımlı `market.tickers`'a YAZILMAZ (eskiden
-                    # timestamp=now ile yazılıyor; WS akışı olmayan sembolde
-                    # bu fiyat diğer tüketicilere dakikalarca "taze" görünüyordu).
-                    # Fiyat yalnız bu açılış kararında yerel olarak kullanılır.
-                    current_price = float(row["price"])
+                # 2026-10-15 (denetim düzeltmesi, madde 3): REST fiyatı
+                # paylaşımlı `market.tickers`'a YAZILMAZ (eskiden
+                # timestamp=now ile yazılıyor; WS akışı olmayan sembolde
+                # bu fiyat diğer tüketicilere dakikalarca "taze" görünüyordu).
+                # Fiyat yalnız bu açılış kararında yerel olarak kullanılır.
+                rest_px = await price_service.rest_ticker_price(symbol)
+                if rest_px:
+                    current_price = float(rest_px)
                     freshness = {"fresh": True, "age_sec": 0.0, "source": "binance_tr_rest_auto_paper"}
             except Exception as exc:
                 logger.warning("auto_paper %s: REST ticker fetch hatası: %s", symbol, exc)
@@ -731,14 +729,14 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
                         symbol, target_pct, max_target)
             target_pct = max_target
 
-        commission_pct = config.COMMISSION_PCT
+        commission_pct = paper_ledger.commission_pct()
         max_cost = order_value / (1 + commission_pct)
         # D-08 (2026-09-12): fiilî ALIŞ dolumuna kayma (slippage) uygula. Maliyet
         # tabanı ve adet bu dolumdan türetilir; quantity*entry_price = max_cost
-        # kimliği korunur (boyut raporu ile muhasebe tutarlı kalır). Tek kaynak:
-        # config.ESTIMATED_SLIPPAGE_PCT.
-        entry_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
-        fill_entry = current_price * (1.0 + entry_slip)
+        # kimliği korunur (boyut raporu ile muhasebe tutarlı kalır). Dolum modeli
+        # ve kayma tek kaynağı: paper_ledger.
+        entry_slip = paper_ledger.slippage_pct()
+        fill_entry = paper_ledger.entry_fill(current_price, entry_slip)
         quantity = max_cost / fill_entry if fill_entry > 0 else 0
         if quantity <= 0:
             return None
@@ -750,7 +748,7 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         # TP brüt = 2.0 + 2×0.15 + 0.025 ≈ +2.325%. Kapanış muhasebesi
         # (`_close_trade`) ZATEN komisyon+ kaymayı düşüyor; çapası da
         # mark-up'lı olmalı ki bildirimdeki hedef gerçekten realize edilsin.
-        cost_markup = 2 * commission_pct + float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+        cost_markup = paper_ledger.round_trip_markup(commission_pct, entry_slip)
         take_profit_price = fill_entry * (1 + target_pct / 100 + cost_markup)
 
         # Volatiliteye duyarlı Stop Loss (ATR koruması):
@@ -913,7 +911,7 @@ async def _update_existing_trade(open_trade: dict, notification: dict, current_p
         # ERKAN İSTEĞİ (2026-09-18): TP-güncelleme de NET hedefe göre — giriş
         # kapasıyla AYNI mark-up (`_open_new_trade` ile tutarlı); aksi halde
         # güncellenen pozisyonun hedefi mark-up'sız kalırdı.
-        cost_markup = 2 * config.COMMISSION_PCT + float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+        cost_markup = paper_ledger.round_trip_markup()
         new_tp = entry_price * (1 + target_pct / 100 + cost_markup)
         old_tp = float(open_trade.get("take_profit") or 0)
 
@@ -1027,7 +1025,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # dalinin yeniden ateslemesini/ratchet'in TP'yi diriltmesini onler.
     tp_cancelled = bool(trade.get("tp_cancelled", False))
     quantity = float(trade["quantity"])
-    commission_pct = config.COMMISSION_PCT
+    commission_pct = paper_ledger.commission_pct()
     # D-01 (2026-09-26 denetimi): kâr kilidi stop'u HER ZAMAN orijinal
     # stop_loss'tan daha yukarıdadır; bu yüzden `stop_loss` kontrolü kâr
     # kilidi kontrolünden ÖNCE çalışırsa, kâr kilidi aktifken daha düşük
@@ -1060,8 +1058,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # (süre/sembol çıkışı da aynı turda ertelenir — en kötü halde bir sonraki
     # turlarda taze fiyatla kapanır).
     ticker_ts = float((ticker or {}).get("timestamp") or 0)
-    price_is_fresh = bool(current_price > 0 and ticker_ts
-                          and (now * 1000 - ticker_ts) <= config.MAX_TICKER_AGE_SEC * 1000)
+    price_is_fresh = bool(current_price > 0 and paper_ledger.is_fresh(ticker_ts, now))
     # Son bilinen fiyat (bayat ticker, yoksa DB tepe/giriş) — yalnız aşağıdaki
     # zorla kapanışta kullanılır.
     last_known_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
@@ -1101,7 +1098,8 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         logger.warning("auto_paper %s: taze fiyat alınamıyor ve süre %.1f dk >= max_hold %.0f dk × %.1f — "
                        "son bilinen fiyatla ZORLA kapatılıyor (çıkış=%.6f)",
                        symbol, hold_minutes, max_hold_minutes, _STALE_FORCE_CLOSE_FACTOR, last_known_price)
-        await _close_trade(trade_id, symbol, last_known_price, now, "stale_force_close")
+        await _close_trade(trade_id, symbol, paper_ledger.exit_fill("stale_force_close", last_known_price),
+                           now, "stale_force_close")
         return
     if max_hold_minutes > 0 and hold_minutes >= max_hold_minutes:
         # D-02: bayat/eksik fiyatla KAPANMA YAPILMAZ. Pozisyon bir sonraki
@@ -1114,7 +1112,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         exit_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
         logger.info("auto_paper %s: MAKSİMUM SÜRE DOLDU (%.1f dk >= %.1f dk) — pozisyon kapatılıyor (çıkış=%.6f)",
                     symbol, hold_minutes, max_hold_minutes, exit_price)
-        await _close_trade(trade_id, symbol, exit_price, now, "max_duration")
+        await _close_trade(trade_id, symbol, paper_ledger.exit_fill("max_duration", exit_price), now, "max_duration")
         return
 
     # 2. SEMBOL STREAM GÜVENLİĞİ VE PASİF KONTROLÜ:
@@ -1140,7 +1138,8 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         exit_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
         logger.info("auto_paper %s: SEMBOL PASİFE ALINMIŞ (doğrulanmış durağan) — açık pozisyon kapatılıyor (çıkış=%.6f)",
                     symbol, exit_price)
-        await _close_trade(trade_id, symbol, exit_price, now, "symbol_deactivated")
+        await _close_trade(trade_id, symbol, paper_ledger.exit_fill("symbol_deactivated", exit_price),
+                           now, "symbol_deactivated")
         return
 
     if not price_is_fresh:
@@ -1151,7 +1150,8 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     tp_primary_exit_enabled = bool((settings or {}).get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", False)))
     if tp_primary_exit_enabled and not tp_cancelled and take_profit is not None and current_price >= take_profit:
         # D-08 (2026-09-12): TP dolumu TETİK fiyatından (gap-through: min(price, tp)).
-        await _close_trade(trade_id, symbol, min(current_price, take_profit), now, "take_profit")
+        await _close_trade(trade_id, symbol, paper_ledger.exit_fill("take_profit", current_price, take_profit),
+                           now, "take_profit")
         return
 
     # Peak güncelle
@@ -1168,8 +1168,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # kullanılır — kâr kilidi aktifken orijinal stop'tan daha yüksekte
     # kapanış olur (aşağıdaki breakeven korumasıyla aynı mantık).
     if effective_stop_loss is not None and current_price <= effective_stop_loss:
-        await _close_trade(trade_id, symbol, min(current_price, effective_stop_loss), now,
-                           "breakeven_stop" if (effective_stop_loss != stop_loss) else "stop_loss")
+        sl_reason = "breakeven_stop" if (effective_stop_loss != stop_loss) else "stop_loss"
+        await _close_trade(trade_id, symbol, paper_ledger.exit_fill(sl_reason, current_price, effective_stop_loss),
+                           now, sl_reason)
         return
 
     # Kâr ve TP oranları
@@ -1220,8 +1221,8 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
             # NET taban (2026-09-18 hassasiyeti): gidiş-dönüş komisyon + SATIŞ dolum
             # kayması dahil (giriş kayması zaten çapa fill_entry'de). Bu fiyattan
             # satış, `_close_trade` muhasebesi sonrası daima pozitif net verir.
-            exit_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
-            net_floor = entry_price * (1 + 2 * commission_pct + exit_slip + breakeven_buffer_pct / 100)
+            exit_slip = paper_ledger.slippage_pct()
+            net_floor = entry_price * (1 + paper_ledger.round_trip_markup(commission_pct, exit_slip) + breakeven_buffer_pct / 100)
             trail_stop = peak_price * (1 - BREAKEVEN_TRAIL_GAP_PCT / 100)
             new_breakeven = max(net_floor, trail_stop)
             applied_breakeven = max(new_breakeven, current_breakeven_stop)
@@ -1235,7 +1236,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         # Breakeven stop koruması (in-memory değer kullanılır, DB okuması değil).
         # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ (min), gap iyimser yazılmaz.
         if breakeven_activated and current_breakeven_stop > 0 and current_price <= current_breakeven_stop:
-            await _close_trade(trade_id, symbol, min(current_price, current_breakeven_stop), now, "breakeven_stop")
+            await _close_trade(trade_id, symbol,
+                               paper_ledger.exit_fill("breakeven_stop", current_price, current_breakeven_stop),
+                               now, "breakeven_stop")
             return
 
     # Trailing stop modülü (kullanıcı isteği 2026-09-08): %trailing_trigger_pct
@@ -1339,7 +1342,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         # Trailing stop koruması: aktifse ve fiyat stopa düştüyse kapat.
         # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ (min), gap iyimser yazılmaz.
         if trailing_activated and current_trailing_stop > 0 and current_price <= current_trailing_stop:
-            await _close_trade(trade_id, symbol, min(current_price, current_trailing_stop), now, "trailing_stop")
+            await _close_trade(trade_id, symbol,
+                               paper_ledger.exit_fill("trailing_stop", current_price, current_trailing_stop),
+                               now, "trailing_stop")
 
 
 async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float, reason: str):
@@ -1351,20 +1356,15 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
 
         entry_price = float(trade["entry_price"])
         quantity = float(trade["quantity"])
-        commission_pct = config.COMMISSION_PCT
-        # D-08 (2026-09-12): fiilî SATIŞ dolumuna kayma (slippage) uygula.
-        # TP/SL tetik dolumu `_manage_single_trade` içinde tetik fiyatına
-        # çekilir (min/max); kayma bunun ÜZERİNE uygulanır. Tek kaynak:
-        # config.ESTIMATED_SLIPPAGE_PCT.
-        exit_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
-        fill_price = exit_price * (1.0 - exit_slip)
-        entry_commission = entry_price * quantity * commission_pct
-        exit_commission = fill_price * quantity * commission_pct
-        total_commission = entry_commission + exit_commission
-        gross_pnl = (fill_price - entry_price) * quantity
-        pnl = gross_pnl - total_commission
-        invested = entry_price * quantity
-        pnl_pct = (pnl / invested * 100) if invested else 0.0
+        # D-08 (2026-09-12): fiilî SATIŞ dolumuna kayma (slippage) uygulanır.
+        # `exit_price` kayma ÖNCESİ tetik/piyasa fiyatıdır (bkz.
+        # paper_ledger.exit_fill); satış kayması + iki bacak komisyonu + net PnL
+        # tek kaynak `paper_ledger.settle_close` içinde.
+        settled = paper_ledger.settle_close(entry_price, exit_price, quantity)
+        fill_price = settled["fill_price"]
+        total_commission = settled["commission"]
+        pnl = settled["pnl"]
+        pnl_pct = settled["pnl_pct"]
         hold_seconds = now - float(trade["entry_time"])
 
         # DB güncelle + wallet iadesi + sinyal tek transaction'da
