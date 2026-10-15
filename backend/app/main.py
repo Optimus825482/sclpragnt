@@ -61,6 +61,7 @@ from app import migration_monitor
 from app import alerting
 from app import security
 from app import ui_prefs
+from app.config_bounds import sanitize_persisted
 from app.watch_prices import watch_prices_loop
 from app import pattern_research
 from app.agent_learning import (new_trace_id, start_trace, append_event, finish_trace,
@@ -1086,6 +1087,11 @@ async def startup_services():
     if saved_config:
         try:
             persisted = json.loads(saved_config)
+            # Sınır dışı kalıcı değerleri kenetle (aksi halde /api/config güncellemesi reddedilir ve
+            # hiçbir ayar kaydedilemez; bkz. app/config_bounds.py).
+            persisted, _clamped = sanitize_persisted(persisted)
+            for _key, _old, _new in _clamped:
+                logger.warning("[Config] kalici ayar sinir disiydi, duzeltildi: %s %s -> %s", _key, _old, _new)
             for key, attr in CONFIG_FIELDS.items():
                 if key in persisted: setattr(config, attr, persisted[key])
             if persisted.get("symbols"):
