@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getJSON } from "../../lib/api";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
 import { useWatchPrices } from "../../lib/useWatchPrices";
+import RegimeBanner from "./RegimeBanner";
 import KpiStrip, { type KpiData } from "./KpiStrip";
 import RisingLiveTable, { type RisingRow } from "./RisingLiveTable";
 import RecentNotifications, { type RecentRow } from "./RecentNotifications";
@@ -42,6 +43,7 @@ export default function UserHome() {
     <div className="space-y-6">
       <h1 className="text-xl font-semibold">Ana sayfa</h1>
       {error && <p role="alert" className="rounded-lg bg-neon-red/10 p-3 text-sm text-neon-red">{error}</p>}
+      <RegimeBanner />
       <KpiStrip today={kpiToday} all={kpiAll} />
       <RisingLiveTable rows={rising} prices={prices} />
       <RecentNotifications rows={recent} prices={prices} failed={recentFailed} />

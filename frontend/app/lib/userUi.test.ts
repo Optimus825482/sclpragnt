@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { confidenceBadge, isUserRole, isUserView, pctChange, statusLabel, visibleMenu, windowEnd } from "./userUi";
+import { confidenceBadge, isUserRole, isUserView, pctChange, regimeNotice, statusLabel, visibleMenu, windowEnd } from "./userUi";
 
 describe("pctChange", () => {
   it("hesaplar", () => expect(pctChange(100, 103)).toBeCloseTo(3, 6));
@@ -68,4 +68,29 @@ describe("isUserView", () => {
     expect(isUserView("admin", "simple")).toBe(true);
   });
   it("rol yok → false", () => expect(isUserView(null, "simple")).toBe(false));
+});
+
+describe("regimeNotice", () => {
+  it("kalkan aktifken uyarı + yüzde fark", () => {
+    const n = regimeNotice({ shield_enabled: true, regime_shield_active: true, btc_price: 4072000, btc_1h_ema200: 4076155 });
+    expect(n.active).toBe(true);
+    expect(n.gapPct).toBeCloseTo(-0.102, 2);
+    expect(n.detail).toContain("%0,10");
+  });
+  it("kalkan kapalıysa (devre dışı) uyarı yok", () => {
+    expect(regimeNotice({ shield_enabled: false, regime_shield_active: true }).active).toBe(false);
+  });
+  it("kalkan aktif değilse uyarı yok", () => {
+    expect(regimeNotice({ shield_enabled: true, regime_shield_active: false }).active).toBe(false);
+  });
+  it("veri yoksa uyarı yok (yanlış alarm verme)", () => {
+    expect(regimeNotice(null).active).toBe(false);
+    expect(regimeNotice(undefined).active).toBe(false);
+    expect(regimeNotice({}).active).toBe(false);
+  });
+  it("fiyat/EMA eksikse yüzde yok ama uyarı var", () => {
+    const n = regimeNotice({ shield_enabled: true, regime_shield_active: true, btc_price: null, btc_1h_ema200: 0 });
+    expect(n.active).toBe(true);
+    expect(n.gapPct).toBeNull();
+  });
 });
