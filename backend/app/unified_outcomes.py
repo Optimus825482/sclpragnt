@@ -69,6 +69,8 @@ def _candidate_row(row: dict) -> dict | None:
         "ceiling_pct": _float_or_none(row.get("ceiling_pct")),
         "target_pct": _float_or_none(row.get("target_pct")),
         "detected_at": float(detected),
+        # '' = kapıdan geçti; dolu = engel nedeni (BTC_BEAR_REGIME_SHIELD vb.). NULL yalnız eski satır.
+        "blocked_by": str(row.get("blocked_by") or "")[:80],
     }
 
 
