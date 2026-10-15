@@ -15,7 +15,7 @@ function when(ts: number): string {
   return `${time} · ${rel}`;
 }
 
-export default function RecentNotifications({ rows, prices }: { rows: RecentRow[]; prices: Record<string, number> }) {
+export default function RecentNotifications({ rows, prices, failed = false }: { rows: RecentRow[]; prices: Record<string, number>; failed?: boolean }) {
   const live = (r: RecentRow) => prices[r.symbol.toUpperCase()] ?? prices[r.symbol] ?? null;
   return (
     <section aria-label="Son bildirimler">
@@ -23,7 +23,9 @@ export default function RecentNotifications({ rows, prices }: { rows: RecentRow[
         <h2 className="text-lg font-semibold">Son bildirimler</h2>
         <Link href="/notifications" className="inline-flex min-h-[44px] items-center text-sm text-neon-green">Tümünü gör</Link>
       </div>
-      {rows.length === 0 ? (
+      {rows.length === 0 && failed ? (
+        <div role="alert" className="card p-4 text-sm text-neon-red">Bildirimler yüklenemedi. Birazdan yeniden denenecek.</div>
+      ) : rows.length === 0 ? (
         <div className="card p-4 text-sm text-bunker-muted">Henüz bildirim yok. Sistem yeni bir fırsat bulduğunda burada görünür.</div>
       ) : (
         <>

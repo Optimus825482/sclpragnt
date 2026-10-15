@@ -9,11 +9,13 @@ import BottomNav from "./BottomNav";
 import { reconcilePushSubscription } from "../lib/push";
 import UserShell from "./user/UserShell";
 import { useIsUserView } from "../lib/adminView";
+import { useServiceWorker } from "../lib/serviceWorker";
 
 const CURRENT_BUILD = process.env.NEXT_PUBLIC_BUILD_ID || "dev";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const userView = useIsUserView();
+  useServiceWorker();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const embeddedAnalysis = pathname === "/symbol-analysis" && searchParams.get("embedded") === "1";
