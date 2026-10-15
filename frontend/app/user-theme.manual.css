@@ -1,0 +1,11 @@
+/* Kullanıcı (light) teması — elle kurallar. Üretilen kurallar user-theme.generated.css'tedir. */
+[data-theme="light"] { color-scheme: light; }
+[data-theme="light"] body { background: #f5f7fb; color: #0f172a; }
+[data-theme="light"] .card { background: #fff; border-color: #e3e8f2; box-shadow: 0 1px 2px rgb(15 23 42 / .06); }
+[data-theme="light"] .topbar { background: rgb(255 255 255 / .9); border-color: #e3e8f2; }
+[data-theme="light"] .input { background: #fff; color: #0f172a; border-color: #cbd3e3; }
+[data-theme="light"] .ui-button-primary { background: #0f8a4e; color: #fff; }
+[data-theme="light"] .ui-button-secondary { background: #eef2f9; color: #0f172a; border-color: #cbd3e3; }
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="light"] * { animation: none !important; transition: none !important; }
+}
