@@ -277,7 +277,11 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
         seen.add(sym)
         panel = candidate.get("panel_score")
         if panel is None:
-            panel = candidate.get("velocity_score")
+            # 2026-10-15 (radar düzeltmesi): ham velocity_score (örn. 1800)
+            # DOĞRUDAN füzyona girmez — `min(100, ·)` ile doyup unified_score'u
+            # anlamsızlaştırıyordu. Panel = normalize_score(raw) (0-100).
+            from app.unified_scan import normalize_score as _normalize_score
+            panel = _normalize_score(candidate.get("velocity_score"))
         components, context = macd_components(sym)
         components.setdefault(SOURCE_VELOCITY, float(panel) if panel is not None else None)
         score, sources = fusion_score(components)

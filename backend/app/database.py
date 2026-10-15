@@ -2173,6 +2173,10 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
         now = time.time()
         window_end_s = min(now, float(since_ts) + max(0.0, float(max_sec)))
         window_end_ms = window_end_s * 1000.0
+        # 2026-10-15 (radar düzeltmesi): canlı fiyat YALNIZ pencere henüz
+        # bitmemişse (ufku süren en yeni liste) MFE/MAE'ye girer. Mühürlü
+        # listenin sonucu sonradan şimdiki fiyatla DEĞİŞMEZ.
+        window_open = (float(since_ts) + max(0.0, float(max_sec))) >= now
         # Simülasyon ufku: otonom paper'ın gerçek maks tutma süresi (liste ömründen
         # bağımsız) — portföy 120 dk tutar, sim de o kadar tutar.
         _max_hold_min = float(getattr(config, "COMBINED_PAPER_MAX_HOLD_MIN", 120.0))
@@ -2184,11 +2188,18 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
             sym = str(c.get("symbol") or "").upper()
             if not sym:
                 continue
-            entry = c.get("price")
+            # 2026-10-15 (radar düzeltmesi): MFE/hit GİRİŞİ bu listenin fiyatı
+            # (`notify_price`); zincir başı `anchor_price` ayrı raporlanır —
+            # sinyal öncesi kazanç MFE'ye karışmaz (sim ile aynı giriş).
+            entry = c.get("notify_price") if c.get("notify_price") is not None else c.get("price")
             try:
                 base = float(entry) if entry is not None else None
             except (TypeError, ValueError):
                 base = None
+            try:
+                anchor = float(c.get("anchor_price")) if c.get("anchor_price") is not None else None
+            except (TypeError, ValueError):
+                anchor = None
             lp = None
             if live_prices:
                 try:
@@ -2220,13 +2231,16 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
                                          "close": float(d.get("close") or 0)})
             except Exception:
                 pass
-            if lp and lp > 0:
+            if lp and lp > 0 and window_open:
                 highs.append(lp)
                 lows.append(lp)
             mfe = mae = None
+            anchor_mfe = None
             if base and base > 0 and highs:
                 mfe = round((max(highs) / base - 1.0) * 100.0, 2)
                 mae = round((min(lows) / base - 1.0) * 100.0, 2) if lows else None
+            if anchor and anchor > 0 and highs:
+                anchor_mfe = round((max(highs) / anchor - 1.0) * 100.0, 2)
             chg = round((lp / base - 1.0) * 100.0, 2) if (base and lp) else None
             ceil_pct = c.get("ceiling_pct")
             hit = None
@@ -2260,6 +2274,8 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
             out.append({
                 "symbol": sym, "entry_price": base, "current_price": lp,
                 "change_pct": chg, "mfe_pct": mfe, "mae_pct": mae,
+                # Zincir başı referansı AYRI alan (modal "ilk bildirimden toplam").
+                "anchor_price": anchor, "anchor_mfe_pct": anchor_mfe,
                 "ceiling_pct": ceil_pct,
                 "potential_pct": c.get("potential_pct"),
                 "target_probability": c.get("target_probability"),
@@ -7713,9 +7729,30 @@ async def get_portfolio_equity_curve():
 # GERÇEK isabetini ölçmek. Placeholder stili: `?` (PostgresCompat → %s).
 # ---------------------------------------------------------------------------
 
+def unified_dedup_window(horizon_minutes: int, detected_at: float) -> tuple[float, float]:
+    """2026-10-15 (radar düzeltmesi): birleşik aday journal'ı dedup KOVASI.
+
+    Anahtar `(symbol, horizon, floor(detected_at / ufuk))`: aynı ufuk kovasına
+    düşen tespitler TEK satırdır (eski `detected_at` eşitliği, her /latest
+    yenilemesi `time.time()` ürettiği için hiç çalışmıyordu). Ufuksuz satır
+    60 sn taban kova. Döner: [start, end) epoch saniye.
+    """
+    try:
+        bucket = max(60.0, float(int(horizon_minutes or 0)) * 60.0)
+    except (TypeError, ValueError):
+        bucket = 60.0
+    try:
+        t = float(detected_at or 0)
+    except (TypeError, ValueError):
+        t = 0.0
+    start = math.floor(t / bucket) * bucket
+    return float(start), float(start + bucket)
+
+
 async def save_unified_candidates(rows: list[dict]) -> int:
     """Birleşik tarama adaylarını journal'a yazar; (symbol, horizon_minutes,
-    detected_at) üçlüsünde duplicate VARSA eklemez. Dönen değer: eklenen satır."""
+    ufuk kovası) üçlüsünde duplicate VARSA eklemez (bkz. `unified_dedup_window`).
+    Dönen değer: eklenen satır."""
     rows = [r for r in (rows or []) if isinstance(r, dict)]
     if not rows:
         return 0
@@ -7747,6 +7784,9 @@ async def save_unified_candidates(rows: list[dict]) -> int:
             score = row.get("scan_score")
             ceiling = row.get("ceiling_pct")
             target = row.get("target_pct")
+            # 2026-10-15 (radar düzeltmesi): dedup kova penceresiyle
+            # (taşınabilir: CAST/floor yerine aralık karşılaştırması).
+            bucket_start, bucket_end = unified_dedup_window(horizon, detected)
             cur = conn.execute(
                 """INSERT INTO unified_candidate_outcomes
                     (symbol, horizon_minutes, sources, scan_score, entry_price,
@@ -7754,14 +7794,15 @@ async def save_unified_candidates(rows: list[dict]) -> int:
                 SELECT ?,?,?,?,?,?,?,?
                 WHERE NOT EXISTS (
                     SELECT 1 FROM unified_candidate_outcomes
-                    WHERE symbol=? AND horizon_minutes=? AND detected_at=?)""",
+                    WHERE symbol=? AND horizon_minutes=?
+                      AND detected_at >= ? AND detected_at < ?)""",
                 (symbol, horizon, sources,
                  float(score) if score is not None else None,
                  entry,
                  float(ceiling) if ceiling is not None else None,
                  float(target) if target is not None else None,
                  detected,
-                 symbol, horizon, detected))
+                 symbol, horizon, bucket_start, bucket_end))
             inserted += int(cur.rowcount or 0)
         conn.commit()
         return inserted
@@ -7783,8 +7824,12 @@ async def get_unified_pending_outcomes(older_than_sec: float, limit: int = 200) 
     return await _run_db(op)
 
 
-async def update_unified_outcome(row_id: int, mfe_pct, mae_pct, hit: bool) -> None:
-    """Bir journal satırının MFE/MAE/hit sonucunu mühürler (`outcome_filled_at` set)."""
+async def update_unified_outcome(row_id: int, mfe_pct, mae_pct, hit: bool | None) -> None:
+    """Bir journal satırının MFE/MAE/hit sonucunu mühürler (`outcome_filled_at` set).
+
+    2026-10-15 (radar düzeltmesi): `hit=None` NULL yazar — mum verisi olmayan
+    satır mühürlenir ama ölçülmüş sayılmaz (istatistik `mfe_pct IS NULL`
+    satırları zaten atlar)."""
 
     def op(conn):
         conn.execute(
@@ -7792,7 +7837,7 @@ async def update_unified_outcome(row_id: int, mfe_pct, mae_pct, hit: bool) -> No
             "outcome_filled_at=? WHERE id=?",
             (float(mfe_pct) if mfe_pct is not None else None,
              float(mae_pct) if mae_pct is not None else None,
-             bool(hit), time.time(), int(row_id)))
+             (bool(hit) if hit is not None else None), time.time(), int(row_id)))
         conn.commit()
     await _run_db(op)
 

@@ -129,6 +129,42 @@ def _combined_quality_score(c: dict) -> tuple[float, int, int]:
     return round(min(99.0, max(0.0, score)), 1), sources, layers
 
 
+def dedup_rows_by_symbol(rows: list[dict]) -> list[dict]:
+    """2026-10-15 (radar düzeltmesi): kombine liste SEMBOL bazında tekildir.
+
+    `combined_scan_rows` (sembol, ufuk) satırları üretir; gönderilen TOP N'de
+    aynı sembol 5m+15m olarak iki yer kapamasın. Sembol başına en yüksek
+    `scan_score`'lu satır kalır; tüm ufuklar `horizons` (artan) listesinde
+    rozet olur. Girdi satırları değiştirilmez (kopya döner); sıra en iyi puana
+    göre azalan.
+    """
+    best: dict[str, dict] = {}
+    horizons: dict[str, set[int]] = {}
+    for row in rows or []:
+        sym = str(row.get("symbol") or "").upper()
+        if not sym:
+            continue
+        try:
+            h = int(row.get("horizon_minutes") or 0)
+        except (TypeError, ValueError):
+            h = 0
+        horizons.setdefault(sym, set()).add(h)
+        try:
+            score = float(row.get("scan_score") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        cur = best.get(sym)
+        if cur is None or score > float(cur.get("scan_score") or 0):
+            best[sym] = row
+    out = []
+    for sym, row in best.items():
+        copy = dict(row)
+        copy["horizons"] = sorted(h for h in horizons.get(sym, set()) if h > 0) or [0]
+        out.append(copy)
+    out.sort(key=lambda r: float(r.get("scan_score") or 0), reverse=True)
+    return out
+
+
 def _source_ids(item: dict) -> list[str]:
     known = item.get("signal_sources")
     if isinstance(known, list):
@@ -162,6 +198,10 @@ async def combined_scan_rows() -> list[dict]:
     from app import macd_mtf
     from app import rising_signals as _rising
 
+    # 2026-10-15 (radar düzeltmesi): tarama anı TEK damga — kendi zaman damgası
+    # olmayan kaynak satırları (velocity) bu anı alır; satır başına ayrı
+    # `time.time()` üretilmez (journal dedup'ı kovaya göre çalışır).
+    scan_started_at = time.time()
     valid_symbols: set[str] = set()
     try:
         tr_syms = [str(symbol).upper() for symbol in await _trading_syms("TRY")]
@@ -177,11 +217,16 @@ async def combined_scan_rows() -> list[dict]:
 
     from app.routers.velocity import _active_horizons as _act_h2
     _extra_h = [h for h in _act_h2() if h not in (5, 15)]
+    # 2026-10-15 (radar düzeltmesi): kombine yol KENDİ velocity taramasını
+    # `journal_enabled=False` ile koşar — /latest yenilemesi (20 sn) ve manuel
+    # tarama kalibrasyon journal'ına (velocity_candidates) kopya YAZMAZ;
+    # journal yalnız `monitoring._run_scan` turundan beslenir.
     _gather = [
-        mo.detect_velocity_candidates({}, horizon_minutes=5),
-        mo.detect_velocity_candidates({}, horizon_minutes=15),
+        mo.detect_velocity_candidates({}, horizon_minutes=5, journal_enabled=False),
+        mo.detect_velocity_candidates({}, horizon_minutes=15, journal_enabled=False),
         mo._short_squeeze_candidates(tr_syms),
-    ] + [mo.detect_velocity_candidates({}, horizon_minutes=h) for h in _extra_h]
+    ] + [mo.detect_velocity_candidates({}, horizon_minutes=h, journal_enabled=False)
+         for h in _extra_h]
     _gather.append(snapback_service.scan_snapback_opportunities())
     _res = await asyncio.gather(*_gather, return_exceptions=True)
     scan5 = _res[0] if isinstance(_res[0], dict) else {}
@@ -204,17 +249,23 @@ async def combined_scan_rows() -> list[dict]:
             sym = str(rc.get("symbol") or "").upper()
             if not sym:
                 continue
+            # 2026-10-15 (radar düzeltmesi): rising skoru 0-100 PANEL ölçeğidir;
+            # ham alana `_raw_from_panel` ile yazılır (ikinci log-normalize yok).
+            _rising_panel = max(0.0, min(100.0, float(rc.get("score") or 0.0)))
             rising_rows.append({
                 "symbol": sym,
                 "strategy": "rising",
                 "horizon_minutes": int(rc.get("horizon_minutes") or 5),
-                "velocity_score": float(rc.get("score") or 0.0),
-                "panel_score": float(rc.get("score") or 0.0),
+                "velocity_score": _raw_from_panel(_rising_panel),
+                "panel_score": _rising_panel,
+                "rising_score": float(rc.get("score") or 0.0),
                 "target_pct": rc.get("target_pct"),
                 "rising_kind": rc.get("kind"),
                 "green": rc.get("green"),
                 "price": rc.get("price"),
                 "source_only": "rising",
+                # 2026-10-15 (radar düzeltmesi): rising'in kendi tespit zamanı.
+                "detected_at": rc.get("detected_at"),
             })
     except Exception as exc:
         logger.debug("kombine: yükseliş adayları alınamadı: %s", exc)
@@ -278,6 +329,10 @@ async def combined_scan_rows() -> list[dict]:
         symbol = str(candidate.get("symbol") or "").upper()
         if not symbol:
             continue
+        # 2026-10-15 (radar düzeltmesi): HER kaynak satırı panel (0-100) taşır
+        # — velocity satırları ham skorla gelir; `_rank` yalnız panel kıyaslar.
+        if candidate.get("panel_score") is None:
+            candidate["panel_score"] = normalize_score(candidate.get("velocity_score"))
         try:
             horizon = int(candidate.get("horizon_minutes") or 0)
         except (TypeError, ValueError):
@@ -291,7 +346,12 @@ async def combined_scan_rows() -> list[dict]:
         merged_sources = list(dict.fromkeys(_source_ids(current) + _source_ids(candidate)))
 
         def _rank(item: dict) -> float:
-            return float(item.get("panel_score") or item.get("velocity_score") or 0)
+            # 2026-10-15 (radar düzeltmesi): YALNIZ panel — ham velocity_score
+            # (300) ile panel (70) kıyaslanmaz.
+            try:
+                return float(item.get("panel_score") or 0)
+            except (TypeError, ValueError):
+                return 0.0
 
         chosen = candidate if _rank(candidate) > _rank(current) else current
         chosen["signal_sources"] = merged_sources
@@ -395,6 +455,10 @@ async def combined_scan_rows() -> list[dict]:
                 mtf = None
         quality, tc_sources, tc_layers = _combined_quality_score(c)
         _fam_bonus, _fam_list = _radar_family_bonus(c)
+        # 2026-10-15 (radar düzeltmesi): `_notify` ile AYNI kapı. Süzülen satır
+        # listeden DÜŞMEZ — `blocked_by` ile UI'da gri kalır; gönderilen TOP N
+        # ve combined_paper bu satırları almaz (monitoring._send_combined_list).
+        blocked_by = mo.gate_candidate(c)
         signal_sources = list(dict.fromkeys(
             [str(source) for source in (c.get("signal_sources") or []) if source]
             + [str(source) for source in (c.get("unified_sources") or []) if source]
@@ -404,7 +468,11 @@ async def combined_scan_rows() -> list[dict]:
             "change_pct": (c.get("source_evidence") or {}).get("return_1m_pct"),
             "return_1m_pct": (c.get("source_evidence") or {}).get("return_1m_pct"),
             "volume_burst": (c.get("source_evidence") or {}).get("volume_burst"),
-            "detected_at": (c.get("source_evidence") or {}).get("detected_at") or time.time(),
+            # 2026-10-15 (radar düzeltmesi): GERÇEK sinyal zamanı — adayın
+            # kendi damgası (`detected_at`/`created_at`/kanıt), yoksa tarama anı.
+            "detected_at": (c.get("detected_at") or c.get("created_at")
+                            or (c.get("source_evidence") or {}).get("detected_at")
+                            or scan_started_at),
             "target_pct": c.get("target_pct"),
             "horizon_minutes": c.get("horizon_minutes"),
             "ceiling_pct": ceil_pct,
@@ -428,6 +496,8 @@ async def combined_scan_rows() -> list[dict]:
             "unified_sources": c.get("unified_sources"),
             "strategy": c.get("strategy") or "combined",
             "velocity_score": c.get("velocity_score"),
+            # 2026-10-15 (radar düzeltmesi): panel (0-100) UI/liste için açık alan.
+            "panel_score": c.get("panel_score"),
             "ret_8h_pct": c.get("ret_8h_pct"),
             "adx_14": c.get("adx_14"),
             "slope_15m": c.get("slope_15m"),
@@ -438,11 +508,13 @@ async def combined_scan_rows() -> list[dict]:
             # listesi + emir defteri dengesizliği (sıralama tie-breaker'ı).
             "radar": c.get("radar"),
             "radar_families": _fam_list,
+            "blocked_by": blocked_by,
             "_hit": hit,
         }
         out.append(row)
 
-    out.sort(key=lambda r: (float(r.get("scan_score") or 0), _is_both(r),
+    # Bloklu satırlar temiz satırların ARKASINA (2026-10-15 radar düzeltmesi).
+    out.sort(key=lambda r: (not r.get("blocked_by"), float(r.get("scan_score") or 0), _is_both(r),
                             (r.get("radar") or {}).get("book_imbalance") or 0.0),
              reverse=True)
     return out
@@ -456,4 +528,5 @@ __all__ = [
     "_combined_quality_score",
     "_radar_family_bonus",
     "combined_scan_rows",
+    "dedup_rows_by_symbol",
 ]

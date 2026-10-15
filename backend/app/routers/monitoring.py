@@ -1204,6 +1204,44 @@ def _master_surge_block_reason(c: dict) -> str | None:
     return _master_surge_hard_block_reason(c)
 
 
+def gate_candidate(c: dict) -> str | None:
+    """2026-10-15 (radar düzeltmesi): TEK aday kapısı — bildirim (`_notify`) ve
+    kombine liste (`unified_scan.combined_scan_rows`) AYNI kapıdan geçer.
+
+    Döner: blok nedeni metni (bildirim/listeye GİRMEZ) ya da None (geçer).
+    Sıra: Master Surge katman 1 (likidite) elemesi → sert risk bloğu
+    (EXTREME_LONG / BTC panik / rejim) → radar `passes=False` (watchlist:
+    asiri_spread / ust_fitil / mfi-rsi asiri / atr_yetersiz …) → `exhausted` /
+    `rejection_wick` bayrakları.
+
+    KAPSAM DIŞI (P0-1 2026-10-07 korunur): yetersiz 4'lü teyit / düşük kompozit
+    (`passed=False`, failed_layer 2-4) SKORLAMA girdisidir, blok değil.
+    Füzyon-tek adaylar (`unified_pass`) radar `passes` kapısından muaftır;
+    `passes` alanı olmayan kaynak satırları (rising/pulse/snapback/squeeze)
+    yalnız master-surge ve bayrak kapılarına tabidir.
+    """
+    if not isinstance(c, dict):
+        return None
+    surge = c.get("master_surge")
+    if isinstance(surge, dict):
+        try:
+            if int(surge.get("failed_layer") or 0) == 1:
+                return f"master_surge_katman1:{surge.get('gate') or 'likidite'}"
+        except (TypeError, ValueError):
+            pass
+    hard = _master_surge_hard_block_reason(c)
+    if hard:
+        return hard
+    if "passes" in c and not c.get("passes") and not c.get("unified_pass"):
+        return str(c.get("block_reason") or "radar_kapisi_gecilmedi")
+    exhausted = c.get("exhausted")
+    if exhausted:
+        return str(exhausted)
+    if c.get("rejection_wick"):
+        return "ust_fitil_tuzagi"
+    return None
+
+
 def _master_surge_gate_enabled() -> bool:
     """Master Surge skOR/4'lü-teyit kapısı karar yolunda uygulansın mı?
 
@@ -1566,7 +1604,9 @@ async def _notify(candidates_list, settings) -> list:
         # fonlaması, BTC panik döküşü, BTC rejim kalkanı) karar yolunu kapatır.
         # "Yetersiz 4'lü teyit / düşük kompozit" artık SKORLAMA girdisidir —
         # bildirimi öldürmez (P0-1: aksi halde adayların çoğu sessizce elenirdi).
-        _surge_block = _master_surge_block_reason(c)
+        # 2026-10-15 (radar düzeltmesi): TEK kapı `gate_candidate` — sert risk +
+        # katman 1 + passes/exhausted/üst fitil/spread; kombine liste de aynısı.
+        _surge_block = gate_candidate(c)
         if _surge_block:
             _monitoring_state["surge_blocked"] = int(
                 _monitoring_state.get("surge_blocked", 0)) + 1
@@ -3163,7 +3203,15 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     # yalnız 1. adayın (en iyi) puanı kontrol ediliyordu; en iyi aday eşiği
     # geçince ALTINDAKİLER (ör. 75 < eşik 80) de listeye giriyordu. Artık eşiğin
     # ALTINDAKİ adaylar listeden ÇIKARILIR → listedeki her sembol eşiği geçmiş olur.
-    ranked = [c for c in cands if float(c.get("scan_score") or 0) >= min_score]
+    # 2026-10-15 (radar düzeltmesi): kapıya takılan satırlar (`blocked_by`,
+    # `gate_candidate`) UI çıktısında kalır ama GÖNDERİLEN listeye ve
+    # combined_paper'a GİRMEZ.
+    ranked = [c for c in cands
+              if not c.get("blocked_by") and float(c.get("scan_score") or 0) >= min_score]
+    # 2026-10-15 (radar düzeltmesi): tekilleştirme SEMBOL bazında — aynı sembol
+    # 5m+15m olarak TOP N'de iki yer kapamaz; ufuklar `horizons` rozeti.
+    from app.unified_scan import dedup_rows_by_symbol as _dedup_by_symbol
+    ranked = _dedup_by_symbol(ranked)
     top = ranked[:n]
     if not top:
         best_all = float((cands[0].get("scan_score") if cands else 0) or 0)
@@ -3537,13 +3585,12 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         is_pending = (rid == newest_id)
         window_end = float(nxt) if nxt else now
         max_sec = max(1.0, window_end - sent_at)
-        # ÖLÇÜM REFERANSI = zincir başı (`anchor_price`): arka arkaya devam eden
-        # sembolde "ilk bildirimden toplam artış" ölçülür (modal/grafik bunu
-        # gösterir). Anchor yoksa bu listenin fiyatı.
-        base_c = [{**x, "price": x.get("anchor_price") or x.get("notify_price") or x.get("price")}
-                  for x in c]
+        # 2026-10-15 (radar düzeltmesi): ÖLÇÜM GİRİŞİ bu listenin fiyatı
+        # (`notify_price`); zincir başı `anchor_price` DB fonksiyonunda AYRI
+        # alan (`anchor_price`/`anchor_mfe_pct`) olarak raporlanır. Eskiden
+        # `price` anchor ile eziliyor, sinyal öncesi kazanç MFE'ye giriyordu.
         rows = await database.evaluate_daily_rising_report(
-            base_c, sent_at, live_prices=_px, max_sec=max_sec)
+            list(c), sent_at, live_prices=_px, max_sec=max_sec)
         # Sembol → orijinal aday (kaynak + carried bilgisi için).
         by_symbol = {str(x.get("symbol") or "").upper(): x for x in c}
         # Her satıra anchor + carried taşı (modal grafiği ve rozet kullanır).
@@ -4307,13 +4354,18 @@ async def _short_squeeze_candidates(tr_symbols: list[str]) -> list[dict]:
             ceil_pct = round(atr_pct * 3.0, 2)
         pot = await _compute_potential(sym, px_f)
         _sq_score = round(float(s.get("score") or 0) * _squeeze_mult, 1)
+        # 2026-10-15 (radar düzeltmesi): squeeze skoru (40-187) PANEL ölçeğinde
+        # kırpılır (0-100); ham alana `_raw_from_panel` ile yazılır — eskiden
+        # 70 ham alana gidip quality'de ikinci kez log-normalize oluyordu (~42).
+        _sq_panel = round(max(0.0, min(100.0, _sq_score)), 1)
         rows.append({
             "symbol": sym, "price": px_f,
             "target_pct": ceil_pct,
             "ceiling_pct": ceil_pct,
             "ceiling_price": round(px_f * (1 + ceil_pct / 100.0), 8),
-            "velocity_score": _sq_score,
-            "panel_score": normalize_score(_sq_score),
+            "velocity_score": _raw_from_panel(_sq_panel),
+            "panel_score": _sq_panel,
+            "squeeze_score": _sq_score,
             "atr_pct_15m": round(atr_pct, 3),
             "funding_rate_pct": s.get("funding_rate_pct"),
             "funding_state": s.get("funding_state"),

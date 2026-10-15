@@ -55,7 +55,11 @@ def _candidate_row(row: dict) -> dict | None:
     score = _float_or_none(
         row.get("scan_score") if row.get("scan_score") is not None
         else row.get("quality_score"))
-    detected = _float_or_none(row.get("detected_at")) or time.time()
+    # 2026-10-15 (radar düzeltmesi): GERÇEK sinyal zamanı — satırın kendi
+    # `detected_at`'i, yoksa `created_at`; yalnız ikisi de yoksa şimdi.
+    detected = (_float_or_none(row.get("detected_at"))
+                or _float_or_none(row.get("created_at"))
+                or time.time())
     return {
         "symbol": symbol,
         "horizon_minutes": max(0, horizon),
@@ -73,7 +77,8 @@ async def record_scan_rows(rows: list[dict]) -> int:
 
     Alan eşlemesi: `signal_sources`/`unified_sources` → sources (JSON dizi),
     `price` → entry_price, `scan_score`/`quality_score` → scan_score.
-    Duplicate koruması (symbol, horizon_minutes, detected_at) DB tarafındadır.
+    Duplicate koruması (symbol, horizon_minutes, ufuk kovası) DB tarafındadır
+    (`database.unified_dedup_window`).
     """
     try:
         candidates = [c for c in (_candidate_row(r) for r in (rows or [])) if c]
@@ -119,6 +124,10 @@ async def fill_pending_outcomes(max_age_sec: float = 7200, batch_limit: int = 20
             highs = [float(c[2]) for c in (candles or []) if c and len(c) > 2]
             lows = [float(c[3]) for c in (candles or []) if c and len(c) > 3]
             if not highs or not lows:
+                # 2026-10-15 (radar düzeltmesi): boş mum dönen satır (sembol
+                # delist / veri yok) MÜHÜRLENİR (mfe/mae/hit NULL) → `LIMIT 200`
+                # kuyruğunu süresiz tıkamaz; `filled` sayacına girmez.
+                await database.update_unified_outcome(int(row["id"]), None, None, None)
                 continue
             mfe = (max(highs) - entry) / entry * 100.0
             mae = (min(lows) - entry) / entry * 100.0
