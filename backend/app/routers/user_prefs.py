@@ -23,6 +23,7 @@ import re
 from fastapi import APIRouter, HTTPException, Request
 
 from app import database, security
+from app.api_common import rate_limit
 from app import whatsapp_notify
 
 logger = logging.getLogger("scalper.user_prefs")
@@ -164,6 +165,10 @@ async def test_user_whatsapp(request: Request):
     username = _current_username(request)
     if not username:
         raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    # 2026-10-15 (denetim düzeltmesi): kullanıcı başına 60 sn'de 1 deneme
+    # mesajı; aksi halde WhatsApp köprüsü spam/maliyet aracına dönüşüyordu.
+    if not rate_limit(f"whatsapp_test:{username}", rate_per_sec=1 / 60.0, burst=1):
+        raise HTTPException(status_code=429, detail="Deneme mesajı en fazla dakikada bir gönderilebilir")
     prefs = await _load(username)
     number = normalize_phone(prefs.get("phone", ""))
     if not number:

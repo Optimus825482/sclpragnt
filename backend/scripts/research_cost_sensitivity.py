@@ -33,6 +33,15 @@ _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _WORK = os.path.join(_HERE, "..", "work")
 
 
+# 2026-10-15 (denetim düzeltmesi): sabit DB kimlik bilgisi kaldırıldı; DATABASE_URL zorunlu.
+def _db_url() -> str:
+    url = os.getenv("DATABASE_URL", "").strip()
+    if not url:
+        sys.exit("HATA: DATABASE_URL ortam değişkeni tanımlı değil "
+                 "(örn. postgresql://kullanici:sifre@host:5432/scalper)")
+    return url
+
+
 def _gross_5m_channel():
     """5m kanal (taker-buy/oflow) sinyalleri için BRÜT getiri serileri."""
     import bisect
@@ -45,7 +54,7 @@ def _gross_5m_channel():
     import time
     since = time.time() - 340 * 3600.0
     cands = []
-    with psycopg.connect("postgresql://postgres:518518Erkan@localhost:5432/scalper",
+    with psycopg.connect(_db_url(),
                          connect_timeout=8) as conn:
         for ts, sym, px, tgt in conn.execute(
             "SELECT created_at, symbol, price, target_pct FROM velocity_candidates "
@@ -234,7 +243,7 @@ def _adverse_selection_test() -> dict:
            for s, b in cache["tr"].items()}
     since = time.time() - 340 * 3600.0
     recs = []
-    with psycopg.connect("postgresql://postgres:518518Erkan@localhost:5432/scalper",
+    with psycopg.connect(_db_url(),
                          connect_timeout=8) as conn:
         for ts, sym, px, tgt in conn.execute(
             "SELECT created_at, symbol, price, target_pct FROM velocity_candidates "

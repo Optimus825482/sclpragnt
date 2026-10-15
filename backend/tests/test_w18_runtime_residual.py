@@ -489,7 +489,9 @@ class G26SecurityHeadersTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("DENY", headers.get("x-frame-options"))
         self.assertEqual("nosniff", headers.get("x-content-type-options"))
         self.assertEqual("no-referrer", headers.get("referrer-policy"))
-        self.assertIn("max-age=31536000", headers.get("strict-transport-security", ""))
+        # 2026-10-15 (denetim düzeltmesi): HSTS tek kaynaktan (nginx gateway)
+        # gönderilir; backend artık çelişen ikinci bir HSTS başlığı yazmaz.
+        self.assertIsNone(headers.get("strict-transport-security"))
         self.assertIn("frame-ancestors 'none'", headers.get("content-security-policy", ""))
 
     async def test_csp_exempts_docs_ui(self):

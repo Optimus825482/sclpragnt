@@ -38,7 +38,14 @@ os.environ.setdefault("SCALPER_ENV", "development")
 
 from app.paper_sim import simulate_exit, tp_pct_for  # noqa: E402
 
-_DB_URL = os.getenv("DATABASE_URL", "postgresql://postgres:518518Erkan@localhost:5432/scalper")
+# 2026-10-15 (denetim düzeltmesi): sabit DB kimlik bilgisi kaldırıldı; DATABASE_URL zorunlu.
+# Import anında değil, bağlantı anında kontrol edilir (testler modülü DB'siz import eder).
+def _db_url() -> str:
+    url = os.getenv("DATABASE_URL", "").strip()
+    if not url:
+        sys.exit("HATA: DATABASE_URL ortam değişkeni tanımlı değil "
+                 "(örn. postgresql://kullanici:sifre@host:5432/scalper)")
+    return url
 _CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "..", "work", "channel_cache.json")
 _BAR_MS = 300_000
@@ -215,7 +222,7 @@ def _load_cands(hours: float) -> list[dict]:
     import psycopg
     since = time.time() - hours * 3600.0
     out = []
-    with psycopg.connect(_DB_URL, connect_timeout=8) as conn:
+    with psycopg.connect(_db_url(), connect_timeout=8) as conn:
         for ts, sym, px, tgt in conn.execute(
             "SELECT created_at, symbol, price, target_pct FROM velocity_candidates "
             "WHERE passes=true AND created_at >= %s AND price > 0 ORDER BY created_at",

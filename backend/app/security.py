@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import time
@@ -43,9 +44,31 @@ def remove_user_session_version(username: str):
     _user_session_versions.pop(str(username or "").strip().lower(), None)
 
 
+def get_user_session_version(username: str) -> int:
+    """Bellekteki geçerli oturum sürümü (bilinmeyen kullanıcı → 0)."""
+    return int(_user_session_versions.get(str(username or "").strip().lower(), 0) or 0)
+
+
+def bump_env_admin_session_version() -> int:
+    """DB kaydı OLMAYAN env-admin için oturum sürümünü artırır.
+
+    2026-10-15 (denetim düzeltmesi): env-admin logout'ta `session_version`
+    yükseltilmiyordu; çalınan cookie 12 saat boyunca geçerli kalıyordu. DB satırı
+    olmadığı için sayaç bellekte tutulur (süreç yeniden başlayınca 0'a döner —
+    yeniden başlatma zaten tüm env-admin oturumlarını bu sayede eskitmez; kabul
+    edilen sınırlama, raporda not edilir).
+    """
+    current = get_user_session_version("admin")
+    _user_session_versions["admin"] = current + 1
+    return current + 1
+
+
 def load_user_session_versions(users):
+    # Env-admin sayacı bellekte olduğu için yeniden yüklemede KORUNUR; DB'de
+    # 'admin' satırı varsa aşağıda onun değeri ezer.
+    env_admin_version = int(_user_session_versions.get("admin", 0) or 0)
     _user_session_versions.clear()
-    _user_session_versions["admin"] = 0
+    _user_session_versions["admin"] = env_admin_version
     for user in users or []:
         username = str(user.get("username") or "").strip().lower()
         if username:
@@ -113,13 +136,26 @@ def _is_trusted_proxy(host) -> bool:
     return any(ip in net for net in _trusted_proxy_networks())
 
 
-def trusted_client_ip(request) -> str | None:
-    """Login rate-limit anahtarı için istemci IP'si.
+def _header(request, name: str) -> str:
+    try:
+        if request.headers:
+            return str(request.headers.get(name) or "").strip()
+    except Exception:
+        pass
+    return ""
 
-    `X-Real-IP` YALNIZ peer güvenilir proxy ise kullanılır; aksi halde gerçek
-    soket adresi döner. Böylece başlığı sahteleştirerek limit sıfırlama yolu
-    kapanır; meşru proxy arkasında ise gerçek istemci IP'si korunur (limit
-    proxy başına değil istemci başına uygulanır).
+
+def trusted_client_ip(request) -> str | None:
+    """Login/rate-limit anahtarı için istemci IP'si.
+
+    2026-10-15 (denetim düzeltmesi): Eskiden yalnız `X-Real-IP` okunuyordu;
+    nginx→Traefik zincirinde bu başlık TRAEFIK'in adresine çöküyor ve tüm
+    kullanıcılar tek anahtarda toplanıyordu (bir saldırgan herkesi kilitler).
+    Artık `X-Forwarded-For` SAĞDAN SOLA yürünür: güvenilir proxy olan her hop
+    atlanır, ilk güvenilmeyen adres gerçek istemcidir (soldaki değerler istemci
+    tarafından eklenmiş/sahtelenmiş olabilir, dikkate alınmaz). XFF yoksa
+    `X-Real-IP` (yalnız peer güvenilir proxy ise), o da yoksa soket adresi.
+    Peer güvenilir değilse başlıklar tamamen yok sayılır (spoof koruması).
     """
     if request is None:
         return None
@@ -128,15 +164,37 @@ def trusted_client_ip(request) -> str | None:
         peer = request.client.host if request.client is not None else None
     except Exception:
         peer = None
-    header_ip = ""
-    try:
-        if request.headers:
-            header_ip = (request.headers.get("X-Real-IP") or "").strip()
-    except Exception:
-        header_ip = ""
-    if header_ip and _is_trusted_proxy(peer):
-        return header_ip
-    return str(peer) if peer else (header_ip or None)
+    peer_str = str(peer) if peer else ""
+    if not _is_trusted_proxy(peer_str):
+        return peer_str or (_header(request, "X-Real-IP") or None)
+    xff = _header(request, "X-Forwarded-For")
+    if xff:
+        hops = [h.strip() for h in xff.split(",") if h.strip()]
+        for hop in reversed(hops):
+            if _is_trusted_proxy(hop):
+                continue
+            try:
+                ipaddress.ip_address(hop)
+            except ValueError:
+                # Geçersiz/karışık değer: güvenilmez; soket adresine düş.
+                break
+            return hop
+    real_ip = _header(request, "X-Real-IP")
+    if real_ip:
+        return real_ip
+    return peer_str or None
+
+
+def login_lockout_key(username, request) -> str:
+    """Brute-force anahtarı: `kullanıcı adı + IP` (2026-10-15 denetim düzeltmesi).
+
+    Yalnız IP ile anahtarlamak, paylaşılan proxy/NAT arkasındaki herkesi tek
+    saldırganın 5 denemesiyle kilitliyordu; yalnız kullanıcı adı ile anahtarlamak
+    ise dışarıdan hedefli hesap kilitlemeye açıktı. İkisinin birleşimi her iki
+    vektörü daraltır.
+    """
+    ip = trusted_client_ip(request) or "unknown"
+    return f"{str(username or '').strip().lower() or '-'}|{ip}"
 
 
 def client_fingerprint(request) -> str:
@@ -214,6 +272,72 @@ def verify_password(password: str, stored: str) -> bool:
         return hmac.compare_digest(digest, expected)
     except (ValueError, TypeError):
         return False
+
+
+# 2026-10-15 (denetim düzeltmesi): Kullanıcı adı sayımı (timing). Kullanıcı
+# DB'de yoksa login hiç PBKDF2 çalıştırmıyor ve ~100 ms erken dönüyordu; var
+# olan/olmayan kullanıcı adları yanıt süresinden ayırt edilebiliyordu. Var
+# olmayan kullanıcı için bu sabit (rastgele) hash'e karşı doğrulama yapılır;
+# sonuç daima False'tur ama süre eşitlenir. Import anında bir kez üretilir.
+DUMMY_PASSWORD_HASH = hash_password(secrets.token_hex(24))
+
+
+# 2026-10-15 (denetim düzeltmesi): DB kullanıcıları için şifre politikası.
+# Env-admin (SCALPER_ADMIN_PASSWORD) politikası DEĞİŞMEZ; yalnız DB kullanıcısı
+# oluşturma/şifre değiştirme uçları bu kontrolü uygular.
+PASSWORD_MIN_LENGTH = 12
+COMMON_PASSWORDS = frozenset({
+    "123456", "123456789", "12345678", "1234567890", "123456789012",
+    "password", "password1", "password123", "passw0rd", "qwerty", "qwerty123",
+    "qwertyuiop", "111111", "123123", "abc123", "iloveyou", "admin", "admin123",
+    "administrator", "letmein", "welcome", "welcome1", "monkey", "dragon",
+    "football", "baseball", "sunshine", "princess", "master", "superman",
+    "trustno1", "1q2w3e4r", "1qaz2wsx", "scalper", "scalper123", "sifre123",
+    "parola123", "123456abc", "abcd1234", "aaaaaaaaaaaa", "123456123456",
+})
+
+
+def password_policy_error(password) -> str | None:
+    """Şifre politikasını ihlal ediyorsa Türkçe hata mesajı, uygunsa None."""
+    value = str(password or "")
+    if len(value) < PASSWORD_MIN_LENGTH:
+        return f"Şifre en az {PASSWORD_MIN_LENGTH} karakter olmalı"
+    low = value.strip().lower()
+    if low in COMMON_PASSWORDS:
+        return "Bu şifre çok yaygın; daha güçlü bir şifre seçin"
+    return None
+
+
+# 2026-10-15 (denetim düzeltmesi): Admin DB tarayıcısı/CSV dışa aktarımı
+# hassas sütunları (password_hash, api_key, *_secret, telefon, ip, UA, token)
+# düz metin döndürüyordu. `database.py` içindeki sır sütunu deseni yerel bir
+# değişken (fonksiyon içi) olduğu için import edilemez; buradaki kopya onu
+# kapsar ve ek alanları (phone/ip/user_agent) ekler. `tokens`/`total_tokens`
+# gibi SAYAÇ sütunları bilerek eşleşmez (`token` tam parça olarak aranır);
+# `llm_settings.key` gibi düz "key" sütunu da korunur (yalnız `*_key`).
+SENSITIVE_COLUMN_RE = re.compile(
+    r"(api_?key|secret|passw|credential|private_?key|encrypted|phone|user_?agent"
+    r"|(^|_)token(_|$)|(^|_)ip(_|$)|_key$)", re.I)
+MASKED_VALUE = "***"
+
+
+def is_sensitive_column(name) -> bool:
+    return bool(SENSITIVE_COLUMN_RE.search(str(name or "")))
+
+
+def mask_sensitive_columns(columns):
+    """Hassas sütun adlarının kümesi (satır maskelemede tek sefer hesaplanır)."""
+    return {c for c in (columns or []) if is_sensitive_column(c)}
+
+
+def mask_sensitive_row(row: dict, sensitive=None) -> dict:
+    """Hassas sütun değerlerini `***` ile değiştirir (NULL olanlar NULL kalır)."""
+    if not isinstance(row, dict):
+        return row
+    keys = sensitive if sensitive is not None else mask_sensitive_columns(row.keys())
+    if not keys:
+        return row
+    return {k: (MASKED_VALUE if (k in keys and v is not None) else v) for k, v in row.items()}
 
 
 def create_session_token(username: str = "admin", role: str = "admin", ttl_seconds=43200,

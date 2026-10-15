@@ -26,10 +26,10 @@ import time
 
 import numpy as np
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
-from app import database
+from app import database, security
 from app.api_common import _background_tasks, _start_background
 from app.state import market, analyzer
 from app.technical_analysis import _macd
@@ -1787,9 +1787,15 @@ async def update_macd_settings_endpoint(payload: dict, request: Request):
     return {"paper_only": True, "ok": True, "settings": settings}
 
 
+# 2026-10-15 (denetim düzeltmesi): zorunlu (force_refresh) taramalar pahalıdır;
+# üst üste binmemeleri için modül düzeyinde tek kilit.
+_force_scan_lock = asyncio.Lock()
+
+
 @router.get("/api/macd-mtf/scan")
 @router.post("/api/macd-mtf/scan")
 async def scan_macd_mtf_endpoint(
+    request: Request,
     scope: str = "active",
     min_verdict: str | None = None,
     fresh_only: bool = False,
@@ -1799,15 +1805,19 @@ async def scan_macd_mtf_endpoint(
     """Canlı MACD MTF (M1..M30) piyasa tarama uç noktası."""
     from app import macd_mtf
     tfs = macd_mtf.SCAN_DEFAULT_TFS
-    res = await macd_mtf.scan_market(
-        tfs=tfs,
-        min_verdict=min_verdict,
-        fresh_only=fresh_only,
-        parallel_only=parallel_only,
-        scope=scope,
-        force_refresh=force_refresh,
-    )
-    return res
+    kwargs = dict(tfs=tfs, min_verdict=min_verdict, fresh_only=fresh_only,
+                  parallel_only=parallel_only, scope=scope)
+    if force_refresh:
+        # 2026-10-15 (denetim düzeltmesi): `force_refresh=1` önbelleği atlayıp
+        # tüm evreni yeniden tarar; yalnız admin tetikleyebilir ve aynı anda
+        # yalnız BİR zorunlu tarama çalışır (ikincisi 409 ile reddedilir).
+        security.require_admin(request)
+        if _force_scan_lock.locked():
+            raise HTTPException(status_code=409,
+                                detail="Zorunlu MACD taraması zaten çalışıyor; bitmesini bekleyin")
+        async with _force_scan_lock:
+            return await macd_mtf.scan_market(force_refresh=True, **kwargs)
+    return await macd_mtf.scan_market(force_refresh=False, **kwargs)
 
 
 def start_macd_monitor_loop() -> bool:

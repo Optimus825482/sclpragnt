@@ -130,9 +130,12 @@ def _paired_t(a: list[float], b: list[float]) -> float:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=float, default=15.0)
-    ap.add_argument("--db-url", default="postgresql://postgres:518518Erkan@localhost:5432/scalper")
+    # 2026-10-15 (denetim düzeltmesi): sabit DB kimlik bilgisi kaldırıldı; DATABASE_URL zorunlu.
+    ap.add_argument("--db-url", default=os.getenv("DATABASE_URL", "").strip())
     ap.add_argument("--out", default="work/unified_pool_replay.json")
     args = ap.parse_args()
+    if not args.db_url:
+        sys.exit("HATA: --db-url verilmedi ve DATABASE_URL ortam değişkeni tanımlı değil")
     print("=== BİRLEŞİK HAVUZ REPLAY (Aşama B) ===")
     cands = _load_candidates(args.days, args.db_url)
     print(f"  aday (passes=true): {len(cands)}")

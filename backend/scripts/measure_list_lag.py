@@ -33,11 +33,20 @@ _DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "..", "work", "market_cache.sqlite")
 
 
+# 2026-10-15 (denetim düzeltmesi): sabit DB kimlik bilgisi kaldırıldı; DATABASE_URL zorunlu.
+def _db_url() -> str:
+    url = os.getenv("DATABASE_URL", "").strip()
+    if not url:
+        sys.exit("HATA: DATABASE_URL ortam değişkeni tanımlı değil "
+                 "(örn. postgresql://kullanici:sifre@host:5432/scalper)")
+    return url
+
+
 def load_candidates(days: float) -> list[dict]:
     import psycopg
     since = time.time() - days * 86400.0
     out = []
-    with psycopg.connect("postgresql://postgres:518518Erkan@localhost:5432/scalper",
+    with psycopg.connect(_db_url(),
                          connect_timeout=8) as conn:
         for ts, sym, px, tgt, score in conn.execute(
             "SELECT created_at, symbol, price, target_pct, velocity_score FROM velocity_candidates "

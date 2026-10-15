@@ -158,8 +158,9 @@ class SecurityHeadersMiddleware:
                 headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("Referrer-Policy", "no-referrer")
-                headers.setdefault("Strict-Transport-Security",
-                                   "max-age=31536000; includeSubDomains")
+                # 2026-10-15 (denetim düzeltmesi): HSTS artık YALNIZ nginx'te
+                # (tek kaynak); backend'in farklı bir HSTS değeri üretmesi
+                # çift/çelişkili başlığa yol açıyordu.
                 if not csp_exempt:
                     headers.setdefault("Content-Security-Policy", self.csp)
             await send(message)
@@ -365,8 +366,10 @@ async def profile_update_password(payload: dict, request: Request):
         raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
     current_password = str(payload.get("current_password") or "")
     new_password = str(payload.get("new_password") or "")
-    if len(new_password) < 6:
-        raise HTTPException(status_code=422, detail="Yeni şifre en az 6 karakter olmalı")
+    # 2026-10-15 (denetim düzeltmesi): min 12 karakter + yaygın şifre reddi.
+    policy_error = security.password_policy_error(new_password)
+    if policy_error:
+        raise HTTPException(status_code=422, detail=f"Yeni şifre: {policy_error}")
     user = await database.get_user_by_username(principal.get("username") or "")
     if not user:
         # DB kaydı olmayan env-admin: profil şifresi değiştirilemez
@@ -401,14 +404,17 @@ async def auth_login(payload: dict, response: Response, request: Request):
     # brute-force limitini (5 deneme) sıfırlıyordu. Artık başlık YALNIZ peer
     # güvenilir proxy ise kabul edilir (security.trusted_client_ip); aksi halde
     # gerçek soket adresi kullanılır.
-    client_key = security.trusted_client_ip(request) or "unknown"
-    if not security.login_allowed(client_key):
-        await log_user_action(None, None, "auth", "LOGIN_BLOCKED",
-                              target=str(payload.get("username") or "").strip().lower() or None,
-                              details={"reason": "too_many_attempts"}, request=request)
-        raise HTTPException(status_code=429, detail="Çok fazla başarısız giriş; 5 dakika sonra tekrar deneyin")
     username = str(payload.get("username") or "").strip().lower()
     password = str(payload.get("password") or "")
+    # 2026-10-15 (denetim düzeltmesi): IP artık X-Forwarded-For zincirinden
+    # (güvenilir proxy'ler atlanarak) çözülür ve kilit anahtarı `kullanıcı+IP`
+    # olur; tek IP'den gelen saldırı tüm kullanıcıları kilitleyemez.
+    client_key = security.login_lockout_key(username, request)
+    if not security.login_allowed(client_key):
+        await log_user_action(None, None, "auth", "LOGIN_BLOCKED",
+                              target=username or None,
+                              details={"reason": "too_many_attempts"}, request=request)
+        raise HTTPException(status_code=429, detail="Çok fazla başarısız giriş; 5 dakika sonra tekrar deneyin")
     # Varsayılan admin (env şifresi) ile DB kullanıcısı aynı anda denenir:
     # env'de SCALPER_ADMIN_PASSWORD tanımlıysa o şifreyle "admin" girişine izin ver.
     matched = False
@@ -428,7 +434,17 @@ async def auth_login(payload: dict, response: Response, request: Request):
         # Henüz DB'ye tohumlanmamış admin: env şifresiyle eşleşirse geçici kabul.
         matched = security.password_matches(password)
         if matched:
-            user = {"username": "admin", "role": "admin", "is_active": True}
+            # 2026-10-15 (denetim düzeltmesi): env-admin'in bellekteki oturum
+            # sürümü korunur (logout bump'ı sonraki login'de 0'a sıfırlanmasın).
+            user = {"username": "admin", "role": "admin", "is_active": True,
+                    "session_version": security.get_user_session_version("admin")}
+    else:
+        # 2026-10-15 (denetim düzeltmesi): Kullanıcı adı sayımı (timing).
+        # Var olmayan kullanıcıda PBKDF2 hiç çalışmıyor ve yanıt ~100 ms erken
+        # dönüyordu. Sabit sahte hash'e karşı doğrulama süreyi eşitler; sonuç
+        # daima False.
+        await asyncio.to_thread(_verify_password, password, security.DUMMY_PASSWORD_HASH)
+        matched = False
     security.record_login_result(client_key, matched)
     if not matched or user is None:
         await log_user_action(username, None, "auth", "LOGIN_FAILED",
@@ -484,6 +500,11 @@ async def auth_logout(request: Request, response: Response):
                 updated = await database.bump_user_session_version(int(user["id"]))
                 if updated:
                     security.set_user_session_version(username, int(updated.get("session_version") or 0))
+            elif username == "admin":
+                # 2026-10-15 (denetim düzeltmesi): DB satırı olmayan env-admin
+                # için de oturum sürümü yükseltilir; aksi halde çalınan cookie
+                # logout sonrası 12 saat geçerli kalıyordu.
+                security.bump_env_admin_session_version()
         except Exception as exc:
             print(f"[Auth] oturum sürümü yükseltilemedi: {exc}", flush=True)
     await log_user_action((principal or {}).get("username"), (principal or {}).get("role"),
@@ -611,8 +632,15 @@ async def admin_db_table_rows(request: Request, table: str = "", page: int = 1, 
                 "rows": [dict(r) if isinstance(r, dict) else dict(zip(cols, r)) for r in rows]}
 
     try:
+        data = await database._run_db(op)
+        # 2026-10-15 (denetim düzeltmesi): hassas sütunlar (password_hash,
+        # api_key, *_secret, phone, ip, user_agent, token…) admin'e dahi
+        # düz metin gösterilmez; değer `***` ile maskelenir.
+        sensitive = security.mask_sensitive_columns(data.get("columns") or [])
+        data["rows"] = [security.mask_sensitive_row(r, sensitive) for r in data.get("rows") or []]
+        data["masked_columns"] = sorted(sensitive)
         return {"paper_only": True, "table": name, "page": page,
-                "page_size": page_size, **await database._run_db(op)}
+                "page_size": page_size, **data}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Tablo okunamadı: {exc}")
 
@@ -647,6 +675,11 @@ async def admin_db_table_export(request: Request, table: str = "", format: str =
     truncated = len(rows) > _ADMIN_EXPORT_MAX_ROWS
     if truncated:
         rows = rows[:_ADMIN_EXPORT_MAX_ROWS]
+    # 2026-10-15 (denetim düzeltmesi): CSV ve SQL çıktısında hassas sütunlar
+    # maskelenir (JSON uçla aynı liste: security.SENSITIVE_COLUMN_RE).
+    sensitive = security.mask_sensitive_columns(cols)
+    if sensitive:
+        rows = [security.mask_sensitive_row(r, sensitive) for r in rows]
 
     if fmt == "csv":
         buf = io.StringIO()
@@ -707,8 +740,11 @@ async def admin_create_user(payload: dict, request: Request):
         raise HTTPException(status_code=422, detail="Kullanıcı adı 3-32 karakter olmalı")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", username):
         raise HTTPException(status_code=422, detail="Kullanıcı adı yalnız harf, rakam, nokta, tire ve alt çizgi içerebilir")
-    if len(password) < 6:
-        raise HTTPException(status_code=422, detail="Şifre en az 6 karakter olmalı")
+    # 2026-10-15 (denetim düzeltmesi): min 12 karakter + yaygın şifre reddi
+    # (env-admin politikası değişmez; bu uç yalnız DB kullanıcısı oluşturur).
+    policy_error = security.password_policy_error(password)
+    if policy_error:
+        raise HTTPException(status_code=422, detail=policy_error)
     existing = await database.get_user_by_username(username)
     if existing:
         raise HTTPException(status_code=409, detail="Bu kullanıcı adı zaten kayıtlı")
@@ -743,8 +779,10 @@ async def admin_update_user(user_id: int, payload: dict, request: Request):
         kwargs["username"] = username
     if "password" in payload and str(payload.get("password") or "").strip():
         password = str(payload.get("password") or "")
-        if len(password) < 6:
-            raise HTTPException(status_code=422, detail="Şifre en az 6 karakter olmalı")
+        # 2026-10-15 (denetim düzeltmesi): aynı politika (min 12 + yaygın şifre reddi).
+        policy_error = security.password_policy_error(password)
+        if policy_error:
+            raise HTTPException(status_code=422, detail=policy_error)
         kwargs["password_hash"] = await asyncio.to_thread(_hash_password, password)
     if "role" in payload:
         role = str(payload.get("role") or "user").lower()
@@ -3777,7 +3815,10 @@ async def binance_order(payload: dict, request: Request):
             place_spot_order, api_key, api_secret, symbol, side, order_type,
             quantity=payload.get("quantity"), quote_order_qty=payload.get("quote_order_qty"),
             price=payload.get("price"), stop_price=payload.get("stop_price"),
-            stop_limit_price=payload.get("stop_limit_price"))
+            stop_limit_price=payload.get("stop_limit_price"),
+            # UI'nin onay penceresinde ürettiği idempotency anahtarı; aynı kimlikle
+            # 10 dk içinde tekrar gelen istek borsaya ikinci kez gitmez.
+            client_order_id=payload.get("client_order_id"))
     except BinanceTrAmbiguousOrderError as exc:
         _actor, _actor_role = _session_identity(request)
         await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_ORDER_UNKNOWN",

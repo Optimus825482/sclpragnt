@@ -39,7 +39,14 @@ os.environ.setdefault("SCALPER_ENV", "development")
 
 from app.paper_sim import simulate_exit, tp_pct_for  # noqa: E402
 
-_DB_URL = os.getenv("DATABASE_URL", "postgresql://postgres:518518Erkan@localhost:5432/scalper")
+# 2026-10-15 (denetim düzeltmesi): sabit DB kimlik bilgisi kaldırıldı; DATABASE_URL zorunlu.
+# Import anında değil, bağlantı anında kontrol edilir (testler modülü DB'siz import eder).
+def _db_url() -> str:
+    url = os.getenv("DATABASE_URL", "").strip()
+    if not url:
+        sys.exit("HATA: DATABASE_URL ortam değişkeni tanımlı değil "
+                 "(örn. postgresql://kullanici:sifre@host:5432/scalper)")
+    return url
 _SQLITE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "..", "work", "market_cache.sqlite")
 
@@ -59,7 +66,7 @@ def _load_candidates(hours: float) -> list[dict]:
     import psycopg
     since = time.time() - hours * 3600.0
     out = []
-    with psycopg.connect(_DB_URL, connect_timeout=8) as conn:
+    with psycopg.connect(_db_url(), connect_timeout=8) as conn:
         cur = conn.execute(
             "SELECT created_at, symbol, price, target_pct, velocity_score, atr_pct, rank "
             "FROM velocity_candidates "

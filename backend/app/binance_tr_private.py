@@ -83,6 +83,17 @@ _open_orders_load_lock = threading.Lock()
 _balance_cache: dict[str, dict] = {}
 _balance_lock = threading.Lock()
 
+# İSTEMCİ İDEMPOTENCY (2026-10-15, denetim P0-2): UI her onay penceresi için
+# tek bir `client_order_id` üretir ve emir POST'unda gönderir. Zaman aşımı /
+# ağ hatası sonrası aynı kimlikle gelen tekrar isteği borsaya İKİNCİ kez
+# gitmez; son 10 dakikanın yanıtı önbellekten döner. Anahtar kullanıcı
+# anahtarına (api_key özeti) bağlıdır; farklı hesaplar birbirini göremez.
+# Binance TR clientId benzersizlik garantisi vermediği için bu koruma
+# borsada değil BURADA uygulanır.
+_RECENT_CLIENT_ORDERS_TTL_SEC = 10 * 60
+_recent_client_orders: dict[str, tuple[float, dict]] = {}
+_recent_client_orders_lock = threading.Lock()
+
 _server_time_cache: dict = {"at": 0.0, "offset": 0.0}
 _server_time_lock = threading.Lock()
 
@@ -447,6 +458,38 @@ def new_client_order_id(prefix: str = "sc") -> str:
     return f"{prefix}{uuid.uuid4().hex}"[:36]
 
 
+def sanitize_client_order_id(value) -> str | None:
+    """İstemciden gelen clientId'yi Binance TR alan kurallarına indirger.
+
+    Yalnız harf/rakam/`-`/`_` kabul edilir, en fazla 36 karakter. Boş veya
+    geçersiz değer `None` döner (sunucu kendi kimliğini üretir).
+    """
+    raw = "".join(ch for ch in str(value or "").strip() if ch.isalnum() or ch in "-_")[:36]
+    return raw or None
+
+
+def _recent_order_key(api_key: str, client_order_id: str) -> str:
+    return f"{hashlib.sha256(str(api_key or '').encode('utf-8')).hexdigest()[:16]}:{client_order_id}"
+
+
+def _recent_order_lookup(api_key: str, client_order_id: str) -> dict | None:
+    """Aynı istemci kimliğiyle son 10 dakikada verilmiş emrin yanıtını döndürür."""
+    now = time.time()
+    key = _recent_order_key(api_key, client_order_id)
+    with _recent_client_orders_lock:
+        expired = [k for k, (at, _) in _recent_client_orders.items()
+                   if now - at > _RECENT_CLIENT_ORDERS_TTL_SEC]
+        for k in expired:
+            _recent_client_orders.pop(k, None)
+        hit = _recent_client_orders.get(key)
+    return dict(hit[1]) if hit else None
+
+
+def _recent_order_remember(api_key: str, client_order_id: str, result: dict) -> None:
+    with _recent_client_orders_lock:
+        _recent_client_orders[_recent_order_key(api_key, client_order_id)] = (time.time(), dict(result))
+
+
 def _qty_to_float(value) -> float:
     """`origQty`/`executedQty` gibi miktar alanlarını güvenle float'a çevir."""
     try:
@@ -691,7 +734,17 @@ def place_spot_order(api_key: str, api_secret: str, symbol: str, side: str, orde
 
     Belirsiz POST sonucu `BinanceTrAmbiguousOrderError` olarak yükseltilir;
     istemci aynı emri tekrar göndermemeli, clientId ile durumu sorgulamalıdır.
+
+    `client_order_id` verilirse (UI onay penceresinde üretilir) ve aynı
+    kimlikle son 10 dakikada bir emir zaten borsaya iletilmişse, emir TEKRAR
+    gönderilmez; önceki yanıt `idempotent_replay=True` ile döner.
     """
+    client_order_id = sanitize_client_order_id(client_order_id)
+    if client_order_id:
+        cached = _recent_order_lookup(api_key, client_order_id)
+        if cached is not None:
+            logger.warning("Binance TR emir tekrarı engellendi: clientId=%s zaten gönderilmiş", client_order_id)
+            return {**cached, "idempotent_replay": True}
     symbol_u = _to_underscore_symbol(symbol)
     side_u, kind = str(side or "").upper(), str(order_type or "").upper()
     if side_u not in ("BUY", "SELL"):
@@ -777,8 +830,11 @@ def place_spot_order(api_key: str, api_secret: str, symbol: str, side: str, orde
     with _open_orders_lock:
         _open_orders_cache["expires"] = 0.0
     invalidate_account_balance_cache(api_key)
-    return {**(data if isinstance(data, dict) else {}), "symbol": symbol_u,
-            "client_id": params["clientId"], "order_id": str(data.get("orderId")) if isinstance(data, dict) and data.get("orderId") else None}
+    result = {**(data if isinstance(data, dict) else {}), "symbol": symbol_u,
+              "client_id": params["clientId"], "order_id": str(data.get("orderId")) if isinstance(data, dict) and data.get("orderId") else None}
+    if client_order_id:
+        _recent_order_remember(api_key, client_order_id, result)
+    return result
 
 
 def get_order_detail(api_key: str, api_secret: str, symbol: str, *,

@@ -18,7 +18,8 @@ from app import security
 from app.config import config
 from app import database
 from app.state import market, analyzer
-from app.api_common import (_start_background, _fresh_public_price, _main_pg_pool, _llm_guard_block_reason)
+from app.api_common import (_start_background, _fresh_public_price, _main_pg_pool, _llm_guard_block_reason,
+                            rate_limit)
 from app.routers.llm_position_tools import (LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL,
                             LLM_CLOSE_POSITION_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
                             LLM_LIST_SYMBOL_GUARDS_TOOL)
@@ -2734,6 +2735,22 @@ async def _get_crypto_news_tool(args: dict = None) -> dict:
         return {"ok": False, "symbol": sym, "error": f"Haber akışı okunamadı: {exc}", "headlines": []}
 
 
+# 2026-10-15 (denetim düzeltmesi): LLM sohbet uçlarında kullanıcı başına hız
+# sınırı yoktu; tek oturum sağlayıcı kotasını/maliyetini tüketebiliyordu.
+# Token-bucket (api_common.rate_limit): varsayılan 1 istek / 5 sn, patlama 3.
+LLM_CHAT_RATE_PER_SEC = float(os.getenv("LLM_CHAT_RATE_PER_SEC", str(1 / 5.0)))
+LLM_CHAT_BURST = float(os.getenv("LLM_CHAT_BURST", "3"))
+
+
+def _enforce_chat_rate_limit(auth_user: dict | None, request):
+    """Kullanıcı (yoksa istemci IP) başına LLM sohbet hız sınırı; aşımda 429."""
+    username = str((auth_user or {}).get("username") or "").strip().lower()
+    key = username or (security.trusted_client_ip(request) if request else None) or "anon"
+    if not rate_limit(f"llm_chat:{key}", rate_per_sec=LLM_CHAT_RATE_PER_SEC, burst=LLM_CHAT_BURST):
+        raise HTTPException(status_code=429,
+                            detail="Çok sık sohbet isteği; birkaç saniye sonra tekrar deneyin")
+
+
 @router.post("/api/symbol-analysis/{symbol}/llm/chat")
 async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: Request = None):
     body = payload or {}
@@ -2743,6 +2760,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
             auth_user = security.request_user(request.headers, request.cookies) or {}
         except Exception:
             auth_user = {}
+    _enforce_chat_rate_limit(auth_user, request)
     # DENETİM 3.3 #26: `username`/`user_role` istemci gövdesinden DEĞİL, yalnız
     # doğrulanmış token'dan (auth_user) okunur. Gövde alanları önceden admin
     # persona'sını tetikleyebiliyordu.
@@ -3298,6 +3316,7 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
             auth_user = security.request_user(request.headers, request.cookies) or {}
         except Exception:
             auth_user = {}
+    _enforce_chat_rate_limit(auth_user, request)
     # DENETİM 3.3 #26: `username`/`user_role` istemci gövdesinden DEĞİL, yalnız
     # doğrulanmış token'dan (auth_user) okunur. Gövde bu değerleri eziyor ve
     # `get_persona` üzerinden admin'e özel davranış tetikletiyordu.
