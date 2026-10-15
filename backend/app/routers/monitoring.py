@@ -1204,6 +1204,44 @@ def _master_surge_block_reason(c: dict) -> str | None:
     return _master_surge_hard_block_reason(c)
 
 
+def gate_candidate(c: dict) -> str | None:
+    """2026-10-15 (radar düzeltmesi): TEK aday kapısı — bildirim (`_notify`) ve
+    kombine liste (`unified_scan.combined_scan_rows`) AYNI kapıdan geçer.
+
+    Döner: blok nedeni metni (bildirim/listeye GİRMEZ) ya da None (geçer).
+    Sıra: Master Surge katman 1 (likidite) elemesi → sert risk bloğu
+    (EXTREME_LONG / BTC panik / rejim) → radar `passes=False` (watchlist:
+    asiri_spread / ust_fitil / mfi-rsi asiri / atr_yetersiz …) → `exhausted` /
+    `rejection_wick` bayrakları.
+
+    KAPSAM DIŞI (P0-1 2026-10-07 korunur): yetersiz 4'lü teyit / düşük kompozit
+    (`passed=False`, failed_layer 2-4) SKORLAMA girdisidir, blok değil.
+    Füzyon-tek adaylar (`unified_pass`) radar `passes` kapısından muaftır;
+    `passes` alanı olmayan kaynak satırları (rising/pulse/snapback/squeeze)
+    yalnız master-surge ve bayrak kapılarına tabidir.
+    """
+    if not isinstance(c, dict):
+        return None
+    surge = c.get("master_surge")
+    if isinstance(surge, dict):
+        try:
+            if int(surge.get("failed_layer") or 0) == 1:
+                return f"master_surge_katman1:{surge.get('gate') or 'likidite'}"
+        except (TypeError, ValueError):
+            pass
+    hard = _master_surge_hard_block_reason(c)
+    if hard:
+        return hard
+    if "passes" in c and not c.get("passes") and not c.get("unified_pass"):
+        return str(c.get("block_reason") or "radar_kapisi_gecilmedi")
+    exhausted = c.get("exhausted")
+    if exhausted:
+        return str(exhausted)
+    if c.get("rejection_wick"):
+        return "ust_fitil_tuzagi"
+    return None
+
+
 def _master_surge_gate_enabled() -> bool:
     """Master Surge skOR/4'lü-teyit kapısı karar yolunda uygulansın mı?
 
@@ -1566,7 +1604,9 @@ async def _notify(candidates_list, settings) -> list:
         # fonlaması, BTC panik döküşü, BTC rejim kalkanı) karar yolunu kapatır.
         # "Yetersiz 4'lü teyit / düşük kompozit" artık SKORLAMA girdisidir —
         # bildirimi öldürmez (P0-1: aksi halde adayların çoğu sessizce elenirdi).
-        _surge_block = _master_surge_block_reason(c)
+        # 2026-10-15 (radar düzeltmesi): TEK kapı `gate_candidate` — sert risk +
+        # katman 1 + passes/exhausted/üst fitil/spread; kombine liste de aynısı.
+        _surge_block = gate_candidate(c)
         if _surge_block:
             _monitoring_state["surge_blocked"] = int(
                 _monitoring_state.get("surge_blocked", 0)) + 1
@@ -3163,7 +3203,11 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     # yalnız 1. adayın (en iyi) puanı kontrol ediliyordu; en iyi aday eşiği
     # geçince ALTINDAKİLER (ör. 75 < eşik 80) de listeye giriyordu. Artık eşiğin
     # ALTINDAKİ adaylar listeden ÇIKARILIR → listedeki her sembol eşiği geçmiş olur.
-    ranked = [c for c in cands if float(c.get("scan_score") or 0) >= min_score]
+    # 2026-10-15 (radar düzeltmesi): kapıya takılan satırlar (`blocked_by`,
+    # `gate_candidate`) UI çıktısında kalır ama GÖNDERİLEN listeye ve
+    # combined_paper'a GİRMEZ.
+    ranked = [c for c in cands
+              if not c.get("blocked_by") and float(c.get("scan_score") or 0) >= min_score]
     top = ranked[:n]
     if not top:
         best_all = float((cands[0].get("scan_score") if cands else 0) or 0)

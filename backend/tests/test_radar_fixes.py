@@ -402,3 +402,120 @@ def test_rank_compares_panel_only(monkeypatch):
     assert r["panel_score"] == pytest.approx(70.0), f"panel 70 kazanmalıydı: {r}"
     assert r["strategy"] == "rising", "seçilen satır rising olmalı (velocity → combined)"
     assert "rising" in r["signal_sources"]
+
+
+# ---------------------------------------------------------------------------
+# (4) TEK gate_candidate(): master-surge sert blok + failed_layer==1 + passes
+#     + exhausted/üst fitil/spread — hem _notify hem kombine liste
+# ---------------------------------------------------------------------------
+def test_gate_candidate_reasons():
+    from app.routers import monitoring as mo
+    g = mo.gate_candidate
+    # Temiz radar adayı → None.
+    assert g({"symbol": "OKTRY", "passes": True, "velocity_score": 2000}) is None
+    # Kaynak satırında `passes` alanı yok (rising/pulse/snapback) → kapı yok.
+    assert g({"symbol": "RISTRY", "strategy": "rising"}) is None
+    # Füzyon-tek aday: passes False ama unified_pass → kapı yok.
+    assert g({"symbol": "FUSTRY", "passes": False, "unified_pass": True}) is None
+    # Master Surge SERT risk bloğu.
+    assert g({"symbol": "A", "passes": True,
+              "master_surge": {"block_reason": "EXTREME_LONG_LIQUIDATION_RISK"}}) \
+        == "EXTREME_LONG_LIQUIDATION_RISK"
+    # Katman 1 (likidite) elemesi artık blok.
+    assert g({"symbol": "A", "passes": True,
+              "master_surge": {"failed_layer": 1, "gate": "LIQUIDITY"}}).startswith("master_surge_katman1")
+    # Katman 2-4 / yetersiz 4'lü teyit SKORLAMA girdisidir, blok DEĞİL (P0-1).
+    assert g({"symbol": "A", "passes": True,
+              "master_surge": {"failed_layer": 3, "passed": False, "gate": "NO_4WAY_CONFLUENCE"}}) is None
+    # Watchlist satırı (passes False) → block_reason, yoksa genel neden.
+    assert g({"symbol": "A", "passes": False, "block_reason": "asiri_spread:1.20%>0.70%_siniri"}) \
+        == "asiri_spread:1.20%>0.70%_siniri"
+    assert g({"symbol": "A", "passes": False}) == "radar_kapisi_gecilmedi"
+    # exhausted / üst fitil bayrakları tek başına da blok.
+    assert g({"symbol": "A", "passes": True, "exhausted": "rsi_asiri_alim:91"}) == "rsi_asiri_alim:91"
+    assert g({"symbol": "A", "passes": True, "rejection_wick": True}).startswith("ust_fitil")
+    # Boş/bozuk girdi düşürmez.
+    assert g({}) is None
+    assert g({"master_surge": "garbage", "passes": True}) is None
+
+
+def test_notify_uses_gate_candidate(monkeypatch):
+    """`_notify`: kapıya takılan aday (exhausted) yüksek skorlu olsa bile
+    bildirim ÜRETMEZ; tek kaynak `gate_candidate`."""
+    import inspect
+    from app.routers import monitoring as mo
+    assert "gate_candidate(" in inspect.getsource(mo._notify)
+
+    async def _no_pending(symbols):
+        return {}
+    monkeypatch.setattr(mo.database, "get_pending_monitoring_notifications", _no_pending)
+    monkeypatch.setattr(mo, "_effective_min_raw_score", lambda s: 0.0)
+    monkeypatch.setattr(mo, "_effective_min_score", lambda s: 0.0)
+    monkeypatch.setattr(mo, "_in_quiet_hours", lambda s: False)
+    cand = {"symbol": "EXHTRY", "velocity_score": 5000.0, "target_pct": 2.0,
+            "price": 1.0, "horizon_minutes": 5, "passes": True,
+            "exhausted": "mfi_asiri_alim:88"}
+    out = asyncio.run(mo._notify([cand], {"enabled": True}))
+    assert out == []
+    blocked = mo._monitoring_state.get("surge_blocked_symbols", {}).get("EXHTRY")
+    assert blocked and blocked["reason"] == "mfi_asiri_alim:88"
+
+
+def test_combined_rows_keep_blocked_with_reason(monkeypatch):
+    """Kombine çıktı: süzülen satır LİSTEDEN DÜŞMEZ, `blocked_by` ile kalır
+    (UI gri gösterir) ve sıralamada temiz satırların ARKASINA gider."""
+    rows = _run_combined(monkeypatch, velocity_by_h={5: [
+        {"symbol": "CLEANTRY", "price": 1.0, "velocity_score": 800.0,
+         "horizon_minutes": 5, "ceiling_pct": 2.0, "passes": True},
+        {"symbol": "SPRDTRY", "price": 1.0, "velocity_score": 9000.0,
+         "horizon_minutes": 5, "ceiling_pct": 2.0, "passes": False,
+         "block_reason": "asiri_spread:1.20%>0.70%_siniri"},
+    ]})
+    by_sym = {r["symbol"]: r for r in rows}
+    assert set(by_sym) == {"CLEANTRY", "SPRDTRY"}
+    assert by_sym["CLEANTRY"]["blocked_by"] is None
+    assert by_sym["SPRDTRY"]["blocked_by"] == "asiri_spread:1.20%>0.70%_siniri"
+    assert [r["symbol"] for r in rows] == ["CLEANTRY", "SPRDTRY"], "bloklu satır sona gitmeli"
+
+
+def test_send_combined_list_excludes_blocked(monkeypatch):
+    """Gönderilen TOP N'e `blocked_by` dolu satır GİRMEZ (combined_paper da
+    açmaz); puanı en yüksek olsa bile."""
+    from app.routers import monitoring as mo
+    import app.whatsapp_notify as wn
+
+    async def _scan():
+        return [
+            {"symbol": "BLKTRY", "price": 1.0, "scan_score": 95.0,
+             "blocked_by": "mfi_asiri_alim:90", "horizon_minutes": 5},
+            {"symbol": "OKTRY", "price": 1.0, "scan_score": 80.0,
+             "blocked_by": None, "horizon_minutes": 5},
+        ]
+
+    async def _last(kind=mo.COMBINED_LIST_KIND):
+        return None
+
+    sent_rows = []
+
+    async def _save(item):
+        sent_rows.append(item)
+        return 1
+
+    async def _send(text):
+        return True
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(mo, "_combined_scan_rows", _scan)
+    monkeypatch.setattr(mo.database, "last_daily_rising_report", _last)
+    monkeypatch.setattr(mo.database, "save_daily_rising_report", _save)
+    monkeypatch.setattr(mo, "_persist_combined_scan_rows", _noop)
+    monkeypatch.setattr(mo, "_record_unified_outcomes", _noop)
+    monkeypatch.setattr(wn, "whatsapp_enabled", lambda: True)
+    monkeypatch.setattr(wn, "send_whatsapp", _send)
+    monkeypatch.setattr(wn, "format_combined_list", lambda cands, **k: "X")
+    cfg = {"top_n": 3, "min_score": 10.0, "list_min": 15, "track_min": 5}
+    assert asyncio.run(mo._send_combined_list(cfg=cfg, force=True)) is True
+    syms = [c["symbol"] for c in sent_rows[-1]["candidates"]]
+    assert syms == ["OKTRY"], f"bloklu aday listeye girdi: {syms}"

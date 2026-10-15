@@ -414,6 +414,10 @@ async def combined_scan_rows() -> list[dict]:
                 mtf = None
         quality, tc_sources, tc_layers = _combined_quality_score(c)
         _fam_bonus, _fam_list = _radar_family_bonus(c)
+        # 2026-10-15 (radar düzeltmesi): `_notify` ile AYNI kapı. Süzülen satır
+        # listeden DÜŞMEZ — `blocked_by` ile UI'da gri kalır; gönderilen TOP N
+        # ve combined_paper bu satırları almaz (monitoring._send_combined_list).
+        blocked_by = mo.gate_candidate(c)
         signal_sources = list(dict.fromkeys(
             [str(source) for source in (c.get("signal_sources") or []) if source]
             + [str(source) for source in (c.get("unified_sources") or []) if source]
@@ -463,11 +467,13 @@ async def combined_scan_rows() -> list[dict]:
             # listesi + emir defteri dengesizliği (sıralama tie-breaker'ı).
             "radar": c.get("radar"),
             "radar_families": _fam_list,
+            "blocked_by": blocked_by,
             "_hit": hit,
         }
         out.append(row)
 
-    out.sort(key=lambda r: (float(r.get("scan_score") or 0), _is_both(r),
+    # Bloklu satırlar temiz satırların ARKASINA (2026-10-15 radar düzeltmesi).
+    out.sort(key=lambda r: (not r.get("blocked_by"), float(r.get("scan_score") or 0), _is_both(r),
                             (r.get("radar") or {}).get("book_imbalance") or 0.0),
              reverse=True)
     return out
