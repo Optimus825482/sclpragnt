@@ -4018,8 +4018,10 @@ async def daily_rising_whatsapp_status(request: Request = None):
     url = str(getattr(_cfg, "WHATSAPP_BRIDGE_URL", "") or "").strip().rstrip("/")
     if url:
         try:
+            # Köprü /status ucunu artık anahtarla korur (denetim 2026-10-15).
+            _status_req = _urlreq.Request(f"{url}/status", headers={"X-Bridge-Key": str(getattr(_cfg, "WHATSAPP_BRIDGE_KEY", "") or "")})
             def _get():
-                with _urlreq.urlopen(f"{url}/status", timeout=5) as r:
+                with _urlreq.urlopen(_status_req, timeout=5) as r:
                     return json.loads(r.read().decode("utf-8", errors="ignore"))
             st = await asyncio.to_thread(_get)
             out["connected"] = bool(st.get("connected"))

@@ -11,6 +11,7 @@ import re
 import uuid
 from datetime import datetime, timezone, timedelta
 
+from app import sql_guard
 from app.config import config
 from app.forecast_learning import outcome_window_seconds
 
@@ -4769,108 +4770,29 @@ async def cleanup_stale_velocity_candidates(max_age_seconds: int = 6 * 3600):
 
 
 async def read_only_query(sql: str, limit: int = 500):
-    """Execute a narrowly validated, read-only query for LLM inspection.
+    """LLM incelemesi için salt-okunur, AST ile doğrulanmış sorgu çalıştırır.
 
-    Denetim P1-6 (2026-10-07) — İKİ sertleştirme:
+    Denetim 2026-10-15 (P0): doğrulama `app.sql_guard` içinde sqlglot AST'si
+    üzerinden yapılır (regex yok). Çalıştırma katmanı da ayrıca sınırlanır:
 
-    1. **Sütun izin listesi.** Eskiden yalnız TABLO adları doğrulanıyordu; tüm
-       sütunlar (JSONB `metadata`/`payload`/`arguments`/`entry_context` dahil)
-       LLM'e akabiliyordu. Bu bloblar opak ve içlerinde anahtar/kişisel veri
-       bulunabilir; salt-okunur analitik için gereksizdirler. Aşağıdaki
-       `_allowed_columns` her tablonun modele açık sütunlarını listeler; niteliği
-       bir tabloya çözülen her `tablo.sütun` izin listesinde olmalıdır. Ayrıca
-       opak ve sır çağrıştıran adlar (niteliksiz kullanımda da) reddedilir.
-    2. **LIMIT bypass'i kapatıldı.** Eskiden iç sorgu zaten bir `LIMIT`
-       içeriyorsa dış sarmalayıcı LIMIT HİÇ uygulanmıyordu → `LIMIT 1000000`
-       ile sınırsız JOIN sonucu dönebiliyordu. Artık iç LIMIT'ler cap'e
-       İNDİRİLİR (küçük değerler büyütülmez) ve dış LIMIT KOŞULSUZ uygulanır.
+    * işlem `READ ONLY` ve `statement_timeout` (sql_guard.STATEMENT_TIMEOUT) ile
+      koşar; uzun/pahalı sorgu sunucuda iptal edilir;
+    * `llm_readonly` rolü varsa `SET LOCAL ROLE` ile ona geçilir (migration 014).
+      Rol yoksa işlem yine READ ONLY + timeout + AST filtresiyle koşar.
+      Rolün oluşturulması ve uygulama kullanıcısının bu role üyeliği deploy
+      kararıdır; README'deki "LLM salt-okunur rol" notuna bakın.
+
+    Tüm SET komutları ilk sorgudan önce çalışır (SET TRANSACTION kuralı) ve
+    `SET LOCAL` olduğundan işlem bitince (commit/rollback) otomatik geri alınır.
     """
-    statement = str(sql or "").strip()
-    if not statement or ";" in statement:
-        raise ValueError("Tek bir SELECT sorgusu gerekli; çoklu ifade veya noktalı virgül yasak")
-    if not re.match(r"^(SELECT|WITH)\b", statement, re.I):
-        raise ValueError("Yalnızca SELECT veya WITH ... SELECT sorgularına izin verilir")
-    if re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|PRAGMA|COPY|GRANT|REVOKE|CALL|DO|VACUUM|ATTACH|DETACH)\b", statement, re.I):
-        raise ValueError("Yazma, DDL veya yönetim komutu tespit edildi")
-    allowed = frozenset({"positions", "trades", "signals", "decision_logs", "virtual_wallet", "analysis_snapshots", "llm_tool_logs"})
-    # P1-6: tablo başına MODELE AÇIK sütunlar. JSONB/opak sütunlar
-    # (entry_context, metadata, payload, arguments) KASITLI olarak listelenmez.
-    allowed_columns = {
-        "positions": frozenset({"symbol", "side", "entry_price", "stop_price", "take_profit",
-                                 "peak_price", "breakeven_hit", "quantity", "entry_time",
-                                 "strategy", "trade_id"}),
-        "trades": frozenset({"id", "symbol", "strategy", "side", "entry_price", "exit_price",
-                             "quantity", "pnl", "pnl_pct", "entry_time", "exit_time",
-                             "commission", "reason", "max_favorable_pct", "max_adverse_pct",
-                             "hold_seconds", "trade_id"}),
-        "signals": frozenset({"id", "timestamp", "symbol", "action", "price", "reason",
-                              "strategy", "trade_id"}),
-        "decision_logs": frozenset({"id", "timestamp", "symbol", "strategy", "decision",
-                                    "reason", "price"}),
-        "virtual_wallet": frozenset({"asset", "amount"}),
-        "analysis_snapshots": frozenset({"id", "symbol", "timeframe", "captured_at", "source",
-                                         "methodology_version", "regime", "regime_confidence",
-                                         "confluence_score", "trade_id"}),
-        "llm_tool_logs": frozenset({"id", "timestamp", "scope", "tool_name", "result_summary",
-                                    "duration_ms", "success"}),
-    }
-    # FROM/JOIN sonrası tablo adlarını çıkar (alt sorguları da kontrol et)
-    referenced = set(re.findall(r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)", statement, re.I))
-    # Alt sorgulardaki tabloları da kontrol et (nested SELECT)
-    subquery_tables = set(re.findall(r"\)\s*AS\s+\w+\s+(?:LEFT|RIGHT|INNER|OUTER|CROSS|FULL|JOIN|FROM)\s+([A-Za-z_][A-Za-z0-9_]*)", statement, re.I))
-    all_referenced = referenced | subquery_tables
-    if not all_referenced or not all_referenced.issubset(allowed):
-        raise ValueError(f"Sorgu yalnızca izin verilen uygulama tablolarını kullanabilir: {allowed}")
-
-    # --- P1-6 sütun doğrulaması ------------------------------------------
-    # String literallerini nötrle: içerikte geçen bir sözcük (ör. '%token%')
-    # sütun adı sanılıp yanlış redde yol açmasın.
-    _lit_stripped = re.sub(r"'(?:[^']|'')*'", " ", statement)
-    _blocked_columns = frozenset({"entry_context", "metadata", "payload", "arguments"})
-    _secret_re = re.compile(r"(api_?key|secret|passw|credential|private_?key|token|encrypted)", re.I)
-    for ident in set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", _lit_stripped)):
-        low = ident.lower()
-        if low in _blocked_columns:
-            raise ValueError(f"Opak/hassas sütunlar izinli değil: {sorted(_blocked_columns)}")
-        if _secret_re.search(low):
-            raise ValueError("Sır içerebilecek sütun adlarına izin verilmez")
-    # Alias haritası: `FROM/JOIN tablo [AS] alias` → tablo adı (tablo adı da kendi alias'ı).
-    _sql_keywords = frozenset({
-        "where", "order", "group", "limit", "offset", "join", "on", "left", "right",
-        "inner", "outer", "cross", "full", "natural", "union", "set", "values", "using",
-        "having", "window", "fetch", "for", "as", "and", "or",
-    })
-    alias_map: dict[str, str] = {}
-    for tbl, alias in re.findall(
-            r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?",
-            _lit_stripped, re.I):
-        tlow = tbl.lower()
-        if tlow not in allowed:
-            continue
-        alias_map[tlow] = tlow
-        if alias and alias.lower() not in _sql_keywords:
-            alias_map[alias.lower()] = tlow
-    # Niteliği bir tabloya çözülen sütun izin listesinde olmalı (izin listesi uygulanır).
-    for qual, col in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)", _lit_stripped):
-        table = alias_map.get(qual.lower())
-        if table and col.lower() not in allowed_columns[table]:
-            raise ValueError(f"{table}.{col} izinli sütunlar arasında değil")
-
-    # --- P1-6 LIMIT zorlaması (koşulsuz) ---------------------------------
-    cap = max(1, min(int(limit), 500))
-
-    def _clamp(match):
-        inner = match.group(2)
-        if inner.upper() == "ALL":
-            return f"{match.group(1)}{cap}"
-        return f"{match.group(1)}{min(int(inner), cap)}"  # yalnız küçült, büyütme
-
-    bounded = re.sub(r"(\bLIMIT\s+)(\d+|ALL)\b", _clamp, statement, flags=re.I)
-    # Dış LIMIT her koşulda uygulanır → sonuç kümesi asla cap'i aşamaz.
-    bounded = f"SELECT * FROM ({bounded}) AS llm_read_only_result LIMIT {cap}"
+    bounded = sql_guard.validate_read_only_select(sql, limit)
 
     def op(conn):
         # V-19: hazır SQL `?` içerebilir; compat'ın yer tutucu dönüşümü atlanır.
+        conn.raw_execute("SET TRANSACTION READ ONLY")
+        conn.raw_execute(f"SET LOCAL statement_timeout = '{sql_guard.STATEMENT_TIMEOUT}'")
+        if conn.raw_execute("SELECT 1 FROM pg_roles WHERE rolname = 'llm_readonly'").fetchall():
+            conn.raw_execute("SET LOCAL ROLE llm_readonly")
         cur = conn.raw_execute(bounded)
         rows = cur.fetchall()
         return [dict(row) if isinstance(row, dict) else dict(zip([d[0] for d in cur.description], row)) for row in rows]

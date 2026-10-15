@@ -14,3 +14,7 @@ edge-tts==7.2.7
 scikit-learn==1.6.1
 joblib==1.4.2
 urllib3>=2.2.0
+
+# 2026-10-15 denetim (P0): `read_only_sql` regex yerine sqlglot AST'si ile
+# tablo/sütun doğrulaması yapar (app/sql_guard.py). Sürüm sabitlidir.
+sqlglot==30.23.0
