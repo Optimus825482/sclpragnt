@@ -159,6 +159,9 @@ class MarketData:
         self._ws_tasks = set()
         # B-06: arka plan onarım görevleri güçlü referansla tutulur.
         self._bg_tasks = set()
+        # 2026-10-15 (denetim düzeltmesi, madde 10): grup başına en fazla BİR
+        # çalışan onarım görevi (WS hata fırtınasında dedup).
+        self._repair_tasks: dict[int, asyncio.Task] = {}
         # B-05: atlanan bozuk/işlenemeyen WS çerçevesi sayacı (gözlemlenebilirlik).
         self.ws_malformed_frames = 0
         self.WS_URL = f"{self.ws_bases[0]}/stream?streams={{}}"
@@ -638,20 +641,39 @@ class MarketData:
         capped = min(30.0, 1.0 * (2 ** min(exponent, 5)))
         return capped * (0.5 + random.random() * 0.5)
 
+    @staticmethod
+    def _ws_reconnect_delay_sec(attempt: int) -> float:
+        """2026-10-15 (denetim düzeltmesi, madde 9): temiz kapanış sonrası bekleme.
+
+        `async for` sunucu kapanışıyla hatasız bittiğinde eskiden backoff'suz
+        anında yeniden bağlanılıyordu; kapanış tekrarlanırsa fırtına. En az
+        1-3 sn (jitter) ve üstel backoff'un büyüğü.
+        """
+        floor = 1.0 + random.random() * 2.0
+        return max(floor, MarketData._ws_backoff_sec(max(1, int(attempt))))
+
     def _schedule_repair(self, symbols, timeframes, generation: int, group_id: int):
         """B-06: arka plan onarım görevi GÜÇLÜ referansla tutulur.
 
         `create_task` sonucu tutulmazsa CPython görevi toplayabilir (yalnızca zayıf
         referans kalır) ve görevin istisnası hiçbir zaman görülmez.
         """
+        # 2026-10-15 (denetim düzeltmesi, madde 10): aynı grup için çalışan
+        # bir onarım varsa yenisi açılmaz (her WS hatası ayrı görev yaratıyordu).
+        existing = self._repair_tasks.get(group_id)
+        if existing is not None and not existing.done():
+            return existing
         task = asyncio.create_task(
             self.repair_history_gaps(symbols=symbols, timeframes=timeframes),
             name=f"market-gap-repair-g{generation}-{group_id}",
         )
         self._bg_tasks.add(task)
+        self._repair_tasks[group_id] = task
 
         def _done(t: asyncio.Task):
             self._bg_tasks.discard(t)
+            if self._repair_tasks.get(group_id) is t:
+                self._repair_tasks.pop(group_id, None)
             if t.cancelled():
                 return
             exc = t.exception()
@@ -709,6 +731,13 @@ class MarketData:
                                 or self.reconnect_requested):
                             break
                         self._handle_ws_frame(message, generation, group_id)
+                # 2026-10-15 (denetim düzeltmesi, madde 9): `async for` temiz
+                # kapanışla bitti (sunucu kapattı). Eskiden backoff'suz anında
+                # yeniden bağlanılıyordu; artık kısa, jitter'lı asgari bekleme.
+                if (self.running and generation == self.connection_generation
+                        and not self.reconnect_requested):
+                    attempts += 1
+                    await asyncio.sleep(self._ws_reconnect_delay_sec(attempts))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

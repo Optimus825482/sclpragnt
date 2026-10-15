@@ -37,6 +37,24 @@ _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 # op'larda (commit_open_position vb.) pg_advisory_xact_lock ile sağlanır.
 # Lazy açılır (open=False); ilk _execute'te açılır. 2026-09-05 (K1).
 _PG_POOL = None
+# 2026-10-15 (denetim düzeltmesi): DB işleri için AYRI thread havuzu. Eskiden
+# `_run_db` asyncio'nun VARSAYILAN executor'ını kullanıyordu; REST istemcisi
+# (binance_public) 429/418 banlarında aynı havuzda `time.sleep` ile thread
+# tutunca DB işleri (pozisyon KAPANIŞLARI dahil) kuyrukta kalıyordu. Havuz
+# boyutu bağlantı havuzuyla (max_size) aynı; `close_db` kapatır.
+_DB_POOL_MAX_SIZE = 8
+_DB_EXECUTOR = None
+
+
+def _get_db_executor():
+    """DB'ye özel ThreadPoolExecutor (lazy; close_db sonrası yeniden kurulur)."""
+    global _DB_EXECUTOR
+    if _DB_EXECUTOR is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _DB_EXECUTOR = ThreadPoolExecutor(max_workers=_DB_POOL_MAX_SIZE, thread_name_prefix="db")
+    return _DB_EXECUTOR
+
+
 # Transport-level errors that mean the cached connection itself is dead
 # (server restart, idle timeout, socket drop). On these the connection is
 # closed and rebuilt on the next operation instead of poisoning every call.
@@ -246,7 +264,7 @@ def _get_connection():
             _PG_POOL = ConnectionPool(
                 os.environ["DATABASE_URL"],
                 min_size=1,
-                max_size=8,
+                max_size=_DB_POOL_MAX_SIZE,
                 open=False,
                 kwargs={"row_factory": _hybrid_row_factory},
                 configure=_configure_pool_connection,
@@ -259,7 +277,8 @@ def _get_connection():
 
 async def _run_db(operation):
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: _execute(operation))
+    # 2026-10-15 (denetim düzeltmesi): varsayılan executor yerine DB'ye özel havuz.
+    return await loop.run_in_executor(_get_db_executor(), lambda: _execute(operation))
 
 
 def _execute(operation):
@@ -5981,13 +6000,22 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
 
 
 async def close_db():
-    """Havuzu kapat (shutdown). Havuz None ise sorun değil."""
-    global _PG_POOL
+    """Havuzu ve DB executor'ını kapat (shutdown). Havuz None ise sorun değil."""
+    global _PG_POOL, _DB_EXECUTOR
     pool = _PG_POOL
     _PG_POOL = None
+    executor = _DB_EXECUTOR
+    _DB_EXECUTOR = None
+    loop = asyncio.get_running_loop()
+    if executor is not None:
+        # 2026-10-15: önce uçuştaki DB işleri bitsin, sonra havuz kapansın.
+        try:
+            await loop.run_in_executor(None, lambda: executor.shutdown(wait=True))
+        except Exception:
+            pass
     if pool is not None:
         try:
-            await asyncio.get_running_loop().run_in_executor(None, pool.close)
+            await loop.run_in_executor(None, pool.close)
         except Exception:
             pass
 
@@ -7480,7 +7508,8 @@ async def open_combined_paper_trade(trade: dict) -> tuple[dict | None, str]:
     try:
         return await _run_db(op)
     except Exception:
-        logger.debug("combined_paper açılış hatası: %s", symbol, exc_info=True)
+        # 2026-10-15 (denetim düzeltmesi): para yolundaki hata artık GÖRÜNÜR (debug değil).
+        logger.exception("combined_paper açılış hatası: %s", symbol)
         return (None, "error")
 
 
@@ -7526,7 +7555,7 @@ async def close_combined_paper_trade(trade_id: int, exit_price: float, exit_time
     try:
         return await _run_db(op)
     except Exception:
-        logger.debug("combined_paper kapanış hatası (id=%s)", trade_id, exc_info=True)
+        logger.exception("combined_paper kapanış hatası (id=%s)", trade_id)
         return None
 
 
@@ -7550,7 +7579,7 @@ async def update_combined_paper_trade(trade_id: int, fields: dict) -> None:
     try:
         await _run_db(op)
     except Exception:
-        logger.debug("combined_paper güncelleme hatası (id=%s)", trade_id, exc_info=True)
+        logger.exception("combined_paper güncelleme hatası (id=%s)", trade_id)
 
 
 async def list_combined_paper_trades(status: str | None = None, limit: int = 200) -> list[dict]:

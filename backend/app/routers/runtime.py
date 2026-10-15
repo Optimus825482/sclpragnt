@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from app.config import config
 from app import database
 from app.state import market, analyzer, apply_symbol_universe, extend_stream_universe
-from app.api_common import _start_background, _fresh_public_price
+from app.api_common import _start_background, _fresh_public_price, _alert_system_event
 from app.circuit_breaker import breaker as strategy_breaker
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, top_gainers
 from app.ws_runtime import ws_manager
@@ -388,6 +388,36 @@ async def auto_open_from_alert(rule, event):
     return {"status": "opened" if signal.get("action") == "BUY_SIGNAL" else "blocked",
             "symbol": rule.get("symbol"), "signal": signal, "details": result, "paper_only": True}
 
+# 2026-10-15 (denetim düzeltmesi, madde 12): pozisyon yönetimi ardışık hata
+# sayacı. Eskiden hata `print` ile traceback'siz basılıyor ve sürekli hata
+# veren bir pozisyon 5 sn'de bir sessizce atlanıyordu (SL/TP çalışmıyor).
+POSITION_MANAGE_ERROR_ALERT_THRESHOLD = 5
+_position_manage_errors: dict[str, int] = {}
+
+
+def _note_position_manage_error(sym: str, exc: BaseException) -> int:
+    """Sembol başına ardışık hata sayısını artırır; eşikte TEK seferlik alarm.
+
+    Eşik altı: traceback'li uyarı. Eşik: error + sistem alarmı (signals).
+    Eşik üstü: log seli olmasın diye ~dakikada bir traceback'siz satır.
+    """
+    count = _position_manage_errors.get(sym, 0) + 1
+    _position_manage_errors[sym] = count
+    if count < POSITION_MANAGE_ERROR_ALERT_THRESHOLD:
+        logger.warning("[Strategy] %s pozisyon yönetimi hatası (ardışık %d): %s",
+                       sym, count, exc, exc_info=True)
+    elif count == POSITION_MANAGE_ERROR_ALERT_THRESHOLD:
+        message = (f"{sym} pozisyon yönetimi {count} turdur ardışık hata veriyor; "
+                   f"SL/TP/trailing bu sembolde ÇALIŞMIYOR olabilir: "
+                   f"{type(exc).__name__}: {exc}")
+        logger.error("[Strategy] %s", message, exc_info=True)
+        _alert_system_event("POSITION_MANAGE_FAILING", message, symbol=sym)
+    elif count % 12 == 0:
+        logger.warning("[Strategy] %s pozisyon yönetimi hâlâ başarısız (ardışık %d): %s",
+                       sym, count, exc)
+    return count
+
+
 async def strategy_loop():
     """Açık pozisyon yönetimi döngüsü.
 
@@ -415,8 +445,11 @@ async def strategy_loop():
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    print(f"[Strategy] {sym} pozisyon yönetimi hatası: {exc}")
+                    # 2026-10-15 (denetim düzeltmesi, madde 12): traceback'li log +
+                    # sembol başına ardışık hata sayacı / eşikte alarm.
+                    _note_position_manage_error(sym, exc)
                     continue
+                _position_manage_errors.pop(sym, None)
                 for sig in signals:
                     print(f"[Sinyal] {sig}")
                     await ws_manager.broadcast({"type": "signal", "data": sig})

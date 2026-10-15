@@ -1921,8 +1921,13 @@ async def velocity_status():
     }
 
 
+# 2026-10-15 (denetim düzeltmesi, bölüm 3): eşzamanlı manuel taramalar üst
+# üste binmesin (aynı adaya iki açılış denemesi / çift LLM maliyeti).
+_manual_scan_lock = asyncio.Lock()
+
+
 @router.post("/api/velocity/manual-scan")
-async def manual_velocity_scan():
+async def manual_velocity_scan(request: Request = None):
     """Manuel hız avcısı taraması: 5dk-%2 + 15dk-%3 profillerini tarar,
     en yüksek skorlu adaya (GEÇTİ veya İZLEME) paper pozisyon açar.
 
@@ -1938,7 +1943,21 @@ async def manual_velocity_scan():
          manuel tarama bunu yok sayıp doğrudan analyzer'a gidiyordu, yani
          iki yol aynı anda iki farklı defter kullanabiliyordu (tek defter
          sözleşmesi ihlali).
+    2026-10-15 (denetim düzeltmesi, bölüm 3): paper pozisyon açan bu uç
+    artık yönetici kapısı (`require_admin`) arkasındadır ve tek bir kilitle
+    serileştirilir; çalışan bir tarama varken ikinci istek 409 alır.
     """
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    if _manual_scan_lock.locked():
+        raise HTTPException(status_code=409,
+                            detail="Manuel hız taraması zaten çalışıyor; bitmesini bekleyin")
+    async with _manual_scan_lock:
+        return await _manual_velocity_scan_body()
+
+
+async def _manual_velocity_scan_body() -> dict:
+    """`manual_velocity_scan` gövdesi — kilit ve yönetici kapısı üstte."""
     scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
     scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
     raw_pool = (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
@@ -2869,9 +2888,12 @@ async def autonomous_velocity_loop():
                     # Yeni M5 kapanışı yok; kapanışa kadar bekle.
                     await asyncio.sleep(3)
                     continue
-                _last_m5_close_ms = latest_close_ms
                 scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
                 scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
+                # 2026-10-15 (denetim düzeltmesi, madde 8): M5 imleci yalnız
+                # BAŞARILI taramadan sonra ilerler; tarama hata verirse aynı
+                # mum bir sonraki turda yeniden denenir (eskiden kalıcı atlanıyordu).
+                _last_m5_close_ms = latest_close_ms
                 _velocity_auto_state["last_scan_at"] = time.time()
                 _velocity_auto_state["last_m5_close_ms"] = latest_close_ms
                 # İki profilin adayları birleşik; kalite çarpanlı skor ile sıralama.

@@ -71,21 +71,29 @@ async def _price(symbol: str) -> float | None:
     return None
 
 
-def _plan_entry(candidate: dict, cash: float) -> dict | None:
+def _plan_entry(candidate: dict, cash: float, price: float | None = None) -> dict | None:
     """Serbest bakiyenin %10'u kadar pozisyon planı üret (potansiyele göre TP).
 
     TP = potansiyelin anlamlı bir dilimi (yarısı), ama en az %3 — ve asla
     potansiyelin kendisini aşmaz. Stop = min(3×ATR?, taban SL) — taban SL
     `COMBINED_PAPER_SL_PCT`.
+
+    2026-10-15 (denetim düzeltmesi, madde 6): `price` verilirse (çağıran taze
+    ticker/REST fiyatını geçirir) WhatsApp listesindeki dakikalar eski
+    `candidate["price"]` yerine o kullanılır. Giriş dolumuna çıkıştakiyle
+    (`close_combined_paper_trade`) AYNI kayma (`ESTIMATED_SLIPPAGE_PCT`)
+    uygulanır; TP/SL çapası bu dolumdan türetilir (auto_paper ile aynı model).
     """
     sym = str(candidate.get("symbol") or "").upper()
-    price = float(candidate.get("price") or 0)
+    price = float(price if price is not None else (candidate.get("price") or 0))
     if not sym or price <= 0 or cash <= 0:
         return None
     pos_pct = float(getattr(config, "COMBINED_PAPER_POSITION_PCT", 10.0)) / 100.0
     order_value = round(cash * pos_pct, 2)
     if order_value < 50.0:  # çok küçük kalan bakiye → anlamsız
         return None
+    entry_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+    price = price * (1.0 + entry_slip)   # giriş dolumu (kayma dahil)
     qty = order_value / price
     potential = candidate.get("potential_pct")
     try:
@@ -120,8 +128,15 @@ async def on_combined_list_sent(candidates: list[dict], report_id: int | None = 
             sym = str(c.get("symbol") or "").upper()
             if not sym:
                 continue
+            # 2026-10-15 (denetim düzeltmesi, madde 6): giriş için TAZE fiyat
+            # (WS ticker, yoksa REST). Taze fiyat yoksa bayat liste fiyatıyla
+            # AÇILMAZ (çıkışta tazelik vardı, girişte yoktu).
+            fresh_price = await _price(sym)
+            if not fresh_price or fresh_price <= 0:
+                logger.warning("combined_paper %s: taze fiyat alınamadı — açılış atlandı", sym)
+                continue
             cash = await database.get_combined_paper_wallet()
-            plan = _plan_entry(c, cash)
+            plan = _plan_entry(c, cash, price=fresh_price)
             if not plan:
                 continue
             plan["report_id"] = report_id
@@ -131,9 +146,32 @@ async def on_combined_list_sent(candidates: list[dict], report_id: int | None = 
                 opened += 1
                 logger.info("combined_paper AÇILDI: %s @ %.6f (%.2f TL, TP +%%%.1f)",
                             sym, plan["entry_price"], plan["order_value_try"], plan["tp_pct"])
-        except Exception as exc:
-            logger.debug("combined_paper açılış denemesi (%s): %s", c.get("symbol"), exc)
+        except Exception:
+            # 2026-10-15 (denetim düzeltmesi, madde 5): para yolundaki hata
+            # GÖRÜNÜR (traceback ile); WhatsApp gönderimi yine etkilenmez.
+            logger.exception("combined_paper açılış denemesi başarısız (%s)", c.get("symbol"))
     return opened
+
+
+async def _close(tid: int, sym: str, price: float, now: float, reason: str) -> dict | None:
+    """Kapanışı DB'de yap; dönüşü KONTROL et, başarısızsa uyar ve BİR kez tekrar dene.
+
+    2026-10-15 (denetim düzeltmesi, madde 5): `close_combined_paper_trade`
+    hata/yarış durumunda None döner; eskiden kimse bakmıyor, pozisyon sessizce
+    açık kalıyordu.
+    """
+    for attempt in (1, 2):
+        try:
+            out = await database.close_combined_paper_trade(tid, price, now, reason)
+        except Exception:
+            logger.exception("combined_paper %s: kapanış istisnası (id=%s, neden=%s, deneme %d/2)",
+                             sym, tid, reason, attempt)
+            out = None
+        if out:
+            return out
+        logger.warning("combined_paper %s: kapanış BAŞARISIZ (id=%s, neden=%s, deneme %d/2)",
+                       sym, tid, reason, attempt)
+    return None
 
 
 async def _manage_single(trade: dict, now: float) -> None:
@@ -168,7 +206,7 @@ async def _manage_single(trade: dict, now: float) -> None:
     # TP kaldırılır (kullanıcı kararı 2026-10-12): "%4'te TP'ye ulaştı ama sembol
     # %20 arttı; trailing ile daha fazla kâr alınabilirdi." Trend sürdükçe taşır.
     if tp is not None and price >= tp and not (tp_cancel_on_trail and trailing_on):
-        await database.close_combined_paper_trade(tid, min(price, tp), now, "take_profit")
+        await _close(tid, sym, min(price, tp), now, "take_profit")
         logger.info("combined_paper %s: TP (+%%%.2f)", sym, gain_pct)
         return
 
@@ -195,9 +233,12 @@ async def _manage_single(trade: dict, now: float) -> None:
         effective_stop = new_trail if effective_stop is None else max(effective_stop, new_trail)
 
     # 3) Stop kontrolü (orijinal SL ya da kâr kilidi).
+    # 2026-10-15 (denetim düzeltmesi, madde 2): dolum iki fiyatın KÖTÜSÜ
+    # `min(price, stop)` — eski `max(price, stop)` gap'te stop fiyatından
+    # dolup zararı küçük/PnL'i iyimser yazıyordu (auto_paper ile aynı düzeltme).
     if effective_stop is not None and price <= effective_stop:
         reason = "trailing_stop" if fields.get("trailing_activated") or trade.get("trailing_activated") else "stop_loss"
-        await database.close_combined_paper_trade(tid, max(price, effective_stop), now, reason)
+        await _close(tid, sym, min(price, effective_stop), now, reason)
         logger.info("combined_paper %s: %s (%+.2f%%)", sym, reason, gain_pct)
         return
 
@@ -208,13 +249,13 @@ async def _manage_single(trade: dict, now: float) -> None:
     # serbest bırakılır.
     no_profit_min = float(getattr(config, "COMBINED_PAPER_NO_PROFIT_MIN", 30.0))
     if no_profit_min > 0 and hold_min >= no_profit_min and peak <= entry:
-        await database.close_combined_paper_trade(tid, price, now, "no_profit_timeout")
+        await _close(tid, sym, price, now, "no_profit_timeout")
         logger.info("combined_paper %s: KÂRSIZ SÜRE DOLDU (%.0f dk, %+.2f%%)", sym, hold_min, gain_pct)
         return
 
     # 4) Süre doldu → kapanış.
     if max_hold_min > 0 and hold_min >= max_hold_min:
-        await database.close_combined_paper_trade(tid, price, now, "max_duration")
+        await _close(tid, sym, price, now, "max_duration")
         logger.info("combined_paper %s: SÜRE DOLDU (%.0f dk, %+.2f%%)", sym, hold_min, gain_pct)
         return
 
@@ -235,8 +276,10 @@ async def combined_paper_management_loop():
                 for tr in open_trades:
                     try:
                         await _manage_single(tr, now)
-                    except Exception as exc:
-                        logger.debug("combined_paper yönetim (%s): %s", tr.get("symbol"), exc)
+                    except Exception:
+                        # 2026-10-15 (madde 5): yönetim hatası traceback ile görünür.
+                        logger.exception("combined_paper yönetim hatası (%s, id=%s)",
+                                         tr.get("symbol"), tr.get("id"))
         except asyncio.CancelledError:
             raise
         except Exception as exc:

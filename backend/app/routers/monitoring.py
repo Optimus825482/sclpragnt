@@ -14,7 +14,8 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
 from app import database
-from app.api_common import log_user_action, _background_tasks, _start_background, get_task
+from app.api_common import (log_user_action, _background_tasks, _start_background, get_task,
+                            _alert_system_event)
 from app.state import market, analyzer
 from app import unified_signals
 from app import llm_second_eye
@@ -75,6 +76,15 @@ _monitoring_state = {
 SCAN_INTERVAL_SEC = max(30.0, float(os.getenv("MONITORING_SCAN_INTERVAL_SEC", "30")))
 HISTORY_LIMIT = 60
 NOTIFY_COOLDOWN_SEC = 300.0  # aynı sembol için asgari tekrar bildirim engeli (5 dk)
+# 2026-10-15 (denetim düzeltmesi, madde 13): LLM ikinci-göz görevleri için
+# eşzamanlılık tavanı. Eskiden her uygun bildirim sınırsız `create_task`
+# açıyordu; artık tavan doluyken yeni görev KUYRUKLANMAZ, atlanır (debug log).
+# Senkron sayaç kullanılır (asyncio.Semaphore senkron çağrıdan edinilemez ve
+# aynı turda yaratılan görevler kuyruklanırdı).
+LLM_SECOND_EYE_MAX_CONCURRENCY = max(1, int(os.getenv("LLM_SECOND_EYE_MAX_CONCURRENCY", "4")))
+_llm_second_eye_inflight = 0
+# 2026-10-15 (denetim düzeltmesi, madde 12): tarama döngüsü ardışık hata eşiği.
+SCAN_CONSECUTIVE_ERROR_ALERT_THRESHOLD = 5
 # NOT (2026-09-20): eski 5 dk → 1 dk → geri 5 dk. 1 dk cooldown,
 # MONITORING_REFIRE_MIN_MOVE_PCT=%0.35 fiyat kapısıyla birleşince hızlı
 # hareket eden sembollerde 2-3 dk arayla tekrar bildirim üretiyordu. Fiyat
@@ -1941,16 +1951,40 @@ async def _llm_second_eye_task(notif: dict) -> None:
         logger.debug("LLM ikinci göz WS yayını %s: %s", sym, exc)
 
 
+def _llm_second_eye_release(_task) -> None:
+    """Görev bitince (başarı/hata/iptal) eşzamanlılık sayacını düşür (madde 13)."""
+    global _llm_second_eye_inflight
+    _llm_second_eye_inflight = max(0, _llm_second_eye_inflight - 1)
+
+
 def _maybe_llm_second_eye(notified) -> None:
-    """Uygun bildirimleri LLM ikinci-göz değerlendirmesine görev olarak gönderir."""
+    """Uygun bildirimleri LLM ikinci-göz değerlendirmesine görev olarak gönderir.
+
+    2026-10-15 (denetim düzeltmesi, madde 13): en fazla
+    `LLM_SECOND_EYE_MAX_CONCURRENCY` görev uçuşta olur; tavan doluyken bildirim
+    atlanır. Girişi bu göreve ERTELENMİŞ bildirimlerde (P1-3) atlama girişi
+    yutmasın diye fail-open giriş LLM'siz denenir.
+    """
+    global _llm_second_eye_inflight
     if not notified:
         return
     for notif in notified:
         if not llm_second_eye.eligible(notif):
             continue
+        if _llm_second_eye_inflight >= LLM_SECOND_EYE_MAX_CONCURRENCY:
+            sym = notif.get("symbol") if isinstance(notif, dict) else None
+            logger.debug("LLM ikinci göz atlandı (eşzamanlılık tavanı %d dolu): %s",
+                         LLM_SECOND_EYE_MAX_CONCURRENCY, sym)
+            if isinstance(notif, dict) and notif.get("_llm_entry_deferred"):
+                fallback = asyncio.create_task(_post_llm_second_eye_entry(notif, None))
+                _background_tasks.add(fallback)
+                fallback.add_done_callback(_background_tasks.discard)
+            continue
+        _llm_second_eye_inflight += 1
         task = asyncio.create_task(_llm_second_eye_task(notif))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
+        task.add_done_callback(_llm_second_eye_release)
 
 
 def _defer_open_for_llm_second_eye(notif: dict) -> bool:
@@ -2893,11 +2927,17 @@ async def daily_momentum_loop():
             if config.DAILY_MOMENTUM_ENABLED:
                 lt = datetime.now(_tz) if _tz else datetime.now()
                 today_key = lt.strftime("%Y-%m-%d")
-                due = (lt.hour == config.DAILY_MOMENTUM_SCAN_HOUR
-                       and lt.minute >= config.DAILY_MOMENTUM_SCAN_MINUTE)
+                # 2026-10-15 (denetim düzeltmesi, madde 11): pencere "o saat" değil
+                # "o saatten gün sonuna kadar" — tam saat kaçırılırsa (restart/uzun
+                # tur) tarama aynı gün yine koşar. Gün işareti yalnız BAŞARILI
+                # taramadan sonra konur; hata olursa sonraki turda yeniden denenir.
+                # Sembol tekrarları `DAILY_MOMENTUM_REPEAT_COOLDOWN_MIN` ile engellenir.
+                due = (lt.hour > config.DAILY_MOMENTUM_SCAN_HOUR
+                       or (lt.hour == config.DAILY_MOMENTUM_SCAN_HOUR
+                           and lt.minute >= config.DAILY_MOMENTUM_SCAN_MINUTE))
                 if due and _monitoring_state.get("daily_momentum_last_day") != today_key:
-                    _monitoring_state["daily_momentum_last_day"] = today_key
                     n = await _daily_momentum_scan_once()
+                    _monitoring_state["daily_momentum_last_day"] = today_key
                     logger.info("günlük momentum taraması tamamlandı: %d aday", n)
             # Kanıt doldurma her turda (sık) — öneri↔anlık fiyat + CANLI MFE/MAE.
             # Anlık fiyat `_batch_prices` ile alınır (WS + REST fallback): bugünkü
@@ -6033,6 +6073,7 @@ async def monitoring_background_loop():
     _surge_bias_last_refresh: float = 0.0
     _SURGE_BIAS_REFRESH_INTERVAL: float = 600.0   # 10 dakika
     _surge_bias_running = False
+    _scan_consecutive_errors = 0
     while True:
         result = None
         try:
@@ -6044,9 +6085,19 @@ async def monitoring_background_loop():
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("monitoring loop turu başarısız: %s", exc)
+            # 2026-10-15 (denetim düzeltmesi, madde 12): traceback'li uyarı +
+            # ardışık hata eşiğinde TEK seferlik error + sistem alarmı.
+            _scan_consecutive_errors += 1
+            logger.warning("monitoring loop turu başarısız (ardışık %d): %s",
+                           _scan_consecutive_errors, exc, exc_info=True)
+            if _scan_consecutive_errors == SCAN_CONSECUTIVE_ERROR_ALERT_THRESHOLD:
+                message = (f"monitoring tarama döngüsü {_scan_consecutive_errors} turdur "
+                           f"ardışık hata veriyor: {type(exc).__name__}: {exc}")
+                logger.error(message)
+                _alert_system_event("MONITORING_LOOP_FAILING", message)
             await asyncio.sleep(SCAN_INTERVAL_SEC)
             continue
+        _scan_consecutive_errors = 0
         # B5: bildirim teslimi (push/WS/otonom paper) state kilidi DIŞINDA —
         # yavaş push ağ I/O'su GET /state ve GET /scan isteklerini bloklamaz.
         if result:

@@ -142,6 +142,33 @@ def _alert_failed_loop(name: str, exc: BaseException) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
+def _alert_system_event(action: str, message: str, symbol: str = "*") -> None:
+    """2026-10-15 (denetim düzeltmesi, madde 12): genel en-iyi-çaba sistem alarmı.
+
+    `_alert_failed_loop` ile aynı kanal (signals tablosu, strategy='system');
+    event loop yoksa sessizce atlanır, ana akışı asla bozmaz.
+    """
+
+    async def _record():
+        try:
+            await database.save_signal({
+                "symbol": symbol or "*", "action": action, "reason": message,
+                "strategy": "system", "timestamp": time.time()})
+        except Exception as record_exc:  # noqa: BLE001 - alarm ana akışı bozmamalı
+            logger.warning("sistem alarmı kaydedilemedi (%s): %s", action, record_exc)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    try:
+        task = asyncio.create_task(_record(), name=f"system-alert-{action.lower()}")
+    except RuntimeError:
+        return
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 def _handle_task_failure(name: str, exc: BaseException) -> bool:
     """Bir background görev hata ile düştüğünde yeniden başlatma kararını verir.
 

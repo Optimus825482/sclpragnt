@@ -58,6 +58,16 @@ REST_WEIGHT_PACING_START = 950
 REST_WEIGHT_EMERGENCY_LIMIT = 1100
 REST_EMERGENCY_WAIT_MAX_SEC = 15.0
 REST_WEIGHT_WINDOW_SEC = 60.0
+# 2026-10-15 (denetim düzeltmesi, madde 4): 429/418 sonrası PAYLAŞIMLI soğuma
+# penceresi. `_get_json` asyncio.to_thread default executor'unda çalışır;
+# eskiden 429'da 300 sn'ye, 418'de 600-3600 sn'ye kadar `time.sleep` ile
+# thread tutuyordu → ban anında aynı havuzdaki DB işleri (kapanışlar) kuyrukta
+# kalıyordu. Artık 429/418 pencereyi açar ve ANINDA `BinanceCooldownError`
+# yükseltir; pencere açıkken gelen yeni istekler de beklemeden aynı hatayla
+# düşer. Yalnız geçici 5xx/ağ/çözümleme hataları için kısa (≤5 sn) uyku kalır.
+REST_COOLDOWN_429_MAX_SEC = 60.0
+REST_COOLDOWN_418_MAX_SEC = 300.0
+REST_TRANSIENT_SLEEP_MAX_SEC = 5.0
 
 # Global kendi bütçesine sahiptir; TR adaptörünün semaphore/pool'uyla
 # PAYLAŞILMAZ (paylaşılan sayaç varsayımı Global'i 429'a sürükler).
@@ -67,6 +77,9 @@ _rate_limit_used = {"total": 0, "by_endpoint": {}}
 _rate_limit_last_reset = None
 _weight_lock = threading.Lock()
 _weight_reported_at = 0.0
+_cooldown_lock = threading.Lock()
+_cooldown_until = 0.0  # time.monotonic() tabanlı (madde 4)
+_cooldown_reason = ""
 
 EXCHANGE_INFO_CACHE_TTL_SEC = 600.0
 _exchange_info_cache: dict = {"payload": None, "expires": 0.0}
@@ -91,6 +104,59 @@ def _ticker_24h_loop_lock() -> asyncio.Lock:
 
 class TransientDecodeError(RuntimeError):
     """Gövde geçici olarak bozuk/eksik — yeniden denenebilir."""
+
+
+class BinanceCooldownError(RuntimeError):
+    """Paylaşımlı 429/418 soğuma penceresi açık — istek HİÇ denenmedi (madde 4).
+
+    RuntimeError alt sınıfıdır: `_get_json` çağıranlarının mevcut yakalama
+    desenleri (RuntimeError/Exception) değişmeden çalışır.
+    """
+
+    def __init__(self, remaining: float, reason: str = ""):
+        self.remaining = float(remaining)
+        self.reason = str(reason or "rate-limit")
+        super().__init__(
+            f"Binance public API soğuma penceresi açık ({self.reason}): "
+            f"{self.remaining:.0f} sn sonra yeniden dene")
+
+
+def _note_cooldown(delay: float, reason: str) -> float:
+    """429/418 sonrası pencere aç; tavan nedene göre kırpılır. Dönüş: uygulanan süre."""
+    global _cooldown_until, _cooldown_reason
+    cap = REST_COOLDOWN_418_MAX_SEC if reason == "418" else REST_COOLDOWN_429_MAX_SEC
+    applied = min(cap, max(0.0, float(delay)))
+    if applied <= 0:
+        return 0.0
+    with _cooldown_lock:
+        _cooldown_until = max(_cooldown_until, time.monotonic() + applied)
+        _cooldown_reason = reason
+    return applied
+
+
+def _cooldown_remaining() -> float:
+    with _cooldown_lock:
+        return max(0.0, _cooldown_until - time.monotonic())
+
+
+def _raise_if_cooling_down() -> None:
+    """Pencere açıksa thread'i UYUTMADAN hemen düş."""
+    remaining = _cooldown_remaining()
+    if remaining > 0:
+        raise BinanceCooldownError(remaining, _cooldown_reason)
+
+
+def reset_cooldown() -> None:
+    """Testler/operatör için: pencereyi kapat."""
+    global _cooldown_until, _cooldown_reason
+    with _cooldown_lock:
+        _cooldown_until = 0.0
+        _cooldown_reason = ""
+
+
+def _transient_sleep(attempt: int, headers=None) -> float:
+    """Geçici hata (5xx/ağ/çözümleme) için KISA, tavanlı bekleme."""
+    return min(REST_TRANSIENT_SLEEP_MAX_SEC, _retry_delay(attempt, headers))
 
 
 def _throttle_for_weight() -> None:
@@ -179,6 +245,8 @@ def _get_json(path: str, params: dict):
     }
     last_error = None
     for attempt in range(1, REST_MAX_ATTEMPTS + 1):
+        # 2026-10-15 (denetim düzeltmesi, madde 4): pencere açıkken bekleme yok.
+        _raise_if_cooling_down()
         _throttle_for_weight()
         # Host fallback: her denemede sırayla havuzdaki hostu dene
         base_url = REST_BASES[(attempt - 1) % len(REST_BASES)]
@@ -218,27 +286,25 @@ def _get_json(path: str, params: dict):
                     last_error = exc
                     if attempt == REST_MAX_ATTEMPTS:
                         break
-                    time.sleep(_retry_delay(attempt, response.headers))
+                    time.sleep(_transient_sleep(attempt, response.headers))
                     continue
             elif status == 418:
                 msg = response.data.decode("utf-8", "ignore")
-                last_error = RuntimeError(f"Binance IP Ban (HTTP 418): {msg}")
-                if attempt == REST_MAX_ATTEMPTS:
-                    break
-                time.sleep(_ban_delay(attempt, response.headers))
-                continue
+                # 2026-10-15 (denetim düzeltmesi, madde 4): thread'i 600-3600 sn
+                # uyutmak yerine paylaşımlı pencereyi aç ve ANINDA düş.
+                applied = _note_cooldown(max(1.0, _ban_delay(attempt, response.headers)), "418")
+                raise BinanceCooldownError(applied, "418") from RuntimeError(
+                    f"Binance IP Ban (HTTP 418): {msg}")
             elif status == 429:
                 msg = response.data.decode("utf-8", "ignore")
-                last_error = RuntimeError(f"Binance Rate Limit (HTTP 429): {msg}")
-                if attempt == REST_MAX_ATTEMPTS:
-                    break
-                time.sleep(_retry_delay(attempt, response.headers))
-                continue
+                applied = _note_cooldown(max(1.0, _retry_delay(attempt, response.headers)), "429")
+                raise BinanceCooldownError(applied, "429") from RuntimeError(
+                    f"Binance Rate Limit (HTTP 429): {msg}")
             elif 500 <= status < 600:
                 last_error = RuntimeError(f"Binance Server Error (HTTP {status}) from {base_url}")
                 if attempt == REST_MAX_ATTEMPTS:
                     break
-                time.sleep(_retry_delay(attempt, response.headers))
+                time.sleep(_transient_sleep(attempt, response.headers))
                 continue
             else:
                 msg = response.data.decode("utf-8", "ignore")
@@ -248,7 +314,7 @@ def _get_json(path: str, params: dict):
             last_error = exc
             if attempt == REST_MAX_ATTEMPTS:
                 break
-            time.sleep(_retry_delay(attempt))
+            time.sleep(_transient_sleep(attempt))
 
     raise RuntimeError(
         f"Binance public API {REST_MAX_ATTEMPTS} denemede yanıt vermedi: {last_error}"

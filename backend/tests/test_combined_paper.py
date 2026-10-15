@@ -41,7 +41,10 @@ def test_plan_entry_position_is_10pct_and_tp_from_potential():
         cash=5000.0)
     assert plan is not None
     assert plan["order_value_try"] == 500.0          # 5000 * %10
-    assert abs(plan["quantity"] - 5.0) < 1e-9        # 500 / 100
+    # 2026-10-15 (madde 6): giriş dolumuna kayma uygulanır → qty = 500 / (100×(1+slip))
+    fill = 100.0 * (1 + config.config.ESTIMATED_SLIPPAGE_PCT)
+    assert abs(plan["entry_price"] - fill) < 1e-9
+    assert abs(plan["quantity"] - 500.0 / fill) < 1e-9
     # TP potansiyele göre anlamlı (taban %3, potansiyelin altında)
     assert 3.0 <= plan["tp_pct"] <= 20.0
     assert plan["take_profit"] > plan["entry_price"]

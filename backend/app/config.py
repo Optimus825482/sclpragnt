@@ -1028,6 +1028,11 @@ class Config:
     # testini bozuyordu. Artık tek isim, drift imkânsız. (Sabit ADI geriye dönük
     # uyum için `AUTO_PAPER_SL_PCT_DEFAULT` kalır — yalnız env anahtarı değişti.)
     AUTO_PAPER_SL_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_SL_PCT", "5.0"))
+    # 2026-10-15 (denetim düzeltmesi, madde 7): ATR nefes payı TAVANI (yüzde).
+    # Otonom açılışta effective_sl = max(sl_pct, min(TAVAN, 1.2×ATR%)) — ATR
+    # stop'u yalnız GENİŞLETİR (asla daraltmaz), genişletme bu tavanla sınırlı.
+    # Eski kod tavan yerine sl_pct'nin kendisini kullanıyordu → ATR ölü koddu.
+    AUTO_PAPER_ATR_SL_CAP_PCT = float(os.getenv("AUTO_PAPER_ATR_SL_CAP_PCT", "2.8"))
     AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "1.5"))  # Eski varsayılan 2.0 → 1.5 (2026-09-17, Erkan kararı: radar/velocity bildirimlerinin hedefi MFE tavanına otursun; replay geometrisi + canlı 50 işlem verisi).
     AUTO_PAPER_MIN_ORDER_TRY = float(os.getenv("AUTO_PAPER_MIN_ORDER_TRY", "50.0"))
     # Hedef tavanı (2026-10-07): bildirimin kendi `target_pct`'i bu değeri aşarsa
@@ -1126,6 +1131,20 @@ class Config:
     # kapanislari ort -%1,08 uretiyordu (bkz. teshis §2); sinyalin gercek
     # yukselisine nefes payi birakmak zarari kesiyor, asiri tasima da yok.
     AUTO_PAPER_MAX_HOLD_MINUTES = float(os.getenv("AUTO_PAPER_MAX_HOLD_MINUTES", "120.0"))
+    # 2026-10-15 (denetim düzeltmesi, madde 14): auto_paper içine gömülü sabitler
+    # tek config kaynağına taşındı. Varsayılanlar ESKİ gömülü değerlerle aynı —
+    # davranış değişmedi, yalnız env ile ayarlanabilir oldu.
+    #   * SL/breakeven kapanışı sonrası yeniden giriş bekleme süresi (dk).
+    AUTO_PAPER_SL_COOLDOWN_MINUTES = float(os.getenv("AUTO_PAPER_SL_COOLDOWN_MINUTES", "5.0"))
+    #   * Yönetim döngüsünün açılıştaki ilk bekleme süresi (sn).
+    AUTO_PAPER_LOOP_STARTUP_DELAY_SEC = float(os.getenv("AUTO_PAPER_LOOP_STARTUP_DELAY_SEC", "30"))
+    #   * Koruma kapanışı sonrası yeniden açma saat kovası (sn; D-06 churn sınırı).
+    AUTO_PAPER_REOPEN_HOUR_BUCKET_SEC = int(os.getenv("AUTO_PAPER_REOPEN_HOUR_BUCKET_SEC", "3600"))
+    # 2026-10-15 (denetim düzeltmesi, madde 1): ticker bayat ve REST yedeği de
+    # başarısızsa, tutma süresi max_hold×ÇARPAN'ı aşınca pozisyon son bilinen
+    # fiyatla zorla kapatılır (exit_reason=stale_force_close). Eski kod bu
+    # durumda pozisyonu süresiz "izleniyor"da bırakıyordu.
+    AUTO_PAPER_STALE_FORCE_CLOSE_FACTOR = float(os.getenv("AUTO_PAPER_STALE_FORCE_CLOSE_FACTOR", "1.5"))
     # Radar & Sinyal başarı ölçüm penceresi (dakika, 2026-09-22 Erkan kararı).
     # 5dk'da erken kapatıp hedefe daha sonra ulaşan başarılı sinyalleri ıska saymamak için
     # otonom işlem maksimum ömrüyle (60 dk) tam senkronize çalışır.

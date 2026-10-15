@@ -117,16 +117,20 @@ class PublicRetryPolicyTests(unittest.TestCase):
         # test_rate_limit_hardening'de sahte saatle ayrıca kilitli.
         with mock.patch.object(pub, "_HTTP_POOL", None), \
              mock.patch.object(pub, "urlopen", side_effect=always_418), \
-             mock.patch.object(pub, "_note_global_cooldown"), \
+             mock.patch.object(pub, "_note_global_cooldown") as noted, \
              mock.patch.object(pub.time, "sleep") as sleeper:
             with self.assertRaises(RuntimeError) as ctx:
                 pub._get_json("/api/v3/klines", {})
         # Eski hâl: `HTTP 418` ANINDA yükseltiliyordu (deneme yok).
         self.assertIn("denemede yanıt vermedi", str(ctx.exception))
-        # Ban ölçeğinde (≥600 sn) tam 3 bekleme; global soğuma penceresinin
-        # kısa pacing dilimleri (tavan 60 sn) bu sayıya dahil değildir.
-        ban_waits = [c for c in sleeper.call_args_list if c.args and c.args[0] >= 600.0]
-        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(ban_waits))
+        # 2026-10-15 (denetim düzeltmesi, madde 4): ban ölçeğindeki bekleme
+        # (≥600 sn) artık THREAD'DE uyunmaz; paylaşımlı soğuma penceresine
+        # yazılır. Thread'deki uyku `REST_TRANSIENT_SLEEP_MAX_SEC` ile tavanlı.
+        ban_notes = [c for c in noted.call_args_list if c.args and c.args[0] >= 600.0]
+        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(ban_notes))
+        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, sleeper.call_count)
+        self.assertTrue(all(c.args[0] <= pub.REST_TRANSIENT_SLEEP_MAX_SEC
+                            for c in sleeper.call_args_list), sleeper.call_args_list)
 
     def test_truncated_json_body_is_retried(self):
         from app import binance_tr_public as pub
@@ -186,19 +190,20 @@ class PublicRetryPolicyTests(unittest.TestCase):
 
         with mock.patch.object(pub, "_HTTP_POOL", None), \
              mock.patch.object(pub, "urlopen", side_effect=throttled), \
-             mock.patch.object(pub, "_note_global_cooldown"), \
+             mock.patch.object(pub, "_note_global_cooldown") as noted, \
              mock.patch.object(pub.time, "sleep", side_effect=slept.append):
             with self.assertRaises(RuntimeError):
                 pub._get_json("/api/v3/klines", {})
         self.assertTrue(slept)
-        # Retry beklemeleri ≥90 olmalı; global soğuma penceresinin kısa
-        # pacing dilimleri (tavan 60 sn) ayrıdır ve bu sözleşmeye dahil
-        # değildir.
-        retry_waits = [d for d in slept if d >= 90.0]
-        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(retry_waits),
-                         f"retry beklemeleri sunucunun 90 sn sözünü dinlemedi: {slept}")
-        self.assertTrue(all(delay >= 90.0 for delay in retry_waits),
-                        f"sunucu 90 sn dedi, istemci {retry_waits} bekledi")
+        # 2026-10-15 (denetim düzeltmesi, madde 4): sunucunun 90 sn sözü
+        # paylaşımlı soğuma penceresine yazılır (diğer döngüler de uyar);
+        # thread'deki uyku tavanlı kalır ki havuz DB işlerine açık kalsın.
+        noted_delays = [c.args[0] for c in noted.call_args_list if c.args]
+        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(noted_delays),
+                         f"retry beklemeleri sunucunun 90 sn sözünü dinlemedi: {noted_delays}")
+        self.assertTrue(all(delay >= 90.0 for delay in noted_delays),
+                        f"sunucu 90 sn dedi, istemci {noted_delays} kaydetti")
+        self.assertTrue(all(d <= pub.REST_TRANSIENT_SLEEP_MAX_SEC for d in slept), slept)
 
     def test_ban_backoff_is_minutes_not_30_60_90_seconds(self):
         """#32: 418 dakikalar-günler sürer; 30/60/90 sn banı garanti ederdi."""
@@ -225,18 +230,19 @@ class PublicRetryPolicyTests(unittest.TestCase):
 
         with mock.patch.object(pub, "_HTTP_POOL", None), \
              mock.patch.object(pub, "urlopen", side_effect=banned), \
-             mock.patch.object(pub, "_note_global_cooldown"), \
+             mock.patch.object(pub, "_note_global_cooldown") as noted, \
              mock.patch.object(pub.time, "sleep", side_effect=slept.append):
             with self.assertRaises(RuntimeError):
                 pub._get_json("/api/v3/klines", {})
-        # Ban ölçeğindeki beklemeler (≥1200 sn) tam olarak 3 kez; global
-        # soğuma penceresinin kısa pacing dilimleri hariçtir.
-        ban_waits = [d for d in slept if d >= 1200.0]
-        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(ban_waits))
-        # Sunucu 1200 sn dedi → 1200 sn beklendi. 4 sn'e (eskiden kullanılan
+        # 2026-10-15 (denetim düzeltmesi, madde 4): ban süresi (1200 sn)
+        # thread'de beklenmez, paylaşımlı pencereye tam değeriyle kaydedilir.
+        ban_notes = [c.args[0] for c in noted.call_args_list if c.args and c.args[0] >= 1200.0]
+        self.assertEqual(pub.REST_MAX_ATTEMPTS - 1, len(ban_notes))
+        # Sunucu 1200 sn dedi → 1200 sn kaydedildi. 4 sn'e (eskiden kullanılan
         # tavan) kırpılmadığı gibi 1 saatlik ban tavanına da takılmadı.
-        self.assertTrue(all(delay == 1200.0 for delay in ban_waits),
-                        f"418 geri çekilmesi sunucunun dediğinden saptı: {ban_waits}")
+        self.assertTrue(all(delay == 1200.0 for delay in ban_notes),
+                        f"418 geri çekilmesi sunucunun dediğinden saptı: {ban_notes}")
+        self.assertTrue(all(d <= pub.REST_TRANSIENT_SLEEP_MAX_SEC for d in slept), slept)
 
 
 # ---------------------------------------------------------------- #32 exchangeInfo cache

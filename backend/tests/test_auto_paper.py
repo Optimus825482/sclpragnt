@@ -346,7 +346,11 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
 
     # --- D-02: bayat fiyatla kapanış engellenir -----------------------------
     async def test_max_hold_does_not_close_with_stale_ticker(self):
-        """60 dk dolmuş olsa bile BAYAT ticker fiyatıyla kapanma yapılmaz."""
+        """60 dk dolmuş olsa bile BAYAT ticker fiyatıyla kapanma yapılmaz.
+
+        2026-10-15 (madde 1): REST yedeği de başarısız (None) → süre
+        max_hold×1.5'i (90 dk) aşmadığı için kapanış yine ertelenir.
+        """
         now = time.time()
         trade = self._sample_trade(entry_time=now - 65 * 60)
         close_mock = AsyncMock(return_value=None)
@@ -354,6 +358,7 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
                                    age_sec=config.MAX_TICKER_AGE_SEC + 120)
 
         with patch("app.routers.auto_paper.market", stale), \
+             patch.object(auto_paper, "_fresh_public_price", AsyncMock(return_value=(None, None))), \
              patch.object(auto_paper, "_close_trade", close_mock):
             await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
 
@@ -369,13 +374,14 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(config, "PASSIVE_SYMBOLS", {"PASSTEST"}), \
              patch("app.routers.auto_paper.market", stale), \
+             patch.object(auto_paper, "_fresh_public_price", AsyncMock(return_value=(None, None))), \
              patch.object(auto_paper, "_close_trade", close_mock):
             await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
 
         close_mock.assert_not_awaited()
 
     async def test_missing_ticker_never_closes(self):
-        """Ticker hiç yoksa hiçbir çıkış yolu tetiklenmez."""
+        """Ticker hiç yoksa (ve REST de yoksa) max_hold×1.5 dolmadan hiçbir çıkış yolu tetiklenmez."""
         now = time.time()
         trade = self._sample_trade(entry_time=now - 65 * 60)
         close_mock = AsyncMock(return_value=None)
@@ -384,6 +390,7 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
         empty.get_ticker = MagicMock(return_value=None)
 
         with patch("app.routers.auto_paper.market", empty), \
+             patch.object(auto_paper, "_fresh_public_price", AsyncMock(return_value=(None, None))), \
              patch.object(auto_paper, "_close_trade", close_mock):
             await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
 
@@ -421,7 +428,8 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
         args = close_mock.await_args.args
         self.assertEqual(args[4], "breakeven_stop",
                          "kilit aktifken kapanış nedeni breakeven olmalı")
-        self.assertAlmostEqual(101.5, args[2], places=6)
+        # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ → min(100.0, 101.5) = 100.0
+        self.assertAlmostEqual(100.0, args[2], places=6)
 
     async def test_breakeven_stop_does_not_preempt_when_price_above_both(self):
         """Fiyat her iki eşiğin de üstündeyse hiçbir stop tetiklenmez."""
@@ -478,11 +486,12 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
         close_mock.assert_awaited_once()
         args = close_mock.await_args.args
         self.assertEqual(args[4], "breakeven_stop")
-        self.assertAlmostEqual(101.5, args[2], places=6)
+        # 2026-10-15 (madde 2): dolum min(100.0, 101.5) = 100.0 (gap iyimser yazılmaz)
+        self.assertAlmostEqual(100.0, args[2], places=6)
 
     async def test_breakeven_stop_closes_above_initial_stop(self):
         """Fiyat breakeven'inin altına düştüyse kâr kilidi stop'u ile kapanır
-        ve fill fiyatı TETİK fiyatına çekilir (gap-through max)."""
+        ve fill fiyatı iki fiyatın KÖTÜSÜDÜR (2026-10-15 madde 2: min)."""
         now = time.time()
         trade = self._sample_trade(entry=100.0, peak=100.0)
         trade["stop_loss"] = 97.0
@@ -505,7 +514,7 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
         close_mock.assert_awaited_once()
         args = close_mock.await_args.args
         self.assertEqual(args[4], "breakeven_stop")
-        self.assertAlmostEqual(101.5, args[2], places=6)
+        self.assertAlmostEqual(100.9, args[2], places=6)
 
 
 class AutoPaperTrailingTPExtensionTests(unittest.IsolatedAsyncioTestCase):

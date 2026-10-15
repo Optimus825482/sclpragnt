@@ -44,6 +44,13 @@ REST_WEIGHT_WINDOW_SEC = 60.0
 # Tek isteğin kendi ban geri çekilmesi (600-3600 sn) değişmedi — yalnız artık
 # semaphore DIŞINDA uyur, yuvayı bloke etmez.
 GLOBAL_COOLDOWN_MAX_SEC = 60.0
+# 2026-10-15 (denetim düzeltmesi, madde 4): pencere AÇIKKEN gelen YENİ istekler
+# (1. deneme) thread'i uyutmak yerine `BinanceCooldownError` ile anında düşer;
+# yalnız zaten uçuşta olan bir isteğin yeniden denemesi pencereyi bekler (en
+# fazla `GLOBAL_COOLDOWN_MAX_SEC`). Deneme arası uyku artık 300-3600 sn değil,
+# `REST_TRANSIENT_SLEEP_MAX_SEC` ile tavanlıdır; pencere içinde ikinci kez
+# 429/418 alan istek yeniden denemez, aynı hatayla düşer.
+REST_TRANSIENT_SLEEP_MAX_SEC = 5.0
 
 _REQUEST_SEMAPHORE = threading.Semaphore(REST_MAX_CONCURRENCY)
 
@@ -101,6 +108,21 @@ class TransientDecodeError(RuntimeError):
     """Gövde geçici olarak bozuk/eksik — yeniden denenebilir (B-13)."""
 
 
+class BinanceCooldownError(RuntimeError):
+    """Paylaşımlı 429/418 soğuma penceresi açık — istek denenmedi (madde 4).
+
+    RuntimeError alt sınıfıdır: `_get_json` çağıranlarının mevcut yakalama
+    desenleri (RuntimeError/Exception) değişmeden çalışır.
+    """
+
+    def __init__(self, remaining: float, reason: str = ""):
+        self.remaining = float(remaining)
+        self.reason = str(reason or "rate-limit")
+        super().__init__(
+            f"Binance TR public API soğuma penceresi açık ({self.reason}): "
+            f"{self.remaining:.0f} sn sonra yeniden dene")
+
+
 class PermanentAPIError(RuntimeError):
     """İş kuralı hatası (code != 0 gövdesi) — YENİDEN DENENMEZ (B-13/W10).
 
@@ -146,6 +168,13 @@ def _note_global_cooldown(delay: float) -> None:
 def _cooldown_remaining() -> float:
     with _weight_lock:
         return max(0.0, _cooldown_until - time.time())
+
+
+def _raise_if_cooling_down() -> None:
+    """Pencere açıksa thread'i UYUTMADAN hemen düş (madde 4)."""
+    remaining = _cooldown_remaining()
+    if remaining > 0:
+        raise BinanceCooldownError(remaining)
 
 
 def _wait_global_cooldown() -> None:
@@ -211,8 +240,14 @@ def _get_json(path: str, params: dict):
         # semaphore DIŞINDA uyur — tek bir 429/418 isteği 16 yuvayı saatlerce
         # bloke edemez. Soğuma penceresi her denemeden önce kontrol edilir;
         # diğer döngüler de aynı pencereye saygı duyar.
-        _wait_global_cooldown()
+        if attempt == 1:
+            # 2026-10-15 (denetim düzeltmesi, madde 4): pencere açıkken YENİ
+            # istek thread'i uyutmaz, anında düşer (havuz DB işlerine kalır).
+            _raise_if_cooling_down()
+        else:
+            _wait_global_cooldown()
         retry_delay = 0.0
+        cooldown_error = None
         with _REQUEST_SEMAPHORE:
             _throttle_for_weight()
             # Host seçimi: birincil host öncelikli, başarısız denemelerde fallback hostlar
@@ -263,11 +298,17 @@ def _get_json(path: str, params: dict):
                     if attempt < REST_MAX_ATTEMPTS:
                         retry_delay = _ban_delay(attempt, headers)
                         _note_global_cooldown(retry_delay)
+                        if attempt > 1 and _cooldown_remaining() > 0:
+                            # 2026-10-15 (madde 4): pencere beklendi, yine ban →
+                            # thread'i döngüde tutma, anında düş.
+                            cooldown_error = BinanceCooldownError(_cooldown_remaining(), "418")
                 elif status_code == 429:
                     last_error = RuntimeError(f"Binance TR HTTP 429 Rate Limit ({base_url})")
                     if attempt < REST_MAX_ATTEMPTS:
                         retry_delay = _retry_delay(attempt, headers)
                         _note_global_cooldown(retry_delay)
+                        if attempt > 1 and _cooldown_remaining() > 0:
+                            cooldown_error = BinanceCooldownError(_cooldown_remaining(), "429")
                 elif status_code >= 400:
                     err_detail = ""
                     try:
@@ -297,8 +338,12 @@ def _get_json(path: str, params: dict):
                 if attempt < REST_MAX_ATTEMPTS:
                     retry_delay = _retry_delay(attempt)
 
+        if cooldown_error is not None:
+            raise cooldown_error from last_error
         if retry_delay > 0:
-            time.sleep(retry_delay)
+            # 2026-10-15 (madde 4): deneme arası uyku tavanlı (≤5 sn); uzun
+            # Retry-After paylaşımlı pencereye yazılır, thread'de beklenmez.
+            time.sleep(min(retry_delay, REST_TRANSIENT_SLEEP_MAX_SEC))
 
     raise RuntimeError(
         f"Binance TR public API {REST_MAX_ATTEMPTS} denemede yanıt vermedi: {last_error}"

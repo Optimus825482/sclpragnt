@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
 from app import database, security
-from app.api_common import log_user_action, _background_tasks, _start_background
+from app.api_common import log_user_action, _background_tasks, _start_background, _fresh_public_price
 # R3-06: likidite + korelasyon küme kapıları (velocity-auto ile aynı kaynak)
 # için analyzer örneği kullanılır (state'ten; market ile aynı yaşam döngüsü).
 from app.state import market, analyzer, extend_stream_universe
@@ -44,6 +44,29 @@ def _session_username(request: Request) -> str | None:
 
 logger = logging.getLogger("scalper.auto_paper")
 router = APIRouter()
+
+# 2026-10-15 (denetim düzeltmesi, madde 14): eskiden fonksiyon gövdelerine
+# gömülü sabitler (sl_cooldown 5.0, açılış bekleme 30 sn, breakeven gap
+# fallback 0.3, reopen saat kovası 3600) tek yerde ve config/env'den okunur.
+# Varsayılanlar ESKİ gömülü değerlerle aynı — davranış değişmedi.
+_SL_COOLDOWN_MINUTES_DEFAULT = float(getattr(config, "AUTO_PAPER_SL_COOLDOWN_MINUTES", 5.0))
+_LOOP_STARTUP_DELAY_SEC = float(getattr(config, "AUTO_PAPER_LOOP_STARTUP_DELAY_SEC", 30.0))
+#: Yalnız config'de AUTO_PAPER_TRAILING_GAP_PCT yoksa kullanılan taban (canlı config 1.0).
+_TRAILING_GAP_FALLBACK_PCT = 0.3
+#: Madde 1: REST de başarısızken zorla kapanış için max_hold çarpanı.
+_STALE_FORCE_CLOSE_FACTOR = float(getattr(config, "AUTO_PAPER_STALE_FORCE_CLOSE_FACTOR", 1.5))
+
+
+def _effective_sl_pct(sl_pct: float, atr_pct: float, cap_pct: float | None = None) -> float:
+    """2026-10-15 (denetim düzeltmesi, madde 7): ATR'ye duyarlı stop (KESİR birimi).
+
+    effective = max(sl_pct, min(TAVAN, 1.2 × atr_pct)). ATR stop'u yalnız
+    GENİŞLETİR (asla daraltmaz); genişletme `AUTO_PAPER_ATR_SL_CAP_PCT`
+    tavanıyla sınırlıdır. Eski kod tavan yerine `sl_pct` yazdığı için her
+    zaman `sl_pct` dönüyordu (ATR ölü kod).
+    """
+    cap = (float(getattr(config, "AUTO_PAPER_ATR_SL_CAP_PCT", 2.8)) / 100.0) if cap_pct is None else float(cap_pct)
+    return max(float(sl_pct), min(cap, 1.2 * float(atr_pct)))
 
 
 def _blocked(symbol: str, reason: str, **extra) -> dict:
@@ -390,7 +413,7 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         # Stop-loss sonrası bekleme süresi (cooldown) kapısı (5 dk):
         # Stop olan sembole hemen peş peşe yeniden girip kayıp serisi (churn) yaratmayı engelle.
         now_ts = time.time()
-        cooldown_min = float(settings.get("sl_cooldown_minutes", 5.0))
+        cooldown_min = float(settings.get("sl_cooldown_minutes", _SL_COOLDOWN_MINUTES_DEFAULT))
         sl_cooldown_until = _stop_loss_cooldowns.get(symbol, 0.0)
         if cooldown_min > 0 and now_ts >= sl_cooldown_until:
             try:
@@ -455,15 +478,13 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                 price_rows = await _fetch_ticker_price([symbol])
                 row = next((r for r in (price_rows or []) if str(r.get("symbol", "")).upper() == symbol), None)
                 if row and float(row.get("price") or 0) > 0:
+                    # 2026-10-15 (denetim düzeltmesi, madde 3): REST fiyatı
+                    # paylaşımlı `market.tickers`'a YAZILMAZ (eskiden
+                    # timestamp=now ile yazılıyor; WS akışı olmayan sembolde
+                    # bu fiyat diğer tüketicilere dakikalarca "taze" görünüyordu).
+                    # Fiyat yalnız bu açılış kararında yerel olarak kullanılır.
                     current_price = float(row["price"])
-                    now_ms = int(time.time() * 1000)
-                    market.tickers[symbol] = {
-                        "symbol": symbol,
-                        "last_price": current_price,
-                        "timestamp": now_ms,
-                        "source": "binance_tr_rest_auto_paper",
-                    }
-                    freshness = {"fresh": True, "age_sec": 0.0}
+                    freshness = {"fresh": True, "age_sec": 0.0, "source": "binance_tr_rest_auto_paper"}
             except Exception as exc:
                 logger.warning("auto_paper %s: REST ticker fetch hatası: %s", symbol, exc)
 
@@ -473,15 +494,11 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
             if notif_time > 1e11:
                 notif_time /= 1000.0
             if notif_time > 0 and (time.time() - notif_time) <= 60.0 and float(notification.get("price") or 0) > 0:
+                # Madde 3: bildirim fiyatı da `market.tickers`'a yazılmaz; gerçek
+                # yaşı `age_sec` ile yalnız bu yerel kararda taşınır.
                 current_price = float(notification["price"])
-                now_ms = int(time.time() * 1000)
-                market.tickers[symbol] = {
-                    "symbol": symbol,
-                    "last_price": current_price,
-                    "timestamp": now_ms,
-                    "source": "notification_fallback",
-                }
-                freshness = {"fresh": True, "age_sec": round(time.time() - notif_time, 1)}
+                freshness = {"fresh": True, "age_sec": round(time.time() - notif_time, 1),
+                             "source": "notification_fallback"}
 
         if current_price <= 0:
             current_price = float(notification.get("price") or 0)
@@ -754,13 +771,14 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
                         if atr_val and current_price > 0:
                             atr_pct = atr_val / current_price
                             # 1.2 * ATR_pct nefes alma alanı, minimum sl_pct.
-                            # DÜZELTME (2026-10-07): eski kod `max(sl_pct, min(TABAN, 1.2*atr))`
-                            # idi. sl_pct TABANDAN genişse (canlıda %4 > %2,8 iken)
-                            # max() her zaman sl_pct döndürüyordu → bu koruma
-                            # SESSİZCE tamamen devre dışı kalıyordu. Artık tavan
-                            # yalnızca ATR tarafını sınırlar; `max(sl_pct, ...)`
-                            # değişmezi (koruma asla stop'u DARALTMAZ) korunur.
-                            effective_sl_pct = max(sl_pct, min(sl_pct, 1.2 * atr_pct))
+                            # 2026-10-15 (denetim düzeltmesi, madde 7): 2026-10-07
+                            # "düzeltmesi" `max(sl_pct, min(sl_pct, 1.2*atr))` yazmıştı —
+                            # bu HER ZAMAN sl_pct döner (ATR ölü kod; denetimde
+                            # doğrulandı). Amaç: ATR stop'u yalnız GENİŞLETİR, asla
+                            # daraltmaz; genişletme `config.AUTO_PAPER_ATR_SL_CAP_PCT`
+                            # (%2,8) tavanıyla sınırlı. sl_pct tavandan genişse
+                            # (canlı %5 > %2,8) sonuç yine sl_pct — bu bilinçli.
+                            effective_sl_pct = _effective_sl_pct(sl_pct, atr_pct)
             except Exception as atr_err:
                 logger.debug("auto_paper %s: ATR stop hesaplama atlandı: %s", symbol, atr_err)
 
@@ -947,7 +965,7 @@ async def auto_paper_management_loop():
     - +breakeven_trigger_pct kâra geçtiyse stop'u maliyet üstüne çek
     """
     logger.info("auto_paper yönetim döngüsü başladı")
-    await asyncio.sleep(30)
+    await asyncio.sleep(_LOOP_STARTUP_DELAY_SEC)
     # D-16 (2026-09-12): hata durumunda üstel backoff (5 → 60 sn) ve
     # `consecutive_errors` sayacı. Eskiden kalıcı DB/REST hatasında 5 sn'de bir
     # denenip log gürültüsü + boşa yük üretiliyordu. Başarılı turda taban
@@ -1044,15 +1062,47 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     ticker_ts = float((ticker or {}).get("timestamp") or 0)
     price_is_fresh = bool(current_price > 0 and ticker_ts
                           and (now * 1000 - ticker_ts) <= config.MAX_TICKER_AGE_SEC * 1000)
+    # Son bilinen fiyat (bayat ticker, yoksa DB tepe/giriş) — yalnız aşağıdaki
+    # zorla kapanışta kullanılır.
+    last_known_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
     if current_price > 0 and not price_is_fresh:
-        logger.warning("auto_paper %s: ticker BAYAT (yaş=%.1fs > %ss) — bu tur kâr/zarar muhasebesi yapılmıyor",
+        logger.warning("auto_paper %s: ticker BAYAT (yaş=%.1fs > %ss) — REST fiyat yedeği deneniyor",
                        symbol, (now * 1000 - ticker_ts) / 1000.0, config.MAX_TICKER_AGE_SEC)
 
-    # 1. SÜRE KONTROLÜ (2026-09-21 Erkan kararı: Maksimum 60 dk):
-    # Fiyat bayat veya ticker boş olsa bile 60 dk dolmuşsa pozisyon kâr/zarara bakılmaksızın kapatılır.
+    # 2026-10-15 (denetim düzeltmesi, madde 1): ticker bayat/eksikse ESKİDEN bu
+    # tur erken dönülüyor, SL/trailing/max_hold hiç çalışmıyordu (WS akışında
+    # olmayan sembolde pozisyon süresiz "izleniyor"da kalırdı). Artık REST
+    # (`api_common._fresh_public_price`) ile taze fiyat alınır ve yönetim
+    # NORMAL sürer; REST de başarısızsa bu tur ertelenir (aşağıdaki zorla
+    # kapanış hariç).
+    if not price_is_fresh:
+        rest_price = None
+        try:
+            rest_price, _rest_info = await _fresh_public_price(symbol)
+        except Exception as rest_exc:
+            logger.warning("auto_paper %s: REST fiyat yedeği hatası: %s", symbol, rest_exc)
+        if rest_price and float(rest_price) > 0:
+            current_price = float(rest_price)
+            price_is_fresh = True
+            logger.info("auto_paper %s: bayat/eksik ticker yerine REST fiyatı kullanıldı (%.6f)",
+                        symbol, current_price)
+
+    # 1. SÜRE KONTROLÜ: varsayılan `config.AUTO_PAPER_MAX_HOLD_MINUTES` (120 dk;
+    # 2026-09-21 Erkan kararı 60 dk idi, 2026-10-07 optimizasyonuyla 120'ye
+    # çıkarıldı — gerekçe config.py'de). Taze (WS ya da REST) fiyatla kapanır;
+    # fiyat yoksa bir sonraki tura ertelenir. REST de başarısızsa ve süre
+    # max_hold × AUTO_PAPER_STALE_FORCE_CLOSE_FACTOR'ü aştıysa son bilinen
+    # fiyatla ZORLA kapatılır (madde 1) — pozisyon sonsuza dek açık kalamaz.
     entry_time = float(trade.get("entry_time") or trade.get("created_at") or 0)
     hold_minutes = (now - entry_time) / 60.0 if entry_time > 0 else 0.0
     max_hold_minutes = float((settings or {}).get("max_hold_minutes", getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 120.0)))
+    if (not price_is_fresh and max_hold_minutes > 0
+            and hold_minutes >= max_hold_minutes * _STALE_FORCE_CLOSE_FACTOR):
+        logger.warning("auto_paper %s: taze fiyat alınamıyor ve süre %.1f dk >= max_hold %.0f dk × %.1f — "
+                       "son bilinen fiyatla ZORLA kapatılıyor (çıkış=%.6f)",
+                       symbol, hold_minutes, max_hold_minutes, _STALE_FORCE_CLOSE_FACTOR, last_known_price)
+        await _close_trade(trade_id, symbol, last_known_price, now, "stale_force_close")
+        return
     if max_hold_minutes > 0 and hold_minutes >= max_hold_minutes:
         # D-02: bayat/eksik fiyatla KAPANMA YAPILMAZ. Pozisyon bir sonraki
         # tazelik turunda kapatılır (gerekirse peak_price fallback'i ile
@@ -1109,12 +1159,16 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     if peak_price > float(trade.get("peak_price") or entry_price):
         await database.update_auto_paper_peak(trade_id, peak_price)
 
-    # SL kontrolü — D-08: dolum tetik fiyatından (gap-through: max(price, sl)).
+    # SL kontrolü — 2026-10-15 (denetim düzeltmesi, madde 2): stop dolumu
+    # `min(price, stop)` = iki fiyatın KÖTÜSÜ. Eski D-08 `max(price, stop)`
+    # gap'te stop'un altına düşen fiyatı yok sayıp stop fiyatından doluyor,
+    # zararı sistematik küçük / PnL'i iyimser yazıyordu. TP dolumu değişmedi
+    # (orada `min(price, tp)` zaten kötümser).
     # D-01 (2026-09-26): burada ARTık `stop_loss` değil `effective_stop_loss`
     # kullanılır — kâr kilidi aktifken orijinal stop'tan daha yüksekte
     # kapanış olur (aşağıdaki breakeven korumasıyla aynı mantık).
     if effective_stop_loss is not None and current_price <= effective_stop_loss:
-        await _close_trade(trade_id, symbol, max(current_price, effective_stop_loss), now,
+        await _close_trade(trade_id, symbol, min(current_price, effective_stop_loss), now,
                            "breakeven_stop" if (effective_stop_loss != stop_loss) else "stop_loss")
         return
 
@@ -1127,7 +1181,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # Breakeven kontrolü (isteğe bağlı — erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI, 2026-09-22 Erkan kararı).
     breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False)))
-    BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", 0.3))
+    BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", _TRAILING_GAP_FALLBACK_PCT))
     if breakeven_enabled:
         breakeven_activated = bool(trade.get("breakeven_activated", False))
 
@@ -1157,7 +1211,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         elif is_master_surge:
             BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40))
         else:
-            BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", 0.3))
+            BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", _TRAILING_GAP_FALLBACK_PCT))
         # In-memory breakeven stop: DB'ye yazılan değerle aynı turdaki koruma
         # kontrolü arasında gecikme olmasın.
         current_breakeven_stop = float(trade.get("breakeven_stop") or 0)
@@ -1179,9 +1233,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
                     logger.info("auto_paper %s: breakeven stop=%.6f (gross=%+.2f%%)", symbol, applied_breakeven, gross_pnl_pct)
 
         # Breakeven stop koruması (in-memory değer kullanılır, DB okuması değil).
-        # D-08: stop dolumu tetik fiyatından (gap-through: max(price, stop)).
+        # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ (min), gap iyimser yazılmaz.
         if breakeven_activated and current_breakeven_stop > 0 and current_price <= current_breakeven_stop:
-            await _close_trade(trade_id, symbol, max(current_price, current_breakeven_stop), now, "breakeven_stop")
+            await _close_trade(trade_id, symbol, min(current_price, current_breakeven_stop), now, "breakeven_stop")
             return
 
     # Trailing stop modülü (kullanıcı isteği 2026-09-08): %trailing_trigger_pct
@@ -1283,9 +1337,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
                     logger.warning("auto_paper %s: TP ratchet hatası: %s", symbol, tp_exc)
 
         # Trailing stop koruması: aktifse ve fiyat stopa düştüyse kapat.
-        # D-08: stop dolumu tetik fiyatından (gap-through: max(price, stop)).
+        # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ (min), gap iyimser yazılmaz.
         if trailing_activated and current_trailing_stop > 0 and current_price <= current_trailing_stop:
-            await _close_trade(trade_id, symbol, max(current_price, current_trailing_stop), now, "trailing_stop")
+            await _close_trade(trade_id, symbol, min(current_price, current_trailing_stop), now, "trailing_stop")
 
 
 async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float, reason: str):
@@ -1360,7 +1414,7 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
         # (çoğunlukla başa-baş/komisyon-altı kapanan) sembole hemen yeniden
         # girmek aynı churn'ü üretir; SL cooldown ailesine dahil edilir.
         if reason in ("stop_loss", "breakeven_stop"):
-            cooldown_min = float(settings.get("sl_cooldown_minutes", 5.0))
+            cooldown_min = float(settings.get("sl_cooldown_minutes", _SL_COOLDOWN_MINUTES_DEFAULT))
             if cooldown_min > 0:
                 _stop_loss_cooldowns[symbol] = now + (cooldown_min * 60.0)
                 logger.info("auto_paper %s: %s sonrası %.0f dakika yeni giriş bekleme süresi (cooldown) başlatıldı",
@@ -1378,7 +1432,7 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
 #: `notification_id` churn kontrolü (auto_paper_trades.notification_id) saat
 #: başına en fazla bir yeniden açmayı zorlar — eski kod `notification_id=None`
 #: ile bu korumayı tamamen baypas ediyordu.
-_REOPEN_HOUR_BUCKET_SEC = 3600
+_REOPEN_HOUR_BUCKET_SEC = int(getattr(config, "AUTO_PAPER_REOPEN_HOUR_BUCKET_SEC", 3600))
 #: Tur/deneme sınırı: sembol başına son deneme zamanı (in-memory, tek süreç).
 _reopen_last_attempt: dict[str, float] = {}
 
@@ -1550,7 +1604,7 @@ async def get_default_settings() -> dict:
         "max_hold_minutes": getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 120.0),
         "block_weak_mtf": True,
         "min_mtf_confluence": 45.0,
-        "sl_cooldown_minutes": 5.0,
+        "sl_cooldown_minutes": _SL_COOLDOWN_MINUTES_DEFAULT,
         "post_win_cooldown_minutes": getattr(config, "AUTO_PAPER_POST_WIN_COOLDOWN_MINUTES", 15.0),
         "llm_gate_enabled": True,
         "llm_min_confidence": 60.0,
@@ -1666,7 +1720,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "llm_min_confidence": max(50.0, min(100.0, float(merged.get("llm_min_confidence", 60.0)))),
         "block_weak_mtf": bool(merged.get("block_weak_mtf", True)),
         "min_mtf_confluence": max(0.0, min(100.0, float(merged.get("min_mtf_confluence", 45.0)))),
-        "sl_cooldown_minutes": max(0.0, min(120.0, float(merged.get("sl_cooldown_minutes", 5.0)))),
+        "sl_cooldown_minutes": max(0.0, min(120.0, float(merged.get("sl_cooldown_minutes", _SL_COOLDOWN_MINUTES_DEFAULT)))),
         "volatility_sl_enabled": bool(merged.get("volatility_sl_enabled", True)),
         # Mod filtresi: yalnizca tanimli mod adlari; ayni degeri korur, bilinmeyen
         # adlar sessizce dusurulur (fail-closed degil — eski davranisa donmesin diye
