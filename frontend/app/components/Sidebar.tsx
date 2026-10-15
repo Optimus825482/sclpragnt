@@ -54,20 +54,7 @@ export default function Sidebar() {
     }, []);
     useLiveMessages(onLiveMessage, ["alert"]);
     useEffect(() => {
-        if ("serviceWorker" in navigator) {
-            if (process.env.NODE_ENV === "production") {
-                // PUSH-RESILIENCE (2026-09-16): SW'ye VAPID public key'i SORGU ile
-                // geçir. Service worker bundle'ı `process.env` göremez; abonelik
-                // döndüğünde (`pushsubscriptionchange`) yeniden abone olmak için
-                // anahtara ihtiyaç duyar. Anahtar, abonelik kadar uzun olmayan
-                // base64url olduğundan sorgu parametresi güvenli.
-                const vapid = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "";
-                navigator.serviceWorker.register(
-                    `/sw.js?v=${process.env.NEXT_PUBLIC_BUILD_ID || "dev"}${vapid ? `&vapid=${encodeURIComponent(vapid)}` : ""}`,
-                ).catch(() => undefined);
-            }
-            else navigator.serviceWorker.getRegistrations().then((registrations) => registrations.forEach((registration) => registration.unregister()));
-        }
+        // Service worker kaydı artık AppShell'de (useServiceWorker): kullanıcı kabuğu da push alsın.
         const handler = (event: Event) => { event.preventDefault(); setInstallEvent(event); };
         window.addEventListener("beforeinstallprompt", handler);
         const installedHandler = () => setInstalled(true);
