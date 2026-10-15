@@ -21,9 +21,8 @@ import asyncio
 import logging
 import time
 
-from app import database
+from app import database, paper_ledger, price_service
 from app.config import config
-from app.state import market
 
 logger = logging.getLogger("scalper.combined_paper")
 
@@ -31,24 +30,13 @@ _LOOP_TASK = None
 
 
 def _ticker_price(symbol: str) -> float | None:
-    """Canlı WS ticker fiyatı (taze değilse None)."""
-    try:
-        t = market.get_ticker(symbol)
-    except Exception:
-        t = None
-    if not t:
-        return None
-    price = float(t.get("last_price") or 0)
-    ts = float(t.get("timestamp") or 0)
-    if price <= 0:
-        return None
-    if ts and (time.time() * 1000 - ts) > config.MAX_TICKER_AGE_SEC * 1000:
-        return None
-    return price
+    """Canlı WS ticker fiyatı (taze değilse None). Tazelik: price_service/paper_ledger."""
+    quote = price_service.ws_quote(symbol)
+    return quote[0] if quote else None
 
 
 async def _price(symbol: str) -> float | None:
-    """Anlık fiyat: önce WS ticker, yoksa REST yedeği.
+    """Anlık fiyat: önce WS ticker, yoksa REST yedeği (price_service.rest_quote).
 
     NEDEN (kullanıcı geri bildirimi 2026-10-11): pasife alınan sembol WS akışında
     DEĞİLDİR; WS-only fiyat okuma `None` döner ve pozisyon TP/trailing/süre
@@ -58,17 +46,8 @@ async def _price(symbol: str) -> float | None:
     p = _ticker_price(symbol)
     if p:
         return p
-    try:
-        from app.binance_tr_public import ticker_price as _tp
-        rows = await _tp([symbol])
-        for r in rows or []:
-            if str(r.get("symbol") or "").upper() == symbol.upper():
-                px = float(r.get("price") or 0)
-                if px > 0:
-                    return px
-    except Exception:
-        pass
-    return None
+    quote = await price_service.rest_quote(symbol)
+    return quote[0] if quote else None
 
 
 def _plan_entry(candidate: dict, cash: float, price: float | None = None) -> dict | None:
@@ -92,8 +71,7 @@ def _plan_entry(candidate: dict, cash: float, price: float | None = None) -> dic
     order_value = round(cash * pos_pct, 2)
     if order_value < 50.0:  # çok küçük kalan bakiye → anlamsız
         return None
-    entry_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
-    price = price * (1.0 + entry_slip)   # giriş dolumu (kayma dahil)
+    price = paper_ledger.entry_fill(price)   # giriş dolumu (kayma dahil)
     qty = order_value / price
     potential = candidate.get("potential_pct")
     try:
@@ -206,7 +184,7 @@ async def _manage_single(trade: dict, now: float) -> None:
     # TP kaldırılır (kullanıcı kararı 2026-10-12): "%4'te TP'ye ulaştı ama sembol
     # %20 arttı; trailing ile daha fazla kâr alınabilirdi." Trend sürdükçe taşır.
     if tp is not None and price >= tp and not (tp_cancel_on_trail and trailing_on):
-        await _close(tid, sym, min(price, tp), now, "take_profit")
+        await _close(tid, sym, paper_ledger.exit_fill("take_profit", price, tp), now, "take_profit")
         logger.info("combined_paper %s: TP (+%%%.2f)", sym, gain_pct)
         return
 
@@ -220,7 +198,7 @@ async def _manage_single(trade: dict, now: float) -> None:
     # Pozisyon kârı büyütmesine izin verilir; kâr korunur ama sıkıştırılmaz.
     effective_stop = float(trade["stop_loss"]) if trade.get("stop_loss") else None
     if peak_gain_pct >= trigger:
-        commission = float(getattr(config, "COMMISSION_PCT", 0.0015))
+        commission = paper_ledger.commission_pct()
         cost_floor = entry * (1 + 2 * commission + 0.002)   # net pozitif taban
         trail_price = max(peak * (1 - gap / 100.0), cost_floor)
         was_active = bool(trade.get("trailing_activated", False))
@@ -238,7 +216,7 @@ async def _manage_single(trade: dict, now: float) -> None:
     # dolup zararı küçük/PnL'i iyimser yazıyordu (auto_paper ile aynı düzeltme).
     if effective_stop is not None and price <= effective_stop:
         reason = "trailing_stop" if fields.get("trailing_activated") or trade.get("trailing_activated") else "stop_loss"
-        await _close(tid, sym, min(price, effective_stop), now, reason)
+        await _close(tid, sym, paper_ledger.exit_fill(reason, price, effective_stop), now, reason)
         logger.info("combined_paper %s: %s (%+.2f%%)", sym, reason, gain_pct)
         return
 
@@ -249,13 +227,13 @@ async def _manage_single(trade: dict, now: float) -> None:
     # serbest bırakılır.
     no_profit_min = float(getattr(config, "COMBINED_PAPER_NO_PROFIT_MIN", 30.0))
     if no_profit_min > 0 and hold_min >= no_profit_min and peak <= entry:
-        await _close(tid, sym, price, now, "no_profit_timeout")
+        await _close(tid, sym, paper_ledger.exit_fill("no_profit_timeout", price), now, "no_profit_timeout")
         logger.info("combined_paper %s: KÂRSIZ SÜRE DOLDU (%.0f dk, %+.2f%%)", sym, hold_min, gain_pct)
         return
 
     # 4) Süre doldu → kapanış.
     if max_hold_min > 0 and hold_min >= max_hold_min:
-        await _close(tid, sym, price, now, "max_duration")
+        await _close(tid, sym, paper_ledger.exit_fill("max_duration", price), now, "max_duration")
         logger.info("combined_paper %s: SÜRE DOLDU (%.0f dk, %+.2f%%)", sym, hold_min, gain_pct)
         return
 

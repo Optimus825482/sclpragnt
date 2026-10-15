@@ -11,7 +11,7 @@ import re
 import uuid
 from datetime import datetime, timezone, timedelta
 
-from app import sql_guard
+from app import paper_ledger, sql_guard
 from app.config import config
 from app.forecast_learning import outcome_window_seconds
 
@@ -7449,13 +7449,13 @@ async def close_combined_paper_trade(trade_id: int, exit_price: float, exit_time
         t = dict(row)
         entry_price = float(t["entry_price"])
         quantity = float(t["quantity"])
-        commission_pct = float(getattr(config, "COMMISSION_PCT", 0.0015))
-        slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
-        fill_price = exit_price * (1.0 - slip)
-        total_commission = (entry_price * quantity + fill_price * quantity) * commission_pct
-        pnl = (fill_price - entry_price) * quantity - total_commission
-        invested = entry_price * quantity
-        pnl_pct = (pnl / invested * 100) if invested else 0.0
+        commission_pct = paper_ledger.commission_pct()
+        # Satış kayması + iki bacak komisyonu + net PnL: paper_ledger.settle_close (tek kaynak).
+        settled = paper_ledger.settle_close(entry_price, exit_price, quantity, commission=commission_pct)
+        fill_price = settled["fill_price"]
+        total_commission = settled["commission"]
+        pnl = settled["pnl"]
+        pnl_pct = settled["pnl_pct"]
         conn.execute(
             "UPDATE combined_paper_trades SET status='closed', exit_price=?, exit_time=?,"
             " exit_reason=?, pnl=?, pnl_pct=?, commission=?, updated_at=? WHERE id=?",
