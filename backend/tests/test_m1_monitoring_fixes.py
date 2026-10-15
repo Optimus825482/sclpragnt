@@ -39,6 +39,9 @@ def _reset_state():
     monitoring._monitoring_state["history"] = []
     monitoring._monitoring_state["risk_off"] = False
     monitoring._monitoring_state["risk_off_unknown"] = False
+    # 2026-10-15 (radar iyileştirme): bildirim politikası dict'leri de sıfırlanır.
+    monitoring._notify_last_sent_at.clear()
+    monitoring._notify_daily_count.clear()
     # D-07: yeniden tetikleme kapısı da sıfırlanır. Aksi halde aynı sembolü
     # aynı fiyatla kullanan ikinci test, kapı tarafından bastırılır
     # (kapı doğru çalışıyor; test izolasyonu eksikti).

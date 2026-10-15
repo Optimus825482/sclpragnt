@@ -76,6 +76,20 @@ _monitoring_state = {
 SCAN_INTERVAL_SEC = max(30.0, float(os.getenv("MONITORING_SCAN_INTERVAL_SEC", "30")))
 HISTORY_LIMIT = 60
 NOTIFY_COOLDOWN_SEC = 300.0  # aynı sembol için asgari tekrar bildirim engeli (5 dk)
+# 2026-10-15 (radar iyileştirme): sembol başına bildirim politikası. Aynı sembol için
+# iki yeni bildirim arasında en az N dk (0 = soğuma kapalı) ve gün içinde sembol
+# başına en fazla M yeni bildirim (0 = günlük tavan kapalı). Gün sınırı Europe/Istanbul.
+# Varsayılan KAPALI (0): mevcut fiyat/MACD refire kapılarını ezmemesi ve önce journal ile
+# ölçülmesi için. Önerilen deneme değeri 120 dk (docs/DENEY_KAYDI.md).
+_NOTIFY_SYMBOL_COOLDOWN_MIN = float(os.getenv("RADAR_NOTIFY_SYMBOL_COOLDOWN_MIN", "0"))
+_NOTIFY_DAILY_CAP_PER_SYMBOL = int(os.getenv("RADAR_NOTIFY_DAILY_CAP_PER_SYMBOL", "0"))  # 0 = kapalı; öneri 4
+# sembol → son gönderim zamanı (epoch saniye; yalnız gönderim kabulünde yazılır)
+_notify_last_sent_at: dict[str, float] = {}
+# sembol → (YYYY-MM-DD Europe/Istanbul, o gün kabul edilen bildirim sayısı)
+_notify_daily_count: dict[str, tuple[str, int]] = {}
+# 2026-10-15 (radar iyileştirme): lead-lag (`global`) öncelikli sıralama ve yalnız-velocity
+# adaylarını push'suz izleme listesine alma. VARSAYILAN KAPALI (env "1" ile açılır).
+_NOTIFY_LEADLAG_PRIORITY = os.getenv("RADAR_NOTIFY_LEADLAG_PRIORITY", "0") == "1"
 # 2026-10-15 (denetim düzeltmesi, madde 13): LLM ikinci-göz görevleri için
 # eşzamanlılık tavanı. Eskiden her uygun bildirim sınırsız `create_task`
 # açıyordu; artık tavan doluyken yeni görev KUYRUKLANMAZ, atlanır (debug log).
@@ -1528,6 +1542,84 @@ async def _record_history(entries):
         logger.warning("monitoring bildirim geçmişi kaydedilemedi: %s", exc)
 
 
+# 2026-10-15 (radar iyileştirme): bildirim politikası yardımcıları. Saf fonksiyonlar —
+# `_notify_policy_allows` durum DEĞİŞTİRMEZ; kayıt yalnız `_notify_policy_record` ile,
+# bildirim kabul edildikten sonra yazılır.
+def _notify_day_key(now: float) -> str:
+    """Epoch → Europe/Istanbul takvim günü (YYYY-MM-DD) — günlük tavan anahtarı."""
+    from zoneinfo import ZoneInfo
+    return datetime.fromtimestamp(float(now), ZoneInfo("Europe/Istanbul")).strftime("%Y-%m-%d")
+
+
+def _notify_policy_allows(symbol: str, now: float) -> str | None:
+    """Sembol yeni bildirim için politikaya uyuyor mu? Uymuyorsa Türkçe neden döner."""
+    sym = str(symbol or "").upper()
+    cooldown_min = float(_NOTIFY_SYMBOL_COOLDOWN_MIN)
+    if cooldown_min > 0:
+        last = _notify_last_sent_at.get(sym)
+        if last is not None and float(now) - float(last) < cooldown_min * 60.0:
+            return f"sembol soğuma ({cooldown_min:g} dk)"
+    cap = int(_NOTIFY_DAILY_CAP_PER_SYMBOL)
+    if cap > 0:
+        day = _notify_day_key(now)
+        stored = _notify_daily_count.get(sym)
+        # Gün değiştiyse sayaç sıfırdır (kayıt yazılmadan okunur).
+        count = int(stored[1]) if stored and stored[0] == day else 0
+        if count >= cap:
+            return f"günlük tavan ({cap})"
+    return None
+
+
+def _notify_policy_record(symbol: str, now: float) -> None:
+    """Kabul edilen bildirimi politika sayaçlarına işle (soğuma + günlük sayı)."""
+    sym = str(symbol or "").upper()
+    _notify_last_sent_at[sym] = float(now)
+    day = _notify_day_key(now)
+    stored = _notify_daily_count.get(sym)
+    count = int(stored[1]) + 1 if stored and stored[0] == day else 1
+    _notify_daily_count[sym] = (day, count)
+    # Bellek sınırı (sızıntı yok): 500 sembolü aşarsa en eski kayıtlar atılır.
+    if len(_notify_last_sent_at) > 500:
+        for k in sorted(_notify_last_sent_at, key=_notify_last_sent_at.get)[:-250]:
+            _notify_last_sent_at.pop(k, None)
+    if len(_notify_daily_count) > 500:
+        for k in [k for k, v in _notify_daily_count.items() if v[0] != day]:
+            _notify_daily_count.pop(k, None)
+
+
+def _candidate_source_labels(candidate: dict, include_kind: bool = False) -> set[str]:
+    """Adayın kaynak etiketleri: `sources` + `unified_sources` (+ isteğe bağlı `kind`)."""
+    out: set[str] = set()
+    for key in ("sources", "unified_sources"):
+        vals = candidate.get(key) or []
+        if isinstance(vals, str):
+            vals = [vals]
+        for s in vals:
+            if s:
+                out.add(str(s).strip().lower())
+    kind = candidate.get("kind")
+    if include_kind and isinstance(kind, str) and kind.strip():
+        out.add(kind.strip().lower())
+    return out
+
+
+def _is_leadlag_confirmed(candidate: dict) -> bool:
+    """Lead-lag (`global`) teyidi var mı? Etiket `sources`/`unified_sources`/`kind` içinde."""
+    if candidate.get("lead_lag") is True:
+        # global_lead_lag.py bildirimi görünüm gereği `sources=["velocity"]` taşır;
+        # teyit izi görünmez `lead_lag` alanındadır.
+        return True
+    hint = f'{candidate.get("strategy") or ""} {candidate.get("mode") or ""}'.lower()
+    if "global" in hint or "lead_lag" in hint or "leadlag" in hint:
+        return True
+    return "global" in _candidate_source_labels(candidate, include_kind=True)
+
+
+def _is_velocity_only(candidate: dict) -> bool:
+    """Tek kaynak velocity mi? Etiket yoksa radar varsayılanı (["velocity"]) sayılır."""
+    return _candidate_source_labels(candidate) <= {"velocity"}
+
+
 async def _notify(candidates_list, settings) -> list:
     """Eşikleri geçen adaylar için bildirim üret ve web push gönder.
 
@@ -1571,6 +1663,10 @@ async def _notify(candidates_list, settings) -> list:
     except Exception as exc:
         logger.warning("monitoring pending toplu sorgu hatasi: %s", exc)
         pending_by_symbol = {}
+    # 2026-10-15 (radar iyileştirme): bayrak açıksa lead-lag (`global`) teyitli adaylar
+    # önce işlenir (stable sort) — günlük tavan/soğuma kotası onlara ayrılır.
+    if _NOTIFY_LEADLAG_PRIORITY:
+        candidates_list = sorted(candidates_list, key=lambda c: 0 if _is_leadlag_confirmed(c) else 1)
     for c in candidates_list:
         sym = str(c.get("symbol", "") or "").upper()
         # BİRLEŞİK SİNYAL (2026-09-17): füzyon-tek adaylar (radar ham skor kapısını
@@ -1717,10 +1813,26 @@ async def _notify(candidates_list, settings) -> list:
             macd_strong = bool(c.get("macd_bullish") or c.get("macd_rising"))
             if prev_score is not None and not macd_strong and score <= float(prev_score):
                 continue
+        # 2026-10-15 (radar iyileştirme): yalnız-velocity aday (bayrak açıkken) push GÖNDERİLMEZ;
+        # izleme listesine alınır (`last_candidates` üzerinden görünür kalır).
+        if _NOTIFY_LEADLAG_PRIORITY and _is_velocity_only(c):
+            c["watchlist_only"] = True
+            logger.info("radar: velocity-only aday izleme listesine alındı %s", sym)
+            continue
+        # 2026-10-15 (radar iyileştirme): sembol soğuma + günlük tavan. Mevcut kapılardan
+        # SONRA çalışır; mevcut sembol soğuması (NOTIFY_COOLDOWN_SEC) aynen korunur.
+        _policy_reason = _notify_policy_allows(sym, now)
+        if _policy_reason:
+            logger.info("radar bildirimi atlandı %s: %s", sym, _policy_reason)
+            continue
         notif = _build_notification(sym, c, settings)
         notif["updated"] = False
         new_entries.append(notif)
         notified.append(notif)
+        # 2026-10-15 (radar iyileştirme): bildirim kabul edildi → politika sayaçları işlenir
+        # (soğuma + günlük sayı). Push teslimi sonradan denenir; kayıt burada yazılır, aynı
+        # `notified_symbols` kaydı gibi.
+        _notify_policy_record(sym, now)
         _monitoring_state["notified_symbols"][sym] = now_mono
         _monitoring_state.setdefault("notified_scores", {})[sym] = score
         _prune_notified_scores()
@@ -6056,6 +6168,9 @@ async def reset_monitoring_notifications(request: Request):
         _monitoring_state.get("surge_blocked_symbols", {}).clear()  # Master Surge rozeti
         _monitoring_state["warm"] = []    # warm rozetleri de geçici durum; tarama tazeler
         _deferred_push.clear()
+        # 2026-10-15 (radar iyileştirme): sembol soğuma / günlük tavan politikası
+        _notify_last_sent_at.clear()
+        _notify_daily_count.clear()
         await _persist_runtime_state()
     await log_user_action(None, None, "monitoring", "MONITORING_NOTIFICATIONS_RESET",
                           details={}, request=request)

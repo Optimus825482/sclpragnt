@@ -185,6 +185,9 @@ async def handle_global_detection(detection: dict[str, Any]) -> dict[str, Any]:
         "detected_at": now,
         "sent_via_push": False,
         "sources": ["velocity"],
+        # 2026-10-15 (radar iyileştirme): görünmez teyit izi; bildirim politikası
+        # (`_is_leadlag_confirmed`) bunu okur, görünüm değişmez.
+        "lead_lag": True,
         "unified": True,
         "url": f"/charts?symbol={tr_symbol}",
         "tag": f"monitoring-{tr_symbol}",

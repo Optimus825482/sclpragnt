@@ -29,6 +29,10 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         monitoring._monitoring_state["notified_scores"] = {}
         monitoring._monitoring_state["rr_blocked"] = 0
         monitoring._monitoring_state["risk_off"] = False
+        # 2026-10-15 (radar iyileştirme): sembol soğuma / günlük tavan politikası
+        # modül dict'lerinde yaşar; testler arasında sıfırlanmazsa birikir.
+        monitoring._notify_last_sent_at.clear()
+        monitoring._notify_daily_count.clear()
 
     async def test_notify_respects_min_score_and_min_target(self):
         """Eşik altı adaylar bildirilmemeli; eşiği geçenler bildirilmeli.
