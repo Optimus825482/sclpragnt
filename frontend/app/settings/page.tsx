@@ -38,8 +38,16 @@ import ChatSettingsPanel from "./ChatSettingsPanel";
 import RequireAdmin from "../components/RequireAdmin";
 import { useAuth } from "../lib/auth";
 
-export default function SettingsPage() {
+import UserSettings from "../components/user/UserSettings";
+import { isUserRole } from "../lib/userUi";
+
+function AdminSettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
+}
+
+export default function SettingsPage() {
+  const { role } = useAuth();
+  return isUserRole(role) ? <UserSettings /> : <AdminSettingsPage />;
 }
 function SettingsPageInner() {
   const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd">("symbols");
