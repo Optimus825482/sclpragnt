@@ -1771,7 +1771,7 @@ export default function ReportsPage() {
       .catch(() => undefined);
   }, []);
 
-  const MAIN_TABS = [
+  const ALL_TABS = [
     { id: "overview", label: "📊 Performans Özeti", icon: "📊" },
     { id: "radar", label: "🎯 Sinyal & Hedef Başarısı", icon: "🎯" },
     { id: "positions", label: "💼 Otonom Pozisyonlar", icon: "💼" },
@@ -1782,6 +1782,9 @@ export default function ReportsPage() {
     { id: "combined_paper", label: "💠 Kombine Paper", icon: "💠" },
     ...(isAdmin ? [{ id: "advanced", label: "⚙️ Gelişmiş Teşhis", icon: "⚙️" }] : []),
   ];
+
+  // Normal kullanıcılara yalnız kullanıcı-seviyesi sekmeler gösterilir (2026-10-15).
+  const MAIN_TABS = isAdmin ? ALL_TABS : ALL_TABS.filter((t) => t.id === "overview" || t.id === "radar");
 
   return (
     <main className="page-shell space-y-6">
