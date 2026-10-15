@@ -35,6 +35,38 @@ let status: LiveStatus = "closed";
 const messageListeners = new Set<MessageListener>();
 const statusListeners = new Set<StatusListener>();
 
+// Abonelik tipleri: her dinleyici ilgilendiği mesaj tiplerini bildirebilir.
+// `null` = tüm tipler (geriye dönük uyumlu varsayılan). Hiçbir dinleyici
+// bir tipi istemiyorsa o mesaj JSON.parse edilmeden, ham metin üzerinde ucuz
+// bir alt-dize kontrolüyle elenir (`binance_price` saniyede bir tüm pazarı taşır).
+const listenerTypes = new Map<MessageListener, ReadonlySet<string> | null>();
+let wantsAllTypes = true;
+let wantedTypes: ReadonlySet<string> = new Set();
+
+function recomputeWanted() {
+  let all = false;
+  const union = new Set<string>();
+  messageListeners.forEach((listener) => {
+    const types = listenerTypes.get(listener) ?? null;
+    if (types === null) { all = true; return; }
+    types.forEach((t) => union.add(t));
+  });
+  wantsAllTypes = all;
+  wantedTypes = union;
+}
+
+/** Ham JSON metninde `"type":"<t>"` geçiyor mu? (parse etmeden ön-eleme) */
+function rawHasType(raw: string, type: string): boolean {
+  return raw.includes(`"type":"${type}"`) || raw.includes(`"type": "${type}"`);
+}
+
+function rawWantsAnyType(raw: string): boolean {
+  for (const t of wantedTypes) if (rawHasType(raw, t)) return true;
+  return false;
+}
+
+const COMMISSION_RE = /"commission_pct"s*:s*([0-9.eE+-]+)/;
+
 // H-09: yarım-açık (half-open) WS bağlantısı gözetimi.
 //
 // `onclose` yalnızca TCP kapanışında tetiklenir; kablo/NAT oturumu düştüğünde
@@ -97,6 +129,15 @@ function connect() {
       if (raw.includes('"type":"tickers"') || raw.includes('"type": "tickers"')) return;
     }
     lastMessageAt = Date.now();
+    // Hiçbir dinleyicinin istemediği tip: parse etmeden at. Tek yan etki olan
+    // komisyon senkronu (H-01) `portfolio` mesajından regex ile alınır.
+    if (raw && !wantsAllTypes && !rawWantsAnyType(raw)) {
+      if (rawHasType(raw, "portfolio")) {
+        const m = COMMISSION_RE.exec(raw);
+        if (m) applyCommissionPct(m[1]);
+      }
+      return;
+    }
     try {
       const message = JSON.parse(event.data) as LiveMessage;
       if (UNCONSUMED_LIVE_TYPES.has(message?.type)) return;
@@ -105,7 +146,13 @@ function connect() {
       if (message?.type === "portfolio") {
         applyCommissionPct((message.data as { commission_pct?: unknown } | null)?.commission_pct);
       }
-      if (message?.type) messageListeners.forEach((listener) => listener(message));
+      if (message?.type) {
+        messageListeners.forEach((listener) => {
+          const types = listenerTypes.get(listener);
+          if (types && !types.has(message.type)) return;
+          listener(message);
+        });
+      }
     } catch {
       // Ignore malformed messages without taking the shared live channel down.
     }
@@ -128,11 +175,18 @@ function connect() {
   instance.onerror = () => instance.close();
 }
 
-export function subscribeLive(listener: MessageListener) {
+/**
+ * @param types dinlenecek mesaj tipleri; verilmezse (veya boşsa) tüm tipler.
+ */
+export function subscribeLive(listener: MessageListener, types?: readonly string[]) {
   messageListeners.add(listener);
+  listenerTypes.set(listener, types && types.length > 0 ? new Set(types) : null);
+  recomputeWanted();
   connect();
   return () => {
     messageListeners.delete(listener);
+    listenerTypes.delete(listener);
+    recomputeWanted();
     if (messageListeners.size === 0) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -160,7 +214,7 @@ export function useLiveStatus() {
   return current;
 }
 
-export function useLiveMessages(listener: MessageListener) {
+export function useLiveMessages(listener: MessageListener, types?: readonly string[]) {
   // Listener bir ref'te tutulur: consumer'ın her render'da yeni bir inline
   // fonksiyon geçmesi (memoize edilmemiş olsa bile) aboneliği koparmaz.
   // Daha önce listener kimliği effect dependency'ydi ve chat sayfası gibi
@@ -170,8 +224,9 @@ export function useLiveMessages(listener: MessageListener) {
   useEffect(() => {
     listenerRef.current = listener;
   }, [listener]);
+  const typesKey = types && types.length > 0 ? types.join("|") : "";
   useEffect(
-    () => subscribeLive((message) => listenerRef.current(message)),
-    [],
+    () => subscribeLive((message) => listenerRef.current(message), typesKey ? typesKey.split("|") : undefined),
+    [typesKey],
   );
 }

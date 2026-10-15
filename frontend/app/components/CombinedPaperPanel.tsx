@@ -100,7 +100,7 @@ export default function CombinedPaperPanel() {
     }
     liveRef.current = { ...liveRef.current, ...next };
     setLivePrices(liveRef.current);
-  });
+  }, ["binance_price"]);
 
   const load = useCallback(async () => {
     setLoading(true);

@@ -179,6 +179,8 @@ export default function BinancePositionChartModal({
   // "TAHTA" yazısını görüp canlı sandığında yanıltılmamalı: 5 sn'den eski
   // veri "canlı değil" rozetiyle işaretlenir.
   const [orderbookUpdatedAt, setOrderbookUpdatedAt] = useState(0);
+  // Derinlik isteği başarısız (yalnız backend proxy; tarayıcıdan 3. taraf yok).
+  const [orderbookError, setOrderbookError] = useState(false);
   const [nowTick, setNowTick] = useState(0);
 
   // Tahta verisi 8 sn'den eskiyse "canlı değil" rozeti gösterilir.
@@ -426,14 +428,14 @@ export default function BinancePositionChartModal({
     const fetchDepth = async () => {
       if (typeof document !== "undefined" && document.hidden) return;
       try {
-        let res = await fetch(`${API_BASE}/api/market-depth/${symbolConcat}?limit=20`);
+        // Yalnız backend proxy: tarayıcıdan doğrudan Binance'e düşülmez (CORS/IP
+        // sızıntısı + 3. taraf bağımlılığı). apiRequest 401'de oturum olayını yayar.
+        const res = await apiRequest(`${API_BASE}/api/market-depth/${symbolConcat}?limit=20`);
+        if (!active) return;
         if (!res.ok) {
-          res = await fetch(`https://api.binance.me/api/v3/depth?symbol=${symbolConcat}&limit=20`);
+          setOrderbookError(true);
+          return;
         }
-        if (!res.ok) {
-          res = await fetch(`https://api.binance.com/api/v3/depth?symbol=${symbolConcat}&limit=20`);
-        }
-        if (!res.ok || !active) return;
         const data = await res.json();
         if (data && Array.isArray(data.bids) && Array.isArray(data.asks) && data.bids.length > 0 && data.asks.length > 0) {
           const bidTotal = data.bids.reduce((sum: number, b: [string, string]) => sum + Number(b[0]) * Number(b[1]), 0);
@@ -458,10 +460,14 @@ export default function BinancePositionChartModal({
               bestAsk,
             });
             setOrderbookUpdatedAt(Date.now());
+            setOrderbookError(false);
           }
+        } else if (active) {
+          setOrderbookError(true);
         }
       } catch {
-        // Ağ kesintisinde sessiz kal (rozet "canlı değil" der)
+        // Ağ kesintisi: hata durumu işaretlenir (veri varsa "canlı değil" rozeti de çıkar)
+        if (active) setOrderbookError(true);
       }
     };
 
@@ -1019,7 +1025,8 @@ export default function BinancePositionChartModal({
         }
       },
       [symbolConcat, holding.asset, applyPriceTick]
-    )
+    ),
+    ["kline", "binance_price", "price_tick", "bookTicker", "depth"],
   );
 
   // 6. Sürükle-Bırak (Drag & Drop) Fare ve Dokunmatik Olayları
@@ -1554,6 +1561,11 @@ export default function BinancePositionChartModal({
         </div>
 
         {/* CANLI TAHTA GÜÇ DENGESİ / ORDERBOOK DEPTH BARI */}
+        {orderbookError && !orderbook && (
+          <div role="alert" className="border-b border-bunker-800/80 bg-bunker-950/90 px-3 sm:px-4 py-1.5 font-mono text-[11px] text-yellow-300">
+            ⚠ TAHTA: Derinlik verisi alınamadı (backend erişilemiyor).
+          </div>
+        )}
         {orderbook && (
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 border-b border-bunker-800/80 bg-bunker-950/90 px-3 sm:px-4 py-1.5 font-mono text-[11px]">
             <div className="flex items-center justify-between sm:justify-start gap-2">
@@ -1564,7 +1576,7 @@ export default function BinancePositionChartModal({
                 // "canlı değil" diyoruz (eskiden panel hiçbir uyarı vermeden
                 // açılış değerini donduruyordu).
                 <span title="Orderbook verisi REST ile 5 sn'de bir tazelenir; backend canlı bookTicker yayınlamıyor" className="shrink-0 rounded border border-yellow-400/40 bg-yellow-400/10 px-1.5 py-0.5 text-[9px] font-bold text-yellow-300">
-                  ⚠ CANLI DEĞİL ({Math.floor((nowTick - orderbookUpdatedAt) / 1000)} sn)
+                  ⚠ CANLI DEĞİL ({Math.floor((nowTick - orderbookUpdatedAt) / 1000)} sn){orderbookError ? " · istek başarısız" : ""}
                 </span>
               ) : null}
               <div className="w-28 sm:w-48 h-2 rounded-full overflow-hidden flex bg-bunker-900 border border-bunker-800 shrink-0">

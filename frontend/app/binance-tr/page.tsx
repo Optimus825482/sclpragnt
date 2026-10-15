@@ -326,7 +326,7 @@ function BinanceTrPageInner() {
         });
       }
     }
-  });
+  }, ["binance_price", "binance_account_update"]);
 
   // Kendi kullanıcı id'mizi öğren (WS hesap push'unu süzmek için, denetim #51).
   useEffect(() => {

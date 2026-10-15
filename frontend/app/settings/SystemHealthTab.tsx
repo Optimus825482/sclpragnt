@@ -15,7 +15,7 @@ export default function SystemHealthTab() {
 
   useLiveMessages(useCallback((message: any) => {
     if (["reset", "trade_updated"].includes(message.type)) load();
-  }, [load]));
+  }, [load]), ["reset", "trade_updated"]);
 
   useEffect(() => {
     load();

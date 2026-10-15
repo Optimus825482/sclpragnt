@@ -155,7 +155,7 @@ export default function RadarAlertModal() {
     showNext(head, alertKind);
   }, [showNext]);
 
-  useLiveMessages(onLiveMessage);
+  useLiveMessages(onLiveMessage, ["monitoring_alert", "alert", "rising_alert"]);
 
   const close = () => showNext(null);
 

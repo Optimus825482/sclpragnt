@@ -1,4 +1,6 @@
-// Browser: localhost geliştirmede backend portu, aksi halde same-origin.
+// Öncelik: NEXT_PUBLIC_API_BASE (veya eski NEXT_PUBLIC_API_URL) env değeri.
+// Yoksa browser'da: localhost geliştirmede backend portu, aksi halde same-origin
+// (gateway arkasında `/api` aynı kökten servis edilir).
 // SSR/prerender: boş string (relative URL). Sabit "http://localhost:8004"
 // fallback'i sunucu tarafında yanlış hedefe istek atmamak için kaldırıldı.
 const browserOrigin = typeof window !== "undefined"
@@ -6,7 +8,7 @@ const browserOrigin = typeof window !== "undefined"
     ? "http://localhost:8004"
     : window.location.origin)
   : "";
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || browserOrigin;
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || process.env.NEXT_PUBLIC_API_URL || browserOrigin;
 export const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || API_BASE.replace(/^http/, "ws");
 
 export const WS_URL = `${WS_BASE.replace(/\/$/, "")}/ws`;

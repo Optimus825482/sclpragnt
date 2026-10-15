@@ -15,7 +15,7 @@ export default function SystemHealth() {
   const onLiveMessage = useCallback((message: any) => {
     if (["reset", "trade_updated"].includes(message.type)) load();
   }, [load]);
-  useLiveMessages(onLiveMessage);
+  useLiveMessages(onLiveMessage, ["reset", "trade_updated"]);
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, 10_000);
 

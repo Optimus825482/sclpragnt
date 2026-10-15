@@ -400,7 +400,7 @@ export default function MacdMonitorPage() {
       setLastEarly({ symbol: message.data.symbol, signals: message.data.signals || [], at: Date.now() / 1000 });
     }
   }, []);
-  useLiveMessages(onLiveMessage);
+  useLiveMessages(onLiveMessage, ["macd_monitor", "macd_monitor_delta", "macd_monitor_alert", "macd_early_alert"]);
 
   const tfs = useMemo(() => {
     const source = snapshot?.timeframes?.length ? snapshot.timeframes : TF_ORDER;

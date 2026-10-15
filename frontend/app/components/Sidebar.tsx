@@ -51,7 +51,7 @@ export default function Sidebar() {
         setNotifications((current) => [item, ...current.filter((entry) => entry.id !== item.id)].slice(0, 30));
         setUnread((count) => count + 1);
     }, []);
-    useLiveMessages(onLiveMessage);
+    useLiveMessages(onLiveMessage, ["alert"]);
     useEffect(() => {
         if ("serviceWorker" in navigator) {
             if (process.env.NODE_ENV === "production") {

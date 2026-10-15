@@ -780,7 +780,7 @@ export default function MonitoringPage() {
       }, 2500);
     }
   }, [loadState, loadHistory]);
-  useLiveMessages(onLiveMessage);
+  useLiveMessages(onLiveMessage, ["monitoring_alert"]);
 
   const loadSettings = useCallback(async (signal?: AbortSignal) => {
     try {

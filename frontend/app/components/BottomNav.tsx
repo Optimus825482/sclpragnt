@@ -31,13 +31,14 @@ export default function BottomNav() {
           <Link
             key={item.href}
             href={item.href}
+            aria-current={isActive ? "page" : undefined}
             className={`flex flex-1 flex-col items-center justify-center py-1.5 px-1 rounded-lg transition-all touch-target ${
               isActive
                 ? "text-neon-green font-bold scale-105"
                 : "text-bunker-muted hover:text-white"
             }`}
           >
-            <span className="text-lg leading-none mb-1">{item.icon}</span>
+            <span aria-hidden="true" className="text-lg leading-none mb-1">{item.icon}</span>
             <span className="truncate tracking-tight text-[10px]">{item.label}</span>
           </Link>
         );
@@ -49,7 +50,7 @@ export default function BottomNav() {
         className="flex flex-1 flex-col items-center justify-center py-1.5 px-1 rounded-lg text-bunker-muted hover:text-white transition-all touch-target"
         aria-label="Tüm Menüyü Aç"
       >
-        <span className="text-lg leading-none mb-1">☰</span>
+        <span aria-hidden="true" className="text-lg leading-none mb-1">☰</span>
         <span className="truncate tracking-tight text-[10px]">Menü</span>
       </button>
     </nav>

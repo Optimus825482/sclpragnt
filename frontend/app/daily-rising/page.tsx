@@ -120,6 +120,36 @@ function averageChangeLine(rep: any): string {
   return ` · ort. değişim ${n > 0 ? "+" : ""}${formatNumber2(n)}%`;
 }
 
+/**
+ * Sonraki listeye geri sayım. Saniyelik saat KENDİ state'inde tutulur; böylece
+ * her saniye yalnız bu küçük bileşen yeniden çizilir, tüm sayfa değil.
+ */
+function Countdown({ nextListAt }: { nextListAt: number | null }) {
+  const [nowTs, setNowTs] = useState<number>(() => Date.now() / 1000);
+  useEffect(() => {
+    if (nextListAt == null) return;
+    setNowTs(Date.now() / 1000);
+    const t = setInterval(() => setNowTs(Date.now() / 1000), 1000);
+    return () => clearInterval(t);
+  }, [nextListAt]);
+  // SONRAKİ LİSTEYE KALAN SÜRE (kullanıcı isteği): geri sayım.
+  if (nextListAt == null) {
+    return <span className="font-mono text-xs text-bunker-muted">Sonraki liste: ilk gönderim bekleniyor…</span>;
+  }
+  const rem = Math.max(0, Math.round(nextListAt - nowTs));
+  const mm = Math.floor(rem / 60);
+  const ss = rem % 60;
+  const soon = rem <= 0;
+  return (
+    <div className={`rounded-xl border px-3 py-1.5 font-mono text-sm font-bold ${
+      soon ? "border-neon-green/50 bg-neon-green/15 text-neon-green animate-pulse"
+           : "border-sky-400/40 bg-sky-400/10 text-sky-300"}`}
+         title="Bir sonraki komine liste gönderimine kalan süre">
+      ⏳ Sonraki liste: {soon ? "şimdi" : `${mm}:${String(ss).padStart(2, "0")}`}
+    </div>
+  );
+}
+
 export default function DailyRisingPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
@@ -143,13 +173,10 @@ export default function DailyRisingPage() {
   const [nextListAt, setNextListAt] = useState<number | null>(null);
   const [listMin, setListMin] = useState<number | null>(null);
   const [topN, setTopN] = useState<number | null>(null);
-  const [nowTs, setNowTs] = useState<number>(() => Date.now() / 1000);
+  // Ana veri yolu hataları sessiz yutulmaz: kullanıcıya uyarı şeridi gösterilir.
+  const [stateError, setStateError] = useState(false);
+  const [watchError, setWatchError] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Geri sayım için saniyede bir saat tazele.
-  useEffect(() => {
-    const t = setInterval(() => setNowTs(Date.now() / 1000), 1000);
-    return () => clearInterval(t);
-  }, []);
 
   const loadLastReport = useCallback(async () => {
     try {
@@ -215,8 +242,11 @@ export default function DailyRisingPage() {
         setListMin(sch.list_min ?? null);
         setTopN(sch.top_n ?? null);
         setUpdatedAt(Date.now());
+        setStateError(false);
+      } else {
+        setStateError(true);
       }
-    } catch { /* sessiz */ } finally { setLoading(false); }
+    } catch { setStateError(true); } finally { setLoading(false); }
   }, []);
 
   const loadWatch = useCallback(async () => {
@@ -226,8 +256,11 @@ export default function DailyRisingPage() {
         const d = await res.json();
         setWatch(Array.isArray(d?.watchlist) ? d.watchlist : []);
         setWatchStats(d?.stats ?? null);
+        setWatchError(false);
+      } else {
+        setWatchError(true);
       }
-    } catch { /* sessiz */ }
+    } catch { setWatchError(true); }
   }, []);
 
   const refresh = useCallback(async () => { await Promise.all([loadState(), loadWatch(), loadWaStatus(), loadLastReport()]); }, [loadState, loadWatch, loadWaStatus, loadLastReport]);
@@ -311,24 +344,7 @@ export default function DailyRisingPage() {
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
-          {(() => {
-            // SONRAKİ LİSTEYE KALAN SÜRE (kullanıcı isteği): geri sayım.
-            if (nextListAt == null) {
-              return <span className="font-mono text-xs text-bunker-muted">Sonraki liste: ilk gönderim bekleniyor…</span>;
-            }
-            const rem = Math.max(0, Math.round(nextListAt - nowTs));
-            const mm = Math.floor(rem / 60);
-            const ss = rem % 60;
-            const soon = rem <= 0;
-            return (
-              <div className={`rounded-xl border px-3 py-1.5 font-mono text-sm font-bold ${
-                soon ? "border-neon-green/50 bg-neon-green/15 text-neon-green animate-pulse"
-                     : "border-sky-400/40 bg-sky-400/10 text-sky-300"}`}
-                   title="Bir sonraki komine liste gönderimine kalan süre">
-                ⏳ Sonraki liste: {soon ? "şimdi" : `${mm}:${String(ss).padStart(2, "0")}`}
-              </div>
-            );
-          })()}
+          <Countdown nextListAt={nextListAt} />
           <Button variant="primary" onClick={runScan} disabled={scanning}>
             {scanning ? "Taranıyor…" : "🔍 Elle Tara"}
           </Button>
@@ -339,6 +355,12 @@ export default function DailyRisingPage() {
       </div>
 
       {msg ? <div className="text-sm text-neon-yellow my-2">{msg}</div> : null}
+      {stateError || watchError ? (
+        <div role="alert" className="my-2 rounded-lg border border-neon-red/40 bg-neon-red/5 px-3 py-2 font-mono text-xs text-neon-red">
+          ⚠ {[stateError ? "Aday listesi" : null, watchError ? "İzleme listesi" : null].filter(Boolean).join(" ve ")} yenilenemedi — gösterilen veriler bayat olabilir.
+          <button type="button" onClick={() => { void Promise.all([loadState(), loadWatch()]); }} className="ml-2 underline">Yeniden dene</button>
+        </div>
+      ) : null}
 
       {/* WhatsApp GRUP GÖNDERİMİ — yalnız admin girişinde */}
       {isAdmin ? (

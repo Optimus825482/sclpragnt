@@ -35,7 +35,7 @@ export default function TopBar() {
         <p className="topbar-title">{currentTitle}</p>
       </div>
       <div className="topbar-status">
-        <span className="status-dot" /> CANLI PUBLIC DATA
+        <span className="status-dot" aria-hidden="true" /> CANLI PUBLIC DATA
       </div>
     </div>
   );

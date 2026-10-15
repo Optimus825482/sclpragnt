@@ -198,7 +198,7 @@ function SettingsPageInner() {
   // durum anında güncellenir (güvenli + ucuz: yalnız setState).
   useLiveMessages((message: any) => {
     if (message.type === "symbol_activity" && message.data?.statuses) setActivity(message.data.statuses);
-  });
+  }, ["symbol_activity"]);
 
   const refreshActivity = async () => {
     setRefreshingActivity(true);

@@ -631,7 +631,7 @@ function ChatPageInner() {
       success: d.success,
       duration_ms: d.duration_ms,
     }, ...current].slice(0, 40));
-  });
+  }, ["model_activity"]);
 
   const sendMessage = async (text: string) => {
     const trimmed = text.trim();

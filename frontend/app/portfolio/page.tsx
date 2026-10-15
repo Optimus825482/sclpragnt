@@ -159,6 +159,18 @@ export default function PortfolioPage() {
   // H-05: ağ hatası "veri yok"tan ayırt edilebilir olmalı — ana veri yolu
   // (`/api/positions`) başarısız olduğunda uyarı şeridi gösterilir.
   const [loadError, setLoadError] = useState(false);
+  // İkincil veri kaynaklarının (otonom paper, karar akışı, geçmiş) hata durumu:
+  // sessiz `.catch(() => undefined)` yerine kullanıcıya gösterilir.
+  const [failedSources, setFailedSources] = useState<string[]>([]);
+  const markSource = useCallback((name: string, failed: boolean) => {
+    setFailedSources((prev) => {
+      const has = prev.includes(name);
+      if (failed === has) return prev;
+      return failed ? [...prev, name] : prev.filter((n) => n !== name);
+    });
+  }, []);
+  // Geçmiş sayfalama isteklerinde yalnız en yeni isteğin sonucu uygulanır.
+  const historySeqRef = useRef(0);
   // Kapanan otonom işlemler: pagination'lı tam geçmiş (sayfa altı tablo)
   const [apHistory, setApHistory] = useState<AutoPaperTrade[]>([]);
   const [apHistoryPage, setApHistoryPage] = useState(0);
@@ -188,32 +200,36 @@ export default function PortfolioPage() {
   const loadAutoPaperOpen = useCallback(() => {
     apiRequest(`${API_BASE}/api/auto-paper/trades?status=open&limit=50`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => setApTrades(d.trades || []))
-      .catch(() => undefined);
-  }, []);
+      .then((d) => { setApTrades(d.trades || []); markSource("açık otonom işlemler", false); })
+      .catch(() => markSource("açık otonom işlemler", true));
+  }, [markSource]);
 
   // Yavaş değişen: istatistik + son kapananlar + ayarlar (yalnız periyodik poll)
   const loadAutoPaperDetail = useCallback(() => {
     apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=8`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => setApRecent(d.trades || []))
-      .catch(() => undefined);
+      .then((d) => { setApRecent(d.trades || []); markSource("son kapananlar", false); })
+      .catch(() => markSource("son kapananlar", true));
     apiRequest(`${API_BASE}/api/auto-paper/stats`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => setApStats(d.stats || null))
-      .catch(() => undefined);
+      .then((d) => { setApStats(d.stats || null); markSource("istatistikler", false); })
+      .catch(() => markSource("istatistikler", true));
     apiRequest(`${API_BASE}/api/auto-paper/settings`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => setApSettings(d))
-      .catch(() => undefined);
-  }, []);
+      .then((d) => { setApSettings(d); markSource("otonom ayarlar", false); })
+      .catch(() => markSource("otonom ayarlar", true));
+  }, [markSource]);
 
   // Kapanan otonom işlemler geçmişi — pagination'lı (sayfa başına 20)
   const loadAutoPaperHistory = useCallback((page: number) => {
     const offset = page * AP_HISTORY_PAGE_SIZE;
+    // Yarış koruması: yavaş dönen eski sayfa yanıtı yenisini ezmesin.
+    const seq = ++historySeqRef.current;
     apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=${AP_HISTORY_PAGE_SIZE}&offset=${offset}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => {
+        if (seq !== historySeqRef.current) return;
+        markSource("işlem geçmişi", false);
         const rows: AutoPaperTrade[] = d.trades || [];
         // H-29: liste küçülünce sayfa numarası kırpılmıyordu → boş tablo +
         // "Sayfa 7". Boş bir sayfaya düşülürse bir öncekine dön (o yükleme
@@ -221,16 +237,16 @@ export default function PortfolioPage() {
         if (rows.length === 0 && page > 0) { setApHistoryPage(page - 1); return; }
         setApHistory(rows);
       })
-      .catch(() => undefined);
-  }, []);
+      .catch(() => { if (seq === historySeqRef.current) markSource("işlem geçmişi", true); });
+  }, [markSource]);
 
   // Otonom karar akışı — decision_logs, strategy=AUTO_PAPER, en yeni `limit`
   const loadDecisions = useCallback((limit = 50) => {
     apiRequest(`${API_BASE}/api/decisions?strategy=AUTO_PAPER&limit=${limit}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => setDecisions(d.decisions || []))
-      .catch(() => undefined);
-  }, []);
+      .then((d) => { setDecisions(d.decisions || []); markSource("karar akışı", false); })
+      .catch(() => markSource("karar akışı", true));
+  }, [markSource]);
 
   // WS kopukken portföy başlığı boş kalmasın: /api/portfolio/summary REST
   // yedeği (WS 'portfolio' mesajı geldiğinde canlı veri üzerine yazar).
@@ -361,7 +377,7 @@ export default function PortfolioPage() {
       loadPortfolioFallback();
     }
   }, [debouncedRefresh, loadMain, loadAutoPaperOpen, loadPortfolioFallback, onReset]);
-  useLiveMessages(onLiveMessage);
+  useLiveMessages(onLiveMessage, ["portfolio", "auto_paper_trade", "reset", "signal", "trade_updated", "portfolio_reconciled", "llm_position_management"]);
 
   // Ana pozisyonları birleştir: WS anlık değeri REST'ten önceliklidir.
   //
@@ -486,6 +502,12 @@ export default function PortfolioPage() {
           >
             YENİDEN DENE
           </button>
+        </div>
+      )}
+
+      {failedSources.length > 0 && !loadError && (
+        <div role="alert" className="mb-4 rounded-lg border border-yellow-300/40 bg-yellow-300/5 px-3 py-2">
+          <p className="font-mono text-xs text-yellow-300">⚠ Bazı veriler yenilenemedi: {failedSources.join(", ")} (gösterilen değerler bayat olabilir).</p>
         </div>
       )}
 
