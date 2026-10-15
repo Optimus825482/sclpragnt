@@ -717,6 +717,42 @@ async def set_reports_baseline(raw) -> float:
     await set_llm_setting(_REPORTS_BASELINE_KEY, text)
     return _parse_reports_baseline(text) if text else await get_reports_baseline()
 
+# ---------------------------------------------------------------------------
+# RADAR RAPOR KESİMİ (2026-10-15 22:30) — yalnız radar bildirimi raporları.
+#
+# `reports_baseline_at` TÜM raporların (paper işlem, bakiye, sembol…) ortak
+# sınırıdır. Radar tarama algoritmaları 2026-10-15 22:30'da önemli ölçüde
+# değişti; eski bildirimler yeni algoritmanın başarısını kirletir. Bu yüzden
+# radar bildirimi raporlarına ÖZEL ikinci bir alt sınır vardır; paper/bakiye
+# raporlarını ETKİLEMEZ. Etkin sınır = max(rapor başlangıcı, radar kesimi).
+# "Arşivi göster" (ignore_reports_baseline=True) ikisini birden kaldırır.
+# Fiziksel silme YOKTUR: eski kayıtlar tabloda kalır, yalnız görünümden çıkar.
+# ---------------------------------------------------------------------------
+_RADAR_REPORTS_BASELINE_KEY = "radar_reports_baseline_at"
+
+
+def _get_radar_floor_sync(conn) -> float:
+    """Radar bildirimi raporlarının ek alt sınırı (epoch; 0.0 = kapalı)."""
+    raw = None
+    try:
+        row = conn.execute(
+            "SELECT value FROM llm_settings WHERE key=?", (_RADAR_REPORTS_BASELINE_KEY,)).fetchone()
+        if row:
+            raw = row[0]
+    except Exception:
+        raw = None
+    if raw is None or not str(raw).strip():
+        raw = getattr(config, "RADAR_REPORTS_BASELINE_DEFAULT", "")
+    return _parse_reports_baseline(raw)
+
+
+async def get_radar_reports_baseline() -> float:
+    """Radar rapor kesimini (epoch float) döndür; 0.0 = kapalı."""
+    def op(conn):
+        return _get_radar_floor_sync(conn)
+    return await _run_db(op)
+
+
 async def get_wallet_balance(asset=None):
     """Virtual wallet balance. Defaults to `config.CASH_ASSET` — the cash row
     this deployment actually keeps (TR→TRY). Legacy "USDT"
@@ -5216,7 +5252,8 @@ async def mark_monitoring_push_sent(notification_id):
 
 async def get_monitoring_velocity_matches(limit: int | None = 1000, day: str | None = None,
                                           slim: bool = False,
-                                          ignore_reports_baseline: bool = False):
+                                          ignore_reports_baseline: bool = False,
+                                          apply_radar_floor: bool = False):
     """Bildirimleri ayni andaki velocity adayiyla karsilastir (salt okunur).
 
 monitoring_notifications VE velocity_candidates ayni tarama turunda
@@ -5238,6 +5275,10 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
     `ignore_reports_baseline=True` → RAPOR BAŞLANGICI alt sınırı uygulanmaz
     ("arşivi göster"). `day` verilmişse pencere ile birlikte uygulanır: sınırın
     ÖNCESİndeki bir gün seçilirse sonuç boş döner (doğru davranış — o gün arşiv).
+
+    `apply_radar_floor=True` → RADAR RAPOR KESİMİ de uygulanır (yalnız rapor
+    uçları geçer; öğrenme/kalibrasyon/bakım çağıranları varsayılan False ile
+    eski davranışta kalır). `ignore_reports_baseline=True` ikisini de kapatır.
     """
     from datetime import datetime, timezone, timedelta
     def op(conn):
@@ -5260,6 +5301,8 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
             upper = (day_start + timedelta(days=1)).timestamp()
         if not ignore_reports_baseline:
             lower = max(lower or 0.0, _get_reports_baseline_sync(conn)) or None
+            if apply_radar_floor:
+                lower = max(lower or 0.0, _get_radar_floor_sync(conn)) or None
         if lower is not None:
             base_sql += " WHERE detected_at >= %s"
             params.append(lower)
@@ -5562,7 +5605,8 @@ async def update_monitoring_notification_outcome(notification_id, status, mfe_pc
 
 
 async def list_macd_mtf_report(days: int = 14, limit: int = 1000,
-                               ignore_reports_baseline: bool = False):
+                               ignore_reports_baseline: bool = False,
+                               apply_radar_floor: bool = False):
     """MACD MTF konfluans raporu satırları (yeni → eski; verdict'sizler dahil).
 
     Agregasyon rapor ucunda yapılır; burada yalnız ham satırlar okunur.
@@ -5574,6 +5618,8 @@ async def list_macd_mtf_report(days: int = 14, limit: int = 1000,
         lower = cutoff
         if not ignore_reports_baseline:
             lower = max(lower, _get_reports_baseline_sync(conn))
+            if apply_radar_floor:
+                lower = max(lower, _get_radar_floor_sync(conn))
         rows = conn.execute(
             "SELECT id,symbol,macd_mtf_verdict,macd_mtf_confluence,outcome_status,"
             "mfe_pct,mae_pct,score,target_pct,horizon_minutes,detected_at,mode,sources "

@@ -34,9 +34,20 @@ class ReportsBaselinePayload(BaseModel):
     value: str | None = None
 
 
-def _baseline_response(effective_ts: float) -> dict:
-    """Sınırın hem ham hem çözümlenmiş hâlini döndür (panel ikisini de gösterir)."""
+def _local_str(ts: float):
+    return (datetime.fromtimestamp(ts, timezone(timedelta(hours=3)))
+            .strftime("%Y-%m-%d %H:%M") if ts else None)
+
+
+def _baseline_response(effective_ts: float, radar_ts: float = 0.0) -> dict:
+    """Sınırın hem ham hem çözümlenmiş hâlini döndür (panel ikisini de gösterir).
+
+    `radar_*`: radar bildirimi bölümlerine özel ek kesim (database.py
+    `_get_radar_floor_sync`); radar bölümleri max(effective, radar) kullanır.
+    """
     return {
+        "radar_effective_ts": max(effective_ts or 0.0, radar_ts or 0.0) if radar_ts else None,
+        "radar_effective_local": _local_str(max(effective_ts or 0.0, radar_ts or 0.0)) if radar_ts else None,
         "paper_only": True,
         "effective_ts": effective_ts,
         # epoch→yerel gösterim `database._parse_reports_baseline` ile AYNI saat
@@ -53,7 +64,8 @@ def _baseline_response(effective_ts: float) -> dict:
 @router.get("/api/reports/baseline")
 async def get_reports_baseline_endpoint():
     """Etkin rapor başlangıcını döndür (0/None = filtre kapalı)."""
-    return _baseline_response(await database.get_reports_baseline())
+    return _baseline_response(await database.get_reports_baseline(),
+                              await database.get_radar_reports_baseline())
 
 
 @router.put("/api/reports/baseline")
@@ -84,7 +96,8 @@ async def set_reports_baseline_endpoint(payload: ReportsBaselinePayload, request
                               request=request)
     except Exception as exc:
         logger.debug("rapor başlangıcı denetim kaydı yazılamadı: %s", exc)
-    return {**_baseline_response(effective), "ok": True, "value": raw}
+    return {**_baseline_response(effective, await database.get_radar_reports_baseline()),
+            "ok": True, "value": raw}
 
 
 @router.get("/api/signals")
@@ -424,7 +437,7 @@ async def get_macd_mtf_report(days: int = 14, limit: int = 1000, include_archive
     days = max(1, min(int(days), 60))
     rows = await database.list_macd_mtf_report(
         days=days, limit=max(1, min(int(limit), 2000)),
-        ignore_reports_baseline=include_archived)
+        ignore_reports_baseline=include_archived, apply_radar_floor=True)
     order = {"GÜÇLÜ": 0, "ORTA": 1, "ZAYIF": 2, "YOK": 3}
     groups: dict[str, dict] = {}
     # DENETİM (2026-10-07): buradaki `getattr` yedeği 1.5'ti ama gerçek stop

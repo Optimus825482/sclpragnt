@@ -856,6 +856,17 @@ class Config:
     # 0 / boş = filtre KAPALI (eski davranış: tüm geçmiş görünür).
     REPORTS_BASELINE_DEFAULT = os.getenv("REPORTS_BASELINE_AT", "2026-10-07 11:30").strip()
 
+    # RADAR RAPOR KESİMİ (2026-10-15): radar tarama algoritmaları bu tarihte
+    # önemli ölçüde geliştirildi (aile lift, p_hit kalibrasyonu, bildirim
+    # politikası…). Raporlar sayfasındaki RADAR BİLDİRİMİ bölümleri (başarı
+    # oranı, teyit kademeleri, sinyal listesi, MACD MTF ölçümü) bu andan
+    # ÖNCEKİ bildirimleri "arşiv" sayar; hesap yalnız sonrasına bakar.
+    # Soft-arşiv: kayıt silinmez, "Arşivi göster" ile görünür. Paper/bakiye
+    # raporları bu sınırdan ETKİLENMEZ (onlar REPORTS_BASELINE_DEFAULT'u kullanır).
+    # Biçim REPORTS_BASELINE_AT ile aynı (yerel saat UTC+3). 0/boş = kapalı.
+    # DB'de `radar_reports_baseline_at` varsa bunu ezer.
+    RADAR_REPORTS_BASELINE_DEFAULT = os.getenv("RADAR_REPORTS_BASELINE_AT", "2026-10-15 22:30").strip()
+
     # ---------------------------------------------------------------------
     # SAKLAMA (RETENTION) PENCERELERİ — disk bütçesi (2026-09-16)
     #

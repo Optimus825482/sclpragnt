@@ -5669,7 +5669,8 @@ async def report_notifications(
     # Tek eşik ilkesi: belirtilmediyse admin etkin eşiği kullanılır.
     threshold = float(min_score) if min_score is not None else _effective_min_score(settings)
     rows = await database.get_monitoring_velocity_matches(
-        limit=limit, day=effective_day, ignore_reports_baseline=include_archived)
+        limit=limit, day=effective_day, ignore_reports_baseline=include_archived,
+        apply_radar_floor=True)
     # Eşik filtresi panel (0-100) skoru üzerinden; eski ham kayıtlar tek kez
     # normalize edilir (bkz. _stored_panel_score).
     rows = [r for r in rows
@@ -5918,7 +5919,7 @@ async def report_notifications(
     if not history_only:
         all_rows = await database.get_monitoring_velocity_matches(
             limit=None, day=effective_day, slim=True,
-            ignore_reports_baseline=include_archived)
+            ignore_reports_baseline=include_archived, apply_radar_floor=True)
     all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
     if req_conf > 1:
         all_rows = [r for r in all_rows if len(_parse_sources(r.get("sources"))) >= req_conf]

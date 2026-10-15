@@ -1759,11 +1759,15 @@ export default function ReportsPage() {
   const [selectedDay, setSelectedDay] = useState<string>("all");
   const [includeArchived, setIncludeArchived] = useState(false);
   const [baselineLabel, setBaselineLabel] = useState<string | null>(null);
+  const [radarCutLabel, setRadarCutLabel] = useState<string | null>(null);
   const todayStr = localDateInput();
 
   useEffect(() => {
-    getJSON<{ effective_local?: string | null; enabled?: boolean }>("/api/reports/baseline")
-      .then((d) => setBaselineLabel(d.enabled ? (d.effective_local || null) : null))
+    getJSON<{ effective_local?: string | null; enabled?: boolean; radar_effective_local?: string | null }>("/api/reports/baseline")
+      .then((d) => {
+        setBaselineLabel(d.enabled ? (d.effective_local || null) : null);
+        setRadarCutLabel(d.radar_effective_local || null);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -1868,6 +1872,15 @@ export default function ReportsPage() {
           Bu andan öncesi <span className="text-white">arşiv</span> sayılır ve yalnız
           &quot;Arşivi göster&quot; işaretliyken listelenir. Sınırı Yönetim Merkezi →
           <span className="text-white"> Rapor Başlangıcı</span> sekmesinden değiştirebilirsiniz.
+        </p>
+      )}
+
+      {radarCutLabel && (
+        <p className="-mt-3 px-1 font-mono text-[11px] text-bunker-muted">
+          🎯 Radar bildirimi bölümleri (başarı oranı, teyit kademeleri, sinyal listesi, MACD MTF)
+          yalnız <span className="text-neon-green">{radarCutLabel}</span> (UTC+3) sonrası
+          bildirimlerle hesaplanır; öncesi <span className="text-white">arşiv</span> sayılır
+          ve &quot;Arşivi göster&quot; ile görünür.
         </p>
       )}
 
