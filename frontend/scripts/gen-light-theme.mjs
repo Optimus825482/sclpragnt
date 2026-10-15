@@ -21,8 +21,9 @@ function walk(dir, out = []) {
   return out;
 }
 
+const files = walk(ROOT);
 const found = new Set();
-for (const file of walk(ROOT)) {
+for (const file of files) {
   for (const m of readFileSync(file, "utf8").matchAll(re)) {
     // bg-white/border-white açık yüzeydir; light temada olduğu gibi kalır (koyuya çevrilmez).
     if (/^(bg|border|divide)-white/.test(m[0])) continue;
@@ -37,6 +38,26 @@ const rules = [...found].sort().map((cls) => {
   const target = kind === "divide" ? `${sel} > :not([hidden]) ~ :not([hidden])` : sel;
   return `[data-theme="light"] ${target}{${PROPS[kind]}:${value}}`;
 });
+
+// Tailwind varsayılan vurgu renkleri: açık tonlar koyu zeminde okunur, beyazda okunmaz → 700 tonu.
+const ACCENT700 = {
+  yellow: [161, 98, 7], amber: [180, 83, 9], cyan: [14, 116, 144], sky: [3, 105, 161], blue: [29, 78, 216],
+  emerald: [4, 120, 87], green: [21, 128, 61], lime: [77, 124, 15], teal: [15, 118, 110], red: [185, 28, 28],
+  rose: [190, 18, 60], orange: [194, 65, 12], purple: [126, 34, 206], violet: [109, 40, 217], pink: [190, 24, 93],
+  fuchsia: [162, 28, 175], indigo: [67, 56, 202],
+};
+const reAccent = new RegExp(String.raw`\btext-(${Object.keys(ACCENT700).join("|")})-(200|300|400)(?![\w-])`, "g");
+const reNeutral = /\btext-(slate|gray|zinc|neutral)-(100|200|300|400|500)(?![\w-])/g;
+const extra = new Map();
+for (const file of files) {
+  const src = readFileSync(file, "utf8");
+  for (const m of src.matchAll(reAccent)) extra.set(m[0], ACCENT700[m[1]].join(" "));
+  for (const m of src.matchAll(reNeutral)) extra.set(m[0], Number(m[2]) >= 400 ? "91 100 120" : "51 65 85");
+}
+for (const [cls, rgb] of [...extra].sort()) {
+  rules.push(`[data-theme="light"] .${cls}{color:rgb(${rgb})}`);
+}
+
 const header = "/* ÜRETİLDİ: node scripts/gen-light-theme.mjs — elle düzenleme yapma; elle kurallar user-theme.manual.css'te. */\n";
 writeFileSync(join(ROOT, "user-theme.generated.css"), header + rules.join("\n") + "\n");
 console.log(`${rules.length} kural üretildi`);

@@ -9,3 +9,27 @@
 @media (prefers-reduced-motion: reduce) {
   [data-theme="light"] * { animation: none !important; transition: none !important; }
 }
+
+/* globals.css'teki @apply ile derlenmiş sabit renkli bileşen sınıfları (class eşlemesi bunları yakalayamaz). */
+[data-theme="light"] .ui-card, [data-theme="light"] .panel {
+  background: #fff; border-color: #e3e8f2; box-shadow: 0 1px 2px rgb(15 23 42 / .06);
+}
+[data-theme="light"] .ui-stat-value { color: #0f172a; }
+[data-theme="light"] .ui-stat-detail, [data-theme="light"] .eyebrow,
+[data-theme="light"] .ui-section-description, [data-theme="light"] .page-heading p:not(.eyebrow),
+[data-theme="light"] .table-subvalue { color: #5b6478; }
+[data-theme="light"] .ui-section-header h2, [data-theme="light"] .page-heading h1 { color: #0f172a; }
+[data-theme="light"] .section-tabs { background: #fff; border-color: #e3e8f2; box-shadow: 0 1px 2px rgb(15 23 42 / .06); }
+[data-theme="light"] .section-tabs button { color: #5b6478; }
+[data-theme="light"] .section-tabs button:hover { color: #0f172a; background: #eef2f9; }
+[data-theme="light"] .section-tabs button.active { color: #0b6e3e; background: #e4f5ec; box-shadow: inset 0 0 0 1px #8fd3ae; }
+[data-theme="light"] .data-table th { color: #5b6478; background: #f5f7fb; border-bottom-color: #e3e8f2; }
+[data-theme="light"] .data-table td { color: #0f172a; border-bottom-color: #eef2f9; }
+[data-theme="light"] .data-table tbody tr:hover { background: #f5f7fb; }
+[data-theme="light"] .input::placeholder { color: #8b94ad; }
+[data-theme="light"] .input:hover { border-color: #8b94ad; }
+[data-theme="light"] .ui-badge-neutral { color: #3b4458; background: #eef2f9; border-color: #cbd3e3; }
+[data-theme="light"] .ui-badge-positive { color: #0b6e3e; background: #e4f5ec; border-color: #8fd3ae; }
+[data-theme="light"] .ui-badge-negative { color: #a11a2a; background: #fde8ea; border-color: #f2a5ad; }
+[data-theme="light"] .ui-badge-warning { color: #8a5a00; background: #fdf3d6; border-color: #e8c76a; }
+[data-theme="light"] .ui-badge-info { color: #1d4fa3; background: #e6efff; border-color: #9bbcf2; }
