@@ -124,3 +124,33 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
+
+  # 2026-10-15 denetim (bölüm 6): iki frontend'de de ESLint yoktu. Taban
+  # politikası `eslint.config.mjs` içinde açıklıdır (gürültülü kurallar `warn`,
+  # gerçek hatalar `error` → job'ı kırar). `scalperintelligent` için vitest yok.
+  frontend-lint:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [frontend, scalperintelligent]
+    defaults:
+      run:
+        working-directory: ${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint (eslint)
+        run: npm run lint
+      - name: Typecheck (tsc --noEmit)
+        # `next typegen` önce çalışır (typed routes); ardından `tsc --noEmit`.
+        run: npm run typecheck
+      - name: Test (vitest)
+        if: matrix.app == 'frontend'
+        run: npx vitest run
