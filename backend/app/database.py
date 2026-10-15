@@ -717,6 +717,42 @@ async def set_reports_baseline(raw) -> float:
     await set_llm_setting(_REPORTS_BASELINE_KEY, text)
     return _parse_reports_baseline(text) if text else await get_reports_baseline()
 
+# ---------------------------------------------------------------------------
+# RADAR RAPOR KESİMİ (2026-10-15 22:30) — yalnız radar bildirimi raporları.
+#
+# `reports_baseline_at` TÜM raporların (paper işlem, bakiye, sembol…) ortak
+# sınırıdır. Radar tarama algoritmaları 2026-10-15 22:30'da önemli ölçüde
+# değişti; eski bildirimler yeni algoritmanın başarısını kirletir. Bu yüzden
+# radar bildirimi raporlarına ÖZEL ikinci bir alt sınır vardır; paper/bakiye
+# raporlarını ETKİLEMEZ. Etkin sınır = max(rapor başlangıcı, radar kesimi).
+# "Arşivi göster" (ignore_reports_baseline=True) ikisini birden kaldırır.
+# Fiziksel silme YOKTUR: eski kayıtlar tabloda kalır, yalnız görünümden çıkar.
+# ---------------------------------------------------------------------------
+_RADAR_REPORTS_BASELINE_KEY = "radar_reports_baseline_at"
+
+
+def _get_radar_floor_sync(conn) -> float:
+    """Radar bildirimi raporlarının ek alt sınırı (epoch; 0.0 = kapalı)."""
+    raw = None
+    try:
+        row = conn.execute(
+            "SELECT value FROM llm_settings WHERE key=?", (_RADAR_REPORTS_BASELINE_KEY,)).fetchone()
+        if row:
+            raw = row[0]
+    except Exception:
+        raw = None
+    if raw is None or not str(raw).strip():
+        raw = getattr(config, "RADAR_REPORTS_BASELINE_DEFAULT", "")
+    return _parse_reports_baseline(raw)
+
+
+async def get_radar_reports_baseline() -> float:
+    """Radar rapor kesimini (epoch float) döndür; 0.0 = kapalı."""
+    def op(conn):
+        return _get_radar_floor_sync(conn)
+    return await _run_db(op)
+
+
 async def get_wallet_balance(asset=None):
     """Virtual wallet balance. Defaults to `config.CASH_ASSET` — the cash row
     this deployment actually keeps (TR→TRY). Legacy "USDT"
@@ -1503,7 +1539,8 @@ async def mark_rising_alert_trade(alert_id: int, trade_id: int) -> None:
 
 async def list_rising_alerts(limit: int = 100, kind: str | None = None,
                              symbol: str | None = None,
-                             ignore_reports_baseline: bool = False) -> list[dict]:
+                             ignore_reports_baseline: bool = False,
+                             apply_radar_floor: bool = False) -> list[dict]:
     """Son yükseliş sinyalleri (en yeni önce).
 
     `ignore_reports_baseline=True` → RAPOR BAŞLANGICI alt sınırı uygulanmaz.
@@ -1524,6 +1561,8 @@ async def list_rising_alerts(limit: int = 100, kind: str | None = None,
             params.append(str(symbol).upper())
         if not ignore_reports_baseline:
             _base = _get_reports_baseline_sync(conn)
+            if apply_radar_floor:
+                _base = max(_base or 0.0, _get_radar_floor_sync(conn))
             if _base:
                 where.append("created_at >= ?")
                 params.append(_base)
@@ -1605,7 +1644,8 @@ async def journal_coverage() -> dict:
     return await _run_db(op)
 
 
-async def get_rising_stats(days: float = 7.0, ignore_reports_baseline: bool = False) -> dict:
+async def get_rising_stats(days: float = 7.0, ignore_reports_baseline: bool = False,
+                           apply_radar_floor: bool = False) -> dict:
     """Yükseliş sinyali kalibrasyon özeti — Raporlar sekmesi için.
 
     Dönen alanlar: toplam sinyal, sınıf dağılımı, ölçülen (evaluate edilmiş)
@@ -1624,6 +1664,8 @@ async def get_rising_stats(days: float = 7.0, ignore_reports_baseline: bool = Fa
         lower = since
         if not ignore_reports_baseline:
             lower = max(lower, _get_reports_baseline_sync(conn))
+            if apply_radar_floor:
+                lower = max(lower, _get_radar_floor_sync(conn))
         rows = conn.execute(
             "SELECT kind, target_pct, mfe_pct, mae_pct, outcome_state, created_at, peak_at "
             "FROM rising_alerts WHERE created_at >= ?", (lower,)).fetchall()
@@ -2037,11 +2079,18 @@ async def save_daily_rising_report(item: dict) -> int | None:
 
 
 async def list_daily_rising_reports(limit: int = 50, days: float = 7.0,
-                                    kind: str | None = None) -> list[dict]:
-    """Son N günün rapor kayıtları (en yeni önce)."""
+                                    kind: str | None = None,
+                                    apply_radar_floor: bool = False) -> list[dict]:
+    """Son N günün rapor kayıtları (en yeni önce).
+
+    `apply_radar_floor=True` → RADAR RAPOR KESİMİ'nden önceki raporlar dışlanır
+    (yalnız Raporlar sayfası uçları geçer; "arşivi göster" için çağıran False verir).
+    """
     def op(conn):
         _ensure_daily_rising_reports_schema(conn)
         since = time.time() - max(0.1, float(days)) * 86400.0
+        if apply_radar_floor:
+            since = max(since, _get_radar_floor_sync(conn))
         where = "sent_at >= ?" + (" AND kind=?" if kind else "")
         params: list = [since] + ([str(kind)] if kind else []) + [max(1, min(500, int(limit)))]
         rows = conn.execute(
@@ -5216,7 +5265,8 @@ async def mark_monitoring_push_sent(notification_id):
 
 async def get_monitoring_velocity_matches(limit: int | None = 1000, day: str | None = None,
                                           slim: bool = False,
-                                          ignore_reports_baseline: bool = False):
+                                          ignore_reports_baseline: bool = False,
+                                          apply_radar_floor: bool = False):
     """Bildirimleri ayni andaki velocity adayiyla karsilastir (salt okunur).
 
 monitoring_notifications VE velocity_candidates ayni tarama turunda
@@ -5238,6 +5288,10 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
     `ignore_reports_baseline=True` → RAPOR BAŞLANGICI alt sınırı uygulanmaz
     ("arşivi göster"). `day` verilmişse pencere ile birlikte uygulanır: sınırın
     ÖNCESİndeki bir gün seçilirse sonuç boş döner (doğru davranış — o gün arşiv).
+
+    `apply_radar_floor=True` → RADAR RAPOR KESİMİ de uygulanır (yalnız rapor
+    uçları geçer; öğrenme/kalibrasyon/bakım çağıranları varsayılan False ile
+    eski davranışta kalır). `ignore_reports_baseline=True` ikisini de kapatır.
     """
     from datetime import datetime, timezone, timedelta
     def op(conn):
@@ -5260,6 +5314,8 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
             upper = (day_start + timedelta(days=1)).timestamp()
         if not ignore_reports_baseline:
             lower = max(lower or 0.0, _get_reports_baseline_sync(conn)) or None
+            if apply_radar_floor:
+                lower = max(lower or 0.0, _get_radar_floor_sync(conn)) or None
         if lower is not None:
             base_sql += " WHERE detected_at >= %s"
             params.append(lower)
@@ -5562,7 +5618,8 @@ async def update_monitoring_notification_outcome(notification_id, status, mfe_pc
 
 
 async def list_macd_mtf_report(days: int = 14, limit: int = 1000,
-                               ignore_reports_baseline: bool = False):
+                               ignore_reports_baseline: bool = False,
+                               apply_radar_floor: bool = False):
     """MACD MTF konfluans raporu satırları (yeni → eski; verdict'sizler dahil).
 
     Agregasyon rapor ucunda yapılır; burada yalnız ham satırlar okunur.
@@ -5574,6 +5631,8 @@ async def list_macd_mtf_report(days: int = 14, limit: int = 1000,
         lower = cutoff
         if not ignore_reports_baseline:
             lower = max(lower, _get_reports_baseline_sync(conn))
+            if apply_radar_floor:
+                lower = max(lower, _get_radar_floor_sync(conn))
         rows = conn.execute(
             "SELECT id,symbol,macd_mtf_verdict,macd_mtf_confluence,outcome_status,"
             "mfe_pct,mae_pct,score,target_pct,horizon_minutes,detected_at,mode,sources "
@@ -6113,6 +6172,30 @@ def _user_binance_keys_row(row) -> dict | None:
             "real_sell_enabled": bool(row["real_sell_enabled"]),
             "created_at": float(row["created_at"] or 0),
             "updated_at": float(row["updated_at"] or 0)}
+
+
+async def get_user_ui_prefs(user_id: int) -> dict:
+    def op(conn):
+        row = conn.execute("SELECT hidden_menu FROM user_ui_prefs WHERE user_id=%s", (int(user_id),)).fetchone()
+        if not row:
+            return {"hidden_menu": []}
+        try:
+            parsed = json.loads(row[0] or "[]")
+        except (TypeError, ValueError):
+            parsed = []
+        return {"hidden_menu": [str(x) for x in parsed] if isinstance(parsed, list) else []}
+    return await _run_db(op)
+
+
+async def set_user_ui_prefs(user_id: int, hidden: list[str]) -> dict:
+    def op(conn):
+        conn.execute(
+            "INSERT INTO user_ui_prefs(user_id, hidden_menu, updated_at) VALUES(%s,%s,%s) "
+            "ON CONFLICT (user_id) DO UPDATE SET hidden_menu=EXCLUDED.hidden_menu, updated_at=EXCLUDED.updated_at",
+            (int(user_id), json.dumps(list(hidden)), time.time()))
+        conn.commit()
+        return {"hidden_menu": list(hidden)}
+    return await _run_db(op)
 
 
 async def get_user_binance_keys(user_id: int) -> dict | None:

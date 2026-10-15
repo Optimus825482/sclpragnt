@@ -1759,15 +1759,19 @@ export default function ReportsPage() {
   const [selectedDay, setSelectedDay] = useState<string>("all");
   const [includeArchived, setIncludeArchived] = useState(false);
   const [baselineLabel, setBaselineLabel] = useState<string | null>(null);
+  const [radarCutLabel, setRadarCutLabel] = useState<string | null>(null);
   const todayStr = localDateInput();
 
   useEffect(() => {
-    getJSON<{ effective_local?: string | null; enabled?: boolean }>("/api/reports/baseline")
-      .then((d) => setBaselineLabel(d.enabled ? (d.effective_local || null) : null))
+    getJSON<{ effective_local?: string | null; enabled?: boolean; radar_effective_local?: string | null }>("/api/reports/baseline")
+      .then((d) => {
+        setBaselineLabel(d.enabled ? (d.effective_local || null) : null);
+        setRadarCutLabel(d.radar_effective_local || null);
+      })
       .catch(() => undefined);
   }, []);
 
-  const MAIN_TABS = [
+  const ALL_TABS = [
     { id: "overview", label: "📊 Performans Özeti", icon: "📊" },
     { id: "radar", label: "🎯 Sinyal & Hedef Başarısı", icon: "🎯" },
     { id: "positions", label: "💼 Otonom Pozisyonlar", icon: "💼" },
@@ -1778,6 +1782,9 @@ export default function ReportsPage() {
     { id: "combined_paper", label: "💠 Kombine Paper", icon: "💠" },
     ...(isAdmin ? [{ id: "advanced", label: "⚙️ Gelişmiş Teşhis", icon: "⚙️" }] : []),
   ];
+
+  // Normal kullanıcılara yalnız kullanıcı-seviyesi sekmeler gösterilir (2026-10-15).
+  const MAIN_TABS = isAdmin ? ALL_TABS : ALL_TABS.filter((t) => t.id === "overview" || t.id === "radar");
 
   return (
     <main className="page-shell space-y-6">
@@ -1871,6 +1878,15 @@ export default function ReportsPage() {
         </p>
       )}
 
+      {radarCutLabel && (
+        <p className="-mt-3 px-1 font-mono text-[11px] text-bunker-muted">
+          🎯 Radar bildirimi bölümleri (başarı oranı, teyit kademeleri, sinyal listesi, MACD MTF)
+          yalnız <span className="text-neon-green">{radarCutLabel}</span> (UTC+3) sonrası
+          bildirimlerle hesaplanır; öncesi <span className="text-white">arşiv</span> sayılır
+          ve &quot;Arşivi göster&quot; ile görünür.
+        </p>
+      )}
+
       {/* Sekmeler — Yatay scrollbar oluşturmayan, responsive buton ızgarası */}
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-8 gap-2 p-1.5 bg-bunker-950/70 border border-bunker-800/80 rounded-2xl shadow-inner">
         {MAIN_TABS.map((item) => {
@@ -1899,7 +1915,7 @@ export default function ReportsPage() {
       {tab === "llm_compare" && <LlmVsRulesTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "symbols" && <SymbolsTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "mtf" && <MacdMtfTab includeArchived={includeArchived} />}
-      {tab === "daily_rising" && <CombinedRisingTab />}
+      {tab === "daily_rising" && <CombinedRisingTab includeArchived={includeArchived} />}
       {tab === "combined_paper" && <CombinedPaperPanel />}
       {tab === "advanced" && isAdmin && (
         <div className="space-y-4">

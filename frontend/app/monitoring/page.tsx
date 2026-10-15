@@ -11,6 +11,8 @@ import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
 import { scoreToneClass, scoreToneText } from "../lib/scoreTone";
 import AppLoader from "../components/AppLoader";
+import UserRadar from "../components/user/UserRadar";
+import { useIsUserView } from "../lib/adminView";
 
 type NotificationSettings = {
   enabled: boolean;
@@ -597,7 +599,7 @@ const CandidateDetail = ({ c, kind, onClose }: { c: Candidate; kind: "radar" | "
   );
 };
 
-export default function MonitoringPage() {
+function AdminMonitoringPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
   const [state, setState] = useState<MonitoringState>({ last_scan_at: null, scan_count: 0, candidates: [], watchlist: [], warm: [], pulse: [] });
@@ -1882,3 +1884,7 @@ export default function MonitoringPage() {
   );
 }
 
+export default function MonitoringPage() {
+  const userView = useIsUserView();
+  return userView ? <UserRadar /> : <AdminMonitoringPage />;
+}

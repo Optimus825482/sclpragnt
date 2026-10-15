@@ -331,10 +331,11 @@ export default function ChartsPage() {
         const chart = createChart(containerRef.current, {
             width: containerRef.current.clientWidth,
             height: chartHeightRef.current,
-            layout: { background: { color: "#000000" }, textColor: "#6b7280", fontFamily: "JetBrains Mono, monospace" },
+            // Kullanıcı (light) teması: beyaz zemin; admin koyu kalır (2026-10-15).
+            layout: { background: { color: document.documentElement.dataset.theme === "light" ? "#ffffff" : "#000000" }, textColor: document.documentElement.dataset.theme === "light" ? "#5b6478" : "#6b7280", fontFamily: "JetBrains Mono, monospace" },
             grid: {
-                vertLines: { color: "rgba(55, 65, 81, 0.2)" },
-                horzLines: { color: "rgba(55, 65, 81, 0.2)" }
+                vertLines: { color: document.documentElement.dataset.theme === "light" ? "rgba(15, 23, 42, 0.08)" : "rgba(55, 65, 81, 0.2)" },
+                horzLines: { color: document.documentElement.dataset.theme === "light" ? "rgba(15, 23, 42, 0.08)" : "rgba(55, 65, 81, 0.2)" }
             },
             crosshair: { mode: 0, vertLine: { color: "#10b981" }, horzLine: { color: "#10b981" } },
             timeScale: { timeVisible: true, secondsVisible: false },

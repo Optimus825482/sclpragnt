@@ -3581,22 +3581,27 @@ async def daily_rising_combined_loop():
 
 @router.get("/api/daily-rising/reports")
 async def daily_rising_reports_list(request: Request = None, limit: int = 50,
-                                    days: float = 7.0, kind: str = ""):
+                                    days: float = 7.0, kind: str = "",
+                                    include_archived: bool = False):
     """Kombine rapor geçmişi — Raporlar sayfasının 'Kombine Yükseliş' sekmesi.
 
     Kullanıcı isteği (2026-10-11): "3'lü sistem sonrasını görmek istiyorum,
     eskileri istemiyorum." Bu yüzden varsayılan olarak YALNIZ yeni sistem
     türleri (`combined_list` + `combined_status`) döner; kaldırılan eski
     `slot`/`delta` kayıtları HARİÇ tutulur.
+
+    RADAR RAPOR KESİMİ (2026-10-15 22:30) öncesi raporlar arşivdir;
+    `include_archived=True` ile görünür.
     """
+    floor = not include_archived
     if kind:
         rows = await database.list_daily_rising_reports(
-            limit=limit, days=days, kind=str(kind))
+            limit=limit, days=days, kind=str(kind), apply_radar_floor=floor)
     else:
         rows = []
         for k in (COMBINED_LIST_KIND, COMBINED_STATUS_KIND):
             rows.extend(await database.list_daily_rising_reports(
-                limit=limit, days=days, kind=k))
+                limit=limit, days=days, kind=k, apply_radar_floor=floor))
         rows.sort(key=lambda r: float(r.get("sent_at") or 0), reverse=True)
         rows = rows[:max(1, int(limit))]
     return {"paper_only": True, "generated_at": time.time(), "reports": rows}
@@ -3604,7 +3609,8 @@ async def daily_rising_reports_list(request: Request = None, limit: int = 50,
 
 @router.get("/api/daily-rising/reports/summary")
 async def daily_rising_reports_summary(request: Request = None, days: float = 7.0,
-                                       limit: int = 200, kind: str = ""):
+                                       limit: int = 200, kind: str = "",
+                                       include_archived: bool = False):
     """Gönderilen HER liste raporunun başarısını ölç + genel özet döndür.
 
     Kullanıcı isteği (2026-10-11): "3'lü sistem geldikten SONRAKİ başarıyı ve
@@ -3622,7 +3628,8 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
     kinds = [str(kind)] if kind else [COMBINED_LIST_KIND]
     reps: list[dict] = []
     for k in kinds:
-        reps.extend(await database.list_daily_rising_reports(limit=limit, days=days, kind=k))
+        reps.extend(await database.list_daily_rising_reports(
+            limit=limit, days=days, kind=k, apply_radar_floor=not include_archived))
     reps.sort(key=lambda r: float(r.get("sent_at") or 0), reverse=True)
     reps = reps[:max(1, int(limit))]
     if not reps:
@@ -5669,7 +5676,8 @@ async def report_notifications(
     # Tek eşik ilkesi: belirtilmediyse admin etkin eşiği kullanılır.
     threshold = float(min_score) if min_score is not None else _effective_min_score(settings)
     rows = await database.get_monitoring_velocity_matches(
-        limit=limit, day=effective_day, ignore_reports_baseline=include_archived)
+        limit=limit, day=effective_day, ignore_reports_baseline=include_archived,
+        apply_radar_floor=True)
     # Eşik filtresi panel (0-100) skoru üzerinden; eski ham kayıtlar tek kez
     # normalize edilir (bkz. _stored_panel_score).
     rows = [r for r in rows
@@ -5918,7 +5926,7 @@ async def report_notifications(
     if not history_only:
         all_rows = await database.get_monitoring_velocity_matches(
             limit=None, day=effective_day, slim=True,
-            ignore_reports_baseline=include_archived)
+            ignore_reports_baseline=include_archived, apply_radar_floor=True)
     all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
     if req_conf > 1:
         all_rows = [r for r in all_rows if len(_parse_sources(r.get("sources"))) >= req_conf]
