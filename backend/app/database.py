@@ -6174,6 +6174,30 @@ def _user_binance_keys_row(row) -> dict | None:
             "updated_at": float(row["updated_at"] or 0)}
 
 
+async def get_user_ui_prefs(user_id: int) -> dict:
+    def op(conn):
+        row = conn.execute("SELECT hidden_menu FROM user_ui_prefs WHERE user_id=%s", (int(user_id),)).fetchone()
+        if not row:
+            return {"hidden_menu": []}
+        try:
+            parsed = json.loads(row[0] or "[]")
+        except (TypeError, ValueError):
+            parsed = []
+        return {"hidden_menu": [str(x) for x in parsed] if isinstance(parsed, list) else []}
+    return await _run_db(op)
+
+
+async def set_user_ui_prefs(user_id: int, hidden: list[str]) -> dict:
+    def op(conn):
+        conn.execute(
+            "INSERT INTO user_ui_prefs(user_id, hidden_menu, updated_at) VALUES(%s,%s,%s) "
+            "ON CONFLICT (user_id) DO UPDATE SET hidden_menu=EXCLUDED.hidden_menu, updated_at=EXCLUDED.updated_at",
+            (int(user_id), json.dumps(list(hidden)), time.time()))
+        conn.commit()
+        return {"hidden_menu": list(hidden)}
+    return await _run_db(op)
+
+
 async def get_user_binance_keys(user_id: int) -> dict | None:
     def op(conn):
         row = conn.execute("SELECT * FROM user_binance_keys WHERE user_id=%s", (int(user_id),)).fetchone()

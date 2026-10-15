@@ -60,6 +60,8 @@ from app import memory_service
 from app import migration_monitor
 from app import alerting
 from app import security
+from app import ui_prefs
+from app import watch_prices
 from app import pattern_research
 from app.agent_learning import (new_trace_id, start_trace, append_event, finish_trace,
                                  evaluate_output, save_evaluation, save_experience, upsert_instinct, set_runtime_pool,
@@ -352,6 +354,32 @@ async def profile_current(request: Request):
     if not user:
         raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
     return {"ok": True, "user": _public_user(user), "paper_only": True}
+
+
+async def _session_user_id(request: Request) -> int:
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or "").strip())
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    return int(user["id"])
+
+
+@app.get("/api/profile/ui-prefs")
+async def get_ui_prefs(request: Request):
+    """Oturumdaki kullanıcının menü tercihleri (yalnız kendisininki)."""
+    prefs = await database.get_user_ui_prefs(await _session_user_id(request))
+    return {"ok": True, **prefs}
+
+
+@app.put("/api/profile/ui-prefs")
+async def put_ui_prefs(payload: dict, request: Request):
+    uid = await _session_user_id(request)
+    try:
+        hidden = ui_prefs.normalize_hidden(payload.get("hidden_menu"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    prefs = await database.set_user_ui_prefs(uid, hidden)
+    return {"ok": True, **prefs}
 
 
 @app.put("/api/profile/password")
@@ -1145,6 +1173,8 @@ async def startup_services():
 
     # --- Faz 2: Fiyat ve hesap verileri ---
     _start_background(binance_price_tick_loop, "binance-price-tick")
+    await asyncio.sleep(_yield)
+    _start_background(watch_prices.watch_prices_loop, "watch-prices")
     await asyncio.sleep(_yield)
     _start_background(binance_account_push_loop, "binance-account-push")
     await asyncio.sleep(_yield)
