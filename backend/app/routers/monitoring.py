@@ -3208,6 +3208,10 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     # combined_paper'a GİRMEZ.
     ranked = [c for c in cands
               if not c.get("blocked_by") and float(c.get("scan_score") or 0) >= min_score]
+    # 2026-10-15 (radar düzeltmesi): tekilleştirme SEMBOL bazında — aynı sembol
+    # 5m+15m olarak TOP N'de iki yer kapamaz; ufuklar `horizons` rozeti.
+    from app.unified_scan import dedup_rows_by_symbol as _dedup_by_symbol
+    ranked = _dedup_by_symbol(ranked)
     top = ranked[:n]
     if not top:
         best_all = float((cands[0].get("scan_score") if cands else 0) or 0)

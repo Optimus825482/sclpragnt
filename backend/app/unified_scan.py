@@ -129,6 +129,42 @@ def _combined_quality_score(c: dict) -> tuple[float, int, int]:
     return round(min(99.0, max(0.0, score)), 1), sources, layers
 
 
+def dedup_rows_by_symbol(rows: list[dict]) -> list[dict]:
+    """2026-10-15 (radar düzeltmesi): kombine liste SEMBOL bazında tekildir.
+
+    `combined_scan_rows` (sembol, ufuk) satırları üretir; gönderilen TOP N'de
+    aynı sembol 5m+15m olarak iki yer kapamasın. Sembol başına en yüksek
+    `scan_score`'lu satır kalır; tüm ufuklar `horizons` (artan) listesinde
+    rozet olur. Girdi satırları değiştirilmez (kopya döner); sıra en iyi puana
+    göre azalan.
+    """
+    best: dict[str, dict] = {}
+    horizons: dict[str, set[int]] = {}
+    for row in rows or []:
+        sym = str(row.get("symbol") or "").upper()
+        if not sym:
+            continue
+        try:
+            h = int(row.get("horizon_minutes") or 0)
+        except (TypeError, ValueError):
+            h = 0
+        horizons.setdefault(sym, set()).add(h)
+        try:
+            score = float(row.get("scan_score") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        cur = best.get(sym)
+        if cur is None or score > float(cur.get("scan_score") or 0):
+            best[sym] = row
+    out = []
+    for sym, row in best.items():
+        copy = dict(row)
+        copy["horizons"] = sorted(h for h in horizons.get(sym, set()) if h > 0) or [0]
+        out.append(copy)
+    out.sort(key=lambda r: float(r.get("scan_score") or 0), reverse=True)
+    return out
+
+
 def _source_ids(item: dict) -> list[str]:
     known = item.get("signal_sources")
     if isinstance(known, list):
@@ -492,4 +528,5 @@ __all__ = [
     "_combined_quality_score",
     "_radar_family_bonus",
     "combined_scan_rows",
+    "dedup_rows_by_symbol",
 ]

@@ -535,3 +535,68 @@ def test_combined_scan_calls_velocity_without_journal(monkeypatch):
     for _args, kwargs in calls:
         assert kwargs.get("journal_enabled") is False, \
             f"kombine yol journal yazıyor: {kwargs}"
+
+
+# ---------------------------------------------------------------------------
+# (6) Kombine liste tekilleştirmesi SEMBOL bazında; ufuklar liste
+# ---------------------------------------------------------------------------
+def test_dedup_rows_by_symbol_keeps_best_and_collects_horizons():
+    from app.unified_scan import dedup_rows_by_symbol
+    rows = [
+        {"symbol": "AAATRY", "horizon_minutes": 5, "scan_score": 90.0},
+        {"symbol": "AAATRY", "horizon_minutes": 15, "scan_score": 85.0},
+        {"symbol": "BBBTRY", "horizon_minutes": 5, "scan_score": 80.0},
+        {"symbol": "AAATRY", "horizon_minutes": 30, "scan_score": 95.0},
+    ]
+    out = dedup_rows_by_symbol(rows)
+    assert [r["symbol"] for r in out] == ["AAATRY", "BBBTRY"]
+    best = out[0]
+    assert best["scan_score"] == 95.0 and best["horizon_minutes"] == 30
+    assert best["horizons"] == [5, 15, 30]
+    assert out[1]["horizons"] == [5]
+    # Girdi satırları DEĞİŞTİRİLMEZ (kopya döner).
+    assert "horizons" not in rows[0]
+
+
+def test_send_combined_list_dedups_by_symbol(monkeypatch):
+    """Aynı sembol 5m+15m olarak TOP 2'yi tek başına DOLDURAMAZ: liste
+    sembol bazında tekildir, ufuklar rozet (`horizons`)."""
+    from app.routers import monitoring as mo
+    import app.whatsapp_notify as wn
+
+    async def _scan():
+        return [
+            {"symbol": "DUPTRY", "price": 1.0, "scan_score": 92.0, "horizon_minutes": 5},
+            {"symbol": "DUPTRY", "price": 1.0, "scan_score": 90.0, "horizon_minutes": 15},
+            {"symbol": "OTHTRY", "price": 1.0, "scan_score": 70.0, "horizon_minutes": 5},
+        ]
+
+    async def _last(kind=mo.COMBINED_LIST_KIND):
+        return None
+
+    sent_rows = []
+
+    async def _save(item):
+        sent_rows.append(item)
+        return 1
+
+    async def _send(text):
+        return True
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(mo, "_combined_scan_rows", _scan)
+    monkeypatch.setattr(mo.database, "last_daily_rising_report", _last)
+    monkeypatch.setattr(mo.database, "save_daily_rising_report", _save)
+    monkeypatch.setattr(mo, "_persist_combined_scan_rows", _noop)
+    monkeypatch.setattr(mo, "_record_unified_outcomes", _noop)
+    monkeypatch.setattr(wn, "whatsapp_enabled", lambda: True)
+    monkeypatch.setattr(wn, "send_whatsapp", _send)
+    monkeypatch.setattr(wn, "format_combined_list", lambda cands, **k: "X")
+    cfg = {"top_n": 2, "min_score": 10.0, "list_min": 15, "track_min": 5}
+    assert asyncio.run(mo._send_combined_list(cfg=cfg, force=True)) is True
+    cands = sent_rows[-1]["candidates"]
+    assert [c["symbol"] for c in cands] == ["DUPTRY", "OTHTRY"]
+    assert cands[0]["horizons"] == [5, 15]
+    assert cands[0]["horizon_minutes"] == 5          # en iyi satırın ufku
