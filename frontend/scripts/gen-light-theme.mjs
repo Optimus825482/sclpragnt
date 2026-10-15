@@ -23,7 +23,11 @@ function walk(dir, out = []) {
 
 const found = new Set();
 for (const file of walk(ROOT)) {
-  for (const m of readFileSync(file, "utf8").matchAll(re)) found.add(m[0]);
+  for (const m of readFileSync(file, "utf8").matchAll(re)) {
+    // bg-white/border-white açık yüzeydir; light temada olduğu gibi kalır (koyuya çevrilmez).
+    if (/^(bg|border|divide)-white/.test(m[0])) continue;
+    found.add(m[0]);
+  }
 }
 const rules = [...found].sort().map((cls) => {
   const [, kind, color, alpha] = cls.match(/^(bg|text|border|divide)-(.+?)(?:\/(\d{1,3}))?$/);

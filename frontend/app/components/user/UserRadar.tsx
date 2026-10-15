@@ -119,20 +119,20 @@ function mapHistory(raw: unknown, now: number): RadarItem[] {
 
 const toneClass = (b: string) =>
   b === "Yüksek"
-    ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+    ? "bg-neon-green/10 text-neon-green border-neon-green"
     : b === "Orta"
-      ? "bg-amber-100 text-amber-800 border-amber-300"
-      : "bg-slate-100 text-slate-700 border-slate-300";
+      ? "bg-neon-yellow/10 text-neon-yellow border-neon-yellow"
+      : "bg-bunker-950 text-bunker-muted border-bunker-700";
 
 function RadarCard({ item, live, onOpen }: { item: RadarItem; live: number | undefined; onOpen: () => void }) {
   const change = pctChange(item.price, live);
   const badge = confidenceBadge(item.score);
   return (
-    <li className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <li className="rounded-2xl border border-bunker-800 bg-white shadow-sm">
       <div className="flex min-h-[44px] items-start justify-between gap-3 p-3">
         <div className="min-w-0">
-          <SymbolLink symbol={item.symbol} className="font-bold text-base text-slate-900 hover:underline" />
-          <p className="mt-0.5 text-sm text-slate-600">{item.sentence}</p>
+          <SymbolLink symbol={item.symbol} className="font-bold text-base text-white hover:underline" />
+          <p className="mt-0.5 text-sm text-bunker-muted">{item.sentence}</p>
         </div>
         <span className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold ${toneClass(badge)}`}>
           Güven: {badge}
@@ -141,20 +141,20 @@ function RadarCard({ item, live, onOpen }: { item: RadarItem; live: number | und
       <button
         type="button"
         onClick={onOpen}
-        className="flex min-h-[44px] w-full items-center justify-between gap-2 rounded-b-2xl border-t border-slate-100 px-3 py-2 text-left text-sm hover:bg-slate-50"
+        className="flex min-h-[44px] w-full items-center justify-between gap-2 rounded-b-2xl border-t border-bunker-800 px-3 py-2 text-left text-sm hover:bg-bunker-950"
         aria-label={`${item.symbol} detayını aç`}
       >
         <span className="flex flex-wrap gap-x-4 gap-y-1">
-          <span className="text-slate-500">Fiyat <b className="text-slate-900">{item.price != null ? formatPrice(item.price) : "—"}</b></span>
-          <span className="text-slate-500">Hedef <b className="text-emerald-700">{item.targetPct != null ? `+%${item.targetPct.toFixed(1)}` : "—"}</b></span>
-          <span className="text-slate-500">
+          <span className="text-bunker-muted">Fiyat <b className="text-white">{item.price != null ? formatPrice(item.price) : "—"}</b></span>
+          <span className="text-bunker-muted">Hedef <b className="text-neon-green">{item.targetPct != null ? `+%${item.targetPct.toFixed(1)}` : "—"}</b></span>
+          <span className="text-bunker-muted">
             Şu an{" "}
-            <b className={change == null ? "text-slate-500" : change >= 0 ? "text-emerald-700" : "text-red-700"}>
+            <b className={change == null ? "text-bunker-muted" : change >= 0 ? "text-neon-green" : "text-neon-red"}>
               {change == null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}
             </b>
           </span>
         </span>
-        <span aria-hidden className="text-slate-400">Detay ›</span>
+        <span aria-hidden className="text-bunker-muted">Detay ›</span>
       </button>
     </li>
   );
@@ -176,32 +176,32 @@ function DetailModal({ item, onClose }: { item: RadarItem; onClose: () => void }
         ref={a11y.ref}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md rounded-t-2xl bg-white p-5 text-slate-900 shadow-xl outline-none sm:rounded-2xl"
+        className="w-full max-w-md rounded-t-2xl bg-white p-5 text-white shadow-xl outline-none sm:rounded-2xl"
       >
         <h2 className="text-lg font-bold">{item.symbol}</h2>
-        <h3 className="mt-3 text-sm font-semibold text-slate-700">Neden önerildi</h3>
-        <p className="mt-1 text-sm text-slate-700">{firstSentence(item.message)}</p>
+        <h3 className="mt-3 text-sm font-semibold text-bunker-muted">Neden önerildi</h3>
+        <p className="mt-1 text-sm text-bunker-muted">{firstSentence(item.message)}</p>
         <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-          <div className="rounded-xl bg-slate-50 p-3">
-            <dt className="text-slate-500">Hedef</dt>
-            <dd className="font-bold text-emerald-700">{item.targetPct != null ? `+%${item.targetPct.toFixed(1)}` : "—"}</dd>
+          <div className="rounded-xl bg-bunker-950 p-3">
+            <dt className="text-bunker-muted">Hedef</dt>
+            <dd className="font-bold text-neon-green">{item.targetPct != null ? `+%${item.targetPct.toFixed(1)}` : "—"}</dd>
           </div>
-          <div className="rounded-xl bg-slate-50 p-3">
-            <dt className="text-slate-500">Ufuk</dt>
+          <div className="rounded-xl bg-bunker-950 p-3">
+            <dt className="text-bunker-muted">Ufuk</dt>
             <dd className="font-bold">{item.horizonMin != null ? `${Math.round(item.horizonMin)} dk` : "—"}</dd>
           </div>
         </dl>
         <div className="mt-5 flex gap-3">
           <Link
             href={`/charts?symbol=${encodeURIComponent(sym)}`}
-            className="flex min-h-[44px] flex-1 items-center justify-center rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white hover:bg-emerald-700"
+            className="flex min-h-[44px] flex-1 items-center justify-center rounded-xl bg-neon-green px-4 text-sm font-semibold text-white hover:bg-neon-greenHover"
           >
             Grafikte gör
           </Link>
           <button
             type="button"
             onClick={onClose}
-            className="min-h-[44px] rounded-xl border border-slate-300 px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            className="min-h-[44px] rounded-xl border border-bunker-700 px-4 text-sm font-semibold text-bunker-muted hover:bg-bunker-950"
           >
             Kapat
           </button>
@@ -298,7 +298,7 @@ export default function UserRadar() {
 
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-4">
-      <h1 className="text-xl font-bold text-slate-900">Radar</h1>
+      <h1 className="text-xl font-bold text-white">Radar</h1>
       <div role="tablist" aria-label="Radar bölümleri" className="mt-3 flex gap-2 overflow-x-auto pb-1">
         {TABS.map((t) => (
           <button
@@ -310,7 +310,7 @@ export default function UserRadar() {
             aria-controls="radar-panel"
             onClick={() => selectTab(t.id)}
             className={`min-h-[44px] shrink-0 rounded-full border px-4 text-sm font-semibold ${
-              tab === t.id ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-300 bg-white text-slate-700"
+              tab === t.id ? "border-neon-green bg-neon-green text-white" : "border-bunker-700 bg-white text-bunker-muted"
             }`}
           >
             {t.label}
@@ -319,11 +319,11 @@ export default function UserRadar() {
       </div>
       <div role="tabpanel" id="radar-panel" aria-labelledby={`radar-tab-${tab}`} className="mt-3">
         {items == null ? (
-          <p className="py-8 text-center text-sm text-slate-500">
+          <p className="py-8 text-center text-sm text-bunker-muted">
             {error ? "Veriler şu an alınamıyor. Biraz sonra tekrar denenecek." : "Yükleniyor…"}
           </p>
         ) : items.length === 0 ? (
-          <p className="rounded-2xl border border-dashed border-slate-300 bg-white py-8 text-center text-sm text-slate-600">
+          <p className="rounded-2xl border border-dashed border-bunker-700 bg-white py-8 text-center text-sm text-bunker-muted">
             {current.empty}
           </p>
         ) : (

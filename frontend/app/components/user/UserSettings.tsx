@@ -5,7 +5,7 @@ import { MENU_ITEMS } from "../../lib/userUi";
 import { useUiPrefs } from "../../lib/useUiPrefs";
 import { ensurePushSubscription, pushPermissionState } from "../../lib/push";
 
-const CARD = "rounded-xl border border-slate-700 bg-slate-900 p-4";
+const CARD = "rounded-xl border border-bunker-700 bg-bunker-900 p-4";
 
 function MenuSection() {
   const { hidden, setHidden } = useUiPrefs();
@@ -25,19 +25,19 @@ function MenuSection() {
 
   return (
     <section className={CARD} aria-labelledby="menu-baslik">
-      <h2 id="menu-baslik" className="text-base font-semibold text-slate-100">Menü</h2>
-      <p className="mt-1 text-sm text-slate-400">Görmek istemediğin sayfaları menüden gizleyebilirsin.</p>
-      <ul className="mt-3 divide-y divide-slate-700">
+      <h2 id="menu-baslik" className="text-base font-semibold text-white">Menü</h2>
+      <p className="mt-1 text-sm text-bunker-muted">Görmek istemediğin sayfaları menüden gizleyebilirsin.</p>
+      <ul className="mt-3 divide-y divide-bunker-800">
         {MENU_ITEMS.map((item) => {
           const visible = item.locked ? true : !hidden.includes(item.id);
           return (
             <li key={item.id} className="flex min-h-[44px] items-center justify-between gap-3 py-2">
-              <span className="text-sm text-slate-100">
+              <span className="text-sm text-white">
                 <span aria-hidden="true" className="mr-2">{item.icon}</span>
                 {item.label}
               </span>
               {item.locked ? (
-                <span className="text-xs text-slate-400">Her zaman görünür</span>
+                <span className="text-xs text-bunker-muted">Her zaman görünür</span>
               ) : (
                 <button
                   type="button"
@@ -45,7 +45,7 @@ function MenuSection() {
                   aria-checked={visible}
                   aria-label={`${item.label} menüde görünsün`}
                   onClick={() => toggle(item.id, !visible)}
-                  className={`relative inline-flex h-11 w-14 shrink-0 items-center rounded-full border border-slate-600 transition-colors ${visible ? "bg-emerald-500" : "bg-slate-700"}`}
+                  className={`relative inline-flex h-11 w-14 shrink-0 items-center rounded-full border border-bunker-700 transition-colors ${visible ? "bg-neon-green" : "bg-bunker-700"}`}
                 >
                   <span
                     className={`inline-block h-6 w-6 rounded-full bg-white shadow transition-transform ${visible ? "translate-x-7" : "translate-x-1"}`}
@@ -56,7 +56,7 @@ function MenuSection() {
           );
         })}
       </ul>
-      {error && <p role="alert" className="mt-2 text-sm text-red-400">{error}</p>}
+      {error && <p role="alert" className="mt-2 text-sm text-neon-red">{error}</p>}
     </section>
   );
 }
@@ -119,13 +119,13 @@ function BinanceSection() {
 
   return (
     <section className={CARD} aria-labelledby="binance-baslik">
-      <h2 id="binance-baslik" className="text-base font-semibold text-slate-100">Binance TR bağlantısı</h2>
-      <p className="mt-1 text-sm text-slate-300" aria-live="polite">
+      <h2 id="binance-baslik" className="text-base font-semibold text-white">Binance TR bağlantısı</h2>
+      <p className="mt-1 text-sm text-white" aria-live="polite">
         {configured === null ? "Durum kontrol ediliyor…" : configured || justSaved ? "Anahtar kayıtlı" : "Anahtar kayıtlı değil"}
       </p>
-      <p className="mt-1 text-xs text-slate-400">Anahtara yalnız okuma ve spot işlem yetkisi ver; para çekme yetkisi verme.</p>
+      <p className="mt-1 text-xs text-bunker-muted">Anahtara yalnız okuma ve spot işlem yetkisi ver; para çekme yetkisi verme.</p>
       <form className="mt-3 space-y-3" onSubmit={submit} autoComplete="off">
-        <label className="block text-sm text-slate-200">
+        <label className="block text-sm text-white">
           API anahtarı
           <input
             type="text"
@@ -135,10 +135,10 @@ function BinanceSection() {
             spellCheck={false}
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            className="mt-1 block min-h-[44px] w-full rounded-lg border border-slate-600 bg-slate-800 px-3 text-sm text-slate-100"
+            className="mt-1 block min-h-[44px] w-full rounded-lg border border-bunker-700 bg-bunker-800 px-3 text-sm text-white"
           />
         </label>
-        <label className="block text-sm text-slate-200">
+        <label className="block text-sm text-white">
           API gizli anahtarı
           <input
             type="password"
@@ -146,18 +146,18 @@ function BinanceSection() {
             autoComplete="new-password"
             value={apiSecret}
             onChange={(e) => setApiSecret(e.target.value)}
-            className="mt-1 block min-h-[44px] w-full rounded-lg border border-slate-600 bg-slate-800 px-3 text-sm text-slate-100"
+            className="mt-1 block min-h-[44px] w-full rounded-lg border border-bunker-700 bg-bunker-800 px-3 text-sm text-white"
           />
         </label>
         <button
           type="submit"
           disabled={!canSave}
-          className="min-h-[44px] rounded-lg bg-emerald-600 px-4 text-sm font-medium text-white disabled:opacity-50"
+          className="min-h-[44px] rounded-lg bg-neon-green px-4 text-sm font-medium text-white disabled:opacity-50"
         >
           {saving ? "Kaydediliyor…" : "Anahtarı kaydet"}
         </button>
       </form>
-      {error && <p role="alert" className="mt-2 text-sm text-red-400">{error}</p>}
+      {error && <p role="alert" className="mt-2 text-sm text-neon-red">{error}</p>}
     </section>
   );
 }
@@ -193,19 +193,19 @@ function NotificationSection() {
 
   return (
     <section className={CARD} aria-labelledby="bildirim-baslik">
-      <h2 id="bildirim-baslik" className="text-base font-semibold text-slate-100">Bildirimler</h2>
-      <p className="mt-1 text-sm text-slate-300">{label}</p>
+      <h2 id="bildirim-baslik" className="text-base font-semibold text-white">Bildirimler</h2>
+      <p className="mt-1 text-sm text-white">{label}</p>
       {perm !== "granted" && perm !== "unsupported" && perm !== "denied" && (
         <button
           type="button"
           onClick={enable}
           disabled={busy}
-          className="mt-3 min-h-[44px] rounded-lg bg-emerald-600 px-4 text-sm font-medium text-white disabled:opacity-50"
+          className="mt-3 min-h-[44px] rounded-lg bg-neon-green px-4 text-sm font-medium text-white disabled:opacity-50"
         >
           {busy ? "Açılıyor…" : "Bildirimleri aç"}
         </button>
       )}
-      {error && <p role="alert" className="mt-2 text-sm text-red-400">{error}</p>}
+      {error && <p role="alert" className="mt-2 text-sm text-neon-red">{error}</p>}
     </section>
   );
 }
@@ -213,7 +213,7 @@ function NotificationSection() {
 export default function UserSettings() {
   return (
     <div className="mx-auto max-w-2xl space-y-4 p-4">
-      <h1 className="text-xl font-semibold text-slate-100">Ayarlar</h1>
+      <h1 className="text-xl font-semibold text-white">Ayarlar</h1>
       <MenuSection />
       <BinanceSection />
       <NotificationSection />

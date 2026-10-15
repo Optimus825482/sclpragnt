@@ -43,6 +43,7 @@
 [data-theme="light"] .bg-neon-green\/5{background-color:rgb(15 138 78 / 0.05)}
 [data-theme="light"] .bg-neon-green\/60{background-color:rgb(15 138 78 / 0.6)}
 [data-theme="light"] .bg-neon-green\/90{background-color:rgb(15 138 78 / 0.9)}
+[data-theme="light"] .bg-neon-greenHover{background-color:rgb(11 110 62)}
 [data-theme="light"] .bg-neon-red{background-color:rgb(200 40 40)}
 [data-theme="light"] .bg-neon-red\/10{background-color:rgb(200 40 40 / 0.1)}
 [data-theme="light"] .bg-neon-red\/15{background-color:rgb(200 40 40 / 0.15)}
@@ -52,10 +53,8 @@
 [data-theme="light"] .bg-neon-red\/5{background-color:rgb(200 40 40 / 0.05)}
 [data-theme="light"] .bg-neon-red\/60{background-color:rgb(200 40 40 / 0.6)}
 [data-theme="light"] .bg-neon-yellow\/10{background-color:rgb(166 110 8 / 0.1)}
+[data-theme="light"] .bg-neon-yellow\/15{background-color:rgb(166 110 8 / 0.15)}
 [data-theme="light"] .bg-neon-yellow\/20{background-color:rgb(166 110 8 / 0.2)}
-[data-theme="light"] .bg-white{background-color:rgb(15 23 42)}
-[data-theme="light"] .bg-white\/10{background-color:rgb(15 23 42 / 0.1)}
-[data-theme="light"] .bg-white\/60{background-color:rgb(15 23 42 / 0.6)}
 [data-theme="light"] .border-black\/40{border-color:rgb(15 23 42 / 0.4)}
 [data-theme="light"] .border-bunker-600{border-color:rgb(139 148 173)}
 [data-theme="light"] .border-bunker-700{border-color:rgb(203 211 227)}
@@ -82,10 +81,9 @@
 [data-theme="light"] .border-neon-red\/40{border-color:rgb(200 40 40 / 0.4)}
 [data-theme="light"] .border-neon-red\/50{border-color:rgb(200 40 40 / 0.5)}
 [data-theme="light"] .border-neon-red\/60{border-color:rgb(200 40 40 / 0.6)}
+[data-theme="light"] .border-neon-yellow{border-color:rgb(166 110 8)}
 [data-theme="light"] .border-neon-yellow\/30{border-color:rgb(166 110 8 / 0.3)}
 [data-theme="light"] .border-neon-yellow\/40{border-color:rgb(166 110 8 / 0.4)}
-[data-theme="light"] .border-white{border-color:rgb(15 23 42)}
-[data-theme="light"] .border-white\/20{border-color:rgb(15 23 42 / 0.2)}
 [data-theme="light"] .divide-bunker-800 > :not([hidden]) ~ :not([hidden]){border-color:rgb(227 232 242)}
 [data-theme="light"] .divide-bunker-800\/50 > :not([hidden]) ~ :not([hidden]){border-color:rgb(227 232 242 / 0.5)}
 [data-theme="light"] .divide-bunker-800\/60 > :not([hidden]) ~ :not([hidden]){border-color:rgb(227 232 242 / 0.6)}
