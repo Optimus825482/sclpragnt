@@ -484,8 +484,10 @@ services:
     environment:
       PORT: "3001"
       AUTH_DIR: /app/auth
-      BRIDGE_KEY: ${WHATSAPP_BRIDGE_KEY:-}
+      # Denetim 2026-10-15 (P0): anahtar zorunlu; boşsa compose çözümlemesi durur.
+      BRIDGE_KEY: ${WHATSAPP_BRIDGE_KEY:?WHATSAPP_BRIDGE_KEY zorunlu (whatsapp-bridge kimlik doğrulaması)}
       WHATSAPP_GROUP_ID: ${WHATSAPP_GROUP_ID:-}
+      WHATSAPP_ALLOWED_RECIPIENTS: ${WHATSAPP_ALLOWED_RECIPIENTS:-}
       LOG_LEVEL: ${WA_LOG_LEVEL:-silent}
     volumes:
       - whatsapp_auth:/app/auth

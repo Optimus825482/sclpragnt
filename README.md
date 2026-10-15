@@ -141,6 +141,14 @@ docker compose start backend
 
 Off-box kopya için host'ta `docker volume inspect scalper_pg_backups` ile mountpoint'i bulup cron/rsync ile dışarı alın.
 
+### LLM salt-okunur rol (deploy notu — 2026-10-15 denetimi)
+
+LLM'in `read_only_sql` aracı sqlglot AST doğrulamasından geçer (`backend/app/sql_guard.py`), sorgu `READ ONLY` ve `statement_timeout = 5s` ile koşar ve `llm_readonly` rolüne (migration `014_llm_readonly_role.sql`) geçer. Migration rolü ve sütun bazlı SELECT yetkilerini oluşturur; ancak aşağıdakiler **deploy kararıdır** ve otomatik yapılmaz:
+
+- Uygulama DB kullanıcısı (`DATABASE_URL`) hâlâ superuser ise, `pg_read_file` gibi yetkilerin etkisini tam kapatmak için **superuser olmayan** bir kullanıcıya geçilmelidir. Superuser ile LLM rolü yalnızca SQL katmanındaki savunmaya bağlı kalır.
+- Migration, uygulama kullanıcısına `llm_readonly` üyeliğini vermeye çalışır; yetki yoksa NOTICE düşer ve `read_only_sql` sorguları rol geçişinde hata verir (kapalı başarısızlık). Bu durumda `GRANT llm_readonly TO <uygulama_kullanıcısı>;` komutunu bir süper kullanıcı ile elle çalıştırın.
+- `ALLOWED_COLUMNS` (`sql_guard.py`) ile migration 014'teki GRANT listeleri birlikte güncellenmelidir.
+
 ### Otomatik top-gainer sembol aktivasyonu
 
 Backend, `TOP_GAINERS_AUTO_ACTIVATE=true` (varsayılan) iken Binance TR public `/api/v3/ticker/24hr` ve TRY `exchangeInfo` verilerini 10 dakikada bir (`TOP_GAINERS_REFRESH_SEC=600`) kontrol eder. 24 saatlik değişime göre ilk `TOP_GAINERS_LIMIT=10` TRY sembolü analiz evrenine alınır. Açık pozisyon sembolleri yeni listenin dışında kalsa bile sistem tarafından korunur ve yönetilmeye devam eder. Bu akış yalnızca paper/public-data aktivasyonudur; gerçek emir göndermez.

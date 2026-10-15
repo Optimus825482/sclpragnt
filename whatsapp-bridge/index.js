@@ -17,6 +17,7 @@
  * Günde 1 mesaj düşük risklidir ama hesap banı riski sıfır değildir.
  */
 import express from "express";
+import { createHash, timingSafeEqual } from "node:crypto";
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
@@ -30,6 +31,29 @@ const PORT = parseInt(process.env.PORT || "3001", 10);
 const BRIDGE_KEY = (process.env.BRIDGE_KEY || "").trim();
 const GROUP_ID = (process.env.WHATSAPP_GROUP_ID || "").trim();
 const AUTH_DIR = process.env.AUTH_DIR || "./auth";
+
+// 2026-10-15 denetim (P0): anahtarsız köprü ÇALIŞMAZ. Eskiden BRIDGE_KEY boşsa
+// tüm uçlar kimliksiz açılıyordu; artık süreç başlamadan çıkar.
+if (!BRIDGE_KEY) {
+  console.error("HATA: BRIDGE_KEY zorunlu; anahtarsız köprü başlatılmaz. WHATSAPP_BRIDGE_KEY ortam değişkenini ayarlayın.");
+  process.exit(1);
+}
+
+// Mesaj gönderilebilecek tek hedefler: WHATSAPP_GROUP_ID ve
+// WHATSAPP_ALLOWED_RECIPIENTS (virgüllü; grup JID'i ya da telefon numarası).
+// Serbest `to` değeri göndermeyi engellemek için bu küme dışı hedefler reddedilir.
+function normalizeJid(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  if (raw.includes("@")) return raw;
+  const digits = raw.replace(/\D/g, "");
+  return digits ? `${digits}@s.whatsapp.net` : "";
+}
+const ALLOWED_RECIPIENTS = new Set(
+  [GROUP_ID, ...(process.env.WHATSAPP_ALLOWED_RECIPIENTS || "").split(",")]
+    .map(normalizeJid)
+    .filter(Boolean),
+);
 
 let sock = null;
 let connected = false;
@@ -114,10 +138,18 @@ async function startSock() {
 const app = express();
 app.use(express.json({ limit: "256kb" }));
 
+// Anahtarları özetleyip sabit-zamanlı karşılaştırırız: timingSafeEqual uzunluk
+// farkında hata verir, SHA-256 özetleri ise her zaman eşit uzunluktadır (uzunluk
+// sızıntısı da olmaz).
+const BRIDGE_KEY_DIGEST = createHash("sha256").update(BRIDGE_KEY).digest();
+function keyMatches(candidate) {
+  const digest = createHash("sha256").update(candidate).digest();
+  return timingSafeEqual(digest, BRIDGE_KEY_DIGEST);
+}
+
 function auth(req, res) {
-  if (!BRIDGE_KEY) return true;
   const key = req.headers["x-bridge-key"];
-  if (key !== BRIDGE_KEY) {
+  if (typeof key !== "string" || !keyMatches(key)) {
     res.status(401).json({ ok: false, error: "geçersiz X-Bridge-Key" });
     return false;
   }
@@ -125,6 +157,7 @@ function auth(req, res) {
 }
 
 app.get("/status", (req, res) => {
+  if (!auth(req, res)) return;
   res.json({
     ok: true,
     connected,
@@ -135,6 +168,7 @@ app.get("/status", (req, res) => {
 });
 
 app.get("/qr", (req, res) => {
+  if (!auth(req, res)) return;
   if (connected) return res.type("text/plain").send("✅ Zaten bağlı — QR gerekmez.");
   if (!lastQrAscii) return res.type("text/plain").send("QR henüz hazır değil; birkaç saniye sonra tekrar deneyin.");
   res.type("text/plain").send(lastQrAscii);
@@ -155,9 +189,10 @@ app.get("/groups", async (req, res) => {
 app.post("/send", async (req, res) => {
   if (!auth(req, res)) return;
   const message = (req.body?.message || "").toString();
-  const to = (req.body?.to || GROUP_ID || "").toString().trim();
+  const to = normalizeJid(req.body?.to || GROUP_ID);
   if (!message) return res.status(400).json({ ok: false, error: "message boş" });
   if (!to) return res.status(400).json({ ok: false, error: "grup ID yok (WHATSAPP_GROUP_ID)" });
+  if (!ALLOWED_RECIPIENTS.has(to)) return res.status(403).json({ ok: false, error: "hedef izinli listede değil" });
   if (!sock || !connected) return res.status(503).json({ ok: false, error: "WhatsApp bağlı değil" });
   try {
     await sock.sendMessage(to, { text: message });
@@ -168,8 +203,7 @@ app.post("/send", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`📡 WhatsApp köprüsü dinliyor: http://0.0.0.0:${PORT}`);
-  if (!BRIDGE_KEY) console.log("⚠️  BRIDGE_KEY ayarlı değil — köprü kimlik doğrulamasız (önerilmez).");
+  console.log(`📡 WhatsApp köprüsü dinliyor: http://0.0.0.0:${PORT} (${ALLOWED_RECIPIENTS.size} izinli hedef)`);
 });
 
 startSock().catch((e) => console.error("başlatma hatası:", e));

@@ -48,7 +48,8 @@ ENV PORT=3001
 EXPOSE 3001
 
 # Basit canlılık: /status ucu 200 döner (bağlantı durumunu JSON'da raporlar).
+# /status artık X-Bridge-Key ister (denetim 2026-10-15); anahtar süreç ortamından okunur.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD node -e "require('http').get('http://127.0.0.1:3001/status',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+  CMD node -e "const k=process.env.BRIDGE_KEY||'';require('http').get({host:'127.0.0.1',port:3001,path:'/status',headers:{'x-bridge-key':k}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
 CMD ["node", "index.js"]

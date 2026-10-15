@@ -278,6 +278,48 @@ def _sanitize_persona_name(value) -> str:
     return text
 
 
+# DENETİM P1 (2026-10-15): yönetici olmayan sohbet yüzeyi ALLOWLIST ile
+# daraltılır. Burada olmayan bir araç (yeni eklenenler dahil) non-admin'e
+# SUNULMAZ — varsayılan kapalıdır. Yalnız salt-okunur araçlar listelenir;
+# paper emir, pozisyon/guard/portföy mutasyonu ve alarm yönetimi yönetici
+# kapısının arkasındadır.
+LLM_NON_ADMIN_TOOL_ALLOWLIST = frozenset({
+    "get_real_account", "get_trades", "get_symbol_trades", "get_signals", "get_decision_logs",
+    "get_strategy_config", "get_strategy_stats", "get_order_status", "get_auto_paper_status",
+    "get_dashboard_summary", "get_monitoring_status", "get_pattern_research_runs",
+    "list_research_patterns", "list_indicator_research_catalog", "list_market_alerts",
+    "list_llm_symbol_guards", "get_llm_open_position", "get_symbol_analysis", "get_symbol_behavior",
+    "get_symbol_outcome_profile", "get_symbol_recent_outcomes", "get_realtime_flow",
+    "get_subminute_microstructure", "get_historical_slippage", "get_historical_klines",
+    "get_microstructure_snapshot", "get_regime_snapshot", "get_orderbook_pressure",
+    "get_derivatives_intel", "get_macro_market_sentiment", "get_crypto_news_catalysts",
+    "get_ml_price_forecast", "get_master_surge_prediction", "get_surge_learning_bias",
+    "get_data_quality", "calculate_trade_economics", "validate_trade_plan", "deep_analyze_symbol",
+    "detect_5m_upside_candidates", "detect_15m_upside_candidates", "search_memory",
+    "read_only_sql", "query_database",
+})
+# Yönetici dışında yürütme anında da reddedilen mutasyon araçları (savunma
+# derinliği: model listede görmese bile çağrı işlem yapmadan döner).
+LLM_ADMIN_ONLY_TOOLS = frozenset({
+    "close_llm_position", "update_llm_position_plan", "set_llm_symbol_guard",
+    "remove_llm_symbol_guard", "deactivate_coin", "activate_coin", "reconcile_portfolio",
+})
+
+
+def _filter_tools_for_role(tools: list[dict], auth_user: dict | None) -> list[dict]:
+    """Yönetici değilse araç listesini `LLM_NON_ADMIN_TOOL_ALLOWLIST` ile sınırlar."""
+    if str((auth_user or {}).get("role") or "").strip().lower() == "admin":
+        return tools
+    return [tool for tool in tools if tool.get("function", {}).get("name") in LLM_NON_ADMIN_TOOL_ALLOWLIST]
+
+
+def _admin_only_denied(name: str, auth_user: dict | None) -> dict | None:
+    """Mutasyon araçları için yürütme anı kapısı; izin varsa ``None``."""
+    if name not in LLM_ADMIN_ONLY_TOOLS:
+        return None
+    return _llm_admin_denied(auth_user)
+
+
 def _persona_role(auth_user: dict | None) -> str:
     """Rol yalnız doğrulanmış token'dan okunur ve beyaz listeyle sınırlanır."""
     role = str((auth_user or {}).get("role") or "").strip().lower()
@@ -2861,6 +2903,8 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
                   LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL])
 
     async def execute_tool(name, args):
+        denied = _admin_only_denied(name, auth_user)
+        if denied: return denied
         if name == "get_derivatives_intel": return await _get_derivatives_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_macro_market_sentiment": return await _get_macro_sentiment_tool(args)
         if name == "get_orderbook_pressure": return await _get_orderbook_pressure_tool({**args, "symbol": args.get("symbol") or symbol})
@@ -2942,6 +2986,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
             return {"count": len(rows), "results": rows}
         return {"error": "Bilinmeyen araç"}
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL])
+    tools = _filter_tools_for_role(tools, auth_user)
     effective_max = _clamp_max_tokens(body.get("max_tokens"), getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
     if body.get("stream") is True:
         async def events():
@@ -3481,6 +3526,8 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
     failed_tool_calls = set()
 
     async def _dispatch_tool(name, args):
+        denied = _admin_only_denied(name, auth_user)
+        if denied: return denied
         if name == "get_derivatives_intel": return await _get_derivatives_tool(args)
         if name == "get_macro_market_sentiment": return await _get_macro_sentiment_tool(args)
         if name == "get_orderbook_pressure": return await _get_orderbook_pressure_tool(args)
@@ -3737,6 +3784,7 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
     # bu yüzeyin ZATEN sahip olduğu capability listesiyle sınırlıdır; emir
     # araçları yukarıda niyet bayrağıyla ayrıca elenir. Executor/paper-only
     # sınırları değişmez.
+    tools = _filter_tools_for_role(tools, auth_user)
     tools = _resolve_active_tools(body, tools)
     effective_max = _clamp_max_tokens(body.get("max_tokens"), getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
     result = await llm_analysis.chat(context, messages, tools, execute_tool, body.get("active_skills"), max_tokens=effective_max)
