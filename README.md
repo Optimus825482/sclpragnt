@@ -168,3 +168,12 @@ Use `docker-compose.yaml` as the Compose file and point `scalper.erkanerdem.onli
 > `POST /api/binance/sell` bu kapının kapalı olması halinde `403` döner. **Alış tarafı her zaman paper'dır**; gerçek satış yalnız bu üç anahtarın da açık olmasıyla mümkündür ve kullanıcının kimlik doğrulanmış oturumu + kendi API anahtarı gerektirir. Public piyasa verisi için hiçbir kimlik bilgisi gerekmez.
 
 The frontend uses same-origin API and WebSocket URLs in production, so no frontend URL environment variable is required. For a local split deployment, set `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` at build time.
+
+## Deney disiplini (2026-10-15)
+
+Radar eşikleri ve flag'leri için iki belge:
+
+- Deney kaydı: `docs/DENEY_KAYDI.md`
+- Eşik sözleşmesi ve yapısal maliyet sınırı: `docs/RADAR_ESIK_SOZLESMESI.md`
+
+Kural: Hiçbir eşik veya flag değişikliği, `docs/DENEY_KAYDI.md` içinde karşılık gelen bir satır olmadan canlıya çıkmaz.
