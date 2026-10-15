@@ -1,6 +1,5 @@
 import asyncio
 import bisect
-import hashlib
 import json
 import logging
 import math
@@ -14,6 +13,16 @@ from datetime import datetime, timezone, timedelta
 from app import sql_guard
 from app.config import config
 from app.forecast_learning import outcome_window_seconds
+from app.migration_plan import (
+    LEGACY_MARKER_KEY,
+    MIGRATION_ADVISORY_KEY,
+    MIGRATION_FILE_RE,
+    SCHEMA_MIGRATIONS_DDL,
+    aggregate_sha256,
+    discover_migrations,
+    legacy_bootstrap_rows,
+    plan_pending,
+)
 
 logger = logging.getLogger("scalper.database")
 
@@ -66,10 +75,12 @@ try:
 except Exception:  # pragma: no cover - psycopg absent in minimal-env
     _PG_FATAL_ERRORS = ()
 
-# --- Şema DDL dayanıklılığı (Denetim 2026-10-07) ---------------------------
-# Migration dosyaları TEK KAYNAKTAN glob ile (scripts/run_postgres_migration.py
-# ile AYNI desen/sıra) okunur → iki koşucu birebir aynı sha üretir.
-_MIGRATION_FILE_RE = re.compile(r"^\d+_.+\.sql$")
+# --- Şema migration takibi (dosya başına) ----------------------------------
+# Her migration dosyası KENDİ transaction'ında koşar ve `schema_migrations`'a
+# kaydedilir; uygulanmış dosya bir daha koşmaz (bkz. app/migration_plan.py ve
+# migrations/README.md). Karar mantığı runner ile AYNI modülde → iki yol aynı
+# dosyaları, aynı sırayla değerlendirir.
+_MIGRATION_FILE_RE = MIGRATION_FILE_RE
 # Geçici (retry edilebilir) PostgreSQL SQLSTATE'leri. İsim tabanlı küme
 # psycopg sürümüne bağlıdır; SQLSTATE daha dayanıklıdır.
 #   55P03 lock_not_available · 40P01 deadlock_detected ·
@@ -301,44 +312,39 @@ def _execute(operation):
         raise
 
 
-def _apply_schema_ddl(conn, schema_sql: str, schema_sha: str, attempts: int = _SCHEMA_DDL_MAX_ATTEMPTS) -> None:
-    """Şema DDL'ini DAHA UZUN kilit sınırı ile uygula; geçici kilit hatalarında tekrar dene.
+def _apply_migration(conn, migration, attempts: int = _SCHEMA_DDL_MAX_ATTEMPTS) -> None:
+    """Tek migration dosyasını KENDİ transaction'ında uygula ve kaydet.
 
-    Denetim 1 (2026-10-07): eski yol havuzun genel 5 sn'lik ``lock_timeout``'u ile
-    koşuyordu. Canlı bir backend aynı nesneler üzerinde ACCESS EXCLUSIVE kilit
-    tutarken ``init_db`` 5 sn içinde hata veriyor ve bu hata ``main.py``den
-    yükselip uvicorn'u restart döngüsüne sokuyordu. Artık DDL'e ``SET LOCAL
-    lock_timeout = '30s'`` (migration koşucusuyla aynı) verilir ve geçici
-    SQLSTATE'ler (lock_timeout / deadlock) kısa bekleyip TEKRAR denenir; kalıcı
-    hatalar hâlâ yükseltilir (sessizce yutulmaz).
+    DDL ile ``schema_migrations`` satırı aynı transaction'da yazılır: ya ikisi de
+    commit olur ya ikisi de geri alınır. Geçici kilit hatalarında (lock_timeout /
+    deadlock, SQLSTATE listesi ``_TRANSIENT_SQLSTATES``) yalnız BU dosya kısa
+    bekleyip yeniden denenir; daha önce commit'lenmiş dosyalar yerinde kalır.
+    Kalıcı hatalar hemen yükseltilir (sessizce yutulmaz, yeniden denenmez).
 
-    ``pg_op`` transaction'ı otomatik başlattığı için ``SET LOCAL`` bu DDL
-    penceresine kapsanır; başarısız denemeden sonra transaction rollback edilip
-    yeni bir deneme başlatılır.
+    DDL'e ``SET LOCAL lock_timeout = '30s'`` verilir (Denetim 1, 2026-10-07).
     """
     last_exc = None
     for attempt in range(1, max(1, int(attempts)) + 1):
         try:
-            # V-15 + Denetim 1: DDL'e özel daha uzun kilit sınırı ve statement üst sınırı.
             conn.conn.execute(f"SET LOCAL lock_timeout = '{_SCHEMA_DDL_LOCK_TIMEOUT}'")
             conn.conn.execute("SET LOCAL statement_timeout = '300s'")
-            conn.conn.execute(schema_sql)
+            conn.conn.execute(migration.sql)
             conn.execute(
-                "INSERT INTO llm_settings(key,value) VALUES('schema_sha256',?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (schema_sha,))
+                "INSERT INTO schema_migrations(version,sha256,applied_at) VALUES(?,?,now())",
+                (migration.version, migration.sha256))
+            conn.conn.commit()
             return
         except Exception as exc:
-            if _sqlstate_of(exc) not in _TRANSIENT_SQLSTATES or attempt == attempts:
-                raise
-            last_exc = exc
-            logger.warning(
-                "init_db DDL geçici kilit hatası (SQLSTATE=%s), deneme %s/%s — kısa bekleyip yeniden denenecek",
-                _sqlstate_of(exc), attempt, attempts)
             try:
                 conn.conn.rollback()
             except Exception:
                 pass
+            if _sqlstate_of(exc) not in _TRANSIENT_SQLSTATES or attempt == attempts:
+                raise
+            last_exc = exc
+            logger.warning(
+                "migration %s geçici kilit hatası (SQLSTATE=%s), deneme %s/%s — kısa bekleyip yeniden denenecek",
+                migration.version, _sqlstate_of(exc), attempt, attempts)
             # Artan backoff: canlı backend kilidi bırakana kadar bekle. Bu kod
             # _run_db'nin executor thread'inde koşar; event loop bloklanmaz.
             time.sleep(0.5 * attempt)
@@ -346,34 +352,65 @@ def _apply_schema_ddl(conn, schema_sql: str, schema_sha: str, attempts: int = _S
         raise last_exc
 
 
+def _apply_pending_migrations(conn, migrations) -> int:
+    """Bekleyen migration'ları numara sırasıyla uygular; uygulanan sayıyı döndürür.
+
+    Eşzamanlı koşuculara karşı advisory lock çağırana aittir (bkz. ``init_db``).
+    Eski tek-sha marker'ı (``llm_settings.schema_sha256``) YALNIZCA ``schema_migrations``
+    boşken okunur: eşleşen önek dosyaları "zaten uygulandı" diye kaydedilir (bir kerelik
+    geçiş). Sonunda, eski binary'ler için birleşik sha yeniden yazılır.
+    """
+    conn.execute(SCHEMA_MIGRATIONS_DDL)
+    conn.conn.commit()
+    applied = {row[0]: row[1] for row in
+               conn.execute("SELECT version, sha256 FROM schema_migrations").fetchall()}
+    bootstrapped = False
+    if not applied and conn.execute("SELECT to_regclass('public.llm_settings')").fetchone()[0]:
+        mrow = conn.execute(f"SELECT value FROM llm_settings WHERE key='{LEGACY_MARKER_KEY}'").fetchone()
+        if mrow and mrow[0]:
+            applied = legacy_bootstrap_rows(migrations, mrow[0])
+            for version, sha in applied.items():
+                conn.execute(
+                    "INSERT INTO schema_migrations(version,sha256,applied_at) VALUES(?,?,now())",
+                    (version, sha))
+            conn.conn.commit()
+            bootstrapped = True
+    pending = plan_pending(migrations, applied)
+    for migration in pending:
+        _apply_migration(conn, migration)
+    if pending or bootstrapped:
+        # Geriye dönük uyum: eski binary'ler birleşik marker'ı okur; yeni kod okumaz.
+        conn.execute(
+            "INSERT INTO llm_settings(key,value) VALUES('schema_sha256',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (aggregate_sha256(migrations),))
+        conn.conn.commit()
+    return len(pending)
+
+
 async def init_db():
     """Initialize the PostgreSQL schema (single backend)."""
     def pg_op(conn):
-        # V-03: TÜM migration dosyaları uygulanır ve sha ikisinin birleşimidir.
-        # Eskiden yalnız 001 okunuyordu → 002_macd_evidence_lift.sql ölüydü ve
-        # MACD kanıt kolonları yalnız çalışma anındaki gecikmeli DDL ile var
-        # oluyordu (şema sürümlemesi yanıltıcıydı).
+        # V-03 + Denetim 2026-10-15 §5-4: migration'lar DOSYA BAŞINA takip edilir.
+        # Uygulanmış dosya tekrar koşmaz; içeriği değişmiş uygulanmış dosya açık
+        # hata verir. Eşzamanlı koşucu (entrypoint runner) ile advisory lock'la sıralanır.
         migrations_dir = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations"))
-        # Denetim 2 (2026-10-07): liste ARTIK hard-code DEĞİL. `run_postgres_migration.py`
-        # ile AYNI glob/sıra kullanılır → 6. migration eklendiğinde burada hiçbir
-        # şey güncellenmeden sha eşleşir ve her restart tam DDL koşmaz.
-        schema_sql = ""
-        for filename in sorted(name for name in os.listdir(migrations_dir)
-                               if _MIGRATION_FILE_RE.match(name)):
-            path = os.path.join(migrations_dir, filename)
-            if os.path.isfile(path):
-                with open(path, encoding="utf-8") as schema_file:
-                    schema_sql += schema_file.read() + "\n"
-        schema_sha = hashlib.sha256(schema_sql.encode("utf-8")).hexdigest()
-        # Hızlı yol: entrypoint migration'ı aynı sha'yı uyguladıysa DDL'i
-        # yeniden koşma (canlı sistemde gereksiz ACCESS EXCLUSIVE lock
-        # yarışı doğuruyordu). to_regclass ile ilk kurulum ayrımı yapılır.
-        marker = None
-        if conn.execute("SELECT to_regclass('public.llm_settings')").fetchone()[0]:
-            mrow = conn.execute("SELECT value FROM llm_settings WHERE key='schema_sha256'").fetchone()
-            marker = mrow[0] if mrow else None
-        if marker != schema_sha:
-            _apply_schema_ddl(conn, schema_sql, schema_sha)
+        migrations = discover_migrations(migrations_dir)
+        # Kilit beklemesi DDL penceresiyle (30 sn) aynı: eşzamanlı koşucu migration'ı
+        # bitirene kadar havuzun genel 5 sn'lik lock_timeout'u burada erken hata vermesin.
+        conn.conn.execute(f"SET LOCAL lock_timeout = '{_SCHEMA_DDL_LOCK_TIMEOUT}'")
+        conn.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_ADVISORY_KEY,))
+        try:
+            _apply_pending_migrations(conn, migrations)
+        except Exception:
+            try:
+                conn.conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (MIGRATION_ADVISORY_KEY,))
+            conn.conn.commit()
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_skills_name ON llm_skills(name)")
         # V-07: `signals.trade_id` üzerinde index yoktu; `reconcile_portfolio`
         # ve `purge_legacy_trade_records` bu kolonla DELETE atıyordu -> tam

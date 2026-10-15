@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 from app import database
 from app.config import config
+from app.migration_plan import Migration
 
 
 def _settings_fake_execute(records, reset, baseline, extra=None):
@@ -481,6 +482,7 @@ class _RawDdlConn:
         self.sqlstate = sqlstate
         self.calls = []
         self.rollbacks = 0
+        self.commits = 0
 
     def execute(self, sql, params=()):
         self.calls.append(sql)
@@ -492,30 +494,38 @@ class _RawDdlConn:
             raise exc
         return MagicMock()
 
+    def commit(self):
+        self.commits += 1
+
     def rollback(self):
         self.rollbacks += 1
 
 
 class _DdlCompat:
-    """`_PostgresCompat` yüzeyi: sha yazımını kaydeder."""
+    """`_PostgresCompat` yüzeyi: `schema_migrations` kayıtlarını toplar."""
 
     def __init__(self, raw):
         self.conn = raw
-        self.sha_writes = []
+        self.recorded = []
 
     def execute(self, sql, params=()):
-        if "schema_sha256" in sql:
-            self.sha_writes.append(params[0])
+        if "schema_migrations" in sql:
+            self.recorded.append(params[0])
         return MagicMock()
 
 
 class InitDbHardeningTests(unittest.TestCase):
-    """Denetim: DDL daha uzun kilit sınırıyla koşmalı ve geçici kilit
-    hatalarında çökmeden yeniden denenmeli."""
+    """Denetim: migration DDL daha uzun kilit sınırıyla koşmalı ve geçici kilit
+    hatalarında çökmeden yeniden denenmeli (artık dosya başına)."""
+
+    _MIGRATION = Migration(
+        version="099_test.sql", number=99, sql="CREATE TABLE x()", sha256="sha123")
 
     def test_migration_discovery_is_globbed_not_hardcoded(self):
+        # Keşif ortak modülde (app/migration_plan.py) glob ile yapılır; init_db
+        # yalnız o fonksiyonu çağırır. Sabit dosya listesi geri gelmemeli.
         src = inspect.getsource(database.init_db)
-        self.assertIn("_MIGRATION_FILE_RE", src)
+        self.assertIn("discover_migrations", src)
         self.assertNotIn("005_user_binance_keys.sql", src,
                          "sabit dosya listesi glob ile değiştirilmeli")
 
@@ -529,18 +539,19 @@ class InitDbHardeningTests(unittest.TestCase):
         raw = _RawDdlConn("CREATE TABLE x()", fail_times=1, sqlstate="55P03")
         compat = _DdlCompat(raw)
         with patch("time.sleep"):  # artan backoff'u gerçekten beklemeyelim
-            database._apply_schema_ddl(compat, "CREATE TABLE x()", "sha123")
-        self.assertEqual(["sha123"], compat.sha_writes, "retry sonrası sha yazılmalı")
+            database._apply_migration(compat, self._MIGRATION)
+        self.assertEqual(["099_test.sql"], compat.recorded, "retry sonrası kayıt yazılmalı")
         self.assertTrue(any("SET LOCAL lock_timeout = '30s'" in c for c in raw.calls))
         self.assertEqual(1, raw.rollbacks, "başarısız denemeden sonra rollback edilmeli")
+        self.assertEqual(1, raw.commits, "başarılı deneme tek commit ile kapanmalı")
 
     def test_permanent_error_propagates_without_retry(self):
         raw = _RawDdlConn("CREATE TABLE x()", fail_times=99, sqlstate="42601")
         compat = _DdlCompat(raw)
         with patch("time.sleep"):
             with self.assertRaises(Exception):
-                database._apply_schema_ddl(compat, "CREATE TABLE x()", "sha123")
-        self.assertEqual([], compat.sha_writes)
+                database._apply_migration(compat, self._MIGRATION)
+        self.assertEqual([], compat.recorded)
         self.assertEqual(1, len([c for c in raw.calls if c == "CREATE TABLE x()"]),
                          "kalıcı (non-transient) hata ANINDA yükseltilmeli — retry YOK")
 
@@ -549,9 +560,9 @@ class InitDbHardeningTests(unittest.TestCase):
         compat = _DdlCompat(raw)
         with patch("time.sleep"):
             with self.assertRaises(Exception):
-                database._apply_schema_ddl(compat, "CREATE TABLE x()", "sha123", attempts=3)
+                database._apply_migration(compat, self._MIGRATION, attempts=3)
         self.assertEqual(3, len([c for c in raw.calls if c == "CREATE TABLE x()"]))
-        self.assertEqual([], compat.sha_writes)
+        self.assertEqual([], compat.recorded)
 
 
 if __name__ == "__main__":

@@ -1,178 +1,191 @@
-"""Run the ScalperAgent PostgreSQL schema during a maintenance window.
+"""Run the ScalperAgent PostgreSQL migrations during a maintenance window.
 
 Canlı deploy'da eski backend konteyneri hâlâ çalışıyor olabilir ve tablo
 kilitlerini tutuyor olabilir (saniyede bir koşan tarama/temizlik döngüleri).
 Bu yüzden script:
 
-1. Önce session-level ``pg_advisory_lock`` alır — eşzamanlı ikinci bir
-   migration koşucusu varsa sıraya girer (çakışan DDL yarışı olmaz).
-2. Şemayı tek idempotent transaction'da uygular (tüm ifadeler
-   ``IF NOT EXISTS``; yarım kalan transaction rollback'te temiz bırakır).
-3. ``LockNotAvailableError``'a karşı sabırlı retry yapar: eski konteyner
-   durana kadar toplam ~10+ dakika boyunca her denemede kilidi yeniden
-   bekler. Böylece deploy overlap'i restart-loop'a dönüşmez.
+1. Session-level ``pg_advisory_lock`` alır — eşzamanlı ikinci bir migration
+   koşucusu varsa sıraya girer (çakışan DDL yarışı olmaz).
+2. ``schema_migrations`` tablosunu okuyup YALNIZ uygulanmamış dosyaları numara
+   sırasıyla koşar. Her dosya kendi transaction'ında: DDL + kayıt birlikte
+   commit olur ya da birlikte geri alınır. Uygulanmış dosya tekrar koşmaz;
+   içeriği değişmiş uygulanmış dosya açık hatadır (sessiz yeniden koşma yok).
+3. Geçici kilit / bağlantı hatalarında (``LockNotAvailableError`` vb.) sabırlı
+   retry yapar: eski konteyner durana kadar toplam ~10+ dakika boyunca her
+   denemede kilidi yeniden bekler. Kalıcı hatalar (SQL hatası, sha uyuşmazlığı)
+   retry edilmeden hemen düşer.
 
-Uygulama tarafındaki ``database.init_db()`` aynı şemayı lock_timeout'suz
-(sonsuz bekleme) çalıştırır; bu script'in kısa lock_timeout'u yalnızca
-fail-fast olmak içindi ve canlı overlap senaryosunda ters tekiyordu.
+Karar mantığı (dosya keşfi, sha, eski marker geçişi) ``app/migration_plan.py``
+içindedir ve ``database.init_db()`` ile aynıdır. Uygulama tarafı da aynı dosya
+kümesini aynı sırayla değerlendirir; ikisinden hangisi önce koşarsa koşsun
+sonuç aynıdır.
 """
 import asyncio
-import hashlib
 import os
-import re
 import sys
 from pathlib import Path
 
 import asyncpg
 
-# Migration koşucularını sıraya sokan sabit advisory lock anahtarı.
-_MIGRATION_ADVISORY_KEY = 0x5343414C  # 'SCAL'
+# `app` paketi bu betiğin üst dizininde (backend/). `python scripts/…` ile
+# koşulunca sys.path'te yoktur; ortak modülü bulabilmesi için eklenir.
+_BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
+from app.migration_plan import (  # noqa: E402
+    MIGRATION_ADVISORY_KEY,
+    MIGRATIONS_DIR_DEFAULT,
+    SCHEMA_MIGRATIONS_DDL,
+    LegacyMarkerError,
+    MigrationDriftError,
+    aggregate_sha256,
+    discover_migrations,
+    legacy_bootstrap_rows,
+    plan_pending,
+)
+
 _MAX_ATTEMPTS = 20
-# 2026-10-07 (P1-11 #5): 30 sn -> 60 sn. Canlı backend'in kilitleri
-# (ACCESS EXCLUSIVE, saniyede bir koşan tarama/temizlik döngüleri) rastgele
-# aralıklarla açılır. Tek bir denemede bekleme penceresini genişletmek,
-# retry döngüsünün toplam süresini (~20 deneme × (60+10 sn) ≈ 23 dk) artırır
-# ve deploy overlap'inde restart-loop'a dönüşme riskini azaltır.
+# 2026-10-07 (P1-11 #5): 30 sn -> 60 sn. Canlı backend'in kilitleri (ACCESS
+# EXCLUSIVE, saniyede bir koşan tarama/temizlik döngüleri) rastgele aralıklarla
+# açılır. Tek bir denemede bekleme penceresini genişletmek, retry döngüsünün
+# toplam süresini (~20 deneme × (60+10 sn) ≈ 23 dk) artırır.
 #
-# NOT: Uygulama tarafı `database.init_db()` aynı DDL'i `lock_timeout=5s`
-# ile çalıştırır (bkz. database.py:213) — bu BİZİM dosyamız değil, ama
-# kilit çekişmesinde `LockNotAvailableError` fırlatıp açılışı düşürür.
-# Gerekli app değişikliği rapora yazıldı (transaction-scoped yüksek
-# lock_timeout + geçici-hatada retry).
+# NOT: Uygulama tarafı `database.init_db()` DDL'i `SET LOCAL lock_timeout = '30s'`
+# ile çalıştırır ve geçici hatada yeniden dener (bkz. database._apply_migration).
 _LOCK_TIMEOUT_MS = 60_000
 _RETRY_SLEEP_SEC = 10.0
+# Eski tek-sha marker'ı (llm_settings). Yalnız schema_migrations boşken, bir kerelik
+# geçiş için okunur; her uygulamadan sonra birleşik sha geriye dönük uyum için yazılır.
 _SHA_MARKER_KEY = "schema_sha256"
-# Geçici (retry edilebilir) PostgreSQL SQLSTATE'leri. İsim tabanlı küme
-# asyncpg'nin sınıf adına bağlıdır; SQLSTATE daha dayanıklıdır (alt sınıf
-# veya farklı bir hata yolu aynı kodu üretse de yakalanır).
-#   55P03 lock_not_available · 40P01 deadlock_detected ·
-#   57P03 cannot_connect_now · 53300 too_many_connections ·
-#   08006/08003 connection failure/does_not_exist
+# Geçici (retry edilebilir) PostgreSQL SQLSTATE'leri. İsim tabanlı küme asyncpg'nin
+# sınıf adına bağlıdır; SQLSTATE daha dayanıklıdır (alt sınıf veya farklı bir hata
+# yolu aynı kodu üretse de yakalanır).
+#   55P03 lock_not_available · 40P01 deadlock_detected · 57P03 cannot_connect_now ·
+#   53300 too_many_connections · 08006/08003 connection failure/does_not_exist
 _TRANSIENT_SQLSTATES = {"55P03", "40P01", "57P03", "53300", "08006", "08003"}
-
-# Migration dosyaları TEK KAYNAKTAN (bu dizin) glob ile sırayla okunur.
-# 2026-09-26 denetim düzeltmesi (#72): liste burada SABİT iki dosyayla
-# (`001`, `002`) hard-code'lanmıştı, `database.init_db()` ise beş dosyayı
-# (001-005) okuyup FARKLI bir sha hesaplıyordu. Sonuç: entrypoint her
-# konteyner açılışında 001+002'nin sha'sını yazıyor, `init_db()` marker'ı
-# eşleşmediği için beş dosyanın tamamını yeniden DDL olarak koşuyordu →
-# her restart tam DDL + ACCESS EXCLUSIVE kilit yarışı, ayrıca
-# `004_bloat_prevention.sql` (autovacuum) ve `005_user_binance_keys.sql`
-# (tablo) YALNIZCA ikinci yolda oluşuyordu.
-#
-# Artık iki koşucu da aynı dosya kümesini, aynı sırayla, aynı ayraçla
-# birleştirir → sha'lar birebir aynı. Yeni migration eklendiğinde burada
-# hiçbir şey güncellenmeye gerekmez.
-_MIGRATION_GLOB = "*.sql"
+_TRANSIENT_EXC_NAMES = {
+    "LockNotAvailableError", "DeadlockDetectedError",
+    "ConnectionDoesNotExistError", "InterfaceError", "PostgresConnectionError",
+    "CannotConnectNowError", "TooManyConnectionsError",
+}
 
 
-def _iter_migration_files(migrations_dir: Path):
-    """Migration SQL dosyalarını ada göre sıralı üretir.
+def _is_transient(exc: BaseException) -> bool:
+    """Yeniden denenmeye değer mi? Ağ/bağlantı hataları ve geçici kilit hataları evet."""
+    if getattr(exc, "sqlstate", None) in _TRANSIENT_SQLSTATES:
+        return True
+    if isinstance(exc, (OSError, asyncio.TimeoutError)):
+        return True
+    return type(exc).__name__ in _TRANSIENT_EXC_NAMES
 
-    `database.init_db()` ile AYNI küme ve AYNI sıra üretmelidir; sha eşleşmesi
-    buna dayanır. Yalnız sıra numarası + `_` ile başlayan dosyaları kabul eder
-    (`001_…`); sıra numarası taşımayan yardımcı/geri dönüş dosyaları şemaya
-    girmez.
+
+async def _apply(conn, migrations) -> int:
+    """Bağlantı üzerinde bekleyen migration'ları uygular; uygulanan sayıyı döndürür.
+
+    Çağıran advisory lock'u dışarıda tutar. Her dosya kendi transaction'ında koşar;
+    yarıda kalan bir denemeden sonra yeniden plan çıkarıldığında kaldığı yerden devam eder.
     """
-    pattern = re.compile(r"^\d+_.+\.sql$")
-    return sorted(
-        p for p in migrations_dir.glob(_MIGRATION_GLOB)
-        if pattern.match(p.name) and p.is_file()
+    await conn.execute(SCHEMA_MIGRATIONS_DDL)
+    applied = {
+        row["version"]: row["sha256"]
+        for row in await conn.fetch("SELECT version, sha256 FROM schema_migrations")
+    }
+    bootstrapped = False
+    if not applied and await conn.fetchval("SELECT to_regclass('public.llm_settings')") is not None:
+        marker = await conn.fetchval("SELECT value FROM llm_settings WHERE key=$1", _SHA_MARKER_KEY)
+        if marker:
+            applied = legacy_bootstrap_rows(migrations, marker)
+            async with conn.transaction():
+                for version, sha in applied.items():
+                    await conn.execute(
+                        "INSERT INTO schema_migrations(version,sha256,applied_at) VALUES($1,$2,now())",
+                        version, sha)
+            bootstrapped = True
+            print(f"Eski schema_sha256 marker'ı: {len(applied)} dosya uygulanmış sayıldı.", flush=True)
+
+    pending = plan_pending(migrations, applied)
+    for migration in pending:
+        async with conn.transaction():
+            await conn.execute(migration.sql)
+            await conn.execute(
+                "INSERT INTO schema_migrations(version,sha256,applied_at) VALUES($1,$2,now())",
+                migration.version, migration.sha256)
+        print(f"Uygulandı: {migration.version}", flush=True)
+
+    if pending or bootstrapped:
+        # Geriye dönük uyum: eski binary'ler birleşik marker'ı okur (yeni kod okumaz).
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO llm_settings(key,value) VALUES($1,$2) "
+                "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
+                _SHA_MARKER_KEY, aggregate_sha256(migrations))
+    return len(pending)
+
+
+async def _run_once(url: str, migrations) -> int:
+    conn = await asyncpg.connect(
+        url,
+        timeout=10,
+        server_settings={
+            "statement_timeout": "120000",
+            # Canlı backend'in kilitleri rastgele aralıklarda açılır; tek sorgu
+            # penceresi yetsin, kalanını retry döngüsü karşılasın.
+            "lock_timeout": str(_LOCK_TIMEOUT_MS),
+        },
     )
+    try:
+        await conn.execute("SELECT pg_advisory_lock($1)", MIGRATION_ADVISORY_KEY)
+        try:
+            return await _apply(conn, migrations)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock($1)", MIGRATION_ADVISORY_KEY)
+    finally:
+        await conn.close()
 
 
-def build_schema_sql(migrations_dir: Path) -> str:
-    """Tüm migration'ları tek string'de birleştirir (sha girdisi)."""
-    parts = []
-    for path in _iter_migration_files(migrations_dir):
-        parts.append(path.read_text(encoding="utf-8") + "\n")
-    if not parts:
-        raise SystemExit(f"Migration bulunamadı: {migrations_dir}")
-    return "".join(parts)
-
-
-async def main():
+async def main(migrations_dir: Path | None = None):
     url = os.getenv("DATABASE_URL")
     if not url:
         raise SystemExit("DATABASE_URL gerekli")
-    # 2026-09-26 (#72): dosya listesi artık hard-code değil; `build_schema_sql`
-    # migrations/ dizinini sırayla tarar. `database.init_db()` ile birebir aynı
-    # küme/sıra/ayraç kullanıldığı için iki koşucunun sha'sı eşleşir ve
-    # marker tutarlı kalır.
-    migrations_dir = Path(__file__).resolve().parents[1] / "migrations"
-    sql = build_schema_sql(migrations_dir)
-    schema_sha = hashlib.sha256(sql.encode("utf-8")).hexdigest()
+    # Dosya listesi tek kaynaktan (backend/migrations, numara sırası) okunur;
+    # database.init_db() ile aynı modül kullanıldığı için iki yol aynı kararı verir.
+    if migrations_dir is None:
+        migrations_dir = MIGRATIONS_DIR_DEFAULT
+    migrations = discover_migrations(migrations_dir)
     print(
-        f"Uygulanacak migration dosyaları: {len(_iter_migration_files(migrations_dir))}"
-        f" (sha256={schema_sha[:12]}…)",
+        f"Migration dosyaları: {len(migrations)} "
+        f"(birleşik sha256={aggregate_sha256(migrations)[:12]}…)",
         flush=True,
     )
 
     last_error = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
-        conn = None
         try:
-            conn = await asyncpg.connect(
-                url,
-                timeout=10,
-                server_settings={
-                    "statement_timeout": "120000",
-                    # Canlı backend'in kilitleri rastgele aralıklarda açılır;
-                    # 5 saniye yerine 30 saniye bekle ki tek sorgu penceresi
-                    # yetsin, kalanını retry döngüsü karşılasın.
-                    "lock_timeout": str(_LOCK_TIMEOUT_MS),
-                },
-            )
-            # Hızlı yol: şema zaten bu dosyanın sha'sı kadar uygulanmışsa
-            # HİÇ DDL koşma. Bu olmayan durumda her restart, canlı sistemle
-            # DDL lock yarışı riskini yeniden alıyordu.
-            marker = None
-            if await conn.fetchval("SELECT to_regclass('public.llm_settings')") is not None:
-                marker = await conn.fetchval(
-                    "SELECT value FROM llm_settings WHERE key=$1", _SHA_MARKER_KEY)
-            if marker == schema_sha:
-                print("PostgreSQL şeması güncel (sha eşleşti); migration atlandı.", flush=True)
-                await conn.close()
-                return
-            # Başka bir migration koşucusu (örn. paralel konteyner) varsa
-            # bekleyip sıraya gir; session-level lock, transaction'lardan bağımsız.
-            await conn.execute("SELECT pg_advisory_lock($1)", _MIGRATION_ADVISORY_KEY)
-            try:
-                async with conn.transaction():
-                    await conn.execute(sql)
-                    await conn.execute(
-                        "INSERT INTO llm_settings(key,value) VALUES($1,$2) "
-                        "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
-                        _SHA_MARKER_KEY, schema_sha)
-            finally:
-                await conn.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_ADVISORY_KEY)
-            print("PostgreSQL migration tamamlandı.", flush=True)
-            await conn.close()
-            return
+            applied_count = await _run_once(url, migrations)
+        except (LegacyMarkerError, MigrationDriftError) as exc:
+            # Veri bütünlüğü sorunu: retry bunu çözmez, operatör karar vermeli.
+            raise SystemExit(f"PostgreSQL migration durduruldu: {exc}")
         except Exception as exc:
+            if not _is_transient(exc):
+                raise SystemExit(
+                    f"PostgreSQL migration başarısız (kalıcı hata, yeniden denenmedi): "
+                    f"{type(exc).__name__}: {exc}")
             last_error = exc
-            if conn is not None:
-                try:
-                    await conn.close()
-                except Exception:
-                    pass
-            transient = (
-                getattr(exc, "sqlstate", None) in _TRANSIENT_SQLSTATES
-                or type(exc).__name__ in {
-                    "LockNotAvailableError", "DeadlockDetectedError",
-                    "ConnectionDoesNotExistError", "InterfaceError", "PostgresConnectionError",
-                    "CannotConnectNowError", "TooManyConnectionsError",
-                }
-            )
             print(
                 f"PostgreSQL migration denemesi {attempt}/{_MAX_ATTEMPTS} başarısız "
-                f"({type(exc).__name__}: {exc})."
-                + (" Eski konteyner kilitleri bırakana kadar bekleniyor..." if transient else ""),
+                f"({type(exc).__name__}: {exc}). Eski konteyner kilitleri bırakana kadar bekleniyor...",
                 file=sys.stderr,
                 flush=True,
             )
             if attempt < _MAX_ATTEMPTS:
                 await asyncio.sleep(_RETRY_SLEEP_SEC)
+        else:
+            if applied_count:
+                print(f"PostgreSQL migration tamamlandı ({applied_count} dosya uygulandı).", flush=True)
+            else:
+                print("PostgreSQL şeması güncel; uygulanacak migration yok.", flush=True)
+            return
     raise SystemExit(f"PostgreSQL migration bağlantı/kilit beklemesi tükendi: {last_error}")
 
 
