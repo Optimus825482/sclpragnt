@@ -513,6 +513,18 @@ async def _ticker_paged(path: str, symbols: list | None):
     if not symbols:
         return await asyncio.to_thread(_get_json, path, {})
 
+    # TEKRARLARI BİRLEŞTİR (ilk görülme sırası korunur). Aynı sembol tekrar edince Binance TR HTTP 400
+    # dönüyor ve aşağıdaki "tek tek kurtar" yolu N isteği ARDIŞIK atıyordu (60 satır ≈ 20 sn; ölçüldü
+    # 2026-10-16). Çağıranlar (ör. 7 günlük aday listesi) doğal olarak tekrarlı sembol taşır.
+    _seen: set[str] = set()
+    _uniq: list = []
+    for _s in symbols:
+        _key = str(_s).upper()
+        if _key not in _seen:
+            _seen.add(_key)
+            _uniq.append(_s)
+    symbols = _uniq
+
     # Önbellekteki geçerli sembollerle filtrele (delisted/hatalı sembollerin tüm grubu 400 yapmasını önle)
     with _exchange_info_lock:
         cached_info = _exchange_info_cache.get("payload")
