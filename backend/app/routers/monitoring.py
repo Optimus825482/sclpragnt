@@ -3537,13 +3537,12 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         is_pending = (rid == newest_id)
         window_end = float(nxt) if nxt else now
         max_sec = max(1.0, window_end - sent_at)
-        # ÖLÇÜM REFERANSI = zincir başı (`anchor_price`): arka arkaya devam eden
-        # sembolde "ilk bildirimden toplam artış" ölçülür (modal/grafik bunu
-        # gösterir). Anchor yoksa bu listenin fiyatı.
-        base_c = [{**x, "price": x.get("anchor_price") or x.get("notify_price") or x.get("price")}
-                  for x in c]
+        # 2026-10-15 (radar düzeltmesi): ÖLÇÜM GİRİŞİ bu listenin fiyatı
+        # (`notify_price`); zincir başı `anchor_price` DB fonksiyonunda AYRI
+        # alan (`anchor_price`/`anchor_mfe_pct`) olarak raporlanır. Eskiden
+        # `price` anchor ile eziliyor, sinyal öncesi kazanç MFE'ye giriyordu.
         rows = await database.evaluate_daily_rising_report(
-            base_c, sent_at, live_prices=_px, max_sec=max_sec)
+            list(c), sent_at, live_prices=_px, max_sec=max_sec)
         # Sembol → orijinal aday (kaynak + carried bilgisi için).
         by_symbol = {str(x.get("symbol") or "").upper(): x for x in c}
         # Her satıra anchor + carried taşı (modal grafiği ve rozet kullanır).

@@ -2136,6 +2136,10 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
         now = time.time()
         window_end_s = min(now, float(since_ts) + max(0.0, float(max_sec)))
         window_end_ms = window_end_s * 1000.0
+        # 2026-10-15 (radar düzeltmesi): canlı fiyat YALNIZ pencere henüz
+        # bitmemişse (ufku süren en yeni liste) MFE/MAE'ye girer. Mühürlü
+        # listenin sonucu sonradan şimdiki fiyatla DEĞİŞMEZ.
+        window_open = (float(since_ts) + max(0.0, float(max_sec))) >= now
         # Simülasyon ufku: otonom paper'ın gerçek maks tutma süresi (liste ömründen
         # bağımsız) — portföy 120 dk tutar, sim de o kadar tutar.
         _max_hold_min = float(getattr(config, "COMBINED_PAPER_MAX_HOLD_MIN", 120.0))
@@ -2147,11 +2151,18 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
             sym = str(c.get("symbol") or "").upper()
             if not sym:
                 continue
-            entry = c.get("price")
+            # 2026-10-15 (radar düzeltmesi): MFE/hit GİRİŞİ bu listenin fiyatı
+            # (`notify_price`); zincir başı `anchor_price` ayrı raporlanır —
+            # sinyal öncesi kazanç MFE'ye karışmaz (sim ile aynı giriş).
+            entry = c.get("notify_price") if c.get("notify_price") is not None else c.get("price")
             try:
                 base = float(entry) if entry is not None else None
             except (TypeError, ValueError):
                 base = None
+            try:
+                anchor = float(c.get("anchor_price")) if c.get("anchor_price") is not None else None
+            except (TypeError, ValueError):
+                anchor = None
             lp = None
             if live_prices:
                 try:
@@ -2183,13 +2194,16 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
                                          "close": float(d.get("close") or 0)})
             except Exception:
                 pass
-            if lp and lp > 0:
+            if lp and lp > 0 and window_open:
                 highs.append(lp)
                 lows.append(lp)
             mfe = mae = None
+            anchor_mfe = None
             if base and base > 0 and highs:
                 mfe = round((max(highs) / base - 1.0) * 100.0, 2)
                 mae = round((min(lows) / base - 1.0) * 100.0, 2) if lows else None
+            if anchor and anchor > 0 and highs:
+                anchor_mfe = round((max(highs) / anchor - 1.0) * 100.0, 2)
             chg = round((lp / base - 1.0) * 100.0, 2) if (base and lp) else None
             ceil_pct = c.get("ceiling_pct")
             hit = None
@@ -2223,6 +2237,8 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
             out.append({
                 "symbol": sym, "entry_price": base, "current_price": lp,
                 "change_pct": chg, "mfe_pct": mfe, "mae_pct": mae,
+                # Zincir başı referansı AYRI alan (modal "ilk bildirimden toplam").
+                "anchor_price": anchor, "anchor_mfe_pct": anchor_mfe,
                 "ceiling_pct": ceil_pct,
                 "potential_pct": c.get("potential_pct"),
                 "target_probability": c.get("target_probability"),
