@@ -2865,7 +2865,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
         snapshot = dict(snapshot)
         snapshot["market_scan"] = {"error": str(exc), "paper_only": True}
     snapshot = dict(snapshot)
-    snapshot["plain_turkish"] = True
+    snapshot["plain_turkish"] = user_role != "admin"
     snapshot["username"] = username
     snapshot["user_name"] = username
     snapshot["user_role"] = user_role
@@ -3108,7 +3108,7 @@ def _quick_pick(source, keys):
     return out
 
 
-async def _symbol_quick_context(symbol: str, body: dict | None = None) -> dict | None:
+async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role: str = "") -> dict | None:
     """Hazır bellek önbelleklerinden KOMPAKT sembol durumu; yoksa canlı veri çeker.
 
     Kaynaklar: ticker (WS bellek) · MACD snapshot (≤1 sn) · radar adayı (≤60 sn)
@@ -3145,10 +3145,16 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None) -> dict |
     if not ticker.get("last_price") and not macd_row and not candidate and not (live_snapshot and live_snapshot.get("data_ready")):
         return None
     
-    is_plain = bool(body and body.get("plain_turkish"))
-    
-    is_plain = True
+    # Rol yalnız doğrulanmış token'dan gelir (çağıran `_persona_role` ile verir);
+    # istemci gövdesindeki `plain_turkish` admin'e sade dil ZORLAMAZ, admin dışı
+    # kullanıcıyı ise teknik dile ÇEVİREMEZ.
+    is_admin_user = user_role == "admin"
+    is_plain = not is_admin_user
     contract = (
+        "TEKNİK ANALİZ FORMATI (admin): teknik terimleri ve gerçek gösterge değerlerini kullan; uydurma, veri yoksa 'bilinmiyor' de. "
+        "Sırayla: (1) Anlık durum (fiyat, değişim, hacim, spread); (2) kısa zaman dilimi bazlı gösterge tablosu; "
+        "(3) fiyat - para akışı uyumsuzluğu; (4) kaynaklı destek/direnç; (5) olasılıklı senaryolar ve geçersizlik seviyesi; (6) somut riskler."
+        if is_admin_user else
         "ZORUNLU KURAL (SIFIR TEKNİK TERİM DÖKÜMÜ): "
         "KULLANICIYA YANIT VERİRKEN KESİNLİKLE HİÇBİR TEKNİK TERİM, İNDİKATÖR KODU VEYA KISALTMA KULLANMA! "
         "RSI, MACD, EMA, SMA, ADX, DI, Supertrend, Aroon, Vortex, CCI, Bollinger, BB, ATR, CVD, MFE, MAE, Keltner, Stokastik, bear_quiet, bull_quiet, trade imbalance, depth imbalance gibi terimler KESİNLİKLE YASAKTIR. "
@@ -3423,14 +3429,18 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
                                       trade_intent=trade_intent,
                                       research_only_intent=research_only_intent)
     if body.get("stream") is True and quick_symbol:
-        quick = await _symbol_quick_context(quick_symbol, body=body)
+        quick = await _symbol_quick_context(quick_symbol, body=body, user_role=user_role)
         if quick:
             quick["username"] = username
             quick["user_name"] = username
             quick["user_role"] = user_role
             return _symbol_quick_stream(quick, body, trace_id, session_id, messages)
 
+    is_admin_user = user_role == "admin"
     role_instruction = (
+        "Sistem yöneticisi (admin) ile konuşuyorsun: coin analizinde teknik terimleri ve gösterge değerlerini kullan; "
+        "zaman dilimi bazlı gösterge tablosu, seviyeler, olasılıklı senaryolar ve geçersizlik koşulunu ver."
+        if is_admin_user else
         "KESİNLİKLE gösterge, indikatör dökümü (RSI, MACD, EMA, ADX, Supertrend, Aroon, Vortex, Bollinger, BB, ATR, CVD, bear_quiet vb.) YAPMA! "
         "Yatırımcıya tamamen bir UZMAN TRADER olarak fiyat hareketleri, alıcı-satıcı gücü, kritik seviyeler ve net karar odaklı, yalın günlük Türkçe ile konuş."
     )
@@ -3451,11 +3461,19 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         "username": username,
         "user_name": username,
         "user_role": user_role,
-        "plain_turkish": True,
+        "plain_turkish": not is_admin_user,
         "chart_assistant": bool(body.get("chart_assistant")),
         "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.",
         "decision_contract": "Bir paper pozisyonu önermeden önce veri tazeliği, rejim, mikro yapı ve calculate_trade_economics sonuçlarını değerlendir. Kararda expected_move, total_cost, edge_cost_ratio, supporting_evidence, counter_evidence ve invalidation alanlarını açıkça üret; maliyet sonrası avantaj yoksa işlemi reddet.",
         "live_analysis_contract": (
+            "TEKNİK ANALİZ FORMATI (admin): teknik terimleri ve gerçek gösterge değerlerini kullan. Sırayla: "
+            "(1) Anlık durum: fiyat, 24 saatlik değişim, hacim oranı, spread, defter dengesi; "
+            "(2) Zaman dilimi bazlı gösterge tablosu (trend, ADX, RSI, MFI, CCI, MACD, Supertrend, Bollinger, yapı, mum, rejim); "
+            "(3) Dikkat çeken uyumsuzluk (fiyat - para akışı); "
+            "(4) Kaynaklı destek/direnç seviyeleri; "
+            "(5) Olasılıklı kısa vade senaryoları ve geçersizlik koşulu; "
+            "(6) Somut riskler. Veri yoksa 'bilinmiyor' de, uydurma."
+            if is_admin_user else
             "ZORUNLU KURAL (SIFIR TEKNİK TERİM DÖKÜMÜ): KESİNLİKLE gösterge, indikatör kodları "
             "(EMA, SMA, ADX, DI, RSI, MACD, CCI, Supertrend, Aroon, Vortex, Bollinger, BB, ATR, CVD, "
             "bear_quiet, bull_quiet, trade imbalance, depth imbalance vb.) DÖKÜMÜ YAPMA! "

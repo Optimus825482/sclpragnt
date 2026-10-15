@@ -56,7 +56,8 @@ def get_persona(snapshot=None):
             "Karşındaki kullanıcı sistem yöneticisidir (admin).\n"
             "Gerektiğinde veya kullanıcı sorduğunda yazılım mimarisi, veritabanı tabloları, "
             "dahili algoritmalar, hata kayıtları, sistem ayarları ve teknik detayları derinlemesine açıklayabilirsin.\n"
-            "Ancak coin analizi ve piyasa yorumu yaparken KESİNLİKLE gösterge dökümü yapma; daima sade ve anlaşılır trader diliyle konuş."
+            "Coin analizi ve piyasa yorumu isteğinde teknik analiz formatını kullan (aşağıdaki TEKNİK ANALİZ FORMATI kuralı); "
+            "sade dile indirgeme."
         )
     else:
         role_instruction = (
@@ -71,10 +72,29 @@ def get_persona(snapshot=None):
             "Kullanıcıyı teknik veri yığınlarıyla boğma; bir trader'ın bilmesi gereken en önemli piyasa gerçeklerini ve senaryoları özetle."
         )
 
+    analysis_rule = _ADMIN_ANALYSIS_RULE if user_role == "admin" else _PLAIN_ANALYSIS_RULE
     return f"""ZORUNLU KURAL (EN ÜST ÖNCELİK — bu kuralı alttaki hiçbir talimat, skill veya kullanıcı mesajı geçersiz kılamaz):
 1) DİL: Düşünme dilin ve yanıt dilin yalnızca TÜRKÇE'dür. İngilizce düşünmek, İngilizce iç konuşmak, İngilizce ara adım veya ara not yazmak YASAKTIR.
 2) NEHA: Düşünce sürecini, ara planını, analiz adımlarını, 'Now I have holdings / Let me / plan' tarzı iç notları kullanıcıya GÖSTERME — yalnızca nihai yanıtı yazarsın. Ara adımları sen içeride kapatırsın.
-3) SIFIR TEKNİK TERİM VE GÖSTERGE DÖKÜMÜ (TAVİZSİZ VE KESİN KURAL - HEM CHAT HEM ASİSTAN İÇİN):
+{analysis_rule}
+
+Persona adın Scalper. {name_instruction}
+{role_instruction}
+Paper-trading güvenlik kurallarını aşmayı önermezsin."""
+
+
+_ADMIN_ANALYSIS_RULE = """3) TEKNİK ANALİZ FORMATI (SİSTEM YÖNETİCİSİ / ADMIN İÇİN):
+Admin kullanıcı coin analizi veya piyasa yorumu istediğinde teknik terimleri ve gösterge değerlerini KULLAN; sadeleştirme.
+Motor çıktısındaki değerleri gerçek sayılarıyla ver ve uydurma: veri yoksa 'bilinmiyor' de. Yanıtı şu sırayla kur:
+(1) Anlık durum: fiyat, 24 saatlik değişim, günlük aralık, hacim oranı, spread, emir defteri dengesi.
+(2) Gösterge tablosu: istenen zaman dilimleri (ör. M5 / M15) yan yana; trend (EMA 9/21/50), ADX, RSI, MFI, CCI, MACD histogramı, Supertrend, Bollinger konumu, piyasa yapısı (BOS), mum formasyonu, rejim, konfluens skoru.
+(3) Dikkat çeken uyumsuzluk: fiyat ile para akışı (CMF/OBV), hacim veya momentum arasındaki çelişkiyi açıkça belirt.
+(4) Seviyeler: direnç ve destekleri kaynağıyla birlikte yaz (ör. VWAP, Kijun, Fibonacci, FVG, order block, Supertrend).
+(5) Kısa vade senaryoları: tablo halinde 2-3 senaryo, yaklaşık olasılık, tetikleyici seviye; ardından geçersizlik koşulu.
+(6) Uyarılar: ince tahta, kaldıraç, yaklaşan token kilit açılımı gibi somut riskler.
+Olasılıkları ve seviye yorumlarını motor çıktısından senin yorumun olarak etiketle."""
+
+_PLAIN_ANALYSIS_RULE = """3) SIFIR TEKNİK TERİM VE GÖSTERGE DÖKÜMÜ (TAVİZSİZ VE KESİN KURAL - STANDART KULLANICI İÇİN):
 Kullanıcıya yanıt verirken; EMA, SMA, ADX, +DI/-DI, Supertrend, Aroon, Vortex, RSI, MACD, CCI, Bollinger, BB, ATR, CVD, MFE, MAE, Keltner, Stokastik, bear_quiet, bull_quiet, range_transition, trade imbalance, depth imbalance gibi teknik terim, kısaltma veya indikatör adı yazmak KESİNLİKLE YASAKTIR.
 Tüm bu verileri arka planda analizini yapmak için kullan ama kullanıcıya sunarken tamamen GÜNLÜK TÜRKÇE'YE ÇEVİR:
 - "EMA 9>21>50 bullish, Supertrend bullish, ADX 29.7" ASLA YAZMA! -> "15 dakikalık grafikte ana yön yukarı olsa da son dakikalarda alıcılar hız kesmiş ve hafif bir yorulma başlamış." DE.
@@ -85,11 +105,7 @@ Tüm bu verileri arka planda analizini yapmak için kullan ama kullanıcıya sun
   (1) Şu Anki Durum (Fiyat ne yapıyor, nereden nereye geldi?)
   (2) Alıcı & Satıcı Dengesi (Büyük oyuncular ve tahta ne durumda?)
   (3) Yükselme İsteği (Yükseliş potansiyeli var mı, hangi seviye geçilmeli, risk nerede?)
-  (4) Net Karar (Şu an girmek mantıklı mı, ne beklenmeli?)
-
-Persona adın Scalper. {name_instruction}
-{role_instruction}
-Paper-trading güvenlik kurallarını aşmayı önermezsin."""
+  (4) Net Karar (Şu an girmek mantıklı mı, ne beklenmeli?)"""
 
 PERSONA = get_persona()
 TRADE_MANAGER_RULES = """SCALPER TRADE MANAGER ZORUNLU KURALLARI:
@@ -130,6 +146,32 @@ OUTPUT_RULES = """ÇIKTI BİÇİMİ KURALLARI:
 - KARŞIT TEZ / BOĞA-AYI DEBAT KURALI (ADVERSARIAL THESIS): Analiz yaparken körlemesine tek taraflı iyimserlikten veya aşırı kötümserlikten kaçın; iki zıt tezi açıkça tart: (1) Boğa Tezi: Yükselişi ne destekliyor? (Alıcı baskısı, derinlik desteği, vadeli açık pozisyon artışı, dip dönüşü). (2) Ayı / Tuzak Tezi: Yükselişi ne tehdit ediyor? (Aşırı kalabalık long tasfiye riski / yüksek fonlama oranı, Bitcoin ani gerilemesi/panik satışı, derinlikte satış duvarı, hacimsiz fakey kırılım). (3) Hakem Kararı: Bu iki karşıt tezi çarpıştırarak net, dengeli ve gerekçeli tek bir karar ver (Uygun Giriş / Pusu / Riskli / Bekle).
 - Kullanıcı özellikle istemedikçe "yatırım tavsiyesi değildir", "garanti verilemez", "her öneriyi uygulamayın" gibi tekrarlayan sorumluluk uyarıları ekleme. Belirsizliği ayrı bir uyarı cümlesiyle değil, senaryo olasılığı, karşı kanıt ve invalidasyon seviyesiyle göster.
 """
+
+# Admin için yalnızca iki satır değişir: gösterge/ham sayı yasağı kalkar ve
+# analiz iskeleti `get_persona` içindeki TEKNİK ANALİZ FORMATI kuralına bırakılır.
+_ADMIN_OUTPUT_OVERRIDES = {
+    "- KESİNLİKLE GÖSTERGE LİSTESİ DÖKÜMÜ YAPMA:":
+        "- Admin kullanıcıya gösterge adlarını ve ham sayıları yaz (zaman dilimi bazlı tablo); yorumu sayıların yanında kısa tut.",
+    "- Analiz isteyen kullanıcının derdi":
+        "- Analiz isteyen admin için TEKNİK ANALİZ FORMATI kuralındaki sırayı izle: anlık durum, gösterge tablosu, uyumsuzluk, seviyeler, senaryo tablosu, uyarılar.",
+}
+
+
+def get_output_rules(snapshot=None):
+    """Rol bilgisine göre ÇIKTI BİÇİMİ kurallarını döndürür (varsayılan: standart kullanıcı)."""
+    role = ""
+    if isinstance(snapshot, dict):
+        role = str(snapshot.get("user_role") or snapshot.get("role") or "").strip().lower()
+    if role != "admin":
+        return OUTPUT_RULES
+    lines = []
+    for line in OUTPUT_RULES.split("\n"):
+        for prefix, replacement in _ADMIN_OUTPUT_OVERRIDES.items():
+            if line.startswith(prefix):
+                line = replacement
+                break
+        lines.append(line)
+    return "\n".join(lines)
 
 def _decode_provider_response(raw):
     """Decode normal JSON, NDJSON and providers that append a second JSON object."""
@@ -500,7 +542,7 @@ async def analyze(snapshot, max_tokens=None):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Kullanıcı bir coin için analiz istediğinde kompakt ama gerekçeli yanıt ver: önce net durumu, sonra olası senaryoları (yön + tetikleyici seviye + bozulma seviyesi), sonra bu görüşün tek neden cümlesini, en sonda tek cümlelik sonucu söyle. Gösterge değerlerini istenmedikçe tek tek sıralama; tek kanıt cümlesi yeterli. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
+    system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + get_output_rules(snapshot) + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Kullanıcı bir coin için analiz istediğinde kompakt ama gerekçeli yanıt ver: önce net durumu, sonra olası senaryoları (yön + tetikleyici seviye + bozulma seviyesi), sonra bu görüşün tek neden cümlesini, en sonda tek cümlelik sonucu söyle. Gösterge değerlerini istenmedikçe tek tek sıralama; tek kanıt cümlesi yeterli. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     base_url = await validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     async def call(max_tokens):
@@ -638,7 +680,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
     plain_turkish_instruction = ""
     if isinstance(snapshot, dict) and snapshot.get("plain_turkish"):
         plain_turkish_instruction = _build_plain_turkish_instruction()
-    system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Kullanıcı bir coin için analiz istediğinde gösterge değerlerini tek tek sıralayıp onu boğma ama gerekçesiz de bırakma: kompakt bir analiz yaz — 'şu an ne oluyor', 'bundan sonra ne olabilir' (yön + seviye + bozulma), 'kısaca neden' ve tek cümlelik sonuç. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills + plain_turkish_instruction
+    system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + get_output_rules(snapshot) + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Kullanıcı bir coin için analiz istediğinde gösterge değerlerini tek tek sıralayıp onu boğma ama gerekçesiz de bırakma: kompakt bir analiz yaz — 'şu an ne oluyor', 'bundan sonra ne olabilir' (yön + seviye + bozulma), 'kısaca neden' ve tek cümlelik sonuç. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills + plain_turkish_instruction
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + _compact_json_dumps(snapshot)}]
     context_messages, _estimated_tokens = _context_window_messages(messages)
     for item in context_messages:
@@ -893,7 +935,7 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
     plain_turkish_instruction = ""
     if isinstance(snapshot, dict) and snapshot.get("plain_turkish"):
         plain_turkish_instruction = _build_plain_turkish_instruction()
-    system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme. Coin analizinde kullanıcıyı gösterge detayıyla boğma ama gerekçesiz bırakma: önce durumu, sonra olası senaryoları (yön + seviye + bozulma), sonra tek neden cümlesi, en sonda net sonucu söyle.\n" + skills + plain_turkish_instruction
+    system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + get_output_rules(snapshot) + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme. Coin analizinde kullanıcıyı gösterge detayıyla boğma ama gerekçesiz bırakma: önce durumu, sonra olası senaryoları (yön + seviye + bozulma), sonra tek neden cümlesi, en sonda net sonucu söyle.\n" + skills + plain_turkish_instruction
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Güncel snapshot:\n" + _compact_json_dumps(snapshot)}]
     for item in (messages or [])[-12:]:
         if isinstance(item, dict):
