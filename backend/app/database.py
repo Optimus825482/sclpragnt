@@ -7900,3 +7900,49 @@ async def get_unified_outcome_stats(days: int = 14) -> dict:
             ],
         }
     return await _run_db(op)
+
+
+async def get_unified_mfe_quantiles(days: int = 14, min_rows: int = 30) -> dict[int, dict]:
+    """Ufuk başına ÖLÇÜLMÜŞ MFE yüzdelikleri (hedef kalibrasyonu).
+
+    # 2026-10-15 (radar iyileştirme): `target_calibration` modülü bildirim hedefini
+    # skor kademesi yerine bu ölçülmüş medyana (p50) dayandırabilir (bayraklı, varsayılan kapalı).
+
+    Yalnız DOLU ve ölçülmüş satırlar (`outcome_filled_at` ve `mfe_pct` NOT NULL) son
+    `days` gün için alınır. Örneklemi `min_rows`'un altında kalan ufuklar çıktıya
+    alınmaz (çağıran taraf yedek hedefe düşer).
+
+    Dönüş: {horizon_minutes: {"n": int, "p50": float, "p70": float, "p30": float}}.
+    Hata durumunda {} döner.
+    """
+    def op(conn):
+        rows = conn.execute(
+            "SELECT horizon_minutes, COUNT(*) AS n, "
+            "percentile_cont(0.5) WITHIN GROUP (ORDER BY mfe_pct) AS p50, "
+            "percentile_cont(0.7) WITHIN GROUP (ORDER BY mfe_pct) AS p70, "
+            "percentile_cont(0.3) WITHIN GROUP (ORDER BY mfe_pct) AS p30 "
+            "FROM unified_candidate_outcomes "
+            "WHERE outcome_filled_at IS NOT NULL AND mfe_pct IS NOT NULL "
+            "AND detected_at >= extract(epoch from now()) - ? "
+            "GROUP BY horizon_minutes", (float(days) * 86400.0,)).fetchall()
+        out: dict[int, dict] = {}
+        for row in rows:
+            item = dict(row)
+            try:
+                horizon = int(item["horizon_minutes"])
+                n = int(item["n"] or 0)
+                if n < int(min_rows) or item["p50"] is None:
+                    continue
+                out[horizon] = {"n": n,
+                                "p50": float(item["p50"]),
+                                "p70": float(item["p70"]),
+                                "p30": float(item["p30"])}
+            except (TypeError, ValueError):
+                # Bozuk satır TEK ufku etkiler, tüm sorguyu düşürmez.
+                continue
+        return out
+    try:
+        return await _run_db(op)
+    except Exception as exc:
+        logger.warning("hedef kalibrasyonu MFE yüzdelikleri okunamadı: %s", exc)
+        return {}

@@ -1221,6 +1221,9 @@ async def startup_services():
     _start_background(auto_paper_start_loop, "auto-paper-start")
     await asyncio.sleep(_yield)
     _start_background(macd_monitor_start_loop, "macd-monitor")
+    await asyncio.sleep(_yield)
+    # 2026-10-15 (radar iyileştirme): hedef kalibrasyonu önbelleği (bayrak kapalıyken DB'ye gitmez).
+    _start_background(target_calibration_start_loop, "target-calibration")
 
     # --- Faz 4: Global erken-tespit katmanı (GÖRÜNMEZ, varsayılan KAPALI) ---
     # Yalnız `GLOBAL_SCAN_ENABLED` açıkken başlar. Ayrı veri motoru
@@ -1261,6 +1264,12 @@ async def macd_monitor_start_loop():
         macd_monitor_routes.start_macd_monitor_loop()
     except Exception as exc:
         print(f"[MACDMonitor] döngü başlatılamadı: {exc}", flush=True)
+
+
+async def target_calibration_start_loop():
+    """Radar hedef kalibrasyonu önbelleğini 10 dk'da bir tazeler (2026-10-15)."""
+    from app import target_calibration
+    await target_calibration.calibration_refresh_loop(600)
 
 
 async def shutdown_services():

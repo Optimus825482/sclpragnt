@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
 from app import database
+from app import target_calibration  # 2026-10-15 (radar iyileştirme): ölçülmüş MFE hedef kalibrasyonu
 from app.state import market, analyzer
 from app.api_common import _start_background, _fresh_public_price, _background_tasks
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, orderbook, ticker_price
@@ -1011,6 +1012,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 ml_prob=ml_hit_prob if (ml_hit_prob is not None and ml_hit_prob > 0) else None,
                 spread_pct=spread_pct,
                 atr_pct=atr_pct,
+                horizon_minutes=horizon_minutes,  # 2026-10-15 (radar iyileştirme): kalibrasyon ufku
             )
             # TAVAN (günlük momentum, 2026-10-10): beklenen maksimum yükseliş.
             # `master_surge.calculate_adaptive_targets` TP2 (koşucu) + 3×ATR üst
@@ -2568,7 +2570,8 @@ def dynamic_target_pct(score: float, base_target_pct: float,
                        ml_prob: float | None = None,
                        panel_score: bool = True,
                        spread_pct: float | None = None,
-                       atr_pct: float | None = None) -> float:
+                       atr_pct: float | None = None,
+                       horizon_minutes: int = 0) -> float:  # 2026-10-15 (radar iyileştirme): ufuk (kalibrasyon anahtarı); 0 = yok
     """Skor ve sembol potansiyeline (ATR) dayalı dinamik hedef.
 
     Komisyon ve Maliyet Garantisi (Kullanıcı Kuralı 2026-09-21):
@@ -2589,6 +2592,11 @@ def dynamic_target_pct(score: float, base_target_pct: float,
             if float(score) >= min_score and (matched_threshold is None or min_score > matched_threshold):
                 matched_threshold = min_score
                 target = max(target, pct)
+
+    # 2026-10-15 (radar iyileştirme): hedef, ölçülmüş ufuk MFE medyanına dayanır
+    # (bayraklı; kapalıyken, örneklem yetersizken veya ufuk bilinmiyorsa değişmez).
+    # Aşağıdaki net-kâr tabanı, öğrenme ve ML düzeltmeleri hâlâ uygulanır.
+    target = target_calibration.calibrated_target_pct(int(horizon_minutes or 0), target)
 
     # Net Kâr Tabanı: komisyon (%0.35) + spread maliyeti hedefe eklenir
     spr = float(spread_pct) if (spread_pct is not None and float(spread_pct) > 0) else getattr(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.65)
