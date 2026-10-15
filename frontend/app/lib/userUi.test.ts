@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { confidenceBadge, isUserRole, pctChange, statusLabel, visibleMenu, windowEnd } from "./userUi";
+import { confidenceBadge, isUserRole, isUserView, pctChange, statusLabel, visibleMenu, windowEnd } from "./userUi";
 
 describe("pctChange", () => {
   it("hesaplar", () => expect(pctChange(100, 103)).toBeCloseTo(3, 6));
@@ -56,4 +56,16 @@ describe("visibleMenu / isUserRole", () => {
     expect(isUserRole("admin")).toBe(false);
     expect(isUserRole(null)).toBe(false);
   });
+});
+
+describe("isUserView", () => {
+  it("kullanıcı her zaman kullanıcı arayüzü", () => {
+    expect(isUserView("user", "advanced")).toBe(true);
+    expect(isUserView("user", "simple")).toBe(true);
+  });
+  it("admin yalnız basit seçtiyse", () => {
+    expect(isUserView("admin", "advanced")).toBe(false);
+    expect(isUserView("admin", "simple")).toBe(true);
+  });
+  it("rol yok → false", () => expect(isUserView(null, "simple")).toBe(false));
 });

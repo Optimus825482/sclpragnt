@@ -8,13 +8,12 @@ import RadarAlertModal from "./RadarAlertModal";
 import BottomNav from "./BottomNav";
 import { reconcilePushSubscription } from "../lib/push";
 import UserShell from "./user/UserShell";
-import { useAuth } from "../lib/auth";
-import { isUserRole } from "../lib/userUi";
+import { useIsUserView } from "../lib/adminView";
 
 const CURRENT_BUILD = process.env.NEXT_PUBLIC_BUILD_ID || "dev";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const { role } = useAuth();
+  const userView = useIsUserView();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const embeddedAnalysis = pathname === "/symbol-analysis" && searchParams.get("embedded") === "1";
@@ -41,7 +40,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  if (isUserRole(role) && !embeddedAnalysis) {
+  if (userView && !embeddedAnalysis) {
     return <UserShell>{children}</UserShell>;
   }
   if (embeddedAnalysis) {

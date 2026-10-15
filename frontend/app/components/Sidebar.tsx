@@ -8,6 +8,7 @@ import { toMs } from "../lib/format";
 import { useLiveMessages } from "../lib/liveSocket";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import SymbolLink from "./SymbolLink";
+import AdminViewSwitch from "./AdminViewSwitch";
 import { useAuth } from "../lib/auth";
 import { canViewMacdMonitor } from "../lib/macdAccess";
 import { ML_PROB_CLASS, ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
@@ -213,6 +214,7 @@ export default function Sidebar() {
                         </button>
                     </div>
                 )}
+                {isAdmin && <AdminViewSwitch className="mb-4" />}
                 <Button variant={installEvent ? "primary" : "secondary"} onClick={install} disabled={!installEvent} className="w-full mb-4">⬇ {installEvent ? "UYGULAMA OLARAK YÜKLE" : "YÜKLEME İÇİN TARAYICI MENÜSÜ"}</Button>
                 {!installed && !installEvent && !isStandalone && (
                     <div className="mb-4 rounded-lg border border-bunker-700 bg-bunker-900/70 p-3">

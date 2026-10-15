@@ -59,3 +59,11 @@ export function visibleMenu(hidden: string[]): MenuItem[] {
 export function isUserRole(role: string | null): boolean {
   return !!role && role !== "admin";
 }
+
+export type AdminView = "advanced" | "simple";
+
+/** Kullanıcı arayüzü mü gösterilecek? Normal kullanıcı her zaman; admin yalnız "Basit" seçtiyse. */
+export function isUserView(role: string | null, adminView: AdminView): boolean {
+  if (isUserRole(role)) return true;
+  return role === "admin" && adminView === "simple";
+}

@@ -39,15 +39,15 @@ import RequireAdmin from "../components/RequireAdmin";
 import { useAuth } from "../lib/auth";
 
 import UserSettings from "../components/user/UserSettings";
-import { isUserRole } from "../lib/userUi";
+import { useIsUserView } from "../lib/adminView";
 
 function AdminSettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
 }
 
 export default function SettingsPage() {
-  const { role } = useAuth();
-  return isUserRole(role) ? <UserSettings /> : <AdminSettingsPage />;
+  const userView = useIsUserView();
+  return userView ? <UserSettings /> : <AdminSettingsPage />;
 }
 function SettingsPageInner() {
   const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd">("symbols");

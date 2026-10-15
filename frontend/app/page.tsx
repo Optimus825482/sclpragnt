@@ -15,7 +15,7 @@ import { useUiMode } from "./lib/ui-mode";
 import { useVisibleInterval } from "./lib/useVisibleInterval";
 import { formatPrice, formatSignedTL, formatTL, toMs } from "./lib/format";
 import { netOpenPnlPct, netOpenPnlTry } from "./lib/pnl";
-import { isUserRole } from "./lib/userUi";
+import { useIsUserView } from "./lib/adminView";
 import UserHome from "./components/user/UserHome";
 
 /* ============== TİPLER ============== */
@@ -53,8 +53,8 @@ function MetricCard({ label, value, hint, tone = "" }: { label: string; value: s
 
 /* ============== SAYFA ============== */
 export default function Page() {
-  const { role } = useAuth();
-  return isUserRole(role) ? <UserHome /> : <AdminHome />;
+  const userView = useIsUserView();
+  return userView ? <UserHome /> : <AdminHome />;
 }
 
 function AdminHome() {

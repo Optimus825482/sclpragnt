@@ -12,7 +12,7 @@ import { ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
 import { scoreToneClass, scoreToneText } from "../lib/scoreTone";
 import AppLoader from "../components/AppLoader";
 import UserRadar from "../components/user/UserRadar";
-import { isUserRole } from "../lib/userUi";
+import { useIsUserView } from "../lib/adminView";
 
 type NotificationSettings = {
   enabled: boolean;
@@ -1885,6 +1885,6 @@ function AdminMonitoringPage() {
 }
 
 export default function MonitoringPage() {
-  const { role } = useAuth();
-  return isUserRole(role) ? <UserRadar /> : <AdminMonitoringPage />;
+  const userView = useIsUserView();
+  return userView ? <UserRadar /> : <AdminMonitoringPage />;
 }

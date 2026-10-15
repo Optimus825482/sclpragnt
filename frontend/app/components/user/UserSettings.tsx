@@ -4,6 +4,8 @@ import { API_BASE, apiRequest } from "../../lib/api";
 import { MENU_ITEMS } from "../../lib/userUi";
 import { useUiPrefs } from "../../lib/useUiPrefs";
 import { ensurePushSubscription, pushPermissionState } from "../../lib/push";
+import { useAuth } from "../../lib/auth";
+import AdminViewSwitch from "../AdminViewSwitch";
 
 const CARD = "rounded-xl border border-bunker-700 bg-bunker-900 p-4";
 
@@ -211,9 +213,16 @@ function NotificationSection() {
 }
 
 export default function UserSettings() {
+  const { role } = useAuth();
   return (
     <div className="mx-auto max-w-2xl space-y-4 p-4">
       <h1 className="text-xl font-semibold text-white">Ayarlar</h1>
+      {role === "admin" && (
+        <section className={CARD} aria-label="Arayüz seçimi">
+          <AdminViewSwitch />
+          <p className="mt-2 text-sm text-bunker-muted">Basit: kullanıcıların gördüğü arayüz. Gelişmiş: mevcut yönetim arayüzü.</p>
+        </section>
+      )}
       <MenuSection />
       <BinanceSection />
       <NotificationSection />
