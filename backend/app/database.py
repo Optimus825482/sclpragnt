@@ -1539,7 +1539,8 @@ async def mark_rising_alert_trade(alert_id: int, trade_id: int) -> None:
 
 async def list_rising_alerts(limit: int = 100, kind: str | None = None,
                              symbol: str | None = None,
-                             ignore_reports_baseline: bool = False) -> list[dict]:
+                             ignore_reports_baseline: bool = False,
+                             apply_radar_floor: bool = False) -> list[dict]:
     """Son yükseliş sinyalleri (en yeni önce).
 
     `ignore_reports_baseline=True` → RAPOR BAŞLANGICI alt sınırı uygulanmaz.
@@ -1560,6 +1561,8 @@ async def list_rising_alerts(limit: int = 100, kind: str | None = None,
             params.append(str(symbol).upper())
         if not ignore_reports_baseline:
             _base = _get_reports_baseline_sync(conn)
+            if apply_radar_floor:
+                _base = max(_base or 0.0, _get_radar_floor_sync(conn))
             if _base:
                 where.append("created_at >= ?")
                 params.append(_base)
@@ -1641,7 +1644,8 @@ async def journal_coverage() -> dict:
     return await _run_db(op)
 
 
-async def get_rising_stats(days: float = 7.0, ignore_reports_baseline: bool = False) -> dict:
+async def get_rising_stats(days: float = 7.0, ignore_reports_baseline: bool = False,
+                           apply_radar_floor: bool = False) -> dict:
     """Yükseliş sinyali kalibrasyon özeti — Raporlar sekmesi için.
 
     Dönen alanlar: toplam sinyal, sınıf dağılımı, ölçülen (evaluate edilmiş)
@@ -1660,6 +1664,8 @@ async def get_rising_stats(days: float = 7.0, ignore_reports_baseline: bool = Fa
         lower = since
         if not ignore_reports_baseline:
             lower = max(lower, _get_reports_baseline_sync(conn))
+            if apply_radar_floor:
+                lower = max(lower, _get_radar_floor_sync(conn))
         rows = conn.execute(
             "SELECT kind, target_pct, mfe_pct, mae_pct, outcome_state, created_at, peak_at "
             "FROM rising_alerts WHERE created_at >= ?", (lower,)).fetchall()
@@ -2073,11 +2079,18 @@ async def save_daily_rising_report(item: dict) -> int | None:
 
 
 async def list_daily_rising_reports(limit: int = 50, days: float = 7.0,
-                                    kind: str | None = None) -> list[dict]:
-    """Son N günün rapor kayıtları (en yeni önce)."""
+                                    kind: str | None = None,
+                                    apply_radar_floor: bool = False) -> list[dict]:
+    """Son N günün rapor kayıtları (en yeni önce).
+
+    `apply_radar_floor=True` → RADAR RAPOR KESİMİ'nden önceki raporlar dışlanır
+    (yalnız Raporlar sayfası uçları geçer; "arşivi göster" için çağıran False verir).
+    """
     def op(conn):
         _ensure_daily_rising_reports_schema(conn)
         since = time.time() - max(0.1, float(days)) * 86400.0
+        if apply_radar_floor:
+            since = max(since, _get_radar_floor_sync(conn))
         where = "sent_at >= ?" + (" AND kind=?" if kind else "")
         params: list = [since] + ([str(kind)] if kind else []) + [max(1, min(500, int(limit)))]
         rows = conn.execute(

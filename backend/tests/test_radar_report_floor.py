@@ -68,3 +68,37 @@ class MacdMtfFloorTests(unittest.IsolatedAsyncioTestCase):
     async def test_archive_view_removes_both(self):
         lower = await self._lower(ignore_reports_baseline=True, apply_radar_floor=True)
         self.assertLess(lower, CUT)
+
+
+class DailyRisingFloorTests(unittest.IsolatedAsyncioTestCase):
+    async def _since(self, **kw):
+        import time
+        seen = {}
+        base = _settings_conn()
+        fake = MagicMock()
+
+        def execute(sql, params=()):
+            if "llm_settings" in sql:
+                return base.execute(sql, params)
+            if "daily_rising_reports" in sql and "SELECT" in sql:
+                seen["params"] = params
+            return MagicMock(fetchall=lambda: [])
+        fake.execute.side_effect = execute
+        orig, orig_schema = database._run_db, database._ensure_daily_rising_reports_schema
+
+        async def runner(op):
+            return op(fake)
+        database._run_db = runner
+        database._ensure_daily_rising_reports_schema = lambda c: None
+        try:
+            await database.list_daily_rising_reports(days=30, **kw)
+        finally:
+            database._run_db, database._ensure_daily_rising_reports_schema = orig, orig_schema
+        return seen["params"][0], time.time()
+
+    async def test_floor_clamps_window_only_when_requested(self):
+        since, now = await self._since(apply_radar_floor=True)
+        self.assertEqual(max(CUT, now - 30 * 86400.0) // 1000, since // 1000)
+        self.assertGreaterEqual(since, CUT)
+        since, _ = await self._since()
+        self.assertLess(since, CUT)

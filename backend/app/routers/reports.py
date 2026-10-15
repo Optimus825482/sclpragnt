@@ -405,9 +405,11 @@ async def get_report_rising_signals(limit: int = 100, kind: str | None = None,
     """
     limit = max(1, min(500, int(limit)))
     stats = await database.get_rising_stats(
-        days=float(days), ignore_reports_baseline=include_archived)
+        days=float(days), ignore_reports_baseline=include_archived,
+        apply_radar_floor=True)
     signals = await database.list_rising_alerts(
-        limit=limit, kind=kind or None, ignore_reports_baseline=include_archived)
+        limit=limit, kind=kind or None, ignore_reports_baseline=include_archived,
+        apply_radar_floor=True)
     try:
         from app import rising_signals as rising
         live = rising.rising_summary_payload()

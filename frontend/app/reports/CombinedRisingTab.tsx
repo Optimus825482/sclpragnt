@@ -230,7 +230,7 @@ function ListDetailModal({ row, onClose }: { row: SummaryRow; onClose: () => voi
     Tek WhatsApp kanalını yansıtır: 30 dk'da bir TOP-3 liste, 10 dk'da bir durum
     takibi. Ayrıca gönderilen listelerin başarı durumlarını + modül genel başarısını
     (kaynak/strateji kırılımıyla) gösterir. */
-export default function CombinedRisingTab() {
+export default function CombinedRisingTab({ includeArchived = false }: { includeArchived?: boolean }) {
   const [reports, setReports] = useState<ReportRow[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [lastList, setLastList] = useState<any>(null);
@@ -247,8 +247,8 @@ export default function CombinedRisingTab() {
     setError("");
     try {
       const [r, s, lr] = await Promise.all([
-        getJSON<{ reports?: ReportRow[] }>("/api/daily-rising/reports?limit=100&days=7"),
-        getJSON<Summary>("/api/daily-rising/reports/summary?days=7").catch(() => null),
+        getJSON<{ reports?: ReportRow[] }>(`/api/daily-rising/reports?limit=100&days=7&include_archived=${includeArchived}`),
+        getJSON<Summary>(`/api/daily-rising/reports/summary?days=7&include_archived=${includeArchived}`).catch(() => null),
         getJSON<any>("/api/daily-rising/last-report?kind=combined_list").catch(() => null),
       ]);
       setReports(r.reports || []);
@@ -259,7 +259,7 @@ export default function CombinedRisingTab() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [includeArchived]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
