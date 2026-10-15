@@ -181,11 +181,16 @@ async def combined_scan_rows() -> list[dict]:
 
     from app.routers.velocity import _active_horizons as _act_h2
     _extra_h = [h for h in _act_h2() if h not in (5, 15)]
+    # 2026-10-15 (radar düzeltmesi): kombine yol KENDİ velocity taramasını
+    # `journal_enabled=False` ile koşar — /latest yenilemesi (20 sn) ve manuel
+    # tarama kalibrasyon journal'ına (velocity_candidates) kopya YAZMAZ;
+    # journal yalnız `monitoring._run_scan` turundan beslenir.
     _gather = [
-        mo.detect_velocity_candidates({}, horizon_minutes=5),
-        mo.detect_velocity_candidates({}, horizon_minutes=15),
+        mo.detect_velocity_candidates({}, horizon_minutes=5, journal_enabled=False),
+        mo.detect_velocity_candidates({}, horizon_minutes=15, journal_enabled=False),
         mo._short_squeeze_candidates(tr_syms),
-    ] + [mo.detect_velocity_candidates({}, horizon_minutes=h) for h in _extra_h]
+    ] + [mo.detect_velocity_candidates({}, horizon_minutes=h, journal_enabled=False)
+         for h in _extra_h]
     _gather.append(snapback_service.scan_snapback_opportunities())
     _res = await asyncio.gather(*_gather, return_exceptions=True)
     scan5 = _res[0] if isinstance(_res[0], dict) else {}

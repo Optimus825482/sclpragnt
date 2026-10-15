@@ -519,3 +519,19 @@ def test_send_combined_list_excludes_blocked(monkeypatch):
     assert asyncio.run(mo._send_combined_list(cfg=cfg, force=True)) is True
     syms = [c["symbol"] for c in sent_rows[-1]["candidates"]]
     assert syms == ["OKTRY"], f"bloklu aday listeye girdi: {syms}"
+
+
+# ---------------------------------------------------------------------------
+# (5) Kombine yol velocity taramasını journal_enabled=False ile çağırır
+# ---------------------------------------------------------------------------
+def test_combined_scan_calls_velocity_without_journal(monkeypatch):
+    """combined_scan_rows → detect_velocity_candidates her ufukta
+    `journal_enabled=False`: /latest yenilemesi (20 sn) ve manuel tarama
+    kalibrasyon journal'ına kopya yazmaz (yalnız `_run_scan` yazar)."""
+    calls = []
+    _run_combined(monkeypatch, velocity_by_h={}, horizons=(5, 15, 30),
+                  velocity_calls=calls)
+    assert len(calls) == 3, f"3 ufuk beklenir: {calls}"
+    for _args, kwargs in calls:
+        assert kwargs.get("journal_enabled") is False, \
+            f"kombine yol journal yazıyor: {kwargs}"
