@@ -208,12 +208,16 @@ async def combined_scan_rows() -> list[dict]:
             sym = str(rc.get("symbol") or "").upper()
             if not sym:
                 continue
+            # 2026-10-15 (radar düzeltmesi): rising skoru 0-100 PANEL ölçeğidir;
+            # ham alana `_raw_from_panel` ile yazılır (ikinci log-normalize yok).
+            _rising_panel = max(0.0, min(100.0, float(rc.get("score") or 0.0)))
             rising_rows.append({
                 "symbol": sym,
                 "strategy": "rising",
                 "horizon_minutes": int(rc.get("horizon_minutes") or 5),
-                "velocity_score": float(rc.get("score") or 0.0),
-                "panel_score": float(rc.get("score") or 0.0),
+                "velocity_score": _raw_from_panel(_rising_panel),
+                "panel_score": _rising_panel,
+                "rising_score": float(rc.get("score") or 0.0),
                 "target_pct": rc.get("target_pct"),
                 "rising_kind": rc.get("kind"),
                 "green": rc.get("green"),
@@ -284,6 +288,10 @@ async def combined_scan_rows() -> list[dict]:
         symbol = str(candidate.get("symbol") or "").upper()
         if not symbol:
             continue
+        # 2026-10-15 (radar düzeltmesi): HER kaynak satırı panel (0-100) taşır
+        # — velocity satırları ham skorla gelir; `_rank` yalnız panel kıyaslar.
+        if candidate.get("panel_score") is None:
+            candidate["panel_score"] = normalize_score(candidate.get("velocity_score"))
         try:
             horizon = int(candidate.get("horizon_minutes") or 0)
         except (TypeError, ValueError):
@@ -297,7 +305,12 @@ async def combined_scan_rows() -> list[dict]:
         merged_sources = list(dict.fromkeys(_source_ids(current) + _source_ids(candidate)))
 
         def _rank(item: dict) -> float:
-            return float(item.get("panel_score") or item.get("velocity_score") or 0)
+            # 2026-10-15 (radar düzeltmesi): YALNIZ panel — ham velocity_score
+            # (300) ile panel (70) kıyaslanmaz.
+            try:
+                return float(item.get("panel_score") or 0)
+            except (TypeError, ValueError):
+                return 0.0
 
         chosen = candidate if _rank(candidate) > _rank(current) else current
         chosen["signal_sources"] = merged_sources
@@ -438,6 +451,8 @@ async def combined_scan_rows() -> list[dict]:
             "unified_sources": c.get("unified_sources"),
             "strategy": c.get("strategy") or "combined",
             "velocity_score": c.get("velocity_score"),
+            # 2026-10-15 (radar düzeltmesi): panel (0-100) UI/liste için açık alan.
+            "panel_score": c.get("panel_score"),
             "ret_8h_pct": c.get("ret_8h_pct"),
             "adx_14": c.get("adx_14"),
             "slope_15m": c.get("slope_15m"),

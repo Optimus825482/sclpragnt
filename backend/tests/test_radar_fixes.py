@@ -311,3 +311,94 @@ def test_combined_rows_carry_candidate_detected_at(monkeypatch):
     by_sym = {r["symbol"]: r for r in rows}
     assert by_sym["VELTRY"]["detected_at"] == 1_750_000_000.0
     assert by_sym["RISTRY"]["detected_at"] == 1_750_000_050.0
+
+
+# ---------------------------------------------------------------------------
+# (3) panel_score HER KAYNAKTA normalize_score(raw); rising/squeeze ham alanı
+#     _raw_from_panel; _rank yalnız panel
+# ---------------------------------------------------------------------------
+def test_fusion_uses_normalized_panel_when_panel_missing(monkeypatch):
+    """enrich_candidates: `panel_score` yoksa ham velocity_score (1800) DOĞRUDAN
+    füzyona girmez; normalize_score(1800) (~74) girer. Eskiden min(100, 1800)
+    = 100 ile doyuyordu."""
+    from app import unified_signals as us
+    from app.unified_scan import normalize_score
+    monkeypatch.setattr(us, "macd_components", lambda sym: ({}, {}))
+    monkeypatch.setattr(us, "enabled", lambda: False)
+    cand = {"symbol": "RAWTRY", "velocity_score": 1800.0}
+    us.enrich_candidates([cand])
+    expected = normalize_score(1800.0)
+    assert expected < 100.0
+    assert cand["unified_score"] == pytest.approx(expected, abs=0.2), \
+        f"füzyon ham skorla doydu: {cand['unified_score']}"
+
+
+def test_rising_rows_use_raw_from_panel(monkeypatch):
+    """Kombine yolda rising satırı: panel = 0-100 skoru (70), ham alan
+    `_raw_from_panel(70)`; kalite puanı panel 70'ten türer (0.6·70 + 8 = 50),
+    ikinci kez log-normalize edilmez (70→~42 → 33.2 olurdu)."""
+    from app.unified_scan import _raw_from_panel
+    rows = _run_combined(monkeypatch, velocity_by_h={}, rising=[
+        {"symbol": "RISTRY", "score": 70.0, "horizon_minutes": 5,
+         "price": 2.0, "kind": "yukselis"}])
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["panel_score"] == pytest.approx(70.0)
+    assert r["velocity_score"] == pytest.approx(_raw_from_panel(70.0), rel=1e-6)
+    assert r["scan_score"] == pytest.approx(50.0)
+
+
+def test_short_squeeze_rows_use_raw_from_panel(monkeypatch):
+    """`_short_squeeze_candidates`: squeeze skoru (40-187) 0-100'e kırpılıp
+    panel olur; ham alan `_raw_from_panel(panel)`; ham squeeze skoru
+    `squeeze_score` alanında korunur."""
+    from app.routers import monitoring as mo
+    from app import derivatives_service as ds
+    from app.unified_scan import _raw_from_panel
+
+    async def _scan(symbols, top_n=20):
+        return [{"symbol": "SQZTRY", "score": 70.0, "funding_rate_pct": -0.05,
+                 "funding_state": "EXTREME_SHORT", "short_squeeze_potential": True},
+                {"symbol": "BIGTRY", "score": 187.0, "funding_rate_pct": -0.2,
+                 "funding_state": "EXTREME_SHORT", "short_squeeze_potential": True}]
+
+    async def _confirm(symbol):
+        return {}
+
+    async def _atr(symbol):
+        return 1.0
+
+    async def _pot(symbol, price):
+        return None
+
+    monkeypatch.setattr(ds, "scan_short_squeeze", _scan)
+    monkeypatch.setattr(ds, "squeeze_confirmation", _confirm)
+    monkeypatch.setattr(mo, "_ticker_price", lambda symbol: 1.0)
+    monkeypatch.setattr(mo, "_live_atr_pct", _atr)
+    monkeypatch.setattr(mo, "_compute_potential", _pot)
+    rows = asyncio.run(mo._short_squeeze_candidates(["SQZTRY", "BIGTRY"]))
+    by_sym = {r["symbol"]: r for r in rows}
+    assert by_sym["SQZTRY"]["panel_score"] == pytest.approx(70.0)
+    assert by_sym["SQZTRY"]["velocity_score"] == pytest.approx(_raw_from_panel(70.0), rel=1e-6)
+    assert by_sym["SQZTRY"]["squeeze_score"] == pytest.approx(70.0)
+    assert by_sym["BIGTRY"]["panel_score"] == pytest.approx(100.0)
+    assert by_sym["BIGTRY"]["squeeze_score"] == pytest.approx(187.0)
+
+
+def test_rank_compares_panel_only(monkeypatch):
+    """(sembol, ufuk) tekilleştirmesinde `_rank` YALNIZ panel ile kıyaslar:
+    velocity ham 300 (panel ~56) ile rising panel 70 → rising kazanır. Eski
+    `panel_score or velocity_score` ham 300'ü panel 70 ile kıyaslayıp velocity'yi
+    seçiyordu. Her kaynak satırı `panel_score` taşır."""
+    from app.unified_scan import normalize_score
+    rows = _run_combined(monkeypatch, velocity_by_h={5: [
+        {"symbol": "DUOTRY", "price": 10.0, "velocity_score": 300.0,
+         "horizon_minutes": 5, "ceiling_pct": 2.0, "passes": True},
+    ]}, rising=[{"symbol": "DUOTRY", "score": 70.0, "horizon_minutes": 5,
+                "price": 10.0, "kind": "yukselis"}])
+    assert len(rows) == 1
+    r = rows[0]
+    assert normalize_score(300.0) < 70.0           # sahne ön koşulu
+    assert r["panel_score"] == pytest.approx(70.0), f"panel 70 kazanmalıydı: {r}"
+    assert r["strategy"] == "rising", "seçilen satır rising olmalı (velocity → combined)"
+    assert "rising" in r["signal_sources"]

@@ -4306,13 +4306,18 @@ async def _short_squeeze_candidates(tr_symbols: list[str]) -> list[dict]:
             ceil_pct = round(atr_pct * 3.0, 2)
         pot = await _compute_potential(sym, px_f)
         _sq_score = round(float(s.get("score") or 0) * _squeeze_mult, 1)
+        # 2026-10-15 (radar düzeltmesi): squeeze skoru (40-187) PANEL ölçeğinde
+        # kırpılır (0-100); ham alana `_raw_from_panel` ile yazılır — eskiden
+        # 70 ham alana gidip quality'de ikinci kez log-normalize oluyordu (~42).
+        _sq_panel = round(max(0.0, min(100.0, _sq_score)), 1)
         rows.append({
             "symbol": sym, "price": px_f,
             "target_pct": ceil_pct,
             "ceiling_pct": ceil_pct,
             "ceiling_price": round(px_f * (1 + ceil_pct / 100.0), 8),
-            "velocity_score": _sq_score,
-            "panel_score": normalize_score(_sq_score),
+            "velocity_score": _raw_from_panel(_sq_panel),
+            "panel_score": _sq_panel,
+            "squeeze_score": _sq_score,
             "atr_pct_15m": round(atr_pct, 3),
             "funding_rate_pct": s.get("funding_rate_pct"),
             "funding_state": s.get("funding_state"),
