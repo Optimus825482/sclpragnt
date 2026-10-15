@@ -7692,9 +7692,30 @@ async def get_portfolio_equity_curve():
 # GERÇEK isabetini ölçmek. Placeholder stili: `?` (PostgresCompat → %s).
 # ---------------------------------------------------------------------------
 
+def unified_dedup_window(horizon_minutes: int, detected_at: float) -> tuple[float, float]:
+    """2026-10-15 (radar düzeltmesi): birleşik aday journal'ı dedup KOVASI.
+
+    Anahtar `(symbol, horizon, floor(detected_at / ufuk))`: aynı ufuk kovasına
+    düşen tespitler TEK satırdır (eski `detected_at` eşitliği, her /latest
+    yenilemesi `time.time()` ürettiği için hiç çalışmıyordu). Ufuksuz satır
+    60 sn taban kova. Döner: [start, end) epoch saniye.
+    """
+    try:
+        bucket = max(60.0, float(int(horizon_minutes or 0)) * 60.0)
+    except (TypeError, ValueError):
+        bucket = 60.0
+    try:
+        t = float(detected_at or 0)
+    except (TypeError, ValueError):
+        t = 0.0
+    start = math.floor(t / bucket) * bucket
+    return float(start), float(start + bucket)
+
+
 async def save_unified_candidates(rows: list[dict]) -> int:
     """Birleşik tarama adaylarını journal'a yazar; (symbol, horizon_minutes,
-    detected_at) üçlüsünde duplicate VARSA eklemez. Dönen değer: eklenen satır."""
+    ufuk kovası) üçlüsünde duplicate VARSA eklemez (bkz. `unified_dedup_window`).
+    Dönen değer: eklenen satır."""
     rows = [r for r in (rows or []) if isinstance(r, dict)]
     if not rows:
         return 0
@@ -7726,6 +7747,9 @@ async def save_unified_candidates(rows: list[dict]) -> int:
             score = row.get("scan_score")
             ceiling = row.get("ceiling_pct")
             target = row.get("target_pct")
+            # 2026-10-15 (radar düzeltmesi): dedup kova penceresiyle
+            # (taşınabilir: CAST/floor yerine aralık karşılaştırması).
+            bucket_start, bucket_end = unified_dedup_window(horizon, detected)
             cur = conn.execute(
                 """INSERT INTO unified_candidate_outcomes
                     (symbol, horizon_minutes, sources, scan_score, entry_price,
@@ -7733,14 +7757,15 @@ async def save_unified_candidates(rows: list[dict]) -> int:
                 SELECT ?,?,?,?,?,?,?,?
                 WHERE NOT EXISTS (
                     SELECT 1 FROM unified_candidate_outcomes
-                    WHERE symbol=? AND horizon_minutes=? AND detected_at=?)""",
+                    WHERE symbol=? AND horizon_minutes=?
+                      AND detected_at >= ? AND detected_at < ?)""",
                 (symbol, horizon, sources,
                  float(score) if score is not None else None,
                  entry,
                  float(ceiling) if ceiling is not None else None,
                  float(target) if target is not None else None,
                  detected,
-                 symbol, horizon, detected))
+                 symbol, horizon, bucket_start, bucket_end))
             inserted += int(cur.rowcount or 0)
         conn.commit()
         return inserted
@@ -7762,8 +7787,12 @@ async def get_unified_pending_outcomes(older_than_sec: float, limit: int = 200) 
     return await _run_db(op)
 
 
-async def update_unified_outcome(row_id: int, mfe_pct, mae_pct, hit: bool) -> None:
-    """Bir journal satırının MFE/MAE/hit sonucunu mühürler (`outcome_filled_at` set)."""
+async def update_unified_outcome(row_id: int, mfe_pct, mae_pct, hit: bool | None) -> None:
+    """Bir journal satırının MFE/MAE/hit sonucunu mühürler (`outcome_filled_at` set).
+
+    2026-10-15 (radar düzeltmesi): `hit=None` NULL yazar — mum verisi olmayan
+    satır mühürlenir ama ölçülmüş sayılmaz (istatistik `mfe_pct IS NULL`
+    satırları zaten atlar)."""
 
     def op(conn):
         conn.execute(
@@ -7771,7 +7800,7 @@ async def update_unified_outcome(row_id: int, mfe_pct, mae_pct, hit: bool) -> No
             "outcome_filled_at=? WHERE id=?",
             (float(mfe_pct) if mfe_pct is not None else None,
              float(mae_pct) if mae_pct is not None else None,
-             bool(hit), time.time(), int(row_id)))
+             (bool(hit) if hit is not None else None), time.time(), int(row_id)))
         conn.commit()
     await _run_db(op)
 

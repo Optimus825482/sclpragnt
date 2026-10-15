@@ -143,3 +143,171 @@ def test_report_summary_does_not_override_price_with_anchor():
     from app.routers import monitoring as mo
     src = inspect.getsource(mo.daily_rising_reports_summary)
     assert '"price": x.get("anchor_price")' not in src
+
+
+# ---------------------------------------------------------------------------
+# Ortak kombine tarama sahnesi (test_daily_rising_combined deseni)
+# ---------------------------------------------------------------------------
+def _run_combined(monkeypatch, *, velocity_by_h: dict, rising=None, squeeze=None,
+                  enrich=None, horizons=(5, 15), velocity_calls=None):
+    from app.routers import monitoring as mo
+    from app import binance_tr_public, rising_signals, early_discovery, snapback_service, macd_mtf
+    from app.routers import velocity as _vel_mod
+
+    async def _symbols(quote_asset="TRY"):
+        syms = set()
+        for rows in velocity_by_h.values():
+            syms.update(r["symbol"] for r in rows)
+        syms.update(r["symbol"] for r in (rising or []))
+        syms.update(r["symbol"] for r in (squeeze or []))
+        return sorted(syms)
+
+    async def _velocity(*args, **kwargs):
+        if velocity_calls is not None:
+            velocity_calls.append((args, kwargs))
+        h = kwargs.get("horizon_minutes", 5)
+        rows = [dict(r) for r in velocity_by_h.get(h, [])]
+        return {"candidates": [r for r in rows if r.get("passes", True)],
+                "watchlist": [r for r in rows if not r.get("passes", True)]}
+
+    async def _empty_momentum(*args, **kwargs):
+        return []
+
+    async def _squeeze(*args, **kwargs):
+        return [dict(r) for r in (squeeze or [])]
+
+    async def _empty_snapback(*args, **kwargs):
+        return {"opportunities": []}
+
+    async def _no_today(limit=200):
+        return []
+
+    async def _no_atr(symbol):
+        return None
+
+    async def _no_pot(symbol, price):
+        return None
+
+    monkeypatch.setattr(binance_tr_public, "trading_symbols", _symbols)
+    monkeypatch.setattr(mo, "detect_velocity_candidates", _velocity)
+    monkeypatch.setattr(mo, "_daily_momentum_candidates", _empty_momentum)
+    monkeypatch.setattr(mo, "_short_squeeze_candidates", _squeeze)
+    monkeypatch.setattr(mo, "_today_rising_rows", _no_today)
+    monkeypatch.setattr(mo, "_live_atr_pct", _no_atr)
+    monkeypatch.setattr(mo, "_compute_potential", _no_pot)
+    monkeypatch.setattr(snapback_service, "scan_snapback_opportunities", _empty_snapback)
+    monkeypatch.setattr(early_discovery, "top_candidates", lambda limit: [])
+    monkeypatch.setattr(macd_mtf, "cached_compact", lambda symbol: None)
+    monkeypatch.setattr(mo, "_ticker_price", lambda symbol: None)
+    monkeypatch.setattr(mo.unified_signals, "enrich_candidates",
+                        enrich if enrich is not None else (lambda rows: []))
+    monkeypatch.setattr(rising_signals, "detect_rising_candidates",
+                        lambda: [dict(r) for r in (rising or [])])
+    monkeypatch.setattr(_vel_mod, "_active_horizons", lambda: list(horizons))
+    return asyncio.run(mo._combined_scan_rows())
+
+
+# ---------------------------------------------------------------------------
+# (2) detected_at GERÇEK SİNYAL ZAMANI + ufuk kovalı dedup + boş mum mühürü
+# ---------------------------------------------------------------------------
+def test_candidate_row_keeps_real_signal_time():
+    """`_candidate_row`: satırın `detected_at`'i (yoksa `created_at`) aynen
+    geçer; yalnız ikisi de yoksa şimdi."""
+    from app import unified_outcomes as uo
+    row = {"symbol": "ABCTRY", "price": 1.0, "horizon_minutes": 5,
+           "detected_at": 1_750_000_000.0}
+    assert uo._candidate_row(row)["detected_at"] == 1_750_000_000.0
+    row2 = {"symbol": "ABCTRY", "price": 1.0, "horizon_minutes": 5,
+            "created_at": 1_750_000_100.0}
+    assert uo._candidate_row(row2)["detected_at"] == 1_750_000_100.0
+    before = time.time()
+    got = uo._candidate_row({"symbol": "ABCTRY", "price": 1.0})["detected_at"]
+    assert got >= before
+
+
+def test_unified_dedup_window_is_horizon_bucket():
+    """Dedup anahtarı (symbol, horizon, floor(detected_at/horizon)): aynı
+    ufuk kovasındaki iki tespit aynı pencereye düşer, komşu kova düşmez."""
+    t = 1_750_000_130.0
+    start, end = database.unified_dedup_window(5, t)
+    assert start % 300 == 0 and end - start == 300.0
+    assert start <= t < end
+    s2, _ = database.unified_dedup_window(5, t + 20)
+    assert s2 == start                       # aynı kova (20 sn sonra)
+    s3, _ = database.unified_dedup_window(5, end + 1)
+    assert s3 == end                         # komşu kova
+    # Ufuksuz satır (0 dk) → 60 sn taban kova.
+    s0, e0 = database.unified_dedup_window(0, t)
+    assert e0 - s0 == 60.0
+
+
+def test_save_unified_candidates_dedups_by_bucket():
+    """`save_unified_candidates` NOT EXISTS koşulu kova penceresiyle
+    (detected_at >= start AND < end) çalışır; eşitlik değil."""
+    conn = _RoutedConn()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(database, "_run_db", _patched_run_db(conn))
+        asyncio.run(database.save_unified_candidates([{
+            "symbol": "ABCTRY", "horizon_minutes": 15, "sources": '["velocity"]',
+            "scan_score": 70.0, "entry_price": 1.0, "detected_at": 1_750_000_130.0,
+        }]))
+    inserts = [(sql, p) for sql, p in conn.calls if "INSERT INTO unified_candidate_outcomes" in sql]
+    assert inserts, "insert yok"
+    sql, params = inserts[0]
+    assert "detected_at >= ?" in sql and "detected_at < ?" in sql
+    assert "AND detected_at=?" not in sql
+    start, end = database.unified_dedup_window(15, 1_750_000_130.0)
+    assert tuple(params[-2:]) == (start, end)
+
+
+def test_fill_seals_row_when_no_candles(monkeypatch):
+    """Boş mum dönen satır MÜHÜRLENİR (mfe/mae/hit None, outcome_filled_at
+    dolu) → `LIMIT 200` kuyruğunu süresiz tıkamaz. Dolu sayılmaz."""
+    from app import unified_outcomes as uo
+    pending = [{"id": 11, "symbol": "GONETRY", "horizon_minutes": 5,
+                "entry_price": 1.0, "detected_at": 1_750_000_000.0}]
+
+    async def _pending(older_than_sec, limit=200):
+        return [dict(r) for r in pending]
+
+    updates = []
+
+    async def _update(row_id, mfe_pct, mae_pct, hit):
+        updates.append((row_id, mfe_pct, mae_pct, hit))
+
+    async def _klines(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(uo.database, "get_unified_pending_outcomes", _pending)
+    monkeypatch.setattr(uo.database, "update_unified_outcome", _update)
+    monkeypatch.setattr(uo, "klines", _klines)
+    filled = asyncio.run(uo.fill_pending_outcomes(max_age_sec=0))
+    assert filled == 0
+    assert updates == [(11, None, None, None)]
+
+
+def test_update_unified_outcome_keeps_hit_null():
+    """`update_unified_outcome(hit=None)` NULL yazar (False DEĞİL) — mühürlü
+    ama ölçülemeyen satır isabet oranını düşürmez."""
+    conn = _RoutedConn()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(database, "_run_db", _patched_run_db(conn))
+        asyncio.run(database.update_unified_outcome(11, None, None, None))
+    sql, params = conn.calls[-1]
+    assert "UPDATE unified_candidate_outcomes" in sql
+    assert params[2] is None
+
+
+def test_combined_rows_carry_candidate_detected_at(monkeypatch):
+    """combined_scan_rows: satırın `detected_at`'i adayın kendi zaman damgası
+    (velocity satırı → tarama anı, rising satırı → kendi `detected_at`'i),
+    her /latest yenilemesinde `time.time()` DEĞİL."""
+    rows = _run_combined(monkeypatch, velocity_by_h={5: [
+        {"symbol": "VELTRY", "price": 10.0, "velocity_score": 1000,
+         "horizon_minutes": 5, "ceiling_pct": 2.0, "detected_at": 1_750_000_000.0,
+         "passes": True},
+    ]}, rising=[{"symbol": "RISTRY", "score": 70.0, "horizon_minutes": 5,
+                "price": 2.0, "kind": "yukselis", "detected_at": 1_750_000_050.0}])
+    by_sym = {r["symbol"]: r for r in rows}
+    assert by_sym["VELTRY"]["detected_at"] == 1_750_000_000.0
+    assert by_sym["RISTRY"]["detected_at"] == 1_750_000_050.0

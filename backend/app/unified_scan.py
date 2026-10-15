@@ -162,6 +162,10 @@ async def combined_scan_rows() -> list[dict]:
     from app import macd_mtf
     from app import rising_signals as _rising
 
+    # 2026-10-15 (radar düzeltmesi): tarama anı TEK damga — kendi zaman damgası
+    # olmayan kaynak satırları (velocity) bu anı alır; satır başına ayrı
+    # `time.time()` üretilmez (journal dedup'ı kovaya göre çalışır).
+    scan_started_at = time.time()
     valid_symbols: set[str] = set()
     try:
         tr_syms = [str(symbol).upper() for symbol in await _trading_syms("TRY")]
@@ -215,6 +219,8 @@ async def combined_scan_rows() -> list[dict]:
                 "green": rc.get("green"),
                 "price": rc.get("price"),
                 "source_only": "rising",
+                # 2026-10-15 (radar düzeltmesi): rising'in kendi tespit zamanı.
+                "detected_at": rc.get("detected_at"),
             })
     except Exception as exc:
         logger.debug("kombine: yükseliş adayları alınamadı: %s", exc)
@@ -404,7 +410,11 @@ async def combined_scan_rows() -> list[dict]:
             "change_pct": (c.get("source_evidence") or {}).get("return_1m_pct"),
             "return_1m_pct": (c.get("source_evidence") or {}).get("return_1m_pct"),
             "volume_burst": (c.get("source_evidence") or {}).get("volume_burst"),
-            "detected_at": (c.get("source_evidence") or {}).get("detected_at") or time.time(),
+            # 2026-10-15 (radar düzeltmesi): GERÇEK sinyal zamanı — adayın
+            # kendi damgası (`detected_at`/`created_at`/kanıt), yoksa tarama anı.
+            "detected_at": (c.get("detected_at") or c.get("created_at")
+                            or (c.get("source_evidence") or {}).get("detected_at")
+                            or scan_started_at),
             "target_pct": c.get("target_pct"),
             "horizon_minutes": c.get("horizon_minutes"),
             "ceiling_pct": ceil_pct,
