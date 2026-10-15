@@ -44,9 +44,14 @@ dosyanın tamamını yeniden DDL olarak koşuyordu → her restart tam DDL + ACC
 EXCLUSIVE kilit yarışı, ve `004_bloat_prevention.sql` / `005_user_binance_keys.sql`
 **yalnızca ikinci yolda** oluşuyordu.
 
-**Düzeltildi:** Artık her iki yol da `migrations/` dizinini **glob ile aynı
-sıraya** tarar ve birebir aynı sha'yı üretir. Yeni migration eklendiğinde
-**hiçbir Python dosyası güncellenmez** — glob kendiliğinden yakalar.
+**Düzeltildi:** Her iki yol da `migrations/` dizinini ortak modül
+(`app/migration_plan.py`) üzerinden **numara sırasıyla** tarar. Yeni migration
+eklendiğinde **hiçbir Python dosyası güncellenmez**.
+
+**2026-10-15 — dosya başına takip:** Tek birleşik sha marker'ı kaldırıldı.
+Her dosya kendi transaction'ında koşar ve `schema_migrations` tablosuna
+kaydedilir; uygulanmış dosya tekrar koşmaz, içeriği değişmişse açılış hata
+verir. Kurallar ve eski kurulumdan geçiş için bkz. `backend/migrations/README.md`.
 
 ## 2. Silinen araştırma artığı (arşiv notu)
 
