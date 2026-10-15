@@ -62,6 +62,7 @@ from app import alerting
 from app import security
 from app import ui_prefs
 from app.watch_prices import watch_prices_loop
+from app.notification_outcomes import notification_outcome_loop
 from app import pattern_research
 from app.agent_learning import (new_trace_id, start_trace, append_event, finish_trace,
                                  evaluate_output, save_evaluation, save_experience, upsert_instinct, set_runtime_pool,
@@ -1175,6 +1176,8 @@ async def startup_services():
     _start_background(binance_price_tick_loop, "binance-price-tick")
     await asyncio.sleep(_yield)
     _start_background(watch_prices_loop, "watch-prices")
+    await asyncio.sleep(_yield)
+    _start_background(notification_outcome_loop, "notification-outcomes")
     await asyncio.sleep(_yield)
     _start_background(binance_account_push_loop, "binance-account-push")
     await asyncio.sleep(_yield)

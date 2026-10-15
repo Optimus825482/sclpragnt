@@ -110,3 +110,32 @@ def test_list_unmeasured_sql_placeholders_match(monkeypatch):
     assert sql.count("%s") == len(params)
     assert "candidate_id" in sql and "outcome_status IS NULL" in sql
     assert "velocity_candidates" not in sql        # yan etki yok: aday tablosuna dokunulmaz
+
+
+# ------------------------------------------------------------------ rapor ucu bayrağı
+
+def test_report_endpoint_passes_include_own_outcomes_to_both_queries(monkeypatch):
+    """Rapor ucu (liste + genel özet) bildirimin kendi sonucunu kullanmalı; diğer çağıranlar değil."""
+    from unittest.mock import AsyncMock
+
+    from app.routers import monitoring
+
+    seen = []
+
+    async def fake_matches(**kw):
+        seen.append(kw)
+        return []
+
+    monkeypatch.setattr(database, "get_monitoring_velocity_matches", fake_matches)
+    monkeypatch.setattr(database, "_run_db", AsyncMock(return_value=[]))
+    monkeypatch.setattr(monitoring, "get_user_notification_settings", AsyncMock(return_value={}))
+    asyncio.run(monitoring.report_notifications(limit=5, day="all"))
+    assert len(seen) == 2
+    assert all(kw.get("include_own_outcomes") is True for kw in seen)
+
+
+def test_default_callers_keep_old_behaviour():
+    import inspect
+
+    sig = inspect.signature(database.get_monitoring_velocity_matches)
+    assert sig.parameters["include_own_outcomes"].default is False
