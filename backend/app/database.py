@@ -5266,7 +5266,8 @@ async def mark_monitoring_push_sent(notification_id):
 async def get_monitoring_velocity_matches(limit: int | None = 1000, day: str | None = None,
                                           slim: bool = False,
                                           ignore_reports_baseline: bool = False,
-                                          apply_radar_floor: bool = False):
+                                          apply_radar_floor: bool = False,
+                                          include_own_outcomes: bool = False):
     """Bildirimleri ayni andaki velocity adayiyla karsilastir (salt okunur).
 
 monitoring_notifications VE velocity_candidates ayni tarama turunda
@@ -5292,6 +5293,10 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
     `apply_radar_floor=True` → RADAR RAPOR KESİMİ de uygulanır (yalnız rapor
     uçları geçer; öğrenme/kalibrasyon/bakım çağıranları varsayılan False ile
     eski davranışta kalır). `ignore_reports_baseline=True` ikisini de kapatır.
+
+    `include_own_outcomes=True` → aday ölçümü olmayan bildirimler için bildirimin KENDİ sonucu
+    (`app/notification_outcomes.py`) rapor alanlarına uygulanır. Yalnız rapor uçları geçer; öğrenme/
+    kalibrasyon çağıranları varsayılan False ile eski davranışta kalır.
     """
     from datetime import datetime, timezone, timedelta
     def op(conn):
@@ -5299,7 +5304,8 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
             "SELECT id, symbol, mode, score, target_pct, price, expected_price,"
             " horizon_minutes, detected_at, sent_via_push,"
             + ("" if slim else " message, title,")
-            + " candidate_id, norm_cap, norm_version, sources"
+            + " candidate_id, norm_cap, norm_version, sources,"
+            " outcome_status, mfe_pct AS own_mfe_pct, mae_pct AS own_mae_pct"
             " FROM monitoring_notifications"
         )
         params: list = []
@@ -5433,8 +5439,29 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
                 item['candidate_passes'] = None
                 item['target_match'] = False
                 item['ml_hit_probability'] = None
+            if include_own_outcomes:
+                from app.notification_outcomes import apply_own_outcome
+                apply_own_outcome(item)
             matches.append(item)
         return matches
+    return await _run_db(op)
+
+
+async def list_unmeasured_notifications(now: float, max_age_sec: float, limit: int = 40) -> list[dict]:
+    """candidate_id'si OLMAYAN, kendi sonucu yazılmamış ve ölçüm penceresi (ufuk + 2 dk) kapanmış bildirimler.
+
+    `app/notification_outcomes.py` bunları 1 dk mumlarla ölçer. `velocity_candidates`'a DOKUNMAZ.
+    """
+    def op(conn):
+        rows = conn.execute(
+            "SELECT id, symbol, price, target_pct, horizon_minutes, detected_at "
+            "FROM monitoring_notifications "
+            "WHERE (candidate_id IS NULL OR candidate_id = '') AND outcome_status IS NULL "
+            "AND detected_at >= %s "
+            "AND detected_at + (COALESCE(horizon_minutes, 5) + 2) * 60 <= %s "
+            "ORDER BY detected_at ASC LIMIT %s",
+            (float(now) - float(max_age_sec), float(now), max(1, min(200, int(limit))))).fetchall()
+        return [dict(r) for r in rows]
     return await _run_db(op)
 
 
