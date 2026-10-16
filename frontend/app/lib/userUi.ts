@@ -112,3 +112,53 @@ export function regimeNotice(r: MacroRegime | null | undefined): RegimeNotice {
     detail: `Risk koruması açık.${gapText} BTC ortalamanın üstüne çıkınca bildirimler kendiliğinden yeniden başlar.`,
   };
 }
+
+// 2026-10-17 (basit arayüz): ana sayfa bildirim kartları için saf yardımcılar.
+
+const MODE_LABELS: Record<string, string> = {
+  trend_devam: "Trend devam",
+  unified: "Birleşik radar",
+  v_donusu: "V dönüşü",
+  global_lead_lag: "Öncü-takipçi",
+};
+
+/** Bildirim `mode` değerini sade Türkçe etikete çevirir; tanınmazsa ham değer, boşsa "". */
+export function modeLabel(mode: string | null | undefined): string {
+  const m = String(mode ?? "").trim();
+  if (!m) return "";
+  return MODE_LABELS[m] ?? m;
+}
+
+export type NotificationStatus =
+  | { kind: "hit"; icon: "✅"; label: string; tone: "good" }
+  | { kind: "active"; icon: "⏳"; label: string; tone: "wait"; remainingMin: number }
+  | { kind: "ended"; icon: "⌛"; label: string; tone: "mute" };
+
+/**
+ * Bildirim kartının durum satırı. Öncelik: hedef fiyata ulaşıldıysa "hit" (pencere kapalı olsa da);
+ * değilse pencere (detected_at + ufuk) sürüyorsa "active" (kalan dakika yukarı yuvarlanır, en az 1);
+ * aksi halde "ended". `live` yoksa/`expected_price` <= 0 ise "hit" üretilmez.
+ */
+export function notificationStatus(
+  row: { expected_price?: number | null; detected_at: number; horizon_minutes?: number | null },
+  live: number | null | undefined,
+  nowSec: number,
+): NotificationStatus {
+  const target = Number(row.expected_price);
+  const l = Number(live);
+  if (Number.isFinite(target) && target > 0 && Number.isFinite(l) && l > 0 && l >= target) {
+    return { kind: "hit", icon: "✅", label: "Hedefe ulaştı", tone: "good" };
+  }
+  const end = windowEnd(row.detected_at, Number(row.horizon_minutes));
+  if (nowSec < end) {
+    const remainingMin = Math.max(1, Math.ceil((end - nowSec) / 60));
+    return { kind: "active", icon: "⏳", label: `Yükseliş ihtimali sürüyor · kalan ${remainingMin} dk`, tone: "wait", remainingMin };
+  }
+  return { kind: "ended", icon: "⌛", label: "Yükseliş penceresi kapandı", tone: "mute" };
+}
+
+/** "STRAXTRY" -> "STRAX" (TRY soneki atılır; sonek yoksa olduğu gibi). */
+export function baseSymbol(symbol: string | null | undefined): string {
+  const s = String(symbol ?? "").replace(/_/g, "").toUpperCase();
+  return s.length > 3 && s.endsWith("TRY") ? s.slice(0, -3) : s;
+}

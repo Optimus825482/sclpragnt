@@ -3,9 +3,11 @@ import { useCallback, useEffect, useState } from "react";
 import { getJSON } from "../../lib/api";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
 import { useWatchPrices } from "../../lib/useWatchPrices";
+import { useWatchPrefs } from "../../lib/useWatchPrefs";
 import RegimeBanner from "./RegimeBanner";
 import KpiStrip, { type KpiData } from "./KpiStrip";
 import RecentNotifications, { type RecentRow } from "./RecentNotifications";
+import FavoritesStrip from "./home/FavoritesStrip";
 
 export default function UserHome() {
   const [kpiToday, setKpiToday] = useState<KpiData>(null);
@@ -23,7 +25,7 @@ export default function UserHome() {
     const [todayFailed, allFailed, histFailed] = await Promise.all([
       track(getJSON<any>("/api/reports/notifications?limit=1000"), (v) => setKpiToday(v?.breakdown ?? null)),
       track(getJSON<any>("/api/reports/notifications?day=all&limit=1"), (v) => setKpiAll(v?.overall ?? null)),
-      track(getJSON<any>("/api/monitoring/notifications"), (v) => { setRecent((v?.history ?? []).slice(0, 5)); setRecentFailed(false); }),
+      track(getJSON<any>("/api/monitoring/notifications"), (v) => { setRecent((v?.history ?? []).slice(0, 10)); setRecentFailed(false); }),
     ]);
     if (histFailed) setRecentFailed(true);
     const failed = [todayFailed, allFailed, histFailed].filter(Boolean).length;
@@ -33,14 +35,20 @@ export default function UserHome() {
   // useVisibleInterval ilk yükü yapmaz.
   useEffect(() => { void load(); }, [load]);
 
-  const prices = useWatchPrices(recent.map((r) => r.symbol));
+  const prefs = useWatchPrefs();
+  const prices = useWatchPrices([
+    ...recent.map((r) => r.symbol),
+    ...prefs.pinned.map((p) => p.symbol),
+    ...prefs.favorites.map((f) => f.symbol),
+  ]);
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-semibold">Ana sayfa</h1>
       {error && <p role="alert" className="rounded-lg bg-neon-red/10 p-3 text-sm text-neon-red">{error}</p>}
+      <FavoritesStrip items={prefs.favorites} prices={prices} onRemove={(s) => { void prefs.removeFavorite(s).catch(() => setError("Favori kaydedilemedi, lütfen tekrar deneyin.")); }} />
       <RegimeBanner />
       <KpiStrip today={kpiToday} all={kpiAll} />
-      <RecentNotifications rows={recent} prices={prices} failed={recentFailed} />
+      <RecentNotifications rows={recent} prices={prices} failed={recentFailed} prefs={prefs} />
     </div>
   );
 }

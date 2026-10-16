@@ -12,11 +12,12 @@ interface Message {
 interface ChartAssistantDrawerProps {
   isOpen: boolean;
   onClose: () => void;
-  symbol: string;
+  /** Verilmezse genel asistan modu (grafik dışı sayfalar). */
+  symbol?: string;
   currentPrice?: number | null;
 }
 
-const QUICK_PROMPTS = [
+const SYMBOL_PROMPTS = [
   { label: "📊 Genel Durum", query: "Bu coinde şu an genel durum nedir? Yükselme isteği var mı?" },
   { label: "🎯 Tahmin Motoru", query: "Sistemin Master Surge ve ML tahmin motorları bu coin için ne öngörüyor?" },
   { label: "🐋 Büyük Alıcılar", query: "Büyük cüzdanlar veya balinalar tahtada aktif mi, alım mı satım mı yapıyorlar?" },
@@ -25,17 +26,33 @@ const QUICK_PROMPTS = [
   { label: "⚠️ Alım Riski", query: "Şu an bu seviyeden pozisyon almak güvenli mi yoksa riskli mi, neyi beklemeliyim?" },
 ];
 
+// Sembolsüz (genel) mod: grafik dışı sayfalarda gösterilen hızlı sorular.
+const GENERAL_PROMPTS = [
+  { label: "📡 Şu an öne çıkan coinler", query: "Şu an radarda öne çıkan coinler hangileri, neden öne çıkıyorlar?" },
+  { label: "🌐 Piyasa & Bitcoin", query: "Kripto piyasasında genel hava, korku endeksi ve Bitcoin'in yönü nasıl?" },
+  { label: "📊 Bugünkü bildirimler nasıl gitti?", query: "Bugün gelen radar bildirimleri nasıl sonuçlandı, hedefe ulaşanlar ve ulaşamayanlar neler?" },
+  { label: "⚠️ Şu an alım yapmak riskli mi?", query: "Şu an genel olarak alım yapmak güvenli mi yoksa riskli mi, neye dikkat etmeliyim?" },
+];
+
+const nowHHMM = () => new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+
+const GENERAL_WELCOME =
+  "Merhaba! Piyasa, radar bildirimleri, portföyün ve coinler hakkında sade bir dille soru sorabilirsin. Teknik terimlerle kafanı karıştırmadan anlık durumu özetleyebilirim. Aşağıdaki hızlı sorulardan birini seçebilir veya aklındakini yazabilirsin.";
+
 export default function ChartAssistantDrawer({
   isOpen,
   onClose,
   symbol,
   currentPrice,
 }: ChartAssistantDrawerProps) {
+  const quickPrompts = symbol ? SYMBOL_PROMPTS : GENERAL_PROMPTS;
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content: `Merhaba! Şu an **${symbol}** grafiğini inceliyorsun. Sistemin tüm tahmin motorları (Master Surge, ML hedef, balina akışı) bağlı. Tamamen sade bir dille, teknik terimlerle kafanı karıştırmadan anlık durumu özetleyebilirim. Aşağıdaki hızlı sorulardan birini seçebilir veya aklındakini yazabilirsin.`,
-      time: new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }),
+      content: !symbol
+        ? GENERAL_WELCOME
+        : `Merhaba! Şu an **${symbol}** grafiğini inceliyorsun. Sistemin tüm tahmin motorları (Master Surge, ML hedef, balina akışı) bağlı. Tamamen sade bir dille, teknik terimlerle kafanı karıştırmadan anlık durumu özetleyebilirim. Aşağıdaki hızlı sorulardan birini seçebilir veya aklındakini yazabilirsin.`,
+      time: nowHHMM(),
     },
   ]);
   const [input, setInput] = useState("");
@@ -49,6 +66,8 @@ export default function ChartAssistantDrawer({
   useEffect(() => {
     if (prevSymbolRef.current !== symbol) {
       prevSymbolRef.current = symbol;
+      // Sembol kalktıysa (genel moda geçiş) ya da tanımsızsa ek mesaj yok.
+      if (!symbol) return;
       const nowTime = new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
       setMessages((prev) => [
         ...prev,
@@ -107,7 +126,8 @@ export default function ChartAssistantDrawer({
         {
           plain_turkish: true,
           chart_assistant: true,
-          current_symbol: symbol,
+          // Backend `symbol` okur; eski istemci/sürümler için `current_symbol` da gönderilir.
+          ...(symbol ? { symbol, current_symbol: symbol } : {}),
           max_tokens: 4096,
         },
         {
@@ -135,7 +155,9 @@ export default function ChartAssistantDrawer({
     setMessages([
       {
         role: "assistant",
-        content: `Sohbet temizlendi. **${symbol}** hakkında sormak istediğin bir şey var mı?`,
+        content: symbol
+          ? `Sohbet temizlendi. **${symbol}** hakkında sormak istediğin bir şey var mı?`
+          : "Sohbet temizlendi. Sormak istediğin bir şey var mı?",
         time: nowTime,
       },
     ]);
@@ -155,16 +177,16 @@ export default function ChartAssistantDrawer({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="font-mono text-sm font-bold text-white tracking-wide">
-                {symbol}
+                {symbol || "Asistan"}
               </span>
-              {currentPrice != null && (
+              {symbol && currentPrice != null && (
                 <span className="text-xs font-mono text-neon-green font-semibold">
                   ₺{currentPrice.toLocaleString("tr-TR")}
                 </span>
               )}
             </div>
-            <p className="text-[10px] text-cyan-300/80 font-medium truncate">
-              Grafik Asistanı · Sade Dil Modu (Teknik terimsiz)
+            <p className="text-[10px] text-cyan-300 font-medium truncate">
+              {symbol ? "Grafik Asistanı" : "Genel Asistan"} · Sade Dil Modu (Teknik terimsiz)
             </p>
           </div>
         </div>
@@ -201,7 +223,7 @@ export default function ChartAssistantDrawer({
               <div
                 className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 leading-relaxed shadow-sm ${
                   isUser
-                    ? "bg-cyan-600 text-white rounded-br-xs font-medium"
+                    ? "bg-cyan-600 text-[#ffffff] rounded-br-xs font-medium"
                     : "bg-bunker-900/90 text-bunker-100 border border-bunker-800/80 rounded-bl-xs"
                 }`}
               >
@@ -233,7 +255,7 @@ export default function ChartAssistantDrawer({
       {/* Hızlı Butonlar */}
       <div className="p-2 bg-bunker-900/40 border-t border-bunker-800/60 shrink-0">
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
-          {QUICK_PROMPTS.map((qp, i) => (
+          {quickPrompts.map((qp, i) => (
             <button
               key={i}
               type="button"
@@ -260,9 +282,9 @@ export default function ChartAssistantDrawer({
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={`${symbol} hakkında bir soru sor...`}
+            placeholder={symbol ? `${symbol} hakkında bir soru sor...` : "Bir soru sor…"}
             disabled={busy}
-            className="flex-1 rounded-xl border border-bunker-800 bg-bunker-900/80 px-3.5 py-2 text-xs text-white placeholder-bunker-muted focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/50 disabled:opacity-50"
+            className="flex-1 rounded-xl border border-bunker-800 bg-bunker-900/80 px-3.5 py-2 text-xs text-white placeholder:text-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/50 disabled:opacity-50"
           />
 
           {busy ? (
@@ -277,7 +299,7 @@ export default function ChartAssistantDrawer({
             <button
               type="submit"
               disabled={!input.trim()}
-              className="rounded-xl border border-cyan-500/40 bg-cyan-600/80 hover:bg-cyan-500 px-3.5 py-2 text-xs font-semibold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-cyan-900/30"
+              className="rounded-xl border border-cyan-500/40 bg-cyan-600/80 hover:bg-cyan-500 px-3.5 py-2 text-xs font-semibold text-[#ffffff] transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-cyan-900/30"
             >
               Gönder
             </button>

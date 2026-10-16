@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MENU_ITEMS, SETTINGS_TABS, parseSettingsTab, confidenceBadge, isUserRole, isUserView, pctChange, regimeNotice, statusLabel, visibleMenu, windowEnd } from "./userUi";
+import { MENU_ITEMS, baseSymbol, modeLabel, notificationStatus, SETTINGS_TABS, parseSettingsTab, confidenceBadge, isUserRole, isUserView, pctChange, regimeNotice, statusLabel, visibleMenu, windowEnd } from "./userUi";
 
 describe("pctChange", () => {
   it("hesaplar", () => expect(pctChange(100, 103)).toBeCloseTo(3, 6));
@@ -118,4 +118,51 @@ describe("parseSettingsTab", () => {
     expect(parseSettingsTab(undefined)).toBeNull();
   });
   it("sekme listesi", () => expect(SETTINGS_TABS.map((t) => t.id)).toEqual(["genel", "bildirim", "profil"]));
+});
+
+describe("modeLabel", () => {
+  it("eşler", () => {
+    expect(modeLabel("trend_devam")).toBe("Trend devam");
+    expect(modeLabel("unified")).toBe("Birleşik radar");
+    expect(modeLabel("v_donusu")).toBe("V dönüşü");
+    expect(modeLabel("global_lead_lag")).toBe("Öncü-takipçi");
+  });
+  it("bilinmeyen ham, boş boş", () => {
+    expect(modeLabel("xyz")).toBe("xyz");
+    expect(modeLabel(null)).toBe("");
+    expect(modeLabel("  ")).toBe("");
+  });
+});
+
+describe("notificationStatus", () => {
+  const row = { expected_price: 110, detected_at: 1000, horizon_minutes: 15 };
+  it("hedefe ulaştı (pencere kapalı olsa da)", () => {
+    expect(notificationStatus(row, 110, 1100).kind).toBe("hit");
+    expect(notificationStatus(row, 120, 999999)).toMatchObject({ kind: "hit", icon: "✅", label: "Hedefe ulaştı", tone: "good" });
+  });
+  it("pencere sürüyor: kalan dakika yukarı yuvarlanır", () => {
+    const s = notificationStatus(row, 105, 1000 + 60);
+    expect(s).toMatchObject({ kind: "active", icon: "⏳", tone: "wait", remainingMin: 14 });
+    expect(s.label).toBe("Yükseliş ihtimali sürüyor · kalan 14 dk");
+    expect(notificationStatus(row, 105, 1000 + 899)).toMatchObject({ kind: "active", remainingMin: 1 });
+  });
+  it("pencere kapandı", () => {
+    expect(notificationStatus(row, 105, 1900)).toMatchObject({ kind: "ended", icon: "⌛", tone: "mute", label: "Yükseliş penceresi kapandı" });
+  });
+  it("canlı fiyat yok / hedef yok → hit olmaz", () => {
+    expect(notificationStatus(row, null, 1100).kind).toBe("active");
+    expect(notificationStatus({ ...row, expected_price: 0 }, 5, 99999).kind).toBe("ended");
+  });
+  it("ufuk yoksa 60 dk", () => {
+    expect(notificationStatus({ expected_price: 0, detected_at: 0, horizon_minutes: null }, null, 3599).kind).toBe("active");
+  });
+});
+
+describe("baseSymbol", () => {
+  it("TRY atar", () => {
+    expect(baseSymbol("STRAXTRY")).toBe("STRAX");
+    expect(baseSymbol("btc_try")).toBe("BTC");
+    expect(baseSymbol("TRY")).toBe("TRY");
+    expect(baseSymbol(null)).toBe("");
+  });
 });
