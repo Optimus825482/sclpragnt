@@ -50,7 +50,25 @@ class BinanceExchange:
         return float(row.get("free", 0) or 0) if row else 0.0
 
     async def price(self, symbol_u: str):
-        return await asyncio.to_thread(btp._resolve_live_price, symbol_u)
+        """Önce bellekteki ticker; yoksa public REST. (`btp._resolve_live_price` senkron sarmalı async `ticker_price`'ı
+        beklemediği için bellek dışı coinlerde None dönüyordu.)"""
+        try:
+            from app.state import market
+            ticker = market.get_ticker(symbol_u)
+            if ticker and float(ticker.get("last_price") or 0) > 0:
+                return float(ticker["last_price"])
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from app.binance_tr_public import ticker_price
+            rows = await ticker_price([symbol_u])
+            want = {symbol_u.upper(), symbol_u.upper().replace("_", "")}
+            for row in rows if isinstance(rows, list) else []:
+                if str(row.get("symbol") or "").upper() in want and float(row.get("price") or 0) > 0:
+                    return float(row["price"])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("canlı fiyat alınamadı (%s): %s", symbol_u, type(exc).__name__)
+        return None
 
     async def buy(self, symbol_u: str, quote_qty: float, client_order_id: str) -> dict:
         return await asyncio.to_thread(btp.place_market_buy, self._k, self._s, symbol_u, quote_qty, None, client_order_id)

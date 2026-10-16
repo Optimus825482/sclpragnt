@@ -35,7 +35,10 @@ def fake(monkeypatch):
     srv = FakeBinanceTR()
     base = srv.start()
     monkeypatch.setattr(btp, "REST_BASE", base)
-    monkeypatch.setattr(btp, "_resolve_live_price", lambda s: srv.price)
+
+    async def fake_ticker_price(symbols=None):
+        return [{"symbol": "ADATRY", "price": str(srv.price)}]
+    monkeypatch.setattr("app.binance_tr_public.ticker_price", fake_ticker_price)
     monkeypatch.setattr(btp, "_throttle_private_request", lambda: None)
     btp._symbols_cache["expires"] = 0
     btp._server_time_cache.clear()
@@ -112,3 +115,8 @@ def test_over_cap_never_reaches_exchange(fake):
     with pytest.raises(open_position.OrderError):
         _run(_payload(amount_try=900.0))
     assert srv.calls("POST", "/open/v1/orders") == []
+
+
+def test_price_falls_back_to_public_ticker_when_not_in_memory(fake):
+    srv, _ = fake
+    assert asyncio.run(BinanceExchange(KEY, SECRET).price("ADA_TRY")) == srv.price
