@@ -74,6 +74,11 @@ export type Holding = {
   pnl_try?: number | null;
   pnl_pct?: number | null;
   has_active_order?: boolean;
+  side?: string | null;
+  volume_try?: number | null;
+  active_sl_price?: number | null;
+  active_tp_price?: number | null;
+  active_orders?: unknown[];
 };
 
 export type OpenOrder = {

@@ -1,4 +1,5 @@
 "use client";
+import dynamic from "next/dynamic";
 import { useRef, useState } from "react";
 import { call, type Holding } from "../../../lib/tradeApi";
 import { SMALL_BALANCE_TRY, errorText, filterSmallBalances, fmtPct, fmtPrice, fmtQty, fmtSignedTry, fmtTry, newClientOrderId } from "../../../lib/tradeUi";
@@ -6,9 +7,17 @@ import ConfirmDialog from "./ConfirmDialog";
 
 const CHIPS = [25, 50, 75, 100];
 
-type Props = { holdings: Holding[]; liveEnabled: boolean; onTraded: () => void };
+// Grafik modalı ağır (lightweight-charts): yalnız ilk açılışta yüklenir.
+const PositionChartModal = dynamic(() => import("../../../binance-tr/BinancePositionChartModal"), { ssr: false });
 
-export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props) {
+type Props = {
+  holdings: Holding[];
+  liveEnabled: boolean;
+  onTraded: () => void;
+  showToast: (message: string, type?: "success" | "error" | "info") => void;
+};
+
+export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToast }: Props) {
   const [target, setTarget] = useState<Holding | null>(null);
   const [chip, setChip] = useState(100);
   const [sending, setSending] = useState(false);
@@ -16,6 +25,9 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props)
   const [done, setDone] = useState("");
   const clientId = useRef("");
   const [hideSmall, setHideSmall] = useState(true);
+  const [chartAsset, setChartAsset] = useState<string | null>(null);
+  // Modal, listedeki güncel satırı izler (fiyat/emir değişince eski kopya kalmaz).
+  const chartHolding = chartAsset ? holdings.find((h) => h.asset === chartAsset) ?? null : null;
 
   const allCoins = holdings.filter((h) => h.asset !== "TRY" && h.total > 0);
   const coins = filterSmallBalances(allCoins, hideSmall);
@@ -68,7 +80,15 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props)
       <ul className="divide-y divide-bunker-800">
         {coins.map((h) => (
           <li key={h.asset} className="flex flex-wrap items-center justify-between gap-2 py-3">
-            <div className="min-w-0">
+            <div className="flex min-w-0 items-start gap-2">
+              <button
+                type="button" onClick={() => setChartAsset(h.asset)}
+                aria-label={`${h.asset} grafiğini aç`} title="Grafiği aç; zarar durdur / kâr al çizgilerini fareyle ayarla"
+                className="ui-button-secondary flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border text-lg"
+              >
+                📈
+              </button>
+              <div className="min-w-0">
               <p className="font-semibold text-white">{h.asset} <span className="font-normal text-bunker-muted">· {fmtQty(h.total)} adet</span></p>
               <p className="text-sm text-white">
                 {fmtTry(h.value_try)}
@@ -79,6 +99,7 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props)
                 )}
               </p>
               {h.has_active_order && <p className="text-xs text-bunker-muted">Koruma emri var; satmadan önce açık emirlerden iptal et.</p>}
+              </div>
             </div>
             <button
               type="button" disabled={!liveEnabled || h.free <= 0}
@@ -91,6 +112,18 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props)
         ))}
       </ul>
       {!liveEnabled && coins.length > 0 && <p className="text-xs text-bunker-muted">Satmak için canlı işlemi aç.</p>}
+
+      {chartHolding && (
+        <PositionChartModal
+          holding={chartHolding}
+          livePrice={chartHolding.price_try}
+          sellEnabled={liveEnabled}
+          confirmBeforeSend
+          showToast={showToast}
+          onClose={() => setChartAsset(null)}
+          onOrderUpdated={onTraded}
+        />
+      )}
 
       <ConfirmDialog
         open={!!target} title={`${target?.asset ?? ""} sat`} confirmLabel="Evet, sat" danger busy={sending}

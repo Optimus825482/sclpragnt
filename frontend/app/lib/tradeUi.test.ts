@@ -185,3 +185,27 @@ describe("filterSmallBalances", () => {
     expect(filterSmallBalances(items, true).map((x) => x.value_try)).toEqual([50, 300, null]));
   it("kapalıyken hepsi", () => expect(filterSmallBalances(items, false)).toHaveLength(4));
 });
+
+import { slTpMode, validateSlTpPrices } from "./tradeUi";
+
+describe("slTpMode", () => {
+  it("ikisi birden OCO, tekli modlar", () => {
+    expect(slTpMode(110, 95)).toBe("OCO");
+    expect(slTpMode(null, 95)).toBe("SL_ONLY");
+    expect(slTpMode(110, undefined)).toBe("TP_ONLY");
+    expect(slTpMode(0, 0)).toBeNull();
+  });
+});
+
+describe("validateSlTpPrices", () => {
+  it("geçerli OCO ve tekliler", () => {
+    expect(validateSlTpPrices(110, 95, 100)).toBeNull();
+    expect(validateSlTpPrices(null, 95, 100)).toBeNull();
+    expect(validateSlTpPrices(110, null, 100)).toBeNull();
+  });
+  it("TP, SL'den büyük olmalı", () => expect(validateSlTpPrices(90, 95, 100)).toContain("büyük"));
+  it("SL güncel fiyatın altında", () => expect(validateSlTpPrices(null, 101, 100)).toContain("altında"));
+  it("TP güncel fiyatın üstünde", () => expect(validateSlTpPrices(99, null, 100)).toContain("üstünde"));
+  it("hiçbiri yok", () => expect(validateSlTpPrices(null, null, 100)).toContain("En az bir"));
+  it("güncel fiyat yoksa yalnız kendi aralarında", () => expect(validateSlTpPrices(110, 95, null)).toBeNull());
+});

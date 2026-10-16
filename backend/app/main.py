@@ -4032,6 +4032,18 @@ async def binance_set_sl_tp(payload: dict, request: Request):
     if not symbol_u:
         raise HTTPException(status_code=422, detail=f"{asset} için uygun işlem çifti (TRY/USDT) bulunamadı")
 
+    # FİYAT İLİŞKİSİ DOĞRULAMASI — iptalden ÖNCE: reddedilen istek mevcut korumayı silmemeli.
+    # Binance TR (OCO, SELL): TP > son fiyat > SL. Son fiyat bilinmiyorsa yalnız TP/SL ilişkisi denetlenir.
+    from app import sl_tp_rules
+    from app.routers.binance_trade import BinanceExchange
+    try:
+        _last_px = await BinanceExchange(api_key, api_secret).price(symbol_u)
+    except Exception:
+        _last_px = None
+    _rule_err = sl_tp_rules.validate_sl_tp(mode, _last_px, payload.get("tp_price"), payload.get("sl_price"))
+    if _rule_err:
+        raise HTTPException(status_code=422, detail=_rule_err)
+
     # Mevcut açık satış emirlerini iptal etme (cancel_existing=True)
     #
     # DENETİM (2026-10-07): Binance TR'de yeni koruyucu emir ESKİ emir İPTAL

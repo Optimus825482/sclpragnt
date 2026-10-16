@@ -237,3 +237,33 @@ export function filterSmallBalances<T extends { value_try: number | null }>(item
   if (!hide) return [...items];
   return items.filter((h) => h.value_try == null || !Number.isFinite(Number(h.value_try)) || Number(h.value_try) >= min);
 }
+
+export type SlTpMode = "OCO" | "SL_ONLY" | "TP_ONLY";
+
+/** Gönderilecek koruma emrinin türü: ikisi birden → OCO, yalnız SL → zarar durdur, yalnız TP → kâr al limit satış. */
+export function slTpMode(tp?: number | null, sl?: number | null): SlTpMode | null {
+  const hasTp = Number(tp) > 0;
+  const hasSl = Number(sl) > 0;
+  if (hasTp && hasSl) return "OCO";
+  if (hasSl) return "SL_ONLY";
+  if (hasTp) return "TP_ONLY";
+  return null;
+}
+
+/**
+ * Binance TR kuralı (SATIŞ): TP > son fiyat > SL. Sunucu aynı kuralı uygular; burada emri göndermeden önce
+ * kullanıcıya anında söylenir. Hata metni ya da null.
+ */
+export function validateSlTpPrices(tp: number | null | undefined, sl: number | null | undefined, last: number | null | undefined): string | null {
+  const mode = slTpMode(tp, sl);
+  if (!mode) return "En az bir Kâr Al (TP) veya Zarar Kes (SL) seviyesi belirlenmelidir";
+  const t = Number(tp) || 0;
+  const s = Number(sl) || 0;
+  if (mode === "OCO" && t <= s) return "Kâr Al (TP) fiyatı Zarar Kes (SL) fiyatından büyük olmalıdır";
+  const px = Number(last);
+  if (Number.isFinite(px) && px > 0) {
+    if (s > 0 && s >= px) return "Zarar Kes (SL) fiyatı güncel fiyatın altında olmalıdır; aksi halde emir hemen tetiklenir";
+    if (t > 0 && t <= px) return "Kâr Al (TP) fiyatı güncel fiyatın üstünde olmalıdır; aksi halde pozisyon hemen satılır";
+  }
+  return null;
+}
