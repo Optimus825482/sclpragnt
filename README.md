@@ -179,3 +179,23 @@ Radar eşikleri ve flag'leri için iki belge:
 - Eşik sözleşmesi ve yapısal maliyet sınırı: `docs/RADAR_ESIK_SOZLESMESI.md`
 
 Kural: Hiçbir eşik veya flag değişikliği, `docs/DENEY_KAYDI.md` içinde karşılık gelen bir satır olmadan canlıya çıkmaz.
+
+## Periyodik ölçüm (2026-10-16)
+
+Radar bildirimlerinin gerçek kalitesi tek komutla ölçülür (salt-okunur; `DATABASE_URL` gerekir). Tüm betikler `backend/` klasöründen çalıştırılır; Windows'ta konsol için `PYTHONIOENCODING=utf-8` ayarlayın.
+
+| Betik | Ne ölçer | Örnek |
+|---|---|---|
+| `scripts/notification_outcomes_report.py` | Bildirim × 5m mum: hit30/60/120, şans tabanı, MFE/MAE, net proxy; hafta/aile/mode/skor/saat kırılımı, karşı-olgusal kapı senaryoları, tekrarsız varyant, precision@k, Spearman | `python scripts/notification_outcomes_report.py --days 30 --out rapor.md --json` |
+| `scripts/notification_outcomes_report.py --source signals` | Aynı ölçüm `signals` tablosundan (yalnız `--signals-actions`, varsayılan `BUY_SIGNAL`); sabit hedef %1.5/2/3, `strategy` kırılımı ve her stratejinin tarih aralığı | `python scripts/notification_outcomes_report.py --source signals --days 60 --out sinyal_60g.md` |
+| `scripts/horizon_grid_report.py` | H (60–1440 dk) × T × S × maliyet ızgarası, iki çıkış kuralı, şans tabanı, haftalık kararlılık | `python scripts/horizon_grid_report.py --days 30 --out ufuk_30g.md` |
+| `scripts/radar_periodic_review.py` | `radar_lift_analysis` + bildirim raporu + `radar_bucket_analysis` → `docs/reviews/RADAR_REVIEW_<tarih>.md` (aktif bayraklar başlıkta, sonda KARAR listesi) | `python scripts/radar_periodic_review.py --days 14` |
+
+Not: `signals` kaydında kaldırılmış stratejiler (PUMP_MONITOR, BB_MFI_*, FISHER_*) eski dönemlere aittir; rapor stratejileri tarih aralığıyla ayrı yazar, "60 gün" sonuçlarını güncel politikayla karıştırmayın. Bildirim günlüğü 2026-09-16'da başlar.
+
+Haftalık çalıştırma (pazartesi 09:00):
+
+- Linux/cron: `0 9 * * 1 cd /srv/sclpragnt/backend && DATABASE_URL=... PYTHONIOENCODING=utf-8 .venv/bin/python scripts/radar_periodic_review.py --days 14`
+- Windows Görev Zamanlayıcı: `schtasks /create /tn "RadarReview" /sc weekly /d MON /st 09:00 /tr "cmd /c cd /d D:\PROJELLER\sclpragnt\backend && set DATABASE_URL=... && set PYTHONIOENCODING=utf-8 && .venv\Scripts\python.exe scripts\radar_periodic_review.py --days 14"`
+
+Çıktı kararları yalnız öneridir; eşik/flag değişikliği yine `docs/DENEY_KAYDI.md` satırı gerektirir.
