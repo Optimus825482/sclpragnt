@@ -629,5 +629,5 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .pband-lg .pband-error { font-size: .8rem; }
 
 
-/* 2026-10-17 (basit arayüz): tüm uygulama gövdesi Roboto; sayısal alanlar kendi ui-monospace tanımlarını korur. */
-body { font-family: var(--font-roboto), ui-sans-serif, system-ui, sans-serif; }
+/* 2026-10-17 (basit arayüz): tüm uygulama gövdesi IBM Plex Sans; sayısal alanlar kendi ui-monospace tanımlarını korur. */
+body { font-family: var(--font-plex), ui-sans-serif, system-ui, sans-serif; }

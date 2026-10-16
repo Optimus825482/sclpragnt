@@ -8011,8 +8011,8 @@ async def save_unified_candidates(rows: list[dict]) -> int:
             cur = conn.execute(
                 """INSERT INTO unified_candidate_outcomes
                     (symbol, horizon_minutes, sources, scan_score, entry_price,
-                     ceiling_pct, target_pct, detected_at, blocked_by)
-                SELECT ?,?,?,?,?,?,?,?,?
+                     ceiling_pct, target_pct, detected_at, blocked_by, regime_badge)
+                SELECT ?,?,?,?,?,?,?,?,?,?
                 WHERE NOT EXISTS (
                     SELECT 1 FROM unified_candidate_outcomes
                     WHERE symbol=? AND horizon_minutes=?
@@ -8024,6 +8024,7 @@ async def save_unified_candidates(rows: list[dict]) -> int:
                  float(target) if target is not None else None,
                  detected,
                  str(row.get("blocked_by") or "")[:80],
+                 (str(row.get("regime_badge") or "")[:40] or None),
                  symbol, horizon, bucket_start, bucket_end))
             inserted += int(cur.rowcount or 0)
         conn.commit()

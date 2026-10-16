@@ -853,6 +853,18 @@ class Config:
     # davranış değişikliği olurdu → ayrı değişiklik olarak ele alınmalı.
     MASTER_SURGE_ENABLED = os.getenv("MASTER_SURGE_ENABLED", "true").lower() == "true"
     BTC_REGIME_SHIELD_ENABLED = os.getenv("BTC_REGIME_SHIELD_ENABLED", "true").lower() == "true"
+    # 2026-10-17 (docs/REJIM_KALKANI_ANALIZI_2026-10-17.md): 21 günlük rescan ölçümünde kalkanın
+    # kestiği adaylar gidenlerden daha kötü değildi (hit60 %21,6 vs %19,8; Welch t +2,3) ve kalkan
+    # tick'lerin %57'sinde açıktı → "badge": bildirim "⚠ BTC REJİM" rozetiyle GİDER, yalnız otonom
+    # paper girişi engellenir (auto_paper kendi kontrolünü yapar). "block": eski davranış (bildirim
+    # ve liste kesilir). Kalkanın kendisi (BTC_REGIME_SHIELD_ENABLED) dokunulmaz.
+    RADAR_SHIELD_MODE = os.getenv("RADAR_SHIELD_MODE", "badge").strip().lower()
+    # 2026-10-17 (aynı ölçüm, tablo 2/2b): kalkan kapalıyken MFI≥90/RSI≥80 ile elenen trend_devam
+    # adayları geçenlerle aynı isabette (hit60 %19,0 vs %19,8, MAE daha küçük) → "penalty": eleme
+    # yerine skor çarpanı (ceza) — yalnız trend_devam ve rejim kalkanı KAPALIYKEN; kalkan açıkken
+    # kesişim hücresi zayıf (%16,6) olduğundan eleme kalır. "block": eski davranış.
+    VELOCITY_EXHAUSTION_MODE = os.getenv("VELOCITY_EXHAUSTION_MODE", "penalty").strip().lower()
+    VELOCITY_EXHAUSTION_PENALTY_MULT = float(os.getenv("VELOCITY_EXHAUSTION_PENALTY_MULT", "0.85"))
     MASTER_SURGE_MIN_SCORE = float(os.getenv("MASTER_SURGE_MIN_SCORE", "70.0"))
     # 2026-10-07: true → false. KANIT (DENETIM_RAPORU_2026-10-07 §P0-1, çalıştırarak
     # doğrulandı): kapı AÇIKken `passed=True` yalnız 4 katmanın TAMAMI geçtiğinde;

@@ -137,6 +137,9 @@ def scan_symbol_at_tick(symbol: str, rows1m, rows5m, rows15m, *, horizon_minutes
         exhausted = f"mfi_asiri_satim:{mfi:.0f}"
     elif rsi >= V.VELOCITY_RSI_UPPER:
         exhausted = f"rsi_asiri_alim:{rsi:.0f}"
+    # 2026-10-17: canlı ile aynı karar (parite); çevrimdışı rejim kalkanı bilinmez → kapalı sayılır
+    # (analiz betiği kalkanı mumlardan ayrıca kurar).
+    exhausted_block, exhaustion_penalty = V.exhaustion_decision(exhausted, mode, False)
     min_atr = float(min_atr_pct if min_atr_pct is not None else V.VELOCITY_MIN_ATR_PCT)
     prof_atr_eff = profile_atr_threshold(prof_atr, min_atr)
     wick_info = _wick_rejection_zscore(opens, highs, lows, closes) if len(closes) >= 21 else {}
@@ -147,7 +150,7 @@ def scan_symbol_at_tick(symbol: str, rows1m, rows5m, rows15m, *, horizon_minutes
     is_breakout = bool(ret3 >= 1.0 or ret5 >= 1.8 or short_atr_pct >= 0.45)
     breakout_floor = min(prof_atr_eff, max(min_atr, prof_atr_eff * 0.6))
     atr_passes = bool(atr_pct >= prof_atr_eff or (is_breakout and atr_pct >= breakout_floor))
-    passes = (exhausted is None and
+    passes = (exhausted_block is None and
               not rejection_wick and
               atr_passes and
               bb_width is not None and bb_width >= V.VELOCITY_MIN_BB_WIDTH_PCT and
@@ -155,8 +158,8 @@ def scan_symbol_at_tick(symbol: str, rows1m, rows5m, rows15m, *, horizon_minutes
               (struct_ok or (mode == "v_donusu" and ret3 >= 0.30)))
     block_reason = None
     if not passes:
-        if exhausted:
-            block_reason = exhausted
+        if exhausted_block:
+            block_reason = exhausted_block
         elif rejection_wick:
             block_reason = f"ust_fitil_tuzagi:wick_{upper_wick_ratio:.2f}_z{upper_zscore:.1f}"
         elif not atr_passes:
@@ -282,8 +285,12 @@ def scan_symbol_at_tick(symbol: str, rows1m, rows5m, rows15m, *, horizon_minutes
         if not macd_strong and 0.0 < config.VELOCITY_TARGET_REALISM_MIN_ML_PROB:
             effective_target = min(effective_target, config.VELOCITY_TARGET_REALISM_MAX_PCT)
     velocity_score = round(velocity_score, 2)
+    if exhaustion_penalty:
+        velocity_score = round(velocity_score * float(getattr(config, "VELOCITY_EXHAUSTION_PENALTY_MULT", 0.85)), 2)
     # ---- Radar güçlendirme çarpanları ----
     _radar: dict = {}
+    if exhaustion_penalty:
+        _radar["exhaustion_penalty"] = exhausted
     if config.VELOCITY_TAKER_CONFIRM_ENABLED and len(rows) >= 10:
         _win = rows[-10:]
         _vol_sum = sum(float(r[5]) for r in _win)

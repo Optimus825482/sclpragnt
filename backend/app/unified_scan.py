@@ -555,6 +555,8 @@ async def combined_scan_rows() -> list[dict]:
             "radar": c.get("radar"),
             "radar_families": _fam_list,
             "blocked_by": blocked_by,
+            # 2026-10-17: kalkan rozeti (badge modu) — journal'da ayrı ölçülür, bildirim başlığına rozet.
+            "regime_badge": (c.get("master_surge") or {}).get("regime_badge") if isinstance(c.get("master_surge"), dict) else None,
             "_hit": hit,
         }
         out.append(row)

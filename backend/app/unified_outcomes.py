@@ -71,6 +71,8 @@ def _candidate_row(row: dict) -> dict | None:
         "detected_at": float(detected),
         # '' = kapıdan geçti; dolu = engel nedeni (BTC_BEAR_REGIME_SHIELD vb.). NULL yalnız eski satır.
         "blocked_by": str(row.get("blocked_by") or "")[:80],
+        # 2026-10-17: kalkan rozeti (RADAR_SHIELD_MODE=badge) — geçti ama BTC < EMA200 idi.
+        "regime_badge": (str(row.get("regime_badge") or "")[:40] or None),
     }
 
 

@@ -391,10 +391,11 @@ class RisingRiskGateTests(unittest.IsolatedAsyncioTestCase):
         deliver.assert_not_awaited()
 
     async def test_btc_bear_regime_blocks_rising_push(self):
-        """BTC 1H EMA200 ALTINDA (rejim kalkanı) → yükseliş push'u bloklanır."""
+        """BTC 1H EMA200 ALTINDA (rejim kalkanı) → RADAR_SHIELD_MODE=block iken yükseliş push'u bloklanır."""
         deliver = AsyncMock(return_value=None)
         grown = self._grown()
         with self._stack(deliver) as stack:
+            stack.enter_context(patch.object(monitoring.config, "RADAR_SHIELD_MODE", "block"))
             stack.enter_context(patch.object(rs, "detect_rising_candidates",
                                              MagicMock(return_value=[_candidate()])))
             _patch_rising_risk(stack)
@@ -405,6 +406,27 @@ class RisingRiskGateTests(unittest.IsolatedAsyncioTestCase):
             summary = await monitoring._run_rising_scan()
         self.assertEqual(0, summary["notified"], "ayı rejiminde yükseliş push'u bloklanmalı (P1-2)")
         deliver.assert_not_awaited()
+
+    async def test_btc_bear_regime_badge_mode_sends_rising_push_with_badge(self):
+        """2026-10-17: RADAR_SHIELD_MODE=badge (varsayılan) → push GİDER, zarf rozet + '⚠ BTC REJİM' başlığı taşır."""
+        deliver = AsyncMock(return_value=None)
+        grown = self._grown()
+        with self._stack(deliver) as stack:
+            stack.enter_context(patch.object(monitoring.config, "RADAR_SHIELD_MODE", "badge"))
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[_candidate()])))
+            _patch_rising_risk(stack)
+            await monitoring._run_rising_scan()
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[grown])))
+            _patch_rising_risk(stack, above_ema=False)
+            summary = await monitoring._run_rising_scan()
+        self.assertEqual(1, summary["notified"], "rozet modunda yükseliş push'u gitmeli")
+        deliver.assert_awaited()
+        notified = deliver.await_args.args[0]
+        envelope = notified[0] if isinstance(notified, (list, tuple)) else notified
+        self.assertEqual("BTC_BEAR_REGIME_SHIELD", envelope.get("regime_badge"))
+        self.assertTrue(str(envelope.get("title", "")).startswith("⚠ BTC REJİM"))
 
     async def test_extreme_long_funding_blocks_rising_push(self):
         """Aşırı şişkin long fonlaması → tasfiye riski → yükseliş push'u bloklanır."""

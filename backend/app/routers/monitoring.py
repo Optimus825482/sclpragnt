@@ -1411,7 +1411,10 @@ def _rising_risk_block_reason(symbol: str) -> tuple[str | None, dict]:
             if panic:
                 return "BTC_PANIC_DOWNTREND", evidence
             if bool(getattr(config, "BTC_REGIME_SHIELD_ENABLED", True)) and above_ema is False:
-                return "BTC_BEAR_REGIME_SHIELD", evidence
+                # 2026-10-17: RADAR_SHIELD_MODE=badge → sert blok değil, rozet (auto_paper ayrıca engeller).
+                if str(getattr(config, "RADAR_SHIELD_MODE", "badge")).lower() == "block":
+                    return "BTC_BEAR_REGIME_SHIELD", evidence
+                evidence["regime_badge"] = "BTC_BEAR_REGIME_SHIELD"
     # EXTREME_LONG (aşırı şişkin long tasfiye riski): freze listesinin aksine bu
     # hâl geçicidir → türev servisi adayın vadeli sembolünü haritalayabilir.
     try:
@@ -1483,6 +1486,11 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     title_prefix = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
     if _surge_block:
         prefix_str = title_prefix = f"⛔ RİSK KAPISI ({_surge_block}) · "
+    # 2026-10-17: rejim kalkanı rozeti — bildirim gider, başlık/mesaj "⚠ BTC REJİM" ile başlar.
+    _regime_badge = (c.get("master_surge") or {}).get("regime_badge") if isinstance(c.get("master_surge"), dict) else None
+    if _regime_badge:
+        prefix_str = "⚠ BTC REJİM · " + prefix_str
+        title_prefix = "⚠ BTC REJİM · " + title_prefix
     message = (
         f"{prefix_str}{sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str} | "
         f"Anlık: {base_price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
@@ -1495,6 +1503,8 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         "tag": f"monitoring-{sym}",
         "detected_at": detected_at,
         "score": score,
+        # 2026-10-17: kalkan rozeti (auto_paper bunu görünce otonom giriş AÇMAZ; rapor ayırabilir)
+        "regime_badge": _regime_badge,
         # BİRLEŞİK SİNYAL: hangi tespit algoritmaları bu bildirimi üretti
         # (DB `sources` kolonuna yazılır; rapor sayfası bunu gösterir).
         "sources": sources or ["velocity"],
@@ -2611,18 +2621,21 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
     # savunma derinliği (auto_paper `block_reason`/`master_surge_passed`
     # okur), (b) LLM ikinci göz kanıtı, (c) panel/rapor görünürlüğü içindir.
     _risk_reason, _risk_evidence = _rising_risk_block_reason(symbol)
+    _regime_badge = (_risk_evidence or {}).get("regime_badge")
+    _badge_prefix = "⚠ BTC REJİM · " if _regime_badge else ""
     message = (
-        f"🎯 {symbol} | Skor: {score:.1f} | Potansiyel: +%{target:g} (5dk){prox_txt} | "
+        f"{_badge_prefix}🎯 {symbol} | Skor: {score:.1f} | Potansiyel: +%{target:g} (5dk){prox_txt} | "
         f"Anlık: {price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
     )
     return {
         "symbol": symbol,
         "message": message,
-        "title": f"🎯 {symbol} · {label} +%{target:g} potansiyel",
+        "title": f"{_badge_prefix}🎯 {symbol} · {label} +%{target:g} potansiyel",
         "url": f"/charts?symbol={symbol}",
         "tag": f"rising-{symbol}",
         "detected_at": now,
         "score": score,
+        "regime_badge": _regime_badge,
         "target_pct": target,
         "price": price,
         "expected_price": expected_price,

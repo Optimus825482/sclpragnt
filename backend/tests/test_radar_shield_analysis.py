@@ -162,3 +162,15 @@ def test_save_unified_candidates_writes_blocked_by_and_placeholders_match(monkey
     assert "blocked_by" in sql
     assert sql.count("?") == len(params)          # kayan parametre = çalışma zamanında sessiz hata
     assert "BTC_BEAR_REGIME_SHIELD" in params
+
+
+def test_regime_badge_rows_form_their_own_group():
+    # 2026-10-17: RADAR_SHIELD_MODE=badge — kalkan açıkken geçen (rozetli) satır 'shield_badge' grubudur.
+    from scripts.radar_shield_analysis import classify_block
+    assert classify_block("", "BTC_BEAR_REGIME_SHIELD") == "shield_badge"
+    assert classify_block("", None) == "passed"
+    assert classify_block("", "") == "passed"
+    assert classify_block("BTC_BEAR_REGIME_SHIELD", "BTC_BEAR_REGIME_SHIELD") == "shield"
+    row = _candidate_row(_scan_row(regime_badge="BTC_BEAR_REGIME_SHIELD"))
+    assert row["blocked_by"] == "" and row["regime_badge"] == "BTC_BEAR_REGIME_SHIELD"
+    assert _candidate_row(_scan_row())["regime_badge"] is None

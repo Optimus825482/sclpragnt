@@ -46,6 +46,37 @@ router = APIRouter()
 VELOCITY_MIN_ATR_PCT = float(os.getenv("VELOCITY_MIN_ATR_PCT", "0.25"))  # 1m ATR% ≥ 0.25 → yüksek salınım rejimi (her iki mod)
 VELOCITY_MIN_BB_WIDTH_PCT = 2.5    # Bollinger(20,2) genişliği ≥ %2.5 (d=+0.73, en güçlü)
 VELOCITY_TREND_RSI_MIN = 60.0      # trend-içi mod: RSI ≥ 60 (momentum devam)
+
+_EXHAUSTION_PENALTY_PREFIXES = ("mfi_asiri_alim", "rsi_asiri_alim")
+
+
+def btc_shield_active() -> bool:
+    """BTC 1H EMA200 altı rejim kalkanı şu an açık mı? Yalnız önbellekten (ağ yok); ölçülemediyse False."""
+    try:
+        from app.macro_sentiment_service import get_cached_btc_compass
+        macro = get_cached_btc_compass(max_age_sec=120.0)
+    except Exception:
+        return False
+    return bool(isinstance(macro, dict) and macro.get("regime_shield_active"))
+
+
+def exhaustion_decision(exhausted: str | None, mode: str | None, shield_active: bool,
+                        exhaustion_mode: str | None = None) -> tuple[str | None, bool]:
+    """Aşırı alım/satım bayrağı → (eleme nedeni | None, skor cezası uygulansın mı).
+
+    2026-10-17 (docs/REJIM_KALKANI_ANALIZI_2026-10-17.md): `VELOCITY_EXHAUSTION_MODE=penalty`
+    iken trend_devam modundaki `mfi/rsi_asiri_alim` ELEME DEĞİL skor cezasıdır — yalnız BTC
+    rejim kalkanı KAPALIYKEN (kalkan açık + aşırı alım kesişimi ölçümde zayıf). Aşırı satım
+    (`mfi_asiri_satim`) ve diğer modlar eskisi gibi elenir. Canlı dedektör ve rescan çekirdeği
+    AYNI fonksiyonu çağırır (parite).
+    """
+    if not exhausted:
+        return None, False
+    em = str(exhaustion_mode if exhaustion_mode is not None else getattr(config, "VELOCITY_EXHAUSTION_MODE", "penalty")).lower()
+    if (em == "penalty" and mode == "trend_devam" and not shield_active
+            and str(exhausted).startswith(_EXHAUSTION_PENALTY_PREFIXES)):
+        return None, True
+    return exhausted, False
 VELOCITY_REVERSAL_RSI_MAX = 35.0   # V-dönüşü mod: RSI ≤ 35 (aşırı satımdan sıçrama)
 VELOCITY_STRUCT_SLOPE_PCT = 0.20   # LinReg(20) eğimi ≥ %0.2/10bar VEYA Aroon ≥ +50
 # Aşırı uç elme: MFI/RSI tükenmişlikte +%2 olasılığı bazın altına düşüyor
@@ -682,6 +713,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 exhausted = f"mfi_asiri_satim:{mfi:.0f}"
             elif rsi >= VELOCITY_RSI_UPPER:
                 exhausted = f"rsi_asiri_alim:{rsi:.0f}"
+            # 2026-10-17: trend_devam'da aşırı alım → eleme yerine skor cezası (bkz. exhaustion_decision).
+            exhausted_block, exhaustion_penalty = exhaustion_decision(exhausted, mode, btc_shield_active())
             # Profil bazlı ATR eşiği: kalibrasyon 5dk/15dk için ayrı kaydeder;
             # yoksa global varsayılan kullanılır.
             prof_key = f"{horizon_minutes}m"
@@ -709,7 +742,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             atr_passes = bool(atr_pct >= prof_atr or (is_breakout and atr_pct >= breakout_floor))
 
             # notr modu (RSI 35-60) da aday olabilir: yalnızca yapısal teyit (struct_ok) aranir.
-            passes = (exhausted is None and
+            passes = (exhausted_block is None and
                       not rejection_wick and
                       atr_passes and
                       bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
@@ -722,8 +755,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # hangi kapıya takıldığını arayüz gösterebilsin (2026-09-04).
             block_reason = None
             if not passes:
-                if exhausted:
-                    block_reason = exhausted  # örn. mfi_asiri_alim:85
+                if exhausted_block:
+                    block_reason = exhausted_block  # örn. mfi_asiri_alim:85
                 elif rejection_wick:
                     block_reason = f"ust_fitil_tuzagi:wick_{upper_wick_ratio:.2f}_z{upper_zscore:.1f}"
                 elif not atr_passes:
@@ -1108,6 +1141,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # kapısı bu bloktan ÖNCE hesaplandığı için değişmez. Tüm bulgular
             # `radar` alanında raporlanır (UI/journal açıklayabilir).
             _radar: dict = {}
+            # 2026-10-17: aşırı alım skor cezası (trend_devam, kalkan kapalı) — passes kapısından BAĞIMSIZ.
+            if exhaustion_penalty:
+                velocity_score = round(velocity_score * float(getattr(config, "VELOCITY_EXHAUSTION_PENALTY_MULT", 0.85)), 2)
+                _radar["exhaustion_penalty"] = exhausted
             # 1.2 TAKER TEYİDİ: son 10 kapanmış 1m barda agresif alıcı payı
             # (takerBuyBaseVolume[9] / volume[5]). Yükselişte alıcı payı zayıfsa
             # (≤0.45) skor cezalanır, güçlüyse (≥0.58) küçük bonus. Eski 9-sütun

@@ -613,7 +613,14 @@ def evaluate_master_surge(
             gate_reason = "COMPOSITE_BELOW_MIN"
 
     # Koruma filtreleri: BTC 1H EMA200 makro rejim kalkanı, BTC panik şelalesi veya aşırı şişkin long tasfiye riski
-    if btc_regime_blocked and sym not in ("BTCTRY", "BTCUSDT"):
+    regime_badge = None
+    shield_mode = str(getattr(config, "RADAR_SHIELD_MODE", "badge")).lower()
+    if btc_regime_blocked and sym not in ("BTCTRY", "BTCUSDT") and shield_mode != "block":
+        # 2026-10-17 (docs/REJIM_KALKANI_ANALIZI_2026-10-17.md): kalkan artık DUVAR değil ROZET —
+        # aday geçer, bildirim "⚠ BTC REJİM" etiketiyle gider; otonom paper girişini auto_paper
+        # kendi kontrolüyle engeller. RADAR_SHIELD_MODE=block eski davranışı geri getirir.
+        regime_badge = "BTC_BEAR_REGIME_SHIELD"
+    if btc_regime_blocked and sym not in ("BTCTRY", "BTCUSDT") and shield_mode == "block":
         passed = False
         block_reason = "BTC_BEAR_REGIME_SHIELD"
     elif btc_panic_blocked and sym not in ("BTCTRY", "BTCUSDT"):
@@ -643,6 +650,8 @@ def evaluate_master_surge(
     }
     if block_reason:
         result["block_reason"] = block_reason
+    if regime_badge:
+        result["regime_badge"] = regime_badge
     if applied_derivatives:
         result["derivatives"] = applied_derivatives
     if macro_sentiment:

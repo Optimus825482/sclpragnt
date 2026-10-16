@@ -27,8 +27,8 @@ export default {
         }
       },
       fontFamily: {
-        // 2026-10-17 (basit arayüz): Roboto öncelikli, Inter yedek.
-        sans: ["var(--font-roboto)", "var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        // 2026-10-17 (basit arayüz): IBM Plex Sans öncelikli, Inter yedek.
+        sans: ["var(--font-plex)", "var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
         display: ["var(--font-display)", "var(--font-sans)", "sans-serif"],
         mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"]
       }

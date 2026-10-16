@@ -99,3 +99,16 @@ TP 1,5 / 2,0, SL −3, maliyet −0,225, 60 dk. Ham çıktı `backend/work/ladde
 **Sınırlar:** 21 gün tek dönem; kalkan günleri kümelenmiş (rejim-dönem karışıklığı olası); rescan sapmaları
 (spread/taker/ML hedef, kadans 5 dk) `docs/RESCAN_HARNESS.md`; giriş gecikmesiz; 16 hücrelik ızgarada en iyi hücre
 iyimser; şans tabanı örneklemde. Canlı kod değiştirilmedi; `--no-exhaustion-gate` yalnız analiz bayrağıdır.
+
+## 6. Uygulama (2026-10-17, aynı gün)
+
+- `RADAR_SHIELD_MODE=badge` (varsayılan): Master Surge ve yükseliş yolunda kalkan artık `passes=False` üretmez;
+  aday `regime_badge="BTC_BEAR_REGIME_SHIELD"` taşır, bildirim başlığı/mesajı "⚠ BTC REJİM · " ile başlar,
+  `monitoring_notifications` zarfına ve `unified_candidate_outcomes.regime_badge` (migration 019) kolonuna yazılır.
+  `auto_paper.try_open_from_notification` rozeti ya da anlık kalkanı görünce otonom girişi yine engeller
+  (`risk_blocked:BTC_BEAR_REGIME_SHIELD`). `block` eski davranışı geri getirir.
+- `VELOCITY_EXHAUSTION_MODE=penalty` (varsayılan) + `VELOCITY_EXHAUSTION_PENALTY_MULT=0.85`: trend_devam modunda
+  `mfi/rsi_asiri_alim` eleme değil skor cezası; yalnız kalkan kapalıyken (kalkan açıkken eleme sürer). Canlı dedektör
+  ve rescan çekirdeği `velocity.exhaustion_decision` ile aynı kararı verir; `radar.exhaustion_penalty` bayrağı.
+- Ölçüm: `scripts/radar_shield_analysis.py` artık `shield_badge` (rozetle giden) grubunu ayrı raporlar; 14 gün sonra
+  `passed` ile kıyaslanmalı. Merdiven dedektörü canlıya alınmadı.

@@ -560,6 +560,19 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         if block_reason:
             logger.warning("auto_paper %s: risk engeli devrede (%s) — açılmadı", symbol, block_reason)
             return _blocked(symbol, f"risk_blocked:{block_reason}", block_reason=block_reason)
+        # 2026-10-17 (RADAR_SHIELD_MODE=badge): bildirim rozetle GİDER ama otonom giriş yine
+        # engellenir — hem zarftaki rozet hem anlık kalkan durumu (yükseliş/hızlı yol zarfları için).
+        _regime_badge = notification.get("regime_badge")
+        if not _regime_badge and str(getattr(config, "RADAR_SHIELD_MODE", "badge")).lower() != "block":
+            try:
+                from app.routers.velocity import btc_shield_active
+                if symbol not in ("BTCTRY", "BTCUSDT") and btc_shield_active():
+                    _regime_badge = "BTC_BEAR_REGIME_SHIELD"
+            except Exception:
+                _regime_badge = None
+        if _regime_badge:
+            logger.info("auto_paper %s: BTC rejim kalkanı (rozet modu) — otonom giriş açılmadı", symbol)
+            return _blocked(symbol, f"risk_blocked:{_regime_badge}", block_reason=_regime_badge)
         if notification.get("master_surge_passed") is False:
             logger.warning("auto_paper %s: Master Surge kontrolünden geçmedi — açılmadı", symbol)
             return _blocked(symbol, "master_surge_failed")

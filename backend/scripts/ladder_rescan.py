@@ -124,6 +124,7 @@ def chance_lift(sigs: list[dict], store: CandleStore, *, tp: float, sample_n: in
 
 
 def _pct(v): return "—" if v is None else f"%{100 * v:.1f}"
+def _mins(v, suffix=""): return "—" if v is None else f"{v:.0f}{suffix}"
 def _t(v): return "" if v is None else f" (t {v:+.1f})"
 
 
@@ -193,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         md.append(f"| {p['n_bars']} | {p['gain_min']} | {p['vol_min']} | {p['rsi_max']:.0f} | {s0.get('n', 0)} | {c['per_day'] or 0:.0f} | "
                   f"{_pct(s0.get('hit'))}{ci_s} | {s0.get('net', 0):+.2f}{_t(s0.get('t'))} | {_pct(s1.get('hit'))} | {s1.get('net', 0):+.2f}{_t(s1.get('t'))} | "
                   f"{s0.get('mfe', 0):+.2f} | {s0.get('mae', 0):+.2f} | {_pct(c['lead_share'])} | "
-                  f"{'—' if c['lead_median'] is None else f'{c['lead_median']:.0f}'} | {_pct(c['coverage'])} | {c['new_n']} · {_pct(nn.get('hit'))} |")
+                  f"{_mins(c['lead_median'])} | {_pct(c['coverage'])} | {c['new_n']} · {_pct(nn.get('hit'))} |")
 
     scored = [c for c in cells if c["stats"][tp0].get("n", 0) >= 100]
     best = max(scored, key=lambda c: c["stats"][tp0][args.best_by]) if scored else None
@@ -214,8 +215,8 @@ def main(argv: list[str] | None = None) -> int:
                f"- BTC kalkan KAPALI: n={sf.get('n', 0)} hit {_pct(sf.get('hit'))} net {sf.get('net', 0):+.2f}{_t(sf.get('t'))} · "
                f"kalkan AÇIK: n={so.get('n', 0)} hit {_pct(so.get('hit'))} net {so.get('net', 0):+.2f}{_t(so.get('t'))}.",
                f"- Hız Avcısı adayı sinyalden sonra 90 dk içinde geldi: {_pct(best['lead_share'])}; öncülük medyanı "
-               f"{'—' if best['lead_median'] is None else f'{best['lead_median']:.0f} dk'}. Hız Avcısı bölümlerinin {_pct(best['coverage'])}'i "
-               f"merdiven sinyaliyle önceden yakalanmış (medyan {'—' if best['coverage_lead'] is None else f'{best['coverage_lead']:.0f} dk'} önce).",
+               f"{_mins(best['lead_median'], ' dk')}. Hız Avcısı bölümlerinin {_pct(best['coverage'])}'i "
+               f"merdiven sinyaliyle önceden yakalanmış (medyan {_mins(best['coverage_lead'], ' dk')} önce).",
                f"- Yeni yakalama (±90 dk'da HA adayı yok): n={best['new_n']}, hit60 {_pct(best['new_stats'][tp0].get('hit'))}, "
                f"net {best['new_stats'][tp0].get('net', 0):+.2f}{_t(best['new_stats'][tp0].get('t'))}."]
         summary["best"] = {"params": best["params"], "chance": ch, "shield_on": so, "shield_off": sf}

@@ -33,19 +33,21 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from scripts.radar_lift_analysis import _to_bool, wilson_interval  # noqa: E402
 
-GROUPS = ("passed", "shield", "layer1", "other_gate")
+# 2026-10-17: "shield_badge" = RADAR_SHIELD_MODE=badge ile kalkan açıkken ROZETLE GİDEN bildirimler
+# (blocked_by='' ama regime_badge dolu); "passed" artık yalnız kalkan kapalıyken geçenler.
+GROUPS = ("passed", "shield_badge", "shield", "layer1", "other_gate")
 DEFAULT_MIN_N = 30
 TIGHT_MARGIN = 0.05     # hit(kalkan) >= hit(geçen) - 5 puan  -> fazla sıkı
 WORKING_MARGIN = 0.10   # hit(kalkan) <  hit(geçen) - 10 puan -> işe yarıyor
 
 
-def classify_block(raw: Any) -> str:
-    """blocked_by -> grup. None = eski satır ('legacy'), '' = geçti."""
+def classify_block(raw: Any, regime_badge: Any = None) -> str:
+    """blocked_by -> grup. None = eski satır ('legacy'), '' = geçti ('passed'; rozetliyse 'shield_badge')."""
     if raw is None:
         return "legacy"
     text = str(raw).strip()
     if not text:
-        return "passed"
+        return "shield_badge" if str(regime_badge or "").strip() else "passed"
     if text == "BTC_BEAR_REGIME_SHIELD":
         return "shield"
     if text.startswith("master_surge_katman1"):
@@ -77,7 +79,7 @@ def compute_shield_report(rows: list[dict], min_n: int = DEFAULT_MIN_N) -> dict:
     legacy = 0
     acc: dict[str, list[tuple[bool, float | None, float | None, int]]] = {g: [] for g in GROUPS}
     for row in rows:
-        group = classify_block(_blocked_value(row))
+        group = classify_block(_blocked_value(row), row.get("regime_badge"))
         if group == "legacy":
             legacy += 1
             continue
@@ -116,7 +118,9 @@ def compute_shield_report(rows: list[dict], min_n: int = DEFAULT_MIN_N) -> dict:
 
 def verdict(report: dict, min_n: int = DEFAULT_MIN_N) -> str:
     """Ön kayıtlı karar kuralını uygular (bkz. modül başı)."""
-    passed, shield = report["passed"], report["shield"]
+    passed = report["passed"]
+    # 2026-10-17: badge modunda kalkan satırı üretilmez; kıyas rozetle geçenlerle (kalkan açıkken giden) yapılır.
+    shield = report["shield"] if report["shield"].get("n", 0) >= min_n else report.get("shield_badge", report["shield"])
     if passed["n"] < min_n or shield["n"] < min_n:
         return "YETERSIZ_VERI"
     diff = shield["hit_rate"] - passed["hit_rate"]
@@ -141,7 +145,7 @@ def _load_from_db(url: str, days: float) -> list[dict]:
     import psycopg
 
     since = time.time() - days * 86400.0
-    cols = ("blocked_by", "hit", "mfe_pct", "mae_pct", "horizon_minutes", "detected_at")
+    cols = ("blocked_by", "hit", "mfe_pct", "mae_pct", "horizon_minutes", "detected_at", "regime_badge")
     sql = (f"SELECT {', '.join(cols)} FROM unified_candidate_outcomes "
            "WHERE outcome_filled_at IS NOT NULL AND detected_at >= %s ORDER BY detected_at")
     with psycopg.connect(url, connect_timeout=8) as conn:
@@ -175,7 +179,8 @@ def _print_report(report: dict, label: str, min_n: int) -> None:
     print()
     print("| Grup | n | hit % | 95% CI | ort. MFE % | ort. MAE % |")
     print("|---|---:|---:|---|---:|---:|")
-    names = {"passed": "geçti (bildirim)", "shield": "kalkan (BTC_BEAR_REGIME_SHIELD)",
+    names = {"passed": "geçti (bildirim, kalkan kapalı)", "shield_badge": "rozetle geçti (kalkan açık, RADAR_SHIELD_MODE=badge)",
+             "shield": "kalkan (BTC_BEAR_REGIME_SHIELD, block modu)",
              "layer1": "katman 1 (likidite)", "other_gate": "diğer kapılar"}
     for g in GROUPS:
         print(_row_md(names[g], report[g]))
