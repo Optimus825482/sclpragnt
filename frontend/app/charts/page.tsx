@@ -116,7 +116,6 @@ export default function ChartsPage() {
     const [instances, setInstances] = useState<IndicatorInstance[]>(DEFAULT_INSTANCES);
     const [picking, setPicking] = useState(false);
     const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
-    const [volumeVisible, setVolumeVisible] = useState(false);
     const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
     const [showPositions, setShowPositions] = useState(true);
     const [showStopTakeProfit, setShowStopTakeProfit] = useState(true);
@@ -289,10 +288,8 @@ export default function ChartsPage() {
     // sembol/ufuk DEĞİŞTİĞİNDE bir kez sığdırılır; sonrası kullanıcının görünümünde
     // tazelenir (canlı mum akmaya devam eder, görünüm kaymaz).
     const fittedForRef = useRef<string>("");
-    const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
     const overlaySeries = useRef<Map<string, ISeriesApi<"Line">[]>>(new Map());
     const paneSeries = useRef<Map<string, (ISeriesApi<"Line"> | ISeriesApi<"Histogram">)[]>>(new Map());
-    const volumePaneIndexRef = useRef<number | null>(null);
     // pane yükseklikleri: "main" | "volume" | indikatör uid anahtarıyla saklanır — index bazlı değil,
     // böylece hacim kapatılıp paneler kayınca yükseklikler doğru pane'e uygulanır
     const paneHeightsRef = useRef<Record<string, number>>(
@@ -792,34 +789,12 @@ export default function ChartsPage() {
         }));
         paneSeries.current.clear();
 
-        if (volumeRef.current) {
-            try { chart.removeSeries(volumeRef.current); } catch { }
-        }
-        volumeRef.current = null;
-        volumePaneIndexRef.current = null;
-
         while (chart.panes().length > 1) chart.removePane(1);
         chart.chartElement().querySelectorAll(".pane-title").forEach((n) => n.remove());
 
         const instPanes = new Map<string, number>(); // uid -> pane index
         let paneIdx = 1;
 
-        // HACİM pane'i (isteğe bağlı)
-        if (volumeVisible) {
-            const volData = bars.map((b) => ({
-                time: b.time as UTCTimestamp,
-                value: b.volume,
-                color: b.close >= b.open ? "rgba(16,185,129,0.45)" : "rgba(239,68,68,0.45)"
-            }));
-            const volumeSeries = chart.addSeries(HistogramSeries, {
-                priceLineVisible: false, lastValueVisible: false
-            }, paneIdx);
-            volumeSeries.setData(volData);
-            volumeRef.current = volumeSeries;
-            volumePaneIndexRef.current = paneIdx;
-            chart.priceScale("right", paneIdx).applyOptions({ scaleMargins: { top: 0.25, bottom: 0.02 } });
-            paneIdx++;
-        }
         for (const inst of instances) {
             const entry = findIndicatorEntry(inst.registryId);
             if (!entry) continue;
@@ -1026,7 +1001,6 @@ export default function ChartsPage() {
         // (plot üretemeyen) indikatörler pane açmaz; hepsi için anahtar üretmek
         // kayıtlı yüksekliklerin yanlış pane'lere uygulanmasına yol açar.
         const paneKeys: string[] = ["main"];
-        if (volumeVisible) paneKeys.push("volume");
         [...instPanes.entries()].sort(([, a], [, b]) => a - b).forEach(([key]) => paneKeys.push(key));
         // Kaydedilmiş yükseklikleri koru, ancak eski 44/56px kayıtları okunabilir
         // minimumun altına inemesin. Gerekirse canvas büyür; panel sıkışmaz.
@@ -1050,20 +1024,6 @@ export default function ChartsPage() {
             el.querySelectorAll(".pane-title").forEach((n) => n.remove());
             const rows = Array.from(el.querySelectorAll("table tr"));
             const paneCount = chart.panes().length;
-            if (!volumeVisible) {
-                const toggle = document.createElement("div");
-                toggle.className = "pane-title";
-                toggle.style.cssText = `position:absolute;top:4px;left:8px;z-index:5;display:flex;align-items:center;gap:5px;background:rgba(11,15,20,0.9);border:1px solid #1f2937;border-radius:6px;padding:2px 7px;font-family:JetBrains Mono,monospace;font-size:11px;color:#9ca3af;cursor:pointer;pointer-events:auto;`;
-                const label = document.createElement("span");
-                label.innerText = "HACİM KAPALI";
-                const open = document.createElement("button");
-                open.innerText = "＋";
-                open.style.cssText = "background:none;border:none;color:#34d399;cursor:pointer;font-size:11px;padding:0 2px;";
-                open.title = "Aç";
-                open.onclick = () => setVolumeVisible(true);
-                toggle.append(label, open);
-                el.appendChild(toggle);
-            }
             for (let i = 1; i < paneCount; i++) {
                 const tr = rows[2 * i];
                 if (!tr) continue;
@@ -1072,53 +1032,38 @@ export default function ChartsPage() {
                 td.style.position = "relative";
 
                 let bar: HTMLDivElement;
-                if (volumeVisible && i === 1) {
-                    // HACİM başlığı (kapama butonu ile)
-                    bar = document.createElement("div");
-                    bar.className = "pane-title";
-                    bar.style.cssText = `position:absolute;top:4px;left:8px;z-index:5;display:flex;align-items:center;gap:5px;background:rgba(11,15,20,0.9);border:1px solid #1f2937;border-radius:6px;padding:2px 7px;font-family:JetBrains Mono,monospace;font-size:11px;color:#9ca3af;cursor:default;pointer-events:auto;`;
-                    const name = document.createElement("span");
-                    name.innerText = "HACİM";
-                    const close = document.createElement("button");
-                    close.innerText = "✕";
-                    close.style.cssText = "background:none;border:none;color:#9ca3af;cursor:pointer;font-size:11px;padding:0 2px;";
-                    close.title = "Kapat";
-                    close.onclick = () => setVolumeVisible(false);
-                    bar.append(name, close);
-                } else {
-                    const inst = [...instances].find((x) => instPanes.get(x.uid) === i);
-                    if (!inst) continue;
-                    bar = document.createElement("div");
-                    bar.className = "pane-title";
-                    bar.style.cssText = `position:absolute;top:4px;left:8px;z-index:5;display:flex;align-items:center;gap:5px;background:rgba(11,15,20,0.9);border:1px solid #1f2937;border-radius:6px;padding:2px 7px;font-family:JetBrains Mono,monospace;font-size:11px;color:#34d399;cursor:default;pointer-events:auto;`;
-                    const name = document.createElement("span");
-                    name.innerText = inst.name;
-                    const gear = document.createElement("button");
-                    gear.innerText = "⚙";
-                    gear.style.cssText = "background:none;border:none;color:#9ca3af;cursor:pointer;font-size:11px;padding:0 2px;";
-                    gear.title = "Ayarlar";
-                    gear.onclick = () => {
-                        const entry = findIndicatorEntry(inst.registryId);
-                        if (entry) setEditTarget({ entry, editUid: inst.uid });
-                    };
-                    const x = document.createElement("button");
-                    x.innerText = "✕";
-                    x.style.cssText = "background:none;border:none;color:#9ca3af;cursor:pointer;font-size:11px;padding:0 2px;";
-                    x.title = "Kaldır";
-                    x.onclick = () => removeIndicator(inst.uid);
-                    bar.append(name, gear, x);
-                }
+                const inst = [...instances].find((x) => instPanes.get(x.uid) === i);
+                if (!inst) continue;
+                bar = document.createElement("div");
+                bar.className = "pane-title";
+                bar.style.cssText = `position:absolute;top:4px;left:8px;z-index:5;display:flex;align-items:center;gap:5px;background:rgba(11,15,20,0.9);border:1px solid #1f2937;border-radius:6px;padding:2px 7px;font-family:JetBrains Mono,monospace;font-size:11px;color:#34d399;cursor:default;pointer-events:auto;`;
+                const name = document.createElement("span");
+                name.innerText = inst.name;
+                const gear = document.createElement("button");
+                gear.innerText = "⚙";
+                gear.style.cssText = "background:none;border:none;color:#9ca3af;cursor:pointer;font-size:11px;padding:0 2px;";
+                gear.title = "Ayarlar";
+                gear.onclick = () => {
+                    const entry = findIndicatorEntry(inst.registryId);
+                    if (entry) setEditTarget({ entry, editUid: inst.uid });
+                };
+                const x = document.createElement("button");
+                x.innerText = "✕";
+                x.style.cssText = "background:none;border:none;color:#9ca3af;cursor:pointer;font-size:11px;padding:0 2px;";
+                x.title = "Kaldır";
+                x.onclick = () => removeIndicator(inst.uid);
+                bar.append(name, gear, x);
                 td.appendChild(bar);
             }
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [bars, instances, volumeVisible]);
+    }, [bars, instances]);
 
     // yapı değişince (indikatör/hacim) yeniden inşa et + yükseklik uygula
     useEffect(() => {
         buildLayout(false);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [instances, volumeVisible]);
+    }, [instances]);
 
     // bars canlı güncellenince sadece veriyi yeniden çiz — yükseklikleri EZME
     useEffect(() => {
@@ -1408,14 +1353,13 @@ export default function ChartsPage() {
         localStorage.setItem(LS_INTERVAL, JSON.stringify(i));
     };
 
-    // seçili sembolün grafik ayarlarını veritabanına kaydet (indikatör, TF, pane yükseklikleri, hacim)
+    // seçili sembolün grafik ayarlarını veritabanına kaydet (indikatör, TF, pane yükseklikleri)
     const saveToDb = async () => {
         setSaveState("saving");
         const payload = {
             interval,
             indicators: instances,
             paneHeights: paneHeightsRef.current,
-            volumeVisible,
             display: { showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines } satisfies DisplaySettings
         };
         try {
@@ -1460,7 +1404,6 @@ export default function ChartsPage() {
                 paneHeightsRef.current = st.paneHeights;
                 try { localStorage.setItem(LS_PANE_HEIGHTS, JSON.stringify(st.paneHeights)); } catch { }
             }
-            if (typeof st.volumeVisible === "boolean") setVolumeVisible(st.volumeVisible);
             if (typeof st.display?.showPositions === "boolean") setShowPositions(st.display.showPositions);
             if (typeof st.display?.showStopTakeProfit === "boolean") setShowStopTakeProfit(st.display.showStopTakeProfit);
             if (typeof st.display?.showPatterns === "boolean") setShowPatterns(st.display.showPatterns);
@@ -1743,20 +1686,6 @@ export default function ChartsPage() {
                     </span>
                 ))}
                 <span className="mx-1 h-5 w-px bg-bunker-800" aria-hidden="true" />
-                {/* Hacim aç/kapa — grafiğin üst kısmında, artı butonunun yanında */}
-                <button
-                    type="button"
-                    role="switch"
-                    aria-checked={volumeVisible}
-                    onClick={() => setVolumeVisible((v) => !v)}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono text-xs transition-colors ${volumeVisible
-                        ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
-                        : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"
-                        }`}
-                    title="Hacim panelini aç/kapat"
-                >
-                    <span className="text-[11px]">◧</span> HACİM {volumeVisible ? "AÇIK" : "KAPALI"}
-                </button>
                 <button
                     type="button"
                     onClick={() => setPicking(true)}
@@ -1788,7 +1717,6 @@ export default function ChartsPage() {
                     </div>
                     <div className="grid grid-cols-1 gap-2 overflow-y-auto p-3 sm:grid-cols-2">
                         {[
-                            { checked: volumeVisible, setChecked: setVolumeVisible, title: "Hacim paneli", description: "Hacim mumlarını göster." },
                             { checked: showPositions, setChecked: setShowPositions, title: "Pozisyonlar", description: "Giriş çizgisi ve işareti." },
                             { checked: showStopTakeProfit, setChecked: setShowStopTakeProfit, title: "SL / TP", description: "Kayıtlı hedef ve stop seviyeleri." },
                             { checked: showPatterns, setChecked: setShowPatterns, title: "Formasyonlar", description: "Teyitli mum formasyonları." },
