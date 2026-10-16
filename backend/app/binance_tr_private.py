@@ -51,6 +51,14 @@ REST_RETRY_AFTER_MAX_SEC = 300.0
 # #33: private tarafta ortak eşzamanlılık sınırı.
 PRIVATE_MAX_CONCURRENCY = 3
 _PRIVATE_SEMAPHORE = threading.Semaphore(PRIVATE_MAX_CONCURRENCY)
+# Emir POST'ları okuma yoğunluğunda (bakiye/sembol taraması) yuva beklemesin diye ayrı yuva.
+ORDER_MAX_CONCURRENCY = 4
+_ORDER_SEMAPHORE = threading.Semaphore(ORDER_MAX_CONCURRENCY)
+_ORDER_PATHS = ("/open/v1/orders", "/open/v1/orders/oco")
+
+
+def _semaphore_for(method: str, path: str) -> threading.Semaphore:
+    return _ORDER_SEMAPHORE if method.upper() == "POST" and path in _ORDER_PATHS else _PRIVATE_SEMAPHORE
 _SERVER_TIME_TTL_SEC = 60.0
 
 _used_weight_1m = 0
@@ -347,7 +355,7 @@ def _signed_request(method: str, path: str, params: dict | None,
     can_retry_post = False
     # #33: imzalı uçlara ortak eşzamanlılık sınırı. Sembol taraması gibi
     # yüzlerce çağrılık patlamalar bakiye/emir uçlarını tek anda doyuruyordu.
-    with _PRIVATE_SEMAPHORE:
+    with _semaphore_for(method, path):
         for attempt in range(1, REST_MAX_ATTEMPTS + 1):
             if attempt == 1:
                 _throttle_private_request()

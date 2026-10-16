@@ -194,11 +194,13 @@ from app.routers import auto_paper as auto_paper_routes
 from app.routers import macd_monitor as macd_monitor_routes
 from app.routers import snapback as snapback_routes
 from app.routers import user_prefs as user_prefs_routes
+from app.routers import binance_trade as binance_trade_routes
 from app.routers import journal as journal_routes
 app.include_router(auto_paper_routes.router)
 app.include_router(macd_monitor_routes.router)
 app.include_router(snapback_routes.router)
 app.include_router(user_prefs_routes.router)
+app.include_router(binance_trade_routes.router)
 app.include_router(journal_routes.router)
 
 
@@ -3196,6 +3198,7 @@ async def save_binance_settings(payload: dict, request: Request):
     if has_key_fields:
         if not api_key or not api_secret:
             raise HTTPException(status_code=422, detail="API key ve secret gerekli")
+        await _verify_binance_keys(api_key, api_secret)
         enc_key = llm_analysis.encrypt_key(api_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
         enc_secret = llm_analysis.encrypt_key(api_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
         await database.save_user_binance_keys(user_id, enc_key, enc_secret, real_val)
@@ -3221,6 +3224,17 @@ async def save_binance_settings(payload: dict, request: Request):
         request=request,
     )
     return {"ok": True, "configured": True, "sell_enabled": sell_ok, "sell_source": sell_source}
+
+async def _verify_binance_keys(api_key: str, api_secret: str) -> None:
+    """Kaydetmeden önce anahtarı borsada dener (hesap bakiyesi okuma). Başarısızsa 422; anahtar loga/yanıta yazılmaz."""
+    try:
+        await asyncio.to_thread(get_account_balance, api_key, api_secret, True)
+    except Exception as exc:
+        logger.info("Binance TR anahtar doğrulaması başarısız: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=422,
+            detail="API anahtarı doğrulanamadı. Anahtarı, gizli anahtarı ve 'okuma' iznini kontrol edin") from None
+
 
 async def _decrypt_binance_creds(request) -> tuple[str, str]:
     """Oturumdaki kullanıcının Binance key/secret'ını çöz (çok kullanıcılı).
@@ -3768,29 +3782,41 @@ async def binance_buy(payload: dict, request: Request):
     await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_BUY",
                           target=asset, details={"asset": asset, **result}, request=request)
     notify_requested = bool(payload.get("notify"))
-    notification_result = None
     if notify_requested:
+        # Push emir yanıtını GECİKTİRMEZ: arka planda gönderilir (hata yalnız loglanır).
+        _spawn_background(_send_admin_trade_push(str(principal.get("username") or ""), symbol_u, result))
+    return {"ok": True, "notify": {"queued": True} if notify_requested else None, **result}
+
+
+_BACKGROUND_TASKS: set = set()
+
+
+def _spawn_background(coro) -> None:
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
+async def _send_admin_trade_push(username: str, symbol_u: str, result: dict) -> None:
+    try:
+        recipients = _parse_recipients(await database.get_llm_setting(
+            ADMIN_TRADE_NOTIFY_RECIPIENTS_KEY, "[]"))
+        if not recipients:
+            return
         try:
-            recipients = _parse_recipients(await database.get_llm_setting(
-                ADMIN_TRADE_NOTIFY_RECIPIENTS_KEY, "[]"))
-            if recipients:
-                try:
-                    price = float(result.get("avg_price") or 0) or None
-                except (TypeError, ValueError):
-                    price = None
-                price_txt = _fmt_tr_price(price) if price else "—"
-                notification_result = await alerting.deliver_web_push(
-                    f"{principal.get('username')} kullanıcısı "
-                    f"{str(symbol_u).replace('_', '')} sembolünde "
-                    f"{price_txt} fiyatla pozisyon açtı",
-                    title="Scalper Agent · İşlem Bildirimi",
-                    url="/binance-tr", tag="admin-trade",
-                    extra={"source": "admin_real_buy", "symbol": symbol_u},
-                    usernames=recipients)
-        except Exception as notify_exc:
-            # Bildirim arızası başarılı emri BOZMAMALI; yalnız loglanır.
-            logger.warning("Admin işlem bildirimi gönderilemedi: %s", notify_exc)
-    return {"ok": True, "notify": notification_result, **result}
+            price = float(result.get("avg_price") or 0) or None
+        except (TypeError, ValueError):
+            price = None
+        price_txt = _fmt_tr_price(price) if price else "—"
+        await alerting.deliver_web_push(
+            f"{username} kullanıcısı {str(symbol_u).replace('_', '')} sembolünde {price_txt} fiyatla pozisyon açtı",
+            title="Scalper Agent · İşlem Bildirimi",
+            url="/binance-tr", tag="admin-trade",
+            extra={"source": "admin_real_buy", "symbol": symbol_u},
+            usernames=recipients)
+    except Exception as notify_exc:
+        # Bildirim arızası başarılı emri BOZMAMALI; yalnız loglanır.
+        logger.warning("Admin işlem bildirimi gönderilemedi: %s", notify_exc)
 
 
 def _fmt_tr_price(value: float) -> str:
