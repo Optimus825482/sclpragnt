@@ -1,9 +1,18 @@
 "use client";
 import dynamic from "next/dynamic";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { call, type Holding } from "../../../lib/tradeApi";
-import { SMALL_BALANCE_TRY, errorText, filterSmallBalances, fmtPct, fmtPrice, fmtQty, fmtSignedTry, fmtTry, newClientOrderId } from "../../../lib/tradeUi";
+import { SMALL_BALANCE_TRY, filterSmallBalances, fmtPct, fmtPrice, fmtQty, fmtSignedTry, fmtTry } from "../../../lib/tradeUi";
+import { applyCommissionPct, commissionPct } from "../../../lib/pnl";
+import {
+  UncertainOrderError, describeSellFill, floorQty, orderFailureText, postJsonGuarded, uncertainOrderText, type SellFillBody,
+} from "../../../binance-tr/orderSafety";
 import ConfirmDialog from "./ConfirmDialog";
+import UncertainOrderNotice from "./UncertainOrderNotice";
+import {
+  describeOrderLookup, holdingNetPnl, intentId, isDefinitiveReject, minNotionalError, priceAgeInfo, resetIntent, sellIntentKey,
+  sellStatusSymbols, type IntentRef,
+} from "./orderIntent";
 
 const CHIPS = [25, 50, 75, 100];
 
@@ -22,8 +31,19 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToas
   const [chip, setChip] = useState(100);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  const [done, setDone] = useState("");
-  const clientId = useRef("");
+  const [done, setDone] = useState<{ text: string; partial: boolean } | null>(null);
+  // 2026-10-16 (basit arayüz): client_order_id "emir niyeti" (varlık+oran/miktar) başına BİR kez üretilir; ağ hatasında
+  // pencere açık kalır ve tekrar gönderimde AYNI kimlik kullanılır (mükerrer satış olmaz).
+  const intent = useRef<IntentRef>({ key: "", id: "" });
+  const sendLock = useRef(false);
+  const [uncertain, setUncertain] = useState<{ asset: string; cid: string; text: string } | null>(null);
+  const [lookup, setLookup] = useState("");
+  const [lookupBusy, setLookupBusy] = useState(false);
+  // 2026-10-16 (basit arayüz): onay penceresi açılınca ticker yenilenir; yaşı gösterilir (> 15 sn uyarı).
+  const [live, setLive] = useState<{ price: number | null; at: number | null }>({ price: null, at: null });
+  const [now, setNow] = useState(() => Date.now());
+  const [minNotional, setMinNotional] = useState<{ asset: string; value: number | null } | null>(null);
+  const [, setCommTick] = useState(0);
   const [hideSmall, setHideSmall] = useState(true);
   const [chartAsset, setChartAsset] = useState<string | null>(null);
   // Modal, listedeki güncel satırı izler (fiyat/emir değişince eski kopya kalmaz).
@@ -32,35 +52,134 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToas
   const allCoins = holdings.filter((h) => h.asset !== "TRY" && h.total > 0);
   const coins = filterSmallBalances(allCoins, hideSmall);
   const hiddenCount = allCoins.length - coins.length;
-  const qty = target ? target.free * (chip / 100) : 0;
+  // Bakiyeden büyük miktar göndermemek için AŞAĞI keser (toFixed yarıya yuvarlardı).
+  const qty = target ? (chip === 100 ? target.free : floorQty(target.free * (chip / 100), 8)) : 0;
+  const targetAsset = target?.asset ?? null;
+  const livePrice = live.price ?? target?.price_try ?? null;
+  const age = priceAgeInfo(live.price != null ? live.at : null, now);
+  const targetMin = targetAsset && minNotional?.asset === targetAsset ? minNotional.value : null;
+  const notionalErr = livePrice ? minNotionalError(qty * livePrice, targetMin) : null;
+  const sellNet = target ? holdingNetPnl(target.avg_cost_try, livePrice, qty) : null;
+  const uncertainHere = !!uncertain && !!target && uncertain.asset === target.asset;
+
+  // Komisyon oranı tek kaynaktan (/api/config); portföy bandı bu sayfada bağlı olmayabilir.
+  useEffect(() => {
+    let alive = true;
+    call<{ commission_pct?: number }>("GET", "/api/config").then((r) => {
+      if (!alive || !r.ok) return;
+      applyCommissionPct(r.body.commission_pct);
+      setCommTick((n) => n + 1);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  // Onay penceresi açıkken: ticker'ı hemen ve 5 sn'de bir yenile, yaşı saniyede bir güncelle; min emir tutarını bir kez al.
+  useEffect(() => {
+    if (!targetAsset) return;
+    let alive = true;
+    setLive({ price: null, at: null });
+    const refresh = async () => {
+      const r = await call<{ tickers?: { available?: boolean; last?: number | null }[] }>("GET", `/api/market-tickers?symbols=${targetAsset}TRY`);
+      if (!alive || !r.ok) return;
+      const last = Number(r.body.tickers?.[0]?.last);
+      if (r.body.tickers?.[0]?.available && Number.isFinite(last) && last > 0) setLive({ price: last, at: Date.now() });
+    };
+    refresh();
+    const t1 = setInterval(refresh, 5000);
+    const t2 = setInterval(() => setNow(Date.now()), 1000);
+    setNow(Date.now());
+    call<{ min_notional?: number | null }>("GET", `/api/binance/symbol-info?symbol=${targetAsset}TRY`).then((r) => {
+      if (!alive) return;
+      const v = r.ok ? Number(r.body.min_notional) : NaN;
+      setMinNotional({ asset: targetAsset, value: Number.isFinite(v) && v > 0 ? v : null });
+    });
+    return () => { alive = false; clearInterval(t1); clearInterval(t2); };
+  }, [targetAsset]);
 
   const sell = async () => {
-    if (!target || sending) return;
+    if (!target || sending || sendLock.current) return;
+    if (notionalErr) { setError(notionalErr); return; }
+    sendLock.current = true;
     setSending(true);
     setError("");
-    if (!clientId.current) clientId.current = newClientOrderId();
-    const r = await call<{ ok?: boolean; status?: string; detail?: string }>("POST", "/api/binance/sell", {
-      asset: target.asset,
-      quantity: chip === 100 ? null : qty,
-      confirmation: "REAL_SELL",
-      client_order_id: clientId.current,
-    });
-    setSending(false);
-    // 202: emir daha önce gönderilmiş / sonucu belirsiz. Aynı kimlikle tekrar denenmez; reddedilmişse yeni kimlik.
-    if (r.status === 202) {
-      if (r.body.status === "failed") clientId.current = "";
-      setError(errorText(r.body.detail));
+    const asset = target.asset;
+    const cid = intentId(intent.current, sellIntentKey(asset, chip, chip === 100 ? 0 : qty));
+    try {
+      const r = await postJsonGuarded<SellFillBody & { ok?: boolean; status?: string; detail?: unknown }>("/api/binance/sell", {
+        asset,
+        quantity: chip === 100 ? null : qty,
+        confirmation: "REAL_SELL",
+        client_order_id: cid,
+      });
+      const detail = typeof r.body.detail === "string" ? r.body.detail : "";
+      // 202: emir daha önce gönderilmiş / sonucu belirsiz. Aynı kimlikle tekrar denenmez; reddedilmişse yeni kimlik.
+      if (r.status === 202) {
+        if (r.body.status === "failed") {
+          resetIntent(intent.current);
+          setUncertain(null);
+          setError(detail || "Bu emir borsa tarafından reddedilmişti; yeniden deneyebilirsin.");
+          setTarget(null);
+        } else {
+          setUncertain({ asset, cid, text: detail || "Bu emir daha önce gönderildi ve sonucu henüz belli değil. Tekrar göndermeyin." });
+          setLookup("");
+          onTraded();
+        }
+        return;
+      }
+      if (!r.ok || r.body.ok === false) {
+        const text = orderFailureText("sell", r.status, detail);
+        // 5xx'te emir borsaya ulaşmış olabilir → aynı kimlik korunur (tekrar gönderim sunucuda yinelenen istek olarak ele alınır).
+        if (r.status < 500 && isDefinitiveReject(r.status, detail)) {
+          resetIntent(intent.current);
+          setUncertain(null);
+          setError(text);
+          setTarget(null);
+        } else {
+          setUncertain({ asset, cid, text });
+          setLookup("");
+          onTraded();
+        }
+        return;
+      }
+      resetIntent(intent.current);
+      setUncertain(null);
+      // Gerçek dolum (miktar / ortalama fiyat / kısmi dolum): ekrandaki eski fiyat varsayılmaz.
+      const fill = describeSellFill(r.body, qty, livePrice);
+      const filled = `${fmtQty(fill.qty)} ${asset}${fill.price ? ` ort. ${fmtPrice(fill.price)} ₺` : ""}`;
+      setDone(
+        fill.partial
+          ? { text: `${asset} satışı KISMİ doldu: ${filled} satıldı${fill.remaining ? `, kalan ${fmtQty(fill.remaining)} ${asset}` : ""}. Kalan için tekrar sat.`, partial: true }
+          : { text: `${asset} satıldı: ${filled}${fill.dust ? " (çok küçük toz bakiye kaldı)" : ""}.`, partial: false },
+      );
       setTarget(null);
-      return;
+      onTraded();
+    } catch (e) {
+      if (e instanceof UncertainOrderError) {
+        setUncertain({ asset, cid, text: uncertainOrderText("sell", e.timedOut) });
+        setLookup("");
+        onTraded();
+      } else {
+        setError("Satış emri gönderilemedi");
+        setTarget(null);
+      }
+    } finally {
+      sendLock.current = false;
+      setSending(false);
     }
-    if (!r.ok) {
-      setError(errorText(r.error));
-      setTarget(null);
-      return;
+  };
+
+  const queryOrderStatus = async () => {
+    if (!uncertain || lookupBusy) return;
+    setLookupBusy(true);
+    let last: Awaited<ReturnType<typeof call<Record<string, unknown>>>> | null = null;
+    for (const symbol of sellStatusSymbols(uncertain.asset)) {
+      const r = await call<Record<string, unknown>>("GET", `/api/binance/order-status?symbol=${symbol}&client_id=${encodeURIComponent(uncertain.cid)}`);
+      last = r;
+      const found = r.ok && Object.keys(((r.body as { order?: object }).order ?? {})).length > 0;
+      if (found) break;
     }
-    clientId.current = "";
-    setDone(`${target.asset} satış emri gönderildi.`);
-    setTarget(null);
+    setLookupBusy(false);
+    setLookup(last ? describeOrderLookup(last) : "Sorgulanacak sembol bulunamadı.");
     onTraded();
   };
 
@@ -75,7 +194,10 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToas
         {SMALL_BALANCE_TRY} TL’den düşük bakiyeleri gizle{hideSmall && hiddenCount > 0 ? ` (${hiddenCount} gizli)` : ""}
       </label>
       {error && <p role="alert" className="text-sm text-neon-red">{error}</p>}
-      {done && <p role="status" className="text-sm text-neon-green">{done}</p>}
+      {done && <p role="status" className={`text-sm ${done.partial ? "text-yellow-300" : "text-neon-green"}`}>{done.text}</p>}
+      {uncertain && !target && (
+        <UncertainOrderNotice text={uncertain.text} lookup={lookup} lookupBusy={lookupBusy} onLookup={queryOrderStatus} onDismiss={() => { setUncertain(null); setLookup(""); }} />
+      )}
       {coins.length === 0 && <p className="text-sm text-bunker-muted">{hiddenCount > 0 ? "Gösterilecek bakiye yok; küçük bakiyeler gizli." : "Şu an elinde coin yok."}</p>}
       <ul className="divide-y divide-bunker-800">
         {coins.map((h) => (
@@ -92,18 +214,23 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToas
               <p className="font-semibold text-white">{h.asset} <span className="font-normal text-bunker-muted">· {fmtQty(h.total)} adet</span></p>
               <p className="text-sm text-white">
                 {fmtTry(h.value_try)}
-                {h.pnl_try != null && (
-                  <span className={h.pnl_try >= 0 ? "ml-2 text-neon-green" : "ml-2 text-neon-red"}>
-                    {fmtSignedTry(h.pnl_try)}{h.pnl_pct != null ? ` (${fmtPct(h.pnl_pct, 1)})` : ""}
-                  </span>
-                )}
+                {(() => {
+                  // 2026-10-16 (basit arayüz): sunucu K/Z'si brüt; burada anlık fiyatla NET (gidiş-dönüş komisyonlu) gösterilir.
+                  const net = holdingNetPnl(h.avg_cost_try, h.price_try, h.total);
+                  if (!net) return null;
+                  return (
+                    <span className={net.tryValue >= 0 ? "ml-2 text-neon-green" : "ml-2 text-neon-red"} title={`Net: alış ve satış komisyonu (%${(commissionPct() * 100).toFixed(2).replace(".", ",")} / işlem) düşülmüş`}>
+                      {fmtSignedTry(net.tryValue)} ({fmtPct(net.pct, 1)}) net
+                    </span>
+                  );
+                })()}
               </p>
               {h.has_active_order && <p className="text-xs text-bunker-muted">Koruma emri var; satmadan önce açık emirlerden iptal et.</p>}
               </div>
             </div>
             <button
               type="button" disabled={!liveEnabled || h.free <= 0}
-              onClick={() => { clientId.current = ""; setTarget(h); setChip(100); setDone(""); setError(""); }}
+              onClick={() => { setTarget(h); setChip(100); setDone(null); setError(""); setLookup(""); }}
               className="min-h-[48px] rounded-lg bg-neon-red px-5 text-sm font-bold text-white disabled:opacity-40"
             >
               Sat
@@ -126,25 +253,42 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToas
       )}
 
       <ConfirmDialog
-        open={!!target} title={`${target?.asset ?? ""} sat`} confirmLabel="Evet, sat" danger busy={sending}
-        disabled={qty <= 0} onConfirm={sell} onClose={() => setTarget(null)}
+        open={!!target} title={`${target?.asset ?? ""} sat`} confirmLabel={uncertainHere ? "Aynı emri tekrar gönder" : "Evet, sat"} danger busy={sending}
+        disabled={qty <= 0 || !!notionalErr} onConfirm={sell} onClose={() => setTarget(null)}
       >
         {target && (
           <>
             <div className="flex gap-2" role="group" aria-label="Satılacak oran">
               {CHIPS.map((c) => (
                 <button
-                  key={c} type="button" aria-pressed={chip === c} onClick={() => { clientId.current = ""; setChip(c); }}
-                  className={`min-h-[48px] flex-1 rounded-lg border text-sm font-semibold ${chip === c ? "ui-button-primary" : "ui-button-secondary"}`}
+                  key={c} type="button" aria-pressed={chip === c} disabled={uncertainHere || sending} onClick={() => setChip(c)}
+                  className={`min-h-[48px] flex-1 rounded-lg border text-sm font-semibold disabled:opacity-60 ${chip === c ? "ui-button-primary" : "ui-button-secondary"}`}
                 >
                   %{c}
                 </button>
               ))}
             </div>
+            {uncertainHere && <p className="text-xs text-bunker-muted">Önceki satışın durumu belirsiz olduğu için oran kilitli; aynı emir kimliğiyle tekrar gönderilir.</p>}
             <p>
               Satılacak: <strong>{fmtQty(qty)} {target.asset}</strong>
-              {target.price_try ? <> (yaklaşık {fmtTry(qty * target.price_try)}, fiyat {fmtPrice(target.price_try)})</> : null}
+              {livePrice ? <> (yaklaşık {fmtTry(qty * livePrice)}, fiyat {fmtPrice(livePrice)})</> : null}
             </p>
+            <p className={age.stale ? "text-xs font-semibold text-yellow-300" : "text-xs text-bunker-muted"}>
+              Fiyat {age.text}{age.stale ? " — 15 sn’den eski olabilir; gerçekleşen fiyat farklı olabilir." : "."}
+            </p>
+            {sellNet ? (
+              <p className={sellNet.tryValue >= 0 ? "text-neon-green" : "text-neon-red"}>
+                Tahmini net sonuç: <strong>{fmtSignedTry(sellNet.tryValue)} ({fmtPct(sellNet.pct, 1)})</strong>
+                <span className="text-bunker-muted"> · komisyon dahil (net)</span>
+              </p>
+            ) : (
+              <p className="text-xs text-bunker-muted">Maliyet bilgisi olmadığı için net sonuç hesaplanamadı.</p>
+            )}
+            {notionalErr && <p role="alert" className="text-neon-red">{notionalErr}</p>}
+            {!notionalErr && targetMin == null && minNotional?.asset === target.asset && (
+              <p className="text-xs text-bunker-muted">Borsanın minimum emir tutarı alınamadı; kontrol satış sırasında borsada yapılır.</p>
+            )}
+            {uncertainHere && uncertain && <UncertainOrderNotice text={uncertain.text} lookup={lookup} lookupBusy={lookupBusy} onLookup={queryOrderStatus} />}
             <p className="text-bunker-muted">Piyasa fiyatından hemen satılır. Bu işlem gerçek paranla yapılır ve geri alınamaz.</p>
           </>
         )}
