@@ -20,7 +20,7 @@ export default function UserNav({ hidden }: { hidden: string[] }) {
               href={m.href}
               aria-current={active ? "page" : undefined}
               className={`rounded-lg px-3 py-2 text-sm font-medium ${
-                active ? "bg-bunker-800 text-white" : "text-bunker-muted hover:text-white"
+                active ? "u-btn-brand" : "text-bunker-muted hover:bg-bunker-950 hover:text-white"
               }`}
             >
               <span aria-hidden className="mr-1">{m.icon}</span>

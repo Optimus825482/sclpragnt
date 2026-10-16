@@ -23,6 +23,12 @@ class NormalizeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ui_prefs.normalize_hidden([locked])
 
+    def test_removed_legacy_ids_are_silently_dropped(self):
+        # 'portfolio' menüden kaldırıldı; eski kayıtlı tercihlerde kalmış olabilir → hata değil, yok sayılır.
+        self.assertEqual(["charts"], ui_prefs.normalize_hidden(["portfolio", "charts"]))
+        self.assertEqual([], ui_prefs.normalize_hidden(["portfolio"]))
+        self.assertNotIn("portfolio", ui_prefs.MENU_IDS)
+
     def test_not_a_list_rejected(self):
         with self.assertRaises(ValueError):
             ui_prefs.normalize_hidden("charts")

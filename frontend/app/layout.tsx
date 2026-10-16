@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Poppins, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import "./user-theme.generated.css";
+import "./user-palette.generated.css";
 import "./user-theme.manual.css";
 import AuthGate from "./components/AuthGate";
 import AppShell from "./components/AppShell";

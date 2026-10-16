@@ -1,0 +1,27 @@
+/* ÜRETİLDİ: node scripts/gen-light-theme.mjs (kaynak: scripts/user-palette.json) */
+[data-theme="light"]{--u-page:#eef2fb;--u-card:#ffffff;--u-ink:#0b1220;--u-muted:#475569;--u-line:#d5dcec;--u-brand:#4338ca;--u-brand-text:#ffffff;--u-good-fg:#065f46;--u-good-bg:#d1fae5;--u-good:#046c4e;--u-warn-fg:#92400e;--u-warn-bg:#fef3c7;--u-warn:#a14e08;--u-bad-fg:#991b1b;--u-bad-bg:#fee2e2;--u-bad:#b91c1c;--u-info-fg:#1e40af;--u-info-bg:#dbeafe;--u-info:#1d4ed8;--u-wait-fg:#334155;--u-wait-bg:#e2e8f0;--u-wait:#475569}
+[data-theme="light"] .u-chip{display:inline-flex;align-items:center;gap:.3rem;padding:.2rem .65rem;border-radius:999px;font-size:.75rem;font-weight:700;line-height:1.2;white-space:nowrap}
+[data-theme="light"] .u-chip-good{background:#d1fae5;color:#065f46}
+[data-theme="light"] .u-num-good{color:#046c4e}
+[data-theme="light"] .u-bar-good{background:#046c4e}
+[data-theme="light"] .card.u-card-good{border-top:4px solid #046c4e;background:linear-gradient(180deg,#d1fae5 0,#ffffff 70%)}
+[data-theme="light"] .u-chip-warn{background:#fef3c7;color:#92400e}
+[data-theme="light"] .u-num-warn{color:#a14e08}
+[data-theme="light"] .u-bar-warn{background:#a14e08}
+[data-theme="light"] .card.u-card-warn{border-top:4px solid #a14e08;background:linear-gradient(180deg,#fef3c7 0,#ffffff 70%)}
+[data-theme="light"] .u-chip-bad{background:#fee2e2;color:#991b1b}
+[data-theme="light"] .u-num-bad{color:#b91c1c}
+[data-theme="light"] .u-bar-bad{background:#b91c1c}
+[data-theme="light"] .card.u-card-bad{border-top:4px solid #b91c1c;background:linear-gradient(180deg,#fee2e2 0,#ffffff 70%)}
+[data-theme="light"] .u-chip-info{background:#dbeafe;color:#1e40af}
+[data-theme="light"] .u-num-info{color:#1d4ed8}
+[data-theme="light"] .u-bar-info{background:#1d4ed8}
+[data-theme="light"] .card.u-card-info{border-top:4px solid #1d4ed8;background:linear-gradient(180deg,#dbeafe 0,#ffffff 70%)}
+[data-theme="light"] .u-chip-wait{background:#e2e8f0;color:#334155}
+[data-theme="light"] .u-num-wait{color:#475569}
+[data-theme="light"] .u-bar-wait{background:#475569}
+[data-theme="light"] .card.u-card-wait{border-top:4px solid #475569;background:linear-gradient(180deg,#e2e8f0 0,#ffffff 70%)}
+[data-theme="light"] .u-btn-brand{background:#4338ca;color:#ffffff;font-weight:700}
+[data-theme="light"] .u-chip-brand{background:#4338ca;color:#ffffff}
+[data-theme="light"] .u-seg-on{background:#4338ca;color:#ffffff}
+[data-theme="light"] .u-seg-off{background:#ffffff;color:#0b1220;border:1px solid #d5dcec}
