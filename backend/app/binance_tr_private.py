@@ -76,8 +76,24 @@ _symbols_lock = threading.Lock()
 # B-14: sembol listesi yüklemesi TEK UÇUŞ olmalı; eskiden ağ çağrısı kilidin
 # DIŞINDA yapıldığı için eşzamanlı çağrılar sürü hâlinde aynı isteği atıyordu.
 _symbols_load_lock = threading.Lock()
-_open_orders_cache: dict = {"orders": [], "expires": 0.0, "partial": False}
+# KULLANICIYA ÖZEL önbellek: anahtar = sha256(api_key)[:16]. Eskiden tek GLOBAL sözlüktü; `symbol` verilmeden
+# çağrılınca önbellekte kimin emirleri varsa herkese dönüyordu (kullanıcılar birbirinin açık emirlerini görüyordu).
+_open_orders_caches: dict[str, dict] = {}
 _open_orders_lock = threading.Lock()
+
+
+def _open_orders_cache_for(api_key: str) -> dict:
+    """Bu API anahtarına ait açık-emir önbellek kaydı (yoksa boş oluşturur). Güncellemeyi çağıran kilit altında yapar."""
+    key = hashlib.sha256(str(api_key or "").encode("utf-8")).hexdigest()[:16]
+    with _open_orders_lock:
+        return _open_orders_caches.setdefault(key, {"orders": [], "expires": 0.0, "partial": False})
+
+
+def _invalidate_open_orders(api_key: str) -> None:
+    """Yalnız bu kullanıcının açık-emir önbelleğini geçersiz kılar (emir/iptal sonrası)."""
+    cache = _open_orders_cache_for(api_key)
+    with _open_orders_lock:
+        cache["expires"] = 0.0
 _open_orders_load_lock = threading.Lock()
 
 _balance_cache: dict[str, dict] = {}
@@ -827,8 +843,7 @@ def place_spot_order(api_key: str, api_secret: str, symbol: str, side: str, orde
             raise BinanceTrAmbiguousOrderError(str(exc), client_order_id=params["clientId"],
                                                symbol=symbol_u) from exc
         raise
-    with _open_orders_lock:
-        _open_orders_cache["expires"] = 0.0
+    _invalidate_open_orders(api_key)
     invalidate_account_balance_cache(api_key)
     result = {**(data if isinstance(data, dict) else {}), "symbol": symbol_u,
               "client_id": params["clientId"], "order_id": str(data.get("orderId")) if isinstance(data, dict) and data.get("orderId") else None}
@@ -918,8 +933,7 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
                 symbol_underscore, params["quantity"], executed_qty, order_id,
                 params["clientId"])
     invalidate_account_balance_cache(api_key)
-    with _open_orders_lock:
-        _open_orders_cache["expires"] = 0.0
+    _invalidate_open_orders(api_key)
     result = {"order_id": str(order_id) if order_id is not None else None,
               "symbol": symbol_underscore, "quantity": params["quantity"],
               "client_order_id": params["clientId"],
@@ -977,8 +991,7 @@ def place_market_buy(api_key: str, api_secret: str, symbol_underscore: str, quot
     logger.info("Binance TR MARKET BUY gönderildi: %s quote=%s orderId=%s clientId=%s",
                 symbol_underscore, params["quoteOrderQty"], order_id, params["clientId"])
     invalidate_account_balance_cache(api_key)
-    with _open_orders_lock:
-        _open_orders_cache["expires"] = 0.0
+    _invalidate_open_orders(api_key)
     out = {"order_id": str(order_id) if order_id is not None else None,
            "symbol": symbol_underscore, "quote_qty": params["quoteOrderQty"],
            "client_order_id": params["clientId"]}
@@ -1075,8 +1088,7 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
     logger.info("Binance TR OCO SELL gönderildi: %s qty=%s tp=%s sl=%s orderListId=%s",
                 symbol_underscore, qty_str, price_str, stop_price_str, order_list_id)
     invalidate_account_balance_cache(api_key)
-    with _open_orders_lock:
-        _open_orders_cache["expires"] = 0.0
+    _invalidate_open_orders(api_key)
     return {
         "order_list_id": str(order_list_id) if order_list_id is not None else None,
         "symbol": symbol_underscore,
@@ -1127,8 +1139,7 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
     logger.info("Binance TR STOP_LOSS_LIMIT SELL gönderildi: %s qty=%s sl=%s orderId=%s",
                 symbol_underscore, qty_str, stop_price_str, order_id)
     invalidate_account_balance_cache(api_key)
-    with _open_orders_lock:
-        _open_orders_cache["expires"] = 0.0
+    _invalidate_open_orders(api_key)
     return {
         "order_id": str(order_id) if order_id is not None else None,
         "symbol": symbol_underscore,
@@ -1171,8 +1182,7 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
     logger.info("Binance TR LIMIT SELL gönderildi: %s qty=%s price=%s orderId=%s",
                 symbol_underscore, qty_str, price_str, order_id)
     invalidate_account_balance_cache(api_key)
-    with _open_orders_lock:
-        _open_orders_cache["expires"] = 0.0
+    _invalidate_open_orders(api_key)
     return {
         "order_id": str(order_id) if order_id is not None else None,
         "symbol": symbol_underscore,
@@ -1197,8 +1207,7 @@ def cancel_order(api_key: str, api_secret: str, order_id: int | str, symbol_unde
     if symbol_underscore:
         params["symbol"] = symbol_underscore
     data = _signed_request("POST", "/open/v1/orders/cancel", params, api_key, api_secret)
-    with _open_orders_lock:
-        _open_orders_cache["expires"] = 0.0
+    _invalidate_open_orders(api_key)
     invalidate_account_balance_cache(api_key)
     logger.info("Binance TR emir iptal edildi: orderId=%s symbol=%s", order_id, symbol_underscore)
     return data if isinstance(data, dict) else {"order_id": str(order_id), "status": "CANCELED"}
@@ -1256,9 +1265,10 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
        - Bu sayede 40-50 rasgele sembol taranarak borsa rate limitlerine takılınmaz (kod 1008).
     """
     now = time.monotonic()
+    cache = _open_orders_cache_for(api_key)
     with _open_orders_lock:
-        if not symbol and now < _open_orders_cache["expires"]:
-            return _open_orders_cache["orders"]
+        if not symbol and now < cache["expires"]:
+            return list(cache["orders"])
 
     def _normalize(rows: list) -> list[dict]:
         out = []
@@ -1289,8 +1299,8 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
     with _open_orders_load_lock:
         now = time.monotonic()
         with _open_orders_lock:
-            if now < _open_orders_cache["expires"]:
-                return _open_orders_cache["orders"]
+            if now < cache["expires"]:
+                return list(cache["orders"])
 
         # 1) Akıllı hedef belirleme: Kilitli varlık analizi
         # Spot borsada açık emir varsa varlık MUTLAKA locked > 0 durumundadır.
@@ -1318,7 +1328,7 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
         # Kilitli hiçbir varlık yoksa açık emir bulunması imkânsızdır
         if has_balance_info and len(locked_assets) == 0:
             with _open_orders_lock:
-                _open_orders_cache.update({"orders": [], "partial": False,
+                cache.update({"orders": [], "partial": False,
                                            "expires": time.monotonic() + _OPEN_ORDERS_CACHE_TTL_SEC})
             return []
 
@@ -1328,7 +1338,7 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
                                    api_key, api_secret)
             orders = _normalize(rows.get("list", []) if isinstance(rows, dict) else [])
             with _open_orders_lock:
-                _open_orders_cache.update({"orders": orders, "partial": False,
+                cache.update({"orders": orders, "partial": False,
                                            "expires": time.monotonic() + _OPEN_ORDERS_CACHE_TTL_SEC})
             return orders
         except Exception as exc:
@@ -1393,7 +1403,7 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
             logger.warning("Açık emir taraması KISMİ: %d/%d sembol tarandı (sınır %d)",
                            len(scanned), len(target_symbols), _OPEN_ORDERS_SWEEP_MAX)
         with _open_orders_lock:
-            _open_orders_cache.update({"orders": orders, "partial": partial,
+            cache.update({"orders": orders, "partial": partial,
                                        "expires": time.monotonic() + _OPEN_ORDERS_CACHE_TTL_SEC})
         return orders
 
@@ -1404,8 +1414,9 @@ def get_open_orders_partial(api_key: str, api_secret: str) -> bool:
     Tarama sınırına takıldığında veya bir sembol sorgulanamadığında `True`.
     Çağıran (UI/API) bunu kullanıcıya "liste eksik olabilir" diye bildirmeli.
     """
+    cache = _open_orders_cache_for(api_key)
     with _open_orders_lock:
-        return bool(_open_orders_cache.get("partial"))
+        return bool(cache.get("partial"))
 
 
 def get_trade_history(api_key: str, api_secret: str, symbol: str,
