@@ -202,9 +202,38 @@ async def _paper_daily_pnl() -> float | None:
     return total if got else None
 
 
+async def _paper_snapshot_fallback() -> dict:
+    """2026-10-17 (basit arayüz): WS anlık görüntüsü henüz üretilmemişse (backend yeni
+    açıldı / yayın döngüsü ilk turunu bitirmedi) bant "—" gösteriyordu. Cüzdan ve açık
+    paper pozisyonlardan asgari bir görüntü kurulur; fiyat yoksa giriş fiyatı kullanılır."""
+    try:
+        from app.routers.runtime import _cached_try_balance
+        from app.state import analyzer, market
+        try_bal = float(await _cached_try_balance() or 0.0)
+        positions = []
+        total = try_bal
+        for sym, pos in dict(getattr(analyzer, "positions", {}) or {}).items():
+            qty = float(pos.get("quantity") or 0.0)
+            entry = float(pos.get("entry_price") or 0.0)
+            ticker = market.get_ticker(sym) if hasattr(market, "get_ticker") else None
+            current = float((ticker or {}).get("last_price") or entry)
+            value = qty * current
+            total += value
+            positions.append({"symbol": sym, "entry": entry, "current": current, "quantity": qty,
+                              "value": value, "side": pos.get("side", "LONG"),
+                              "strategy": pos.get("strategy", "UT")})
+        return {"try": try_bal, "total_value": total, "positions": positions,
+                "auto_paper_positions": [], "fallback": True}
+    except Exception as exc:  # fail-open: bant yine "—" gösterir, uç çökmez
+        logger.debug("paper band fallback başarısız: %s", exc)
+        return {}
+
+
 async def _paper_band() -> dict:
     from app.routers.runtime import _ws_snapshot_cache
     snapshot = _ws_snapshot_cache.get("portfolio") or {}
+    if not snapshot or snapshot.get("total_value") is None:
+        snapshot = await _paper_snapshot_fallback()
     try:
         snapshot = database._json_safe(snapshot)
     except Exception:

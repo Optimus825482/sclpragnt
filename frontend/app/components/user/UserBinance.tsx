@@ -1,7 +1,8 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLiveMessages } from "../../lib/liveSocket";
+import { grossOpenPnlTry } from "../../lib/pnl";
 import { call, type Holding, type OpenOrder, type RiskSettings } from "../../lib/tradeApi";
 import { fmtSignedTry, fmtTry } from "../../lib/tradeUi";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
@@ -15,6 +16,29 @@ type Settings = { configured: boolean; sell_enabled: boolean; sell_source: strin
 type Positions = { holdings?: Holding[]; total_value_try?: number };
 type Daily = { daily?: { realized_pnl_try?: number } | null };
 
+// 2026-10-17 (basit arayüz): "güncellendi X sn önce" damgası. Kendi 1 sn sayacı vardır; üst bileşen her saniye yeniden çizilmez.
+const STALE_AFTER_SEC = 30;
+function Freshness({ at, onRefresh }: { at: number | null; onRefresh: () => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  if (at == null) return null;
+  const sec = Math.max(0, Math.round((now - at) / 1000));
+  const stale = sec > STALE_AFTER_SEC;
+  return (
+    <p role="status" className={`flex flex-wrap items-center gap-2 text-xs ${stale ? "text-yellow-300" : "text-bunker-muted"}`}>
+      <span>{stale ? `Veri ${sec} sn önce alındı — yenilenemiyor olabilir, eski değerler gösteriliyor.` : sec < 3 ? "Az önce güncellendi" : `Güncellendi ${sec} sn önce`}</span>
+      {stale && (
+        <button type="button" onClick={onRefresh} className="ui-button-secondary min-h-[32px] rounded-lg border px-3 text-xs font-medium">
+          Şimdi yenile
+        </button>
+      )}
+    </p>
+  );
+}
+
 export default function UserBinance() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [risk, setRisk] = useState<RiskSettings | null>(null);
@@ -22,6 +46,10 @@ export default function UserBinance() {
   const [total, setTotal] = useState<number | null>(null);
   const [orders, setOrders] = useState<OpenOrder[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  // 2026-10-17 (basit arayüz): varlıklar ilk yanıt gelene kadar "yükleniyor" (boş liste mesajı yanıltmasın).
+  const [positionsLoading, setPositionsLoading] = useState(true);
+  const [lastOkAt, setLastOkAt] = useState<number | null>(null);
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
   const [todayPnl, setTodayPnl] = useState<number | null>(null);
   const [accountError, setAccountError] = useState("");
   // 2026-10-16 (basit arayüz): açık emir / günlük K/Z yenilemesi başarısızsa sessizce eski veri gösterilmez.
@@ -48,18 +76,34 @@ export default function UserBinance() {
     if (r.ok) setRisk({ max_position_pct: r.body.max_position_pct, default_rr: r.body.default_rr });
   }, []);
 
-  const loadAccount = useCallback(async () => {
-    const [pos, ord] = await Promise.all([
-      call<Positions>("GET", "/api/binance/positions"),
-      call<{ orders?: OpenOrder[] }>("GET", "/api/binance/open-orders"),
-    ]);
+  // 2026-10-17 (basit arayüz): pozisyonlar ve bekleyen emirler AYRI yüklenir; varlık listesi
+  // açık emir yanıtını (ve günlük K/Z'yi) beklemez. Sıra dışı gelen eski yanıt yenisini ezmez.
+  const posSeq = useRef(0);
+  const posApplied = useRef(0);
+  const ordSeq = useRef(0);
+  const ordApplied = useRef(0);
+  const loadPositions = useCallback(async () => {
+    const seq = ++posSeq.current;
+    const pos = await call<Positions>("GET", "/api/binance/positions");
+    if (seq < posApplied.current) return;
+    posApplied.current = seq;
     if (pos.ok) {
       setHoldings(pos.body.holdings || []);
       setTotal(pos.body.total_value_try ?? null);
+      setLivePrices({}); // sunucu fiyatı taze; sonraki WS tick'i üzerine yazar
+      setLastOkAt(Date.now());
       setAccountError("");
     } else {
       setAccountError(pos.error);
     }
+    setPositionsLoading(false);
+  }, []);
+
+  const loadOrders = useCallback(async () => {
+    const seq = ++ordSeq.current;
+    const ord = await call<{ orders?: OpenOrder[] }>("GET", "/api/binance/open-orders");
+    if (seq < ordApplied.current) return;
+    ordApplied.current = seq;
     if (ord.ok) {
       setOrders(ord.body.orders || []);
       setOrdersError(false);
@@ -68,6 +112,11 @@ export default function UserBinance() {
     }
     setOrdersLoading(false);
   }, []);
+
+  const loadAccount = useCallback(() => {
+    void loadPositions();
+    void loadOrders();
+  }, [loadPositions, loadOrders]);
 
   const loadToday = useCallback(async () => {
     const d = new Date();
@@ -97,7 +146,10 @@ export default function UserBinance() {
   }, [configured, loadAccount, loadToday]);
 
   // Sekme öne gelince hemen tazele (arka planda beklerken emirler/bakiye eskimiş olabilir).
-  useVisibleInterval(() => { if (configured) { loadAccount(); loadToday(); } }, configured ? 20000 : null, { runOnVisible: true });
+  // 2026-10-17 (basit arayüz): 20 sn → 10 sn (sunucuda 3 sn yanıt + 300 sn maliyet cache'i var, ek yük yok);
+  // günlük K/Z daha ağır olduğundan ayrı ve daha seyrek (30 sn) yenilenir.
+  useVisibleInterval(() => { if (configured) loadAccount(); }, configured ? 10000 : null, { runOnVisible: true });
+  useVisibleInterval(() => { if (configured) loadToday(); }, configured ? 30000 : null, { runOnVisible: false });
 
   // Binance hesap/dolum olayı (WS): 1 sn debounce ile hesabı ve günlük sonucu tazele.
   const wsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -109,13 +161,54 @@ export default function UserBinance() {
   }, [configured, loadAccount, loadToday]);
   useLiveMessages(onLive, ["binance_account_update"]);
 
+  // 2026-10-17 (basit arayüz): canlı fiyat — backend `binance_price` (2 sn'de bir, TRY'ye çevrilmiş
+  // {VARLIK: {price}} haritası) ile elde tutulan varlıkların fiyat/değer/K-Z'si iki yoklama arasında da kayar.
+  // (`tickers` tipi istemcide bilinçli olarak elenir — liveSocket.UNCONSUMED_LIVE_TYPES.)
+  const heldRef = useRef<string[]>([]);
+  useEffect(() => { heldRef.current = holdings.filter((h) => h.asset !== "TRY" && h.total > 0).map((h) => h.asset); }, [holdings]);
+  const onTick = useCallback((m: { type: string; data?: unknown }) => {
+    if (m?.type !== "binance_price" || (typeof document !== "undefined" && document.hidden)) return;
+    const ticks = (m.data as { ticks?: Record<string, { price?: number }> } | null)?.ticks;
+    if (!ticks) return;
+    setLivePrices((cur) => {
+      let next: Record<string, number> | null = null;
+      for (const asset of heldRef.current) {
+        const p = Number(ticks[asset]?.price);
+        if (Number.isFinite(p) && p > 0 && cur[asset] !== p) { next = next ?? { ...cur }; next[asset] = p; }
+      }
+      return next ?? cur;
+    });
+  }, []);
+  useLiveMessages(onTick, ["binance_price"]);
+
+  // Yerel mark-to-market: sunucu satırı + son tick. K/Z brüt (sunucuyla aynı), net hesap HoldingsCard'da.
+  const liveHoldings = useMemo(() => {
+    const rows = holdings.map((h) => {
+      const p = livePrices[h.asset];
+      if (h.asset === "TRY" || !p) return h;
+      const avg = Number(h.avg_cost_try);
+      return {
+        ...h,
+        price_try: p,
+        value_try: Math.round(h.total * p * 100) / 100,
+        pnl_try: grossOpenPnlTry(h.avg_cost_try, p, h.total),
+        pnl_pct: avg > 0 ? ((p - avg) / avg) * 100 : null,
+      };
+    });
+    return rows.sort((a, b) => (a.value_try == null ? 1 : 0) - (b.value_try == null ? 1 : 0) || (b.value_try ?? 0) - (a.value_try ?? 0));
+  }, [holdings, livePrices]);
+  const liveTotal = useMemo(
+    () => (Object.keys(livePrices).length ? liveHoldings.reduce((sum, h) => sum + (h.value_try ?? 0), 0) : total),
+    [liveHoldings, livePrices, total],
+  );
+
   const afterTrade = useCallback(() => {
     loadAccount();
     loadToday();
     setRefreshKey((k) => k + 1);
   }, [loadAccount, loadToday]);
 
-  const tryRow = holdings.find((h) => h.asset === "TRY");
+  const tryRow = liveHoldings.find((h) => h.asset === "TRY");
   const freeTry = tryRow ? tryRow.free : null;
 
   return (
@@ -144,7 +237,7 @@ export default function UserBinance() {
         <section className="grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label="Hesap özeti">
           <div className="card p-4">
             <p className="text-sm font-medium text-bunker-muted">Toplam değer</p>
-            <p className="mt-1 text-2xl font-bold text-white">{fmtTry(total)}</p>
+            <p className="mt-1 text-2xl font-bold text-white">{fmtTry(liveTotal)}</p>
           </div>
           <div className="card p-4">
             <p className="text-sm font-medium text-bunker-muted">Kullanılabilir TL</p>
@@ -157,7 +250,8 @@ export default function UserBinance() {
           </div>
         </section>
       )}
-      {accountError && <p role="alert" className="text-sm text-neon-red">Hesap bilgisi alınamadı: {accountError}</p>}
+      {settings && configured && <Freshness at={lastOkAt} onRefresh={loadAccount} />}
+      {accountError && <p role="alert" className="text-sm text-neon-red">Hesap bilgisi alınamadı: {accountError}{lastOkAt ? " — son başarılı veri gösteriliyor." : ""}</p>}
 
       {settings && (
         <>
@@ -169,7 +263,7 @@ export default function UserBinance() {
           />
           {configured && (
             <>
-              <HoldingsCard holdings={holdings} liveEnabled={settings.sell_enabled} onTraded={afterTrade} showToast={showToast} />
+              <HoldingsCard holdings={liveHoldings} loading={positionsLoading} liveEnabled={settings.sell_enabled} onTraded={afterTrade} showToast={showToast} />
               {ordersError && <p role="status" className="text-sm text-yellow-300">Bekleyen emirler yenilenemedi — liste eski olabilir (koruma emirlerini Binance TR’den doğrula).</p>}
               <OpenOrdersCard orders={orders} loading={ordersLoading} onChanged={loadAccount} />
               <HistoryCard enabled={configured} refreshKey={refreshKey} />

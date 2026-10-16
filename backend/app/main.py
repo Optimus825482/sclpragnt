@@ -3281,6 +3281,8 @@ async def _decrypt_binance_creds(request) -> tuple[str, str]:
 
 async def _publish_binance_user_event(user_id: int, event: dict) -> None:
     """Özel borsa olayını yalnız ilgili kullanıcının doğrulanmış WS oturumlarına ilet."""
+    # 2026-10-17 (basit arayüz): dolum/bakiye olayı → pozisyon + maliyet cache'i düşer.
+    _invalidate_positions_cache(user_id)
     await ws_manager.broadcast({"type": "binance_user_event", "data": event}, user_id=user_id)
 
 
@@ -3309,6 +3311,42 @@ async def binance_account(request: Request):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
 
+# 2026-10-17 (basit arayüz): /api/binance/positions yanıtı kullanıcı başına 3 sn
+# cache'lenir (sayfa + üst bant + WS tetikli yenilemeler aynı anda gelince
+# Binance'e tek tur gider). Aynı kullanıcının eşzamanlı istekleri tek hesaplamayı
+# paylaşır (kilit). Emir/iptal/dolum olaylarında `_invalidate_positions_cache`
+# hem bu cache'i hem FIFO maliyet cache'ini (300 sn) kullanıcı kapsamında düşürür.
+_POSITIONS_TTL_SEC = 3.0
+# Maliyeti bulunamayan varlık (işlem geçmişi yok / geçici hata) için kısa TTL:
+# 300 sn boyunca "Giriş: —" kalmasın, ama her istekte N+1 de olmasın.
+_COST_NEGATIVE_TTL_SEC = 60.0
+_positions_cache: dict[tuple[int, str], tuple[float, dict, object]] = {}
+_positions_locks: dict[int, asyncio.Lock] = {}
+_positions_gen: dict[int, int] = {}
+
+
+def _balance_cache_token(api_key: str):
+    """Bakiye cache kaydının kimliği: emir/iptal/SL-TP yolları `invalidate_account_balance_cache`
+    ile kaydı düşürünce kimlik değişir → pozisyon cache'i otomatik geçersiz olur."""
+    try:
+        from app import binance_tr_private as _btr
+        return _btr._balance_cache.get((api_key or "")[:16])
+    except Exception:
+        return None
+
+
+def _invalidate_positions_cache(user_id: int) -> None:
+    """Kullanıcının pozisyon yanıtı + FIFO maliyet cache'ini düşürür (emir/dolum sonrası)."""
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return
+    _positions_gen[uid] = _positions_gen.get(uid, 0) + 1
+    for key in [k for k in _positions_cache if k[0] == uid]:
+        _positions_cache.pop(key, None)
+    _invalidate_binance_cost_cache(uid)
+
+
 @app.get("/api/binance/positions")
 async def binance_positions(request: Request):
     """Binance TR sembol bakiyeleri + TRY değerleri (salt okunur, oturum açmış kullanıcı).
@@ -3316,13 +3354,40 @@ async def binance_positions(request: Request):
     "Pozisyon" burada açık emir değil, hesaptaki varlıklardır: her non-zero
     varlık için TRY piyasa fiyatı ({ASSET}TRY çifti, yoksa {ASSET}USDT × USDTTRY)
     bulunup TRY değeri hesaplanır.
+
+    2026-10-17 (basit arayüz): 3 sn kullanıcı-başı yanıt cache'i + tek-uçuş kilidi;
+    süre DEBUG'a yazılır.
     """
+    import copy as _copy
+    t0 = time.perf_counter()
     principal = _require_user(request)
     user = await database.get_user_by_username(str(principal.get("username") or ""))
     if not user:
         raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
     user_id = int(user["id"])
     api_key, api_secret = await _decrypt_binance_creds(request)
+    cache_key = (user_id, (api_key or "")[:16])
+    cached = _positions_cache.get(cache_key)
+    if cached and cached[0] > time.monotonic() and cached[2] is _balance_cache_token(api_key):
+        logger.debug("binance_positions cache-hit user=%s %.1f ms", user_id, (time.perf_counter() - t0) * 1000)
+        return _copy.deepcopy(cached[1])
+    lock = _positions_locks.setdefault(user_id, asyncio.Lock())
+    async with lock:
+        cached = _positions_cache.get(cache_key)
+        if cached and cached[0] > time.monotonic() and cached[2] is _balance_cache_token(api_key):
+            logger.debug("binance_positions cache-hit(lock) user=%s %.1f ms", user_id, (time.perf_counter() - t0) * 1000)
+            return _copy.deepcopy(cached[1])
+        gen = _positions_gen.get(user_id, 0)
+        payload = await _binance_positions_uncached(principal, user_id, api_key, api_secret)
+        # Hesaplama sürerken emir/dolum geldiyse (gen değişti) bayat sonucu saklama.
+        if _positions_gen.get(user_id, 0) == gen:
+            _positions_cache[cache_key] = (time.monotonic() + _POSITIONS_TTL_SEC, payload, _balance_cache_token(api_key))
+    logger.debug("binance_positions cache-miss user=%s holdings=%d %.1f ms",
+                 user_id, len(payload.get("holdings") or []), (time.perf_counter() - t0) * 1000)
+    return _copy.deepcopy(payload)
+
+
+async def _binance_positions_uncached(principal: dict, user_id: int, api_key: str, api_secret: str) -> dict:
     stream_status = await _ensure_binance_user_stream(user_id, api_key, api_secret)
     try:
         balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
@@ -3399,8 +3464,13 @@ async def binance_positions(request: Request):
         sym = h.get("_cost_symbol") or f"{h['asset']}TRY"
         async with _cost_sem:
             try:
-                return await asyncio.to_thread(
+                info = await asyncio.to_thread(
                     _avg_buy_cost, user_id, api_key, api_secret, h["asset"], sym, now_ts, h["total"], usdt_try)
+                # 2026-10-17 (basit arayüz): maliyet bulunamadıysa (geçici hata / geçmiş yok)
+                # 300 sn değil kısa süre cache'le → "Giriş: —" uzun süre takılı kalmaz.
+                if not (info and info.get("avg_price")):
+                    _binance_cost_cache[(user_id, h["asset"])] = (now_ts + _COST_NEGATIVE_TTL_SEC, info or {})
+                return info
             except Exception:
                 return None
 
@@ -3695,7 +3765,7 @@ async def binance_sell(payload: dict, request: Request):
     await order_requests.complete(int(user["id"]), cid, result)
     # PERFORMANS (2026-09-27): TTL uzatılan FIFO maliyet cache'ini emir sonrası
     # tazele — satış FIFO kuyruğunu değiştirir, eski maliyet yanlış PnL üretir.
-    _invalidate_binance_cost_cache(int(user["id"]))
+    _invalidate_positions_cache(int(user["id"]))
     _actor, _actor_role = _session_identity(request)
     await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_SELL",
                           target=asset, details={"asset": asset, **result}, request=request)
@@ -3799,7 +3869,7 @@ async def binance_buy(payload: dict, request: Request):
         raise HTTPException(status_code=502, detail=f"Alım emri gönderilemedi: {exc}")
     await order_requests.complete(int(user["id"]), cid, result)
     # PERFORMANS (2026-09-27): alım yeni FIFO lotu ekler → maliyet cache'i tazele.
-    _invalidate_binance_cost_cache(int(user["id"]))
+    _invalidate_positions_cache(int(user["id"]))
     _actor, _actor_role = _session_identity(request)
     await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_BUY",
                           target=asset, details={"asset": asset, **result}, request=request)
@@ -3941,6 +4011,7 @@ async def binance_order(payload: dict, request: Request):
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Binance TR emri gönderilemedi: {exc}")
+    _invalidate_positions_cache(int(user["id"]))  # 2026-10-17 (basit arayüz)
     _actor, _actor_role = _session_identity(request)
     # Emir yanıtında olabilecek hassas olmayan, sınırlı alanları audit'e yaz.
     await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_ORDER_SUBMITTED",

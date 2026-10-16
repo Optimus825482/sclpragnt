@@ -21,12 +21,14 @@ const PositionChartModal = dynamic(() => import("../../../binance-tr/BinancePosi
 
 type Props = {
   holdings: Holding[];
+  /** 2026-10-17 (basit arayüz): ilk pozisyon yanıtı gelene kadar true → "elinde coin yok" yanıltmasın. */
+  loading?: boolean;
   liveEnabled: boolean;
   onTraded: () => void;
   showToast: (message: string, type?: "success" | "error" | "info") => void;
 };
 
-export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToast }: Props) {
+export default function HoldingsCard({ holdings, loading = false, liveEnabled, onTraded, showToast }: Props) {
   const [target, setTarget] = useState<Holding | null>(null);
   const [chip, setChip] = useState(100);
   const [sending, setSending] = useState(false);
@@ -55,7 +57,10 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToas
   // Bakiyeden büyük miktar göndermemek için AŞAĞI keser (toFixed yarıya yuvarlardı).
   const qty = target ? (chip === 100 ? target.free : floorQty(target.free * (chip / 100), 8)) : 0;
   const targetAsset = target?.asset ?? null;
-  const livePrice = live.price ?? target?.price_try ?? null;
+  // 2026-10-17 (basit arayüz): onay penceresi açıkken liste canlı tick/yoklamayla kayar; yedek fiyat listedeki GÜNCEL satırdan
+  // alınır (target açıldığı andaki kopyadır). Miktar (qty) bilerek açılış kopyasından gelir: belirsiz emirde aynı kimlik/aynı miktar.
+  const currentTarget = target ? holdings.find((h) => h.asset === target.asset) ?? target : null;
+  const livePrice = live.price ?? currentTarget?.price_try ?? null;
   const age = priceAgeInfo(live.price != null ? live.at : null, now);
   const targetMin = targetAsset && minNotional?.asset === targetAsset ? minNotional.value : null;
   const notionalErr = livePrice ? minNotionalError(qty * livePrice, targetMin) : null;
@@ -198,7 +203,11 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToas
       {uncertain && !target && (
         <UncertainOrderNotice text={uncertain.text} lookup={lookup} lookupBusy={lookupBusy} onLookup={queryOrderStatus} onDismiss={() => { setUncertain(null); setLookup(""); }} />
       )}
-      {coins.length === 0 && <p className="text-sm text-bunker-muted">{hiddenCount > 0 ? "Gösterilecek bakiye yok; küçük bakiyeler gizli." : "Şu an elinde coin yok."}</p>}
+      {coins.length === 0 && (
+        <p className="text-sm text-bunker-muted" aria-live="polite">
+          {loading ? "Varlıkların yükleniyor…" : hiddenCount > 0 ? "Gösterilecek bakiye yok; küçük bakiyeler gizli." : "Şu an elinde coin yok."}
+        </p>
+      )}
       <ul className="divide-y divide-bunker-800">
         {coins.map((h) => (
           <li key={h.asset} className="flex flex-wrap items-center justify-between gap-2 py-3">
@@ -213,11 +222,15 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToas
               <div className="min-w-0">
               <p className="font-semibold text-white">{h.asset} <span className="font-normal text-bunker-muted">· {fmtQty(h.total)} adet</span></p>
               <p className="text-sm text-white">
-                {fmtTry(h.value_try)}
+                {h.value_try == null ? <span className="text-yellow-300" title="Bu coin için TL veya USDT fiyatı alınamadı">fiyat alınamadı</span> : fmtTry(h.value_try)}
                 {(() => {
                   // 2026-10-16 (basit arayüz): sunucu K/Z'si brüt; burada anlık fiyatla NET (gidiş-dönüş komisyonlu) gösterilir.
                   const net = holdingNetPnl(h.avg_cost_try, h.price_try, h.total);
-                  if (!net) return null;
+                  if (!net) {
+                    // 2026-10-17 (basit arayüz): sessizce boş bırakma — neden K/Z yok, söyle.
+                    if (h.value_try == null || h.asset === "USDT") return null;
+                    return <span className="ml-2 text-xs text-bunker-muted" title="Alış geçmişi bulunamadığı için giriş fiyatı bilinmiyor">maliyet bilinmiyor</span>;
+                  }
                   return (
                     <span className={net.tryValue >= 0 ? "ml-2 text-neon-green" : "ml-2 text-neon-red"} title={`Net: alış ve satış komisyonu (%${(commissionPct() * 100).toFixed(2).replace(".", ",")} / işlem) düşülmüş`}>
                       {fmtSignedTry(net.tryValue)} ({fmtPct(net.pct, 1)}) net
@@ -226,6 +239,7 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded, showToas
                 })()}
               </p>
               {h.has_active_order && <p className="text-xs text-bunker-muted">Koruma emri var; satmadan önce açık emirlerden iptal et.</p>}
+              {!h.has_active_order && h.free <= 0 && <p className="text-xs text-bunker-muted">Bakiyenin tamamı emirde kilitli; satmak için önce Bekleyen emirler’den iptal et.</p>}
               </div>
             </div>
             <button

@@ -12,7 +12,9 @@ import { useWatchPrices } from "../../lib/useWatchPrices";
 import { confidenceBadge, pctChange } from "../../lib/userUi";
 import SymbolLink from "../SymbolLink";
 
-type TabId = "warm" | "watch" | "history";
+// 2026-10-17 (basit arayüz): "Isınanlar" sekmesi kaldırıldı — kullanıcıyı karıştırıyordu;
+// yalnız izlemedekiler ve gönderilen bildirimler gösterilir.
+type TabId = "watch" | "history";
 
 type RadarItem = {
   key: string;
@@ -28,7 +30,6 @@ type RadarItem = {
 
 const TAB_KEY = "scalper:user-radar-tab";
 const TABS: { id: TabId; label: string; empty: string }[] = [
-  { id: "warm", label: "Isınanlar", empty: "Şu an ısınan coin yok. Sistem tarama yapmaya devam ediyor." },
   { id: "watch", label: "İzlemedekiler", empty: "Şu an izlemede coin yok. Güçlü bir hareket olduğunda burada görünür." },
   { id: "history", label: "Gönderilen bildirimler", empty: "Henüz gönderilmiş bir bildirim yok." },
 ];
@@ -73,7 +74,7 @@ function firstSentence(text: string | null): string {
   return (m ? m[0] : t).trim() || DEFAULT_REASON;
 }
 
-function mapItems(raw: unknown, kind: "warm" | "watch"): RadarItem[] {
+function mapItems(raw: unknown, kind: "warm" | "watch"): RadarItem[] {  // "warm" türü yalnız geriye uyum için
   if (!Array.isArray(raw)) return [];
   const sentence = kind === "warm" ? "Hareketlenme başladı, henüz izlemede değil" : "Sistem bu coini izliyor";
   const out: RadarItem[] = [];
@@ -213,8 +214,7 @@ function DetailModal({ item, onClose }: { item: RadarItem; onClose: () => void }
 }
 
 export default function UserRadar() {
-  const [tab, setTab] = useState<TabId>("warm");
-  const [warm, setWarm] = useState<RadarItem[] | null>(null);
+  const [tab, setTab] = useState<TabId>("watch");
   const [watch, setWatch] = useState<RadarItem[] | null>(null);
   const [history, setHistory] = useState<RadarItem[] | null>(null);
   const [error, setError] = useState(false);
@@ -225,7 +225,7 @@ export default function UserRadar() {
     mounted.current = true;
     try {
       const saved = window.localStorage.getItem(TAB_KEY);
-      if (saved === "warm" || saved === "watch" || saved === "history") setTab(saved);
+      if (saved === "watch" || saved === "history") setTab(saved);
     } catch {
       /* localStorage yok */
     }
@@ -253,7 +253,6 @@ export default function UserRadar() {
       if (sRes.ok) {
         const s = await sRes.json();
         if (!mounted.current) return;
-        setWarm(mapItems(s?.warm, "warm"));
         setWatch(mapItems(s?.watchlist, "watch"));
       }
       if (hRes.ok) {
@@ -291,7 +290,7 @@ export default function UserRadar() {
   );
   useLiveMessages(onLive, ["monitoring_alert"]);
 
-  const lists: Record<TabId, RadarItem[] | null> = { warm, watch, history };
+  const lists: Record<TabId, RadarItem[] | null> = { watch, history };
   const items = lists[tab];
   const symbols = (items ?? []).map((i) => i.symbol);
   const prices = useWatchPrices(symbols);
