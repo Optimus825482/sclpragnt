@@ -921,13 +921,16 @@ class AdminTradeNotifyTests(unittest.IsolatedAsyncioTestCase):
         """Kaynak kilidi: buy ucunda notify → seçili alıcılara, tutarsız mesaj."""
         from app import alerting, main
 
-        src = inspect.getsource(main.binance_buy)
-        self.assertIn('bool(payload.get("notify"))', src)
+        buy_src = inspect.getsource(main.binance_buy)
+        self.assertIn('bool(payload.get("notify"))', buy_src)
+        # Push emir yanıtını geciktirmez: arka plan görevine devredilir.
+        self.assertIn("_spawn_background(_send_admin_trade_push(", buy_src)
+        src = inspect.getsource(main._send_admin_trade_push)
         self.assertIn("usernames=recipients", src)
         self.assertIn("fiyatla pozisyon açtı", src)
         self.assertIn("list_push_subscriptions", inspect.getsource(alerting.deliver_web_push))
-        tail = src[src.index("notify_requested"):]
-        self.assertNotIn("amount_try", tail)
+        self.assertNotIn("amount_try", src)
+        self.assertNotIn("amount_try", buy_src[buy_src.index("notify_requested"):])
 
     def test_push_subscription_schema_binds_username(self):
         from app import database
