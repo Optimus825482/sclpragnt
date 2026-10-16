@@ -16,6 +16,7 @@ import {
     IChartApi, ISeriesApi, IPriceLine, UTCTimestamp, Time
 } from "lightweight-charts";
 import { filterIndicatorInstances, findIndicatorEntry } from "./IndicatorPicker";
+import { buildEntryLevels } from "./entryLevels";
 // Ağır modal bileşenleri ayrı chunk'a al: yalnızca kullanıcı picker'ı açınca
 // yüklenir. Senkron yardımcılar (filter/find) yukarıdaki statik import'tan gelir.
 const IndicatorPicker = dynamic(() => import("./IndicatorPicker").then((m) => m.default), { ssr: false });
@@ -143,6 +144,12 @@ export default function ChartsPage() {
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
     const [autoPaperPositions, setAutoPaperPositions] = useState<any[]>([]);
+    // Gerçek Binance TR varlıkları (GET /api/binance/positions → holdings). Grafikte
+    // yalnız seçili sembolün giriş/SL/TP çizgileri için kullanılır.
+    const [binanceHoldings, setBinanceHoldings] = useState<any[]>([]);
+    const binanceReqIdRef = useRef(0);
+    const binanceConfiguredRef = useRef<boolean | null>(null); // null = henüz bilinmiyor
+    const binanceFetchedAtRef = useRef(0);
     // WS durumu: HTTP yedek-yol frekansını seçmek için (WS sağlıklıyken seyreltilir).
     const liveStatus = useLiveStatus();
     // Radar bildirimi paneli: sembol için ufku dolmamış son monitoring bildirimi
@@ -1172,6 +1179,60 @@ export default function ChartsPage() {
             }]);
         } catch { /* marker zamanı veri aralığında değilse sessiz geç */ }
     }, [showPositions, showStopTakeProfit, positions, autoPaperPositions, monitorNotif, symbol, bars, interval]);
+
+    // Gerçek Binance TR pozisyonu: sembol değişince BİR kez çek (tick'te değil).
+    // /api/binance/positions ağırdır (maliyet hesabı) → 60 sn içinde tekrar çağrılmaz;
+    // sembol başına filtreleme çizim effect'inde yapılır. Bayat yanıt, istek no ile atılır.
+    useEffect(() => {
+        if (!symbol) return;
+        const requestId = ++binanceReqIdRef.current;
+        const stale = () => requestId !== binanceReqIdRef.current;
+        void (async () => {
+            try {
+                if (binanceConfiguredRef.current === null) {
+                    const sRes = await apiRequest(`${API_BASE}/api/binance/settings`, { cache: "no-store" });
+                    if (stale()) return;
+                    if (!sRes.ok) return; // belirsiz → bir sonraki sembol değişiminde tekrar dene
+                    const s = await sRes.json();
+                    if (stale()) return;
+                    binanceConfiguredRef.current = !!s?.configured;
+                }
+                if (!binanceConfiguredRef.current) { setBinanceHoldings([]); return; }
+                if (Date.now() - binanceFetchedAtRef.current < 60_000) return; // taze veri state'te
+                const res = await apiRequest(`${API_BASE}/api/binance/positions`, { cache: "no-store" });
+                if (stale() || !res.ok) return; // hata → mevcut listeyi koru
+                const data = await res.json();
+                if (stale()) return;
+                if (Array.isArray(data?.holdings)) {
+                    setBinanceHoldings(data.holdings);
+                    binanceFetchedAtRef.current = Date.now();
+                }
+            } catch { /* anahtar yok/ağ hatası: sessiz geç */ }
+        })();
+        return () => { binanceReqIdRef.current++; };
+    }, [symbol]);
+
+    // Gerçek Binance TR pozisyonunun giriş / SL / TP çizgileri (buildEntryLevels).
+    // Paper çizgileri yukarıdaki effect'te; burada yalnız Binance katmanı çizilir
+    // (paper'ı tekrar çizmemek için paperPositions=[]). Çizgi seri üzerinde olduğundan
+    // her çalışmada ve cleanup'ta removePriceLine ile sökülür → semboller arası sızıntı yok.
+    useEffect(() => {
+        const series = candleRef.current;
+        if (!series || !showPositions) return;
+        const created: IPriceLine[] = [];
+        for (const lv of buildEntryLevels(symbol, binanceHoldings, [])) {
+            if (lv.kind !== "entry" && !showStopTakeProfit) continue;
+            try {
+                created.push(series.createPriceLine({
+                    price: lv.price, color: lv.color, lineWidth: 1, lineStyle: lv.lineStyle,
+                    axisLabelVisible: true, title: lv.label,
+                }));
+            } catch { }
+        }
+        return () => {
+            for (const l of created) { try { series.removePriceLine(l); } catch { } }
+        };
+    }, [symbol, binanceHoldings, showPositions, showStopTakeProfit]);
 
     // Radar bildirimi çizgileri: Pozisyonu olmayan semboller için gelen canlı radar bildirimleri
     // (fiyat + hedef), "Grafikte göster" açıkken mor ve sarı renkle çizilir.
