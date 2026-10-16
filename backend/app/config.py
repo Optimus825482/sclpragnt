@@ -563,6 +563,19 @@ class Config:
     RADAR_JUMP_VELOCITY_BONUS = max(0.0, float(
         os.getenv("RADAR_JUMP_VELOCITY_BONUS", "").strip() or "0"))
     # ------------------------------------------------------------------
+    # 2026-10-16 (sinyal politikası): BİLDİRİM POLİTİKASI — ortak lavabo
+    # (`database.save_monitoring_notifications` → `app/notification_policy.py`).
+    # Kanıt: docs/BACKTEST_RAPORU_7G_2026-10-16.md §7 (30 gün hit60): trend_devam
+    # %53,6; unified %32,8 (skor>=95 %54,4 / 85-95 %36,7); notr %41,1 (eşleşen şans
+    # %45,9'un altı); llm_ikinci_goz %22,1; v_donusu %19,0 (n=21). Kayıt: DENEY_KAYDI.
+    # ÇAĞRI ANINDA okunur. Bloklanan kayıt DB'ye yazılmaz (log + sayaç).
+    RADAR_NOTIFY_POLICY_ENABLED = os.getenv("RADAR_NOTIFY_POLICY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    RADAR_NOTIFY_DISABLED_MODES = os.getenv(
+        "RADAR_NOTIFY_DISABLED_MODES", "notr,v_donusu,llm_ikinci_goz").strip()
+    # unified yalnız panel skoru (<=100) bu tabanın üstündeyse; 0 = taban kapalı.
+    RADAR_NOTIFY_UNIFIED_MIN_SCORE = max(0.0, float(
+        os.getenv("RADAR_NOTIFY_UNIFIED_MIN_SCORE", "").strip() or "95.0"))
+    # ------------------------------------------------------------------
     # KOMBİNE PAPER PORTFÖY (2026-10-11 kullanıcı kararı) — WhatsApp'a gönderilen
     # kombine liste adayları AYRI bir 5.000 TL sanal portföyde OTONOM paper
     # işlemle açılır. Mevcut otonom paper'dan BAĞIMSIZ (kendi cüzdanı, kendi
@@ -1201,6 +1214,18 @@ class Config:
     # fiyatla zorla kapatılır (exit_reason=stale_force_close). Eski kod bu
     # durumda pozisyonu süresiz "izleniyor"da bırakıyordu.
     AUTO_PAPER_STALE_FORCE_CLOSE_FACTOR = float(os.getenv("AUTO_PAPER_STALE_FORCE_CLOSE_FACTOR", "1.5"))
+    # 2026-10-16 (giriş gecikmesi): bildirim `detected_at` ile paper dolum
+    # (`entry_time`) arasındaki süre bu eşiği (sn) aşarsa `logger.warning`.
+    # Yalnız GÖZLEM — davranış değişmez. Giriş TETİKLEMESİ olay güdümlüdür
+    # (monitoring `_notify` → `try_open_from_notification`, anında); bu yüzden
+    # ayrı bir "pickup aralığı" ayarı YOKTUR (yönetim döngüsünün 5 sn'si yalnız
+    # SL/TP izleme içindir). Kayıt: docs/DENEY_KAYDI.md.
+    AUTO_PAPER_ENTRY_LATENCY_WARN_SEC = float(os.getenv("AUTO_PAPER_ENTRY_LATENCY_WARN_SEC", "15"))
+    # 2026-10-16 (giriş gecikmesi): otonom girişi LLM ikinci göz kararına kadar ERTELEME.
+    # Ölçüm: ertelenen girişlerde gecikme medyanı 56.7 sn (ertelenmeyende 0.3 sn) ve LLM
+    # kararı isabeti artırmıyor (FAKE %41 vs DEVAM %30). Varsayılan KAPALI: giriş anında
+    # yapılır, LLM kararı yalnız sonradan RE-OPEN'i bastırır (eski davranış). "1" = ertele.
+    AUTO_PAPER_LLM_SECOND_EYE_DEFER = os.getenv("AUTO_PAPER_LLM_SECOND_EYE_DEFER", "0").strip() == "1"
     # Radar & Sinyal başarı ölçüm penceresi (dakika, 2026-09-22 Erkan kararı).
     # 5dk'da erken kapatıp hedefe daha sonra ulaşan başarılı sinyalleri ıska saymamak için
     # otonom işlem maksimum ömrüyle (60 dk) tam senkronize çalışır.
