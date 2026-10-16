@@ -130,3 +130,21 @@ describe("normalizeSymbol", () => {
     expect(hasBlockingWarnings(undefined)).toBe(false);
   });
 });
+
+import { suggestSymbols } from "./tradeUi";
+
+describe("suggestSymbols", () => {
+  const all = ["ADATRY", "AVAXTRY", "BTCTRY", "BTTTRY", "DOGETRY", "AAVETRY", "ADXTRY"];
+  it("3 harften önce öneri yok", () => expect(suggestSymbols(all, "ad")).toEqual([]));
+  it("önek önce, sonra içeren", () => {
+    expect(suggestSymbols([...all, "WAVAXTRY"], "ava")).toEqual(["AVAX", "WAVAX"]);
+    expect(suggestSymbols(all, "btc")).toEqual(["BTC"]);
+  });
+  it("TRY ekini ve boşlukları yok sayar", () => expect(suggestSymbols(all, " ada/try ")).toEqual(["ADA"]));
+  it("sınır ve tekrar", () => expect(suggestSymbols([...all, "ADATRY"], "ada", 1)).toEqual(["ADA"]));
+});
+
+describe("suggestSymbols USDT çiftleri", () => {
+  it("USDT çiftleri önerilmez (yalnız TL ile işlem)", () =>
+    expect(suggestSymbols(["ADATRY", "ADAUSDT"], "ada")).toEqual(["ADA"]));
+});
