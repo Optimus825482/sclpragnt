@@ -9,6 +9,7 @@ import { commissionPct, netOpenPnlTry } from "../lib/pnl";
 import { useAuth } from "../lib/auth";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { useModalA11y } from "../lib/useModalA11y";
+import { newClientOrderId } from "../lib/tradeUi";
 import Link from "next/link";
 import { useIsUserView } from "../lib/adminView";
 import UserBinance from "../components/user/UserBinance";
@@ -157,6 +158,21 @@ function BinanceTrPageInner() {
   const [balances, setBalances] = useState<Balance[]>([]);
   const [acctLoading, setAcctLoading] = useState(false);
   const [acctError, setAcctError] = useState("");
+  // Sessizce yutulan yükleme hataları artık görünür (anahtar → mesaj; başarıda temizlenir).
+  const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
+  const markLoad = useCallback((key: string, message: string) => {
+    setLoadErrors((prev) => {
+      if (!message) {
+        if (!(key in prev)) return prev;
+        return Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key));
+      }
+      return prev[key] === message ? prev : { ...prev, [key]: message };
+    });
+  }, []);
+  // İdempotent emir kimlikleri: kesin sonuç gelene kadar AYNI kimlik kullanılır (çift tıklama/yeniden deneme güvenli).
+  const buyCidRef = useRef("");
+  const sellCidRef = useRef("");
+  // Emir parametresi değişirse eski kimlik yeniden kullanılmaz (farklı emre eski sonucun dönmesini önler).
 
   // Pozisyonlar (Holdings)
   const [holdings, setHoldings] = useState<Holding[]>([]);
@@ -172,6 +188,7 @@ function BinanceTrPageInner() {
 
   // Satış Modalı (Market Sell)
   const [sellFor, setSellFor] = useState<Holding | null>(null);
+  useEffect(() => { sellCidRef.current = ""; }, [sellFor]);
   const [sellQty, setSellQty] = useState("");
   const [sellBusy, setSellBusy] = useState(false);
   const [sellMsg, setSellMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -190,6 +207,7 @@ function BinanceTrPageInner() {
   const [buyNotify, setBuyNotify] = useState(false);
   const [pairs, setPairs] = useState<string[]>([]);
   const buyAssetRef = useRef("");
+  useEffect(() => { buyCidRef.current = ""; }, [buyAsset, buyAmount, buyOpen]);
 
   // SL / TP & OCO Modalı
   const [sltpModalOpen, setSltpModalOpen] = useState(false);
@@ -364,9 +382,12 @@ function BinanceTrPageInner() {
         // Anahtar hiç bağlı değil → onboarding ekranına düş (hata gösterme).
         setConfigured(false);
         setSellEnabled(false);
+      } else if (!r.ok) {
+        markLoad("settings", `Bağlantı ayarları alınamadı (HTTP ${r.status}).`);
       }
-    } catch { /* */ }
-  }, []);
+      if (r.ok) markLoad("settings", "");
+    } catch { markLoad("settings", "Bağlantı ayarları alınamadı (bağlantı hatası)."); }
+  }, [markLoad]);
 
   useEffect(() => { check(); }, [check]);
 
@@ -397,8 +418,11 @@ function BinanceTrPageInner() {
         if (d.balances && Array.isArray(d.balances) && d.balances.length > 0) {
           setBalances(d.balances);
         }
+        markLoad("positions", "");
+      } else {
+        markLoad("positions", `Varlıklar alınamadı (HTTP ${r.status}); gösterilen veri eski olabilir.`);
       }
-    } catch { /* */ }
+    } catch { markLoad("positions", "Varlıklar alınamadı (bağlantı hatası); gösterilen veri eski olabilir."); }
     finally { setOrdLoading(false); }
   }, []);
 
@@ -409,8 +433,11 @@ function BinanceTrPageInner() {
       if (r.ok) {
         const d = await r.json();
         setOpenOrders(d.orders || []);
+        markLoad("open-orders", "");
+      } else {
+        markLoad("open-orders", `Açık emirler alınamadı (HTTP ${r.status}); liste eski olabilir.`);
       }
-    } catch { /* */ }
+    } catch { markLoad("open-orders", "Açık emirler alınamadı (bağlantı hatası); liste eski olabilir."); }
     finally { setOpenOrdersLoading(false); }
   }, []);
 
@@ -427,10 +454,13 @@ function BinanceTrPageInner() {
         setSymbolSummary((d.symbol_summary || []) as SymbolSummary[]);
         setDaily(d.daily || null);
         setTrMeta({ count: d.count || 0, symbols_scanned: d.symbols_scanned || 0 });
+        markLoad("trades", "");
+      } else {
+        markLoad("trades", `İşlem geçmişi alınamadı (HTTP ${r.status}).`);
       }
-    } catch { /* */ }
+    } catch { markLoad("trades", "İşlem geçmişi alınamadı (bağlantı hatası)."); }
     finally { setTrLoading(false); }
-  }, [tradeDay]);
+  }, [tradeDay, markLoad]);
 
   const refreshAccountData = useCallback(() => {
     if (!configured) return;
@@ -736,7 +766,8 @@ function BinanceTrPageInner() {
         .map((s: string) => String(s).toUpperCase().replace(/TRY$/, ""))
         .filter((s: string) => s && s !== "TRY");
       setPairs(Array.from(new Set(list)));
-    } catch { /* */ }
+      markLoad("pairs", "");
+    } catch { markLoad("pairs", "Sembol listesi alınamadı; arama önerileri eksik olabilir."); }
   };
 
   const selectBuyAsset = async (asset: string) => {
@@ -775,14 +806,18 @@ function BinanceTrPageInner() {
     }
     setBuyBusy(true);
     setBuyMsg(null);
+    if (!buyCidRef.current) buyCidRef.current = newClientOrderId();
     try {
       const r = await apiRequest(`${API_BASE}/api/binance/buy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset, amount_try: buyAmountNum, confirmation: "REAL_BUY", notify: buyNotify }),
+        body: JSON.stringify({ asset, amount_try: buyAmountNum, confirmation: "REAL_BUY", notify: buyNotify, client_order_id: buyCidRef.current }),
       });
       const d = await r.json().catch(() => ({}));
+      // 202: emir daha önce gönderilmiş / sonucu belirsiz → AYNI kimlikle körlemesine tekrar denenmez.
+      if (r.status === 202 && d.status === "failed") buyCidRef.current = "";
       if (!r.ok || !d.ok) throw new Error(d.detail || `Alım emri gönderilemedi (HTTP ${r.status})`);
+      buyCidRef.current = "";
       const qty = d.executed_qty != null ? fmtPrice(d.executed_qty, 6) : buyPrice ? fmtPrice(buyAmountNum / buyPrice, 6) : "—";
       const price = d.avg_price != null ? fmtPrice(d.avg_price, d.avg_price < 1 ? 6 : 2) : buyPrice ? fmtPrice(buyPrice, buyPrice < 1 ? 6 : 2) : "—";
       setBuyDone({ order: d.order_id ?? "—", asset, qty, price });
@@ -799,6 +834,7 @@ function BinanceTrPageInner() {
 
   // ---- Aksiyonlar: Piyasa Satış (Sell) ----
   const openSell = (h: Holding) => {
+    sellCidRef.current = "";
     setSellFor(h);
     setSellQty(String(h.free));
     setSellMsg(null);
@@ -818,14 +854,17 @@ function BinanceTrPageInner() {
     }
     setSellBusy(true);
     setSellMsg(null);
+    if (!sellCidRef.current) sellCidRef.current = newClientOrderId();
     try {
       const r = await apiRequest(`${API_BASE}/api/binance/sell`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset: sellFor.asset, quantity: qty, confirmation: "REAL_SELL" }),
+        body: JSON.stringify({ asset: sellFor.asset, quantity: qty, confirmation: "REAL_SELL", client_order_id: sellCidRef.current }),
       });
       const d = await r.json().catch(() => ({}));
+      if (r.status === 202 && d.status === "failed") sellCidRef.current = "";
       if (!r.ok || !d.ok) throw new Error(d.detail || `Satış emri gönderilemedi (HTTP ${r.status})`);
+      sellCidRef.current = "";
       const donePrice = sellFor.price_try ?? 0;
       setSellDone({
         order: d.order_id ?? "—",
@@ -1111,7 +1150,7 @@ function BinanceTrPageInner() {
             onClick={openBuy}
             disabled={!configured || !sellEnabled}
             className="ui-button ui-button-primary disabled:opacity-40"
-            title={!sellEnabled ? "Gerçek işlem kapalı (Ayarlar > GERÇEK SATIŞ)" : "Piyasa fiyatından alım yap"}
+            title={!sellEnabled ? "Canlı işlem kapalı (Ayarlar > Canlı işlem anahtarı)" : "Piyasa fiyatından alım yap"}
           >
             + ALIM YAP
           </button>
@@ -1176,6 +1215,11 @@ function BinanceTrPageInner() {
               {acctError}
             </div>
           )}
+          {Object.entries(loadErrors).map(([key, message]) => (
+            <div key={key} role="alert" className="mt-2 rounded-lg border border-neon-red/40 bg-neon-red/10 px-4 py-2 text-sm text-neon-red">
+              {message}
+            </div>
+          ))}
 
           {/* ÜST KPI DASHBOARD BAR */}
           <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -1184,9 +1228,11 @@ function BinanceTrPageInner() {
               <div className="absolute top-0 left-0 h-1 w-full bg-neon-green/40" />
               <p className="eyebrow">TOPLAM PORTFÖY DEĞERİ</p>
               <p className="mt-1 font-mono text-xl font-bold text-white">₺{fmtPrice(totalValueTry)}</p>
-              <p className="mt-0.5 text-[11px] text-bunker-muted">
-                ~${fmtPrice(usdtFreeBalance > 0 ? totalValueTry / (liveTicks["USDT"]?.price || 38) : 0)} USD
-              </p>
+              {Number(liveTicks["USDT"]?.price) > 0 && (
+                <p className="mt-0.5 text-[11px] text-bunker-muted">
+                  ~${fmtPrice(totalValueTry / Number(liveTicks["USDT"]?.price))} USD
+                </p>
+              )}
             </div>
 
             {/* Açık K/Z (Unrealized PnL) */}
@@ -1605,7 +1651,7 @@ function BinanceTrPageInner() {
                                     type="button"
                                     onClick={() => openSell(h)}
                                     disabled={!sellEnabled || h.free <= 0 || h.asset === "TRY" || h.price_try == null}
-                                    title={!sellEnabled ? "Gerçek satış kapalı" : h.free <= 0 ? "Boşta bakiye yok" : "Piyasa fiyatından hızlı sat"}
+                                    title={!sellEnabled ? "Canlı işlem kapalı" : h.free <= 0 ? "Boşta bakiye yok" : "Piyasa fiyatından hızlı sat"}
                                     className="rounded border border-neon-red/50 bg-neon-red/10 px-2 py-1 font-mono text-[11px] font-bold text-neon-red hover:bg-neon-red/20 disabled:opacity-30 transition-colors"
                                   >
                                     ⚡ SAT

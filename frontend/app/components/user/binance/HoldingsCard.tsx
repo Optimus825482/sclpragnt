@@ -1,7 +1,7 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { call, type Holding } from "../../../lib/tradeApi";
-import { errorText, fmtPct, fmtPrice, fmtQty, fmtSignedTry, fmtTry } from "../../../lib/tradeUi";
+import { errorText, fmtPct, fmtPrice, fmtQty, fmtSignedTry, fmtTry, newClientOrderId } from "../../../lib/tradeUi";
 import ConfirmDialog from "./ConfirmDialog";
 
 const CHIPS = [25, 50, 75, 100];
@@ -14,6 +14,7 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props)
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
+  const clientId = useRef("");
 
   const coins = holdings.filter((h) => h.asset !== "TRY" && h.total > 0);
   const qty = target ? target.free * (chip / 100) : 0;
@@ -22,17 +23,27 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props)
     if (!target || sending) return;
     setSending(true);
     setError("");
-    const r = await call("POST", "/api/binance/sell", {
+    if (!clientId.current) clientId.current = newClientOrderId();
+    const r = await call<{ ok?: boolean; status?: string; detail?: string }>("POST", "/api/binance/sell", {
       asset: target.asset,
       quantity: chip === 100 ? null : qty,
       confirmation: "REAL_SELL",
+      client_order_id: clientId.current,
     });
     setSending(false);
+    // 202: emir daha önce gönderilmiş / sonucu belirsiz. Aynı kimlikle tekrar denenmez; reddedilmişse yeni kimlik.
+    if (r.status === 202) {
+      if (r.body.status === "failed") clientId.current = "";
+      setError(errorText(r.body.detail));
+      setTarget(null);
+      return;
+    }
     if (!r.ok) {
       setError(errorText(r.error));
       setTarget(null);
       return;
     }
+    clientId.current = "";
     setDone(`${target.asset} satış emri gönderildi.`);
     setTarget(null);
     onTraded();
@@ -64,7 +75,7 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props)
             </div>
             <button
               type="button" disabled={!liveEnabled || h.free <= 0}
-              onClick={() => { setTarget(h); setChip(100); setDone(""); setError(""); }}
+              onClick={() => { clientId.current = ""; setTarget(h); setChip(100); setDone(""); setError(""); }}
               className="min-h-[48px] rounded-lg bg-neon-red px-5 text-sm font-bold text-white disabled:opacity-40"
             >
               Sat
@@ -83,7 +94,7 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props)
             <div className="flex gap-2" role="group" aria-label="Satılacak oran">
               {CHIPS.map((c) => (
                 <button
-                  key={c} type="button" aria-pressed={chip === c} onClick={() => setChip(c)}
+                  key={c} type="button" aria-pressed={chip === c} onClick={() => { clientId.current = ""; setChip(c); }}
                   className={`min-h-[48px] flex-1 rounded-lg border text-sm font-semibold ${chip === c ? "ui-button-primary" : "ui-button-secondary"}`}
                 >
                   %{c}
