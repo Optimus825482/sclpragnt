@@ -278,13 +278,13 @@ def test_signed_post_is_not_retried_after_a_500_even_with_client_id():
 
 def test_place_market_buy_keeps_client_id_and_disables_post_retry():
     with mock.patch.object(btp, "_signed_request", return_value={"orderId": "77"}) as sr:
-        out = btp.place_market_buy("k", "s", "BTC_TRY", 100.0, client_order_id="bu-fixed-1")
+        out = btp.place_market_buy("k", "s", "BTC_TRY", 100.0, client_order_id="bufixed1")
     params = sr.call_args[0][2]
     # Çağıranın verdiği id `clientId` olarak korunur (durum sorgusu/mutabakat
     # için); dedupe değildir, bu yüzden POST tekrarı kapalıdır.
-    assert params["clientId"] == "bu-fixed-1"
+    assert params["clientId"] == "bufixed1"
     assert "clientOrderId" not in params
-    assert out["client_order_id"] == "bu-fixed-1"
+    assert out["client_order_id"] == "bufixed1"
     assert sr.call_args[1].get("idempotent") is False
 
 
@@ -665,3 +665,27 @@ def test_get_all_valid_symbols_from_cache():
 
 
 
+
+
+
+def test_sanitize_client_order_id_strips_dash_and_caps_36():
+    # 2026-10-17: Binance TR 3703 "Invalid client ID" — tire kabul edilmiyor.
+    assert btp.sanitize_client_order_id("web-0123456789abcdef0123456789abcdef") == "web0123456789abcdef0123456789abcdef"
+    assert btp.sanitize_client_order_id("a_b-c d") == "abcd"
+    assert btp.sanitize_client_order_id("x" * 50) == "x" * 36
+    assert btp.sanitize_client_order_id("") is None
+    assert btp.sanitize_client_order_id("---") is None
+
+
+def test_place_market_sell_sanitizes_client_id():
+    with mock.patch.object(btp, "_signed_request", return_value={"orderId": "42"}) as sr:
+        result = btp.place_market_sell("k", "s", "BTC_USDT", 0.16, None, "web-abc123def456")
+    params = sr.call_args[0][2]
+    assert params["clientId"] == "webabc123def456"
+    assert result["client_order_id"] == "webabc123def456"
+
+
+def test_place_market_buy_sanitizes_client_id():
+    with mock.patch.object(btp, "_signed_request", return_value={"orderId": "43"}) as sr:
+        btp.place_market_buy("k", "s", "BTC_TRY", 500.0, None, "web-abc123def456")
+    assert sr.call_args[0][2]["clientId"] == "webabc123def456"

@@ -485,10 +485,14 @@ def new_client_order_id(prefix: str = "sc") -> str:
 def sanitize_client_order_id(value) -> str | None:
     """İstemciden gelen clientId'yi Binance TR alan kurallarına indirger.
 
-    Yalnız harf/rakam/`-`/`_` kabul edilir, en fazla 36 karakter. Boş veya
-    geçersiz değer `None` döner (sunucu kendi kimliğini üretir).
+    2026-10-17: Binance TR `clientId` TİRE/ALT ÇİZGİ KABUL ETMİYOR — basit
+    arayüzün `web-…` kimliği canlıda "3703: Invalid client ID" ile reddedildi;
+    başarılı tüm emirler `sa…`/`bu…` + hex (yalnız harf/rakam, ≤36) biçimindeydi.
+    Bu yüzden yalnız ASCII harf/rakam kalır, en fazla 36 karakter. Boş veya
+    geçersiz değer `None` döner (sunucu kendi kimliğini üretir). Mutabakat
+    (`order_requests`, order-status) aynı temizlenmiş kimliği kullanmalıdır.
     """
-    raw = "".join(ch for ch in str(value or "").strip() if ch.isalnum() or ch in "-_")[:36]
+    raw = "".join(ch for ch in str(value or "").strip() if ch.isascii() and ch.isalnum())[:36]
     return raw or None
 
 
@@ -867,7 +871,8 @@ def get_order_detail(api_key: str, api_secret: str, symbol: str, *,
     if order_id not in (None, ""):
         params["orderId"] = str(order_id)
     elif client_id:
-        params["clientId"] = str(client_id)
+        # 2026-10-17: emir POST'unda temizlenen kimlikle aynı biçim (tire yok).
+        params["clientId"] = sanitize_client_order_id(client_id) or str(client_id)
     else:
         raise ValueError("order_id veya client_id gerekli")
     data = _signed_request("GET", "/open/v1/orders/detail", params, api_key, api_secret)
@@ -917,7 +922,7 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
         "type": 2,       # doküman: 2=MARKET (satış için quantity zorunlu)
         "quantity": _fmt_quantity(quantity, step_size),
         # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
-        "clientId": client_order_id or new_client_order_id("sa"),
+        "clientId": sanitize_client_order_id(client_order_id) or new_client_order_id("sa"),
     }
     # #36/P1-8: fiyat geçilmediyse toz kapısı için canlı fiyatı TÜRET. Eskiden
     # çağıran last_price'ı hiç vermediği için bu kapı hiç ateşlenmiyor ve dust
@@ -991,7 +996,7 @@ def place_market_buy(api_key: str, api_secret: str, symbol_underscore: str, quot
         "type": 2,           # doküman: 2=MARKET
         "quoteOrderQty": f"{float(quote_qty):.2f}",  # quote asset (TRY) büyüklüğü
         # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
-        "clientId": client_order_id or new_client_order_id("bu"),
+        "clientId": sanitize_client_order_id(client_order_id) or new_client_order_id("bu"),
     }
     data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
                            idempotent=False)
@@ -1087,7 +1092,7 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
         "stopPrice": stop_price_str,     # SL tetik fiyatı
         "stopLimitPrice": stop_limit_price_str,
         # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
-        "clientId": client_order_id or new_client_order_id("oc"),
+        "clientId": sanitize_client_order_id(client_order_id) or new_client_order_id("oc"),
     }
     data = _signed_request("POST", "/open/v1/orders/oco", params, api_key, api_secret,
                            idempotent=False)
@@ -1139,7 +1144,7 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
         "stopPrice": stop_price_str,
         "timeInForce": 1,           # doküman: INT: 1=GTC, 2=IOC, 3=FOK, 4=GTX
         # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
-        "clientId": client_order_id or new_client_order_id("sl"),
+        "clientId": sanitize_client_order_id(client_order_id) or new_client_order_id("sl"),
     }
     data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
                            idempotent=False)
@@ -1182,7 +1187,7 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
         "price": price_str,
         "timeInForce": 1,    # doküman: INT: 1=GTC
         # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
-        "clientId": client_order_id or new_client_order_id("tp"),
+        "clientId": sanitize_client_order_id(client_order_id) or new_client_order_id("tp"),
     }
     data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
                            idempotent=False)

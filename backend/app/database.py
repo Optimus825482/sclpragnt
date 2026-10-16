@@ -6287,27 +6287,52 @@ async def set_user_risk_settings(user_id: int, values: dict) -> dict:
     return await _run_db(op)
 
 
+def _parse_json_list(raw) -> list:
+    try:
+        parsed = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _ui_prefs_from_row(row) -> dict:
+    if not row:
+        return {"hidden_menu": [], "favorites": [], "pinned": []}
+    return {
+        "hidden_menu": [str(x) for x in _parse_json_list(row[0])],
+        "favorites": [x for x in _parse_json_list(row[1]) if isinstance(x, dict)],
+        "pinned": [x for x in _parse_json_list(row[2]) if isinstance(x, dict)],
+    }
+
+
 async def get_user_ui_prefs(user_id: int) -> dict:
     def op(conn):
-        row = conn.execute("SELECT hidden_menu FROM user_ui_prefs WHERE user_id=%s", (int(user_id),)).fetchone()
-        if not row:
-            return {"hidden_menu": []}
-        try:
-            parsed = json.loads(row[0] or "[]")
-        except (TypeError, ValueError):
-            parsed = []
-        return {"hidden_menu": [str(x) for x in parsed] if isinstance(parsed, list) else []}
+        row = conn.execute(
+            "SELECT hidden_menu, favorites, pinned FROM user_ui_prefs WHERE user_id=%s", (int(user_id),)).fetchone()
+        return _ui_prefs_from_row(row)
     return await _run_db(op)
 
 
-async def set_user_ui_prefs(user_id: int, hidden: list[str]) -> dict:
+async def set_user_ui_prefs(user_id: int, hidden: list[str] | None = None,
+                            favorites: list[dict] | None = None, pinned: list[dict] | None = None) -> dict:
+    """Verilen (None olmayan) alanları yazar; None = mevcut değer korunur. Birleşik tercihleri döndürür."""
     def op(conn):
-        conn.execute(
-            "INSERT INTO user_ui_prefs(user_id, hidden_menu, updated_at) VALUES(%s,%s,%s) "
-            "ON CONFLICT (user_id) DO UPDATE SET hidden_menu=EXCLUDED.hidden_menu, updated_at=EXCLUDED.updated_at",
-            (int(user_id), json.dumps(list(hidden)), time.time()))
+        hidden_j = None if hidden is None else json.dumps(list(hidden))
+        fav_j = None if favorites is None else json.dumps(list(favorites))
+        pin_j = None if pinned is None else json.dumps(list(pinned))
+        # Yeni satırda None alanlar '[]' olur; mevcut satırda COALESCE ile korunur.
+        row = conn.execute(
+            "INSERT INTO user_ui_prefs(user_id, hidden_menu, favorites, pinned, updated_at) "
+            "VALUES(%s, COALESCE(%s,'[]'), COALESCE(%s,'[]'), COALESCE(%s,'[]'), %s) "
+            "ON CONFLICT (user_id) DO UPDATE SET "
+            "hidden_menu=COALESCE(%s, user_ui_prefs.hidden_menu), "
+            "favorites=COALESCE(%s, user_ui_prefs.favorites), "
+            "pinned=COALESCE(%s, user_ui_prefs.pinned), "
+            "updated_at=EXCLUDED.updated_at "
+            "RETURNING hidden_menu, favorites, pinned",
+            (int(user_id), hidden_j, fav_j, pin_j, time.time(), hidden_j, fav_j, pin_j)).fetchone()
         conn.commit()
-        return {"hidden_menu": list(hidden)}
+        return _ui_prefs_from_row(row)
     return await _run_db(op)
 
 

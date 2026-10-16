@@ -3077,6 +3077,25 @@ _QUICK_LANE_MAX_WORDS = 12
 _QUICK_LANE_MACD_TFS = ("1m", "5m", "15m", "30m", "1h")
 
 
+def _merge_body_symbols(requested_symbols, body):
+    """Gövdedeki sembol alanlarını (symbols / symbol / current_symbol) requested_symbols'a ekle.
+
+    2026-10-17: Grafik asistanı çekmecesi `current_symbol` gönderiyor; daha önce yok sayıldığı için
+    "Bu coinde şu an genel durum nedir?" gibi hızlı sorular sembolsüz kalıyordu. Hızlı şerit de
+    requested_symbols'a baktığından aynı düzeltme onu da kapsar.
+    """
+    for s in (body.get("symbols") or []):
+        sym_clean = str(s).replace("_", "").upper()
+        if sym_clean and sym_clean not in requested_symbols:
+            requested_symbols.append(sym_clean)
+    for key in ("symbol", "current_symbol"):
+        if body.get(key):
+            sym_clean = str(body.get(key)).replace("_", "").upper()
+            if sym_clean and sym_clean not in requested_symbols:
+                requested_symbols.append(sym_clean)
+    return requested_symbols
+
+
 def _quick_lane_symbol(symbols, text, *, trade_intent=None, research_only_intent=False):
     """Hızlı şerit adayı: TEK sembol + durum sorusu; derinlik/emir niyeti yok.
 
@@ -3392,14 +3411,7 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
     if research_only_intent:
         trade_intent = False
     requested_symbols = [token.upper() for token in re.findall(r"\b[A-Za-z]{2,12}TRY\b", last_text.upper())]
-    for s in (body.get("symbols") or []):
-        sym_clean = str(s).replace("_", "").upper()
-        if sym_clean and sym_clean not in requested_symbols:
-            requested_symbols.append(sym_clean)
-    if body.get("symbol"):
-        sym_clean = str(body.get("symbol")).replace("_", "").upper()
-        if sym_clean and sym_clean not in requested_symbols:
-            requested_symbols.append(sym_clean)
+    _merge_body_symbols(requested_symbols, body)
     market_opportunity_intent = bool(re.search(
         r"(güncel|guncel|fırsat|firsat|piyasa|tarama|sembol|art(?:ar|ış|is)|%\s*5|h1|m30|30m|1h|momentum|yüksel|yuksel)",
         last_text.lower(),

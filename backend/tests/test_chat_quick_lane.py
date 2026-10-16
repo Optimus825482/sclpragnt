@@ -78,6 +78,14 @@ class QuickLaneSymbolTests(unittest.TestCase):
     def test_no_symbol_returns_none(self):
         self.assertIsNone(llm_chat._quick_lane_symbol([], "piyasa nasıl"))
 
+    def test_current_symbol_from_chart_assistant_feeds_quick_lane(self):
+        # 2026-10-17: grafik asistanı `current_symbol` gönderir; requested_symbols'a girmeli.
+        req = llm_chat._merge_body_symbols([], {"current_symbol": "btc_try"})
+        self.assertEqual(["BTCTRY"], req)
+        self.assertEqual("BTCTRY", llm_chat._quick_lane_symbol(req, "Bu coinde şu an genel durum nedir?"))
+        # symbol ile aynıysa tekrarlanmaz.
+        self.assertEqual(["BTCTRY"], llm_chat._merge_body_symbols([], {"symbol": "BTCTRY", "current_symbol": "BTCTRY"}))
+
     def test_disabled_by_config(self):
         with patch.object(config, "LLM_QUICK_LANE_ENABLED", False):
             self.assertIsNone(llm_chat._quick_lane_symbol(["EGLDTRY"], "EGLDTRY"))

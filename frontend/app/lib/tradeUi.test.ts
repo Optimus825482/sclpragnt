@@ -44,6 +44,8 @@ describe("client_order_id", () => {
     const b = newClientOrderId();
     expect(isValidClientOrderId(a)).toBe(true);
     expect(a).not.toBe(b);
+    // Binance TR clientId: tire/alt çizgi yok, en fazla 36 karakter (3703 Invalid client ID).
+    expect(a).toMatch(/^[A-Za-z0-9]{8,36}$/);
   });
   it("geçersizler", () => {
     expect(isValidClientOrderId("kisa")).toBe(false);

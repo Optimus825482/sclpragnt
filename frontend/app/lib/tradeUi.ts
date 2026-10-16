@@ -51,13 +51,18 @@ export function parseTrNumber(text: string | number | null | undefined): number 
   return Number.isFinite(n) ? n : null;
 }
 
-/** Sunucu `client_order_id` kuralı: 8–64 karakter, [A-Za-z0-9_-]. Her onay penceresi açılışında yeni üretilir. */
+/**
+ * Sunucu `client_order_id` kuralı: 8–64 karakter, [A-Za-z0-9_-]. Her onay penceresi açılışında yeni üretilir.
+ * 2026-10-17: Binance TR `clientId` alanı tire kabul ETMİYOR ("3703: Invalid client ID"); eski `web-…` (36 kr.)
+ * biçimi canlıda reddedildi. Başarılı emirlerin tamamı `sa…`/`bu…` + 32 hex (34 kr., yalnız harf/rakam) biçimindeydi;
+ * aynı biçim: `wb` + 32 hex.
+ */
 export function newClientOrderId(): string {
   const rnd =
     typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
       ? crypto.randomUUID().replace(/-/g, "")
       : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
-  return `web-${rnd}`.slice(0, 64);
+  return `wb${rnd}`.replace(/[^A-Za-z0-9]/g, "").slice(0, 34);
 }
 
 export function isValidClientOrderId(value: string): boolean {

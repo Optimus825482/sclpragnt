@@ -54,7 +54,7 @@ from app.binance_tr_private import (get_account_balance, get_trade_history, get_
                                     place_market_sell, place_market_buy, place_oco_sell,
                                     place_stop_loss_sell, place_limit_sell, cancel_order, get_open_orders,
                                     place_spot_order, get_order_detail, BinanceTrAmbiguousOrderError,
-                                    BinanceTrPartialFillError, reconcile_sell_fill)
+                                    BinanceTrApiError, BinanceTrPartialFillError, reconcile_sell_fill)
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
 from app import memory_service
@@ -380,12 +380,15 @@ async def get_ui_prefs(request: Request):
 
 @app.put("/api/profile/ui-prefs")
 async def put_ui_prefs(payload: dict, request: Request):
+    """Gönderilmeyen anahtarlar DEĞİŞMEZ (2026-10-17: favorites/pinned eklendi); birleşik tercihler döner."""
     uid = await _session_user_id(request)
     try:
-        hidden = ui_prefs.normalize_hidden(payload.get("hidden_menu"))
+        hidden = ui_prefs.normalize_hidden(payload["hidden_menu"]) if "hidden_menu" in payload else None
+        favorites = ui_prefs.normalize_watch_list(payload["favorites"]) if "favorites" in payload else None
+        pinned = ui_prefs.normalize_watch_list(payload["pinned"]) if "pinned" in payload else None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    prefs = await database.set_user_ui_prefs(uid, hidden)
+    prefs = await database.set_user_ui_prefs(uid, hidden, favorites, pinned)
     return {"ok": True, **prefs}
 
 
@@ -3761,7 +3764,9 @@ async def binance_sell(payload: dict, request: Request):
             symbol_u, exc.requested_qty, exc.executed_qty, result.get("remaining_qty"))
     except Exception as exc:
         await order_requests.fail(int(user["id"]), cid, str(exc), isinstance(exc, BinanceTrAmbiguousOrderError))
-        raise HTTPException(status_code=502, detail=f"Satış emri gönderilemedi: {exc}")
+        # 2026-10-17: borsanın KESİN reddi (API hata zarfı, ör. 3703 Invalid client ID) 400 döner;
+        # 502 istemcide "durum belirsiz" sayılıp aynı kimlik kilitleniyordu. Belirsiz/ağ hataları 502 kalır.
+        raise HTTPException(status_code=_order_reject_status(exc), detail=f"Satış emri gönderilemedi: {exc}")
     await order_requests.complete(int(user["id"]), cid, result)
     # PERFORMANS (2026-09-27): TTL uzatılan FIFO maliyet cache'ini emir sonrası
     # tazele — satış FIFO kuyruğunu değiştirir, eski maliyet yanlış PnL üretir.
@@ -3866,7 +3871,7 @@ async def binance_buy(payload: dict, request: Request):
             min_notional if quote_asset != "USDT" else None, cid)
     except Exception as exc:
         await order_requests.fail(int(user["id"]), cid, str(exc), isinstance(exc, BinanceTrAmbiguousOrderError))
-        raise HTTPException(status_code=502, detail=f"Alım emri gönderilemedi: {exc}")
+        raise HTTPException(status_code=_order_reject_status(exc), detail=f"Alım emri gönderilemedi: {exc}")
     await order_requests.complete(int(user["id"]), cid, result)
     # PERFORMANS (2026-09-27): alım yeni FIFO lotu ekler → maliyet cache'i tazele.
     _invalidate_positions_cache(int(user["id"]))
@@ -3909,6 +3914,14 @@ async def _send_admin_trade_push(username: str, symbol_u: str, result: dict) -> 
     except Exception as notify_exc:
         # Bildirim arızası başarılı emri BOZMAMALI; yalnız loglanır.
         logger.warning("Admin işlem bildirimi gönderilemedi: %s", notify_exc)
+
+
+def _order_reject_status(exc: Exception) -> int:
+    """Emir POST istisnası → HTTP durumu. Borsanın kesin reddi (API hata zarfı, geçici değil) 400:
+    istemci kimliği sıfırlayıp yeni istek olarak gönderebilir. Belirsiz (zaman aşımı/5xx/bozuk yanıt) 502."""
+    if isinstance(exc, BinanceTrApiError) and not isinstance(exc, BinanceTrAmbiguousOrderError) and not exc.is_transient:
+        return 400
+    return 502
 
 
 def _order_replay_response(rp):
