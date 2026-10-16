@@ -6201,6 +6201,75 @@ def _user_binance_keys_row(row) -> dict | None:
             "updated_at": float(row["updated_at"] or 0)}
 
 
+async def claim_order_request(user_id: int, client_order_id: str, symbol: str, request: dict) -> bool:
+    """İdempotent emir kaydı: bu çağrı kaydın SAHİBİ ise True (gerçek emri yalnız o gönderir)."""
+    def op(conn):
+        now = time.time()
+        cur = conn.execute(
+            "INSERT INTO order_requests(user_id, client_order_id, status, symbol, request, created_at, updated_at) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (user_id, client_order_id) DO NOTHING",
+            (int(user_id), str(client_order_id), "in_progress", str(symbol or ""),
+             _json_safe_dumps(request or {}), now, now))
+        conn.commit()
+        return int(getattr(cur, "rowcount", 0) or 0) == 1
+    return await _run_db(op)
+
+
+async def finish_order_request(user_id: int, client_order_id: str, status: str, result: dict | None) -> None:
+    def op(conn):
+        conn.execute(
+            "UPDATE order_requests SET status=%s, result=%s, updated_at=%s WHERE user_id=%s AND client_order_id=%s",
+            (str(status), _json_safe_dumps(result or {}), time.time(), int(user_id), str(client_order_id)))
+        conn.commit()
+    await _run_db(op)
+
+
+async def get_order_request(user_id: int, client_order_id: str) -> dict | None:
+    def op(conn):
+        row = conn.execute(
+            "SELECT status, symbol, result, created_at FROM order_requests WHERE user_id=%s AND client_order_id=%s",
+            (int(user_id), str(client_order_id))).fetchone()
+        if not row:
+            return None
+        result = row[2]
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except ValueError:
+                result = {}
+        return {"status": row[0], "symbol": row[1], "result": result or {}, "created_at": float(row[3])}
+    return await _run_db(op)
+
+
+async def get_user_risk_settings(user_id: int) -> dict:
+    """Risk Merkezi ayarları; kayıt yoksa varsayılanlar (app/risk_settings.py)."""
+    from app.risk_settings import DEFAULTS
+
+    def op(conn):
+        row = conn.execute(
+            "SELECT max_position_pct, default_rr FROM user_risk_settings WHERE user_id=%s", (int(user_id),)).fetchone()
+        if not row:
+            return dict(DEFAULTS)
+        return {"max_position_pct": float(row[0]), "default_rr": float(row[1])}
+    return await _run_db(op)
+
+
+async def set_user_risk_settings(user_id: int, values: dict) -> dict:
+    """Gelen alanları mevcut/varsayılan değerlerle birleştirip yazar (kısmi güncelleme eksik alanı SIFIRLAMAZ)."""
+    current = await get_user_risk_settings(user_id)
+    merged = {**current, **{k: float(v) for k, v in (values or {}).items() if k in current}}
+
+    def op(conn):
+        conn.execute(
+            "INSERT INTO user_risk_settings(user_id, max_position_pct, default_rr, updated_at) VALUES(%s,%s,%s,%s) "
+            "ON CONFLICT (user_id) DO UPDATE SET max_position_pct=EXCLUDED.max_position_pct, "
+            "default_rr=EXCLUDED.default_rr, updated_at=EXCLUDED.updated_at",
+            (int(user_id), merged["max_position_pct"], merged["default_rr"], time.time()))
+        conn.commit()
+        return merged
+    return await _run_db(op)
+
+
 async def get_user_ui_prefs(user_id: int) -> dict:
     def op(conn):
         row = conn.execute("SELECT hidden_menu FROM user_ui_prefs WHERE user_id=%s", (int(user_id),)).fetchone()
