@@ -112,7 +112,10 @@ class RefireGateTests(unittest.IsolatedAsyncioTestCase):
         from app.config import config
         self.assertAlmostEqual(config.round_trip_cost() * 100,
                                self.m.MONITORING_REFIRE_MIN_MOVE_PCT, places=9)
-        self.assertAlmostEqual(0.35, self.m.MONITORING_REFIRE_MIN_MOVE_PCT, places=9)
+        # 2026-10-16 (maliyet/çıkış): komisyon bacağı EFEKTİF oran (BNB açık: %0.275,
+        # kapalı: %0.35) — literal yerine bağımsız formülden türetilir.
+        self.assertAlmostEqual((config.effective_commission_pct() + config.ESTIMATED_SLIPPAGE_PCT) * 200,
+                               self.m.MONITORING_REFIRE_MIN_MOVE_PCT, places=9)
 
     async def test_frozen_price_produces_single_notification(self):
         """10 tarama boyunca fiyat donmus -> TEK bildirim (vaka: 9 x 9,45)."""

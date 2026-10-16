@@ -68,7 +68,11 @@ class SellFillAndMarkupTests(unittest.TestCase):
         self.assertAlmostEqual(pl.round_trip_markup(0.0015, 0.00025), 0.00325, places=12)
 
     def test_defaults_follow_config(self):
+        # 2026-10-16 (maliyet/çıkış): commission_pct() artık EFEKTİF oran (BNB
+        # indirimi/override); ham taban testi için BNB modu ve override kapatılır.
         with patch.object(config, "COMMISSION_PCT", 0.002), \
+             patch.object(config, "COMMISSION_BNB_MODE", False), \
+             patch.object(config, "COMMISSION_PCT_OVERRIDE", None), \
              patch.object(config, "ESTIMATED_SLIPPAGE_PCT", 0.0005):
             self.assertAlmostEqual(pl.round_trip_markup(), 0.0045, places=12)
             self.assertAlmostEqual(pl.commission_pct(), 0.002, places=12)

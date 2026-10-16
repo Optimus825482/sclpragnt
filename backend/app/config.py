@@ -1028,7 +1028,31 @@ class Config:
     SYSTEM_ATR_TRAILING_ACTIVATION_ATR = max(0.25, float(os.getenv("SYSTEM_ATR_TRAILING_ACTIVATION_ATR", "1.0")))
 
     # Binance TR spot komisyonu (Bronz/Standart taker %0.15) - işlem başına
+    # TABAN oran (indirimsiz). Canlı paper motorları bu sabiti DOĞRUDAN değil,
+    # `paper_ledger.commission_pct()` üzerinden (BNB indirimi / override uygulanmış
+    # EFEKTİF oran) okur — bkz. aşağıdaki 2026-10-16 bloğu ve `effective_commission_pct`.
     COMMISSION_PCT = float(os.getenv("COMMISSION_PCT", "0.0015"))
+    # 2026-10-16 (maliyet/çıkış): BNB ile komisyon modeli.
+    # 60 günlük ölçüm (docs/BACKTEST_60G_RESCAN_2026-10-16.md) paper motorlarının
+    # yaklaşık gidiş-dönüş maliyeti kadar (%0,35) kaybettiğini gösterdi; kullanıcı
+    # Binance TR'de BNB ile komisyon ödemeyi AÇTI. Varsayılan "1" (açık).
+    #   COMMISSION_BNB_MODE          : "1"/"true" → taban orana indirim uygulanır.
+    #   COMMISSION_BNB_DISCOUNT_PCT  : indirim yüzdesi (25.0 = Binance'in standart
+    #       BNB indirimi). Binance TR'nin GERÇEK BNB indirim oranı DOĞRULANMADI
+    #       (hesap cevabında ayrı alan yok) — bu yüzden ayarlanabilir; hesap
+    #       taker komisyonu ile paper varsayımı farkı /api/binance/fee-mode'da
+    #       gösterilir (otomatik düzeltme YAPILMAZ).
+    #   COMMISSION_PCT_OVERRIDE      : isteğe bağlı MUTLAK bacak başı kesir
+    #       (ör. 0.00075); boş değilse her şeyi ezer (hesaptan okunan gerçek
+    #       oranı elle sabitlemek için).
+    # Öncelik: OVERRIDE > BNB indirimi (COMMISSION_PCT × (1 − indirim/100)) > COMMISSION_PCT.
+    # Tek okuma noktası: `paper_ledger.commission_pct()` / `config.effective_commission_pct()`.
+    COMMISSION_BNB_MODE = os.getenv("COMMISSION_BNB_MODE", "1").strip().lower() in ("1", "true", "yes", "on")
+    COMMISSION_BNB_DISCOUNT_PCT = max(0.0, min(100.0, float(os.getenv("COMMISSION_BNB_DISCOUNT_PCT", "25.0"))))
+    _commission_override_raw = os.getenv("COMMISSION_PCT_OVERRIDE", "").strip()
+    COMMISSION_PCT_OVERRIDE: float | None = (
+        float(_commission_override_raw) if _commission_override_raw.lower() not in ("", "none", "null") else None
+    )
     ESTIMATED_SLIPPAGE_PCT = 0.00025
     # 2026-10-16 (backtest onarımı): scripts/run_portfolio_backtest.py tam (gidiş-dönüş
     # değil, tek seferlik) spread'i KESİR olarak okur; her dolumda spread/2 uygulanır.
@@ -1158,6 +1182,28 @@ class Config:
     # kazanan erken kesiliyordu. Kapatilinca cikisi trailing + genis SL belirler
     # ve test seti negatiften pozitife donuyor. (max_target_pct ile ayni sebep.)
     AUTO_PAPER_TP_PRIMARY_ENABLED = os.getenv("AUTO_PAPER_TP_PRIMARY_ENABLED", "false").lower() == "true"
+    # 2026-10-16 (maliyet/çıkış): otonom paper ÇIKIŞ PROFİLİ.
+    #   mevcut  : bugünkü varsayılanlar (SL 5.0 / tetik 2.0 / gap 1.0 / TP-primary
+    #             kapalı — yukarıdaki sabitler neyse o). VARSAYILAN.
+    #   kalibre : calibrate_combined_paper walk-forward'ında 7/30/60 günde en iyi
+    #             hücre — SL 0.8 / trailing tetik 1.0 / trailing gap 0.8 /
+    #             TP-primary kapalı. 60 günde test EV −0.157 (taban −0.250 %/işlem).
+    # Öncelik (yüksekten düşüğe): DB'ye kaydedilmiş admin ayarı (auto_paper_settings)
+    # > profil (kalibre) > env/config sabitleri. Profil yalnız VARSAYILANLARI
+    # değiştirir; UI'dan kaydedilmiş bir değer varsa ona dokunmaz.
+    # Varsayılan `mevcut` kalır: canlıda dar SL (4.0 → 1.5) bir kez 7 KAT kötü
+    # sonuç vermişti (bkz. AUTO_PAPER_SL_PCT_DEFAULT yorumu); kalibre profil
+    # önce gerçek dolumlarla ölçülmeli. Çözümleme: `config.auto_paper_exit_defaults()`.
+    AUTO_PAPER_EXIT_PROFILE = os.getenv("AUTO_PAPER_EXIT_PROFILE", "mevcut").strip().lower() or "mevcut"
+    AUTO_PAPER_EXIT_PROFILES = {
+        "mevcut": {},
+        "kalibre": {
+            "stop_loss_pct": 0.8,
+            "trailing_trigger_pct": 1.0,
+            "trailing_gap_pct": 0.8,
+            "tp_primary_exit_enabled": False,
+        },
+    }
     # TP-CANCEL-ON-TRAIL (2026-10-09, opsiyonel — varsayilan KAPALI, canlida
     # KAPALI BIRAKILDI: bkz. asagidaki canli-parametre bulgusu).
     # Trailing devreye girdigi AN sabit TP emri IPTAL edilir (take_profit=0 +
@@ -1284,14 +1330,78 @@ class Config:
     GLOBAL_SIGNAL_STRATEGY = os.getenv("GLOBAL_SIGNAL_STRATEGY", "GLOBAL_LEAD_LAG")
 
     @classmethod
+    def effective_commission_pct(cls) -> float:
+        """2026-10-16 (maliyet/çıkış): EFEKTİF bacak başı komisyon (KESİR).
+
+        Öncelik: COMMISSION_PCT_OVERRIDE (mutlak) > BNB modu
+        (COMMISSION_PCT × (1 − COMMISSION_BNB_DISCOUNT_PCT/100)) > COMMISSION_PCT.
+        Varsayılanlarla: 0.0015 × 0.75 = 0.001125 (%0,1125/bacak).
+        `paper_ledger.commission_pct()` bu fonksiyonu sarar; iki yerde formül yok.
+        """
+        override = cls._cfg_attr("COMMISSION_PCT_OVERRIDE", None)
+        if override is not None:
+            try:
+                return max(0.0, float(override))
+            except (TypeError, ValueError):
+                pass
+        base = float(cls._cfg_attr("COMMISSION_PCT", 0.0015))
+        if cls._cfg_attr("COMMISSION_BNB_MODE", False):
+            discount = float(cls._cfg_attr("COMMISSION_BNB_DISCOUNT_PCT", 0.0) or 0.0)
+            discount = max(0.0, min(100.0, discount))
+            return base * (1.0 - discount / 100.0)
+        return base
+
+    @classmethod
+    def _cfg_attr(cls, name: str, default=None):
+        """Bayrağı önce `config` ÖRNEĞİNDEN (testlerde patch.object edilen), yoksa sınıftan oku.
+
+        Sınıf metotları `cls.X` okuduğunda örnek üzerindeki patch'ler görünmez;
+        `Config.min_net_exit_pct(...)` sınıf çağrıları da çalışmaya devam etsin diye
+        classmethod kalır, değerler örnekten çözülür.
+        """
+        inst = globals().get("config")
+        if inst is not None and isinstance(inst, cls):
+            return getattr(inst, name, default)
+        return getattr(cls, name, default)
+
+    @classmethod
     def round_trip_cost(cls) -> float:
         """Gidiş-dönüş maliyet: iki bacak komisyon + iki bacak slippage (KESİR).
 
         D-06 (2026-09-14) tek kaynak: `min_net_exit_pct` VE velocity gerçekleşen
         çıkış metriği aynı sayıyı kullanır; kopya formül üretilmez.
-        -> (0.0015 + 0.00025) * 2 = 0.0035 (%%0.35)
+        2026-10-16 (maliyet/çıkış): komisyon bacağı EFEKTİF oran
+        (`effective_commission_pct`, BNB indirimi/override dahil).
+        -> BNB açık: (0.001125 + 0.00025) * 2 = 0.00275 (%0,275);
+           BNB kapalı: (0.0015 + 0.00025) * 2 = 0.0035 (%0,35)
         """
-        return cls.COMMISSION_PCT * 2 + cls.ESTIMATED_SLIPPAGE_PCT * 2
+        return cls.effective_commission_pct() * 2 + float(cls._cfg_attr("ESTIMATED_SLIPPAGE_PCT", 0.00025)) * 2
+
+    @classmethod
+    def auto_paper_exit_defaults(cls) -> dict:
+        """2026-10-16 (maliyet/çıkış): otonom paper çıkış VARSAYILANLARI (profil uygulanmış).
+
+        Döner: {stop_loss_pct, trailing_trigger_pct, trailing_gap_pct,
+        tp_primary_exit_enabled, profile}. `mevcut` → config sabitleri;
+        `kalibre` → AUTO_PAPER_EXIT_PROFILES["kalibre"] üstüne yazar. Bilinmeyen
+        profil adı `mevcut` gibi davranır. DB'ye kaydedilmiş admin ayarı bu
+        varsayılanların ÜSTÜNDEDİR (auto_paper.get_auto_paper_settings).
+        """
+        base = {
+            "stop_loss_pct": float(cls._cfg_attr("AUTO_PAPER_SL_PCT_DEFAULT", 5.0)),
+            "trailing_trigger_pct": float(cls._cfg_attr("AUTO_PAPER_TRAILING_TRIGGER_PCT", 2.0)),
+            "trailing_gap_pct": float(cls._cfg_attr("AUTO_PAPER_TRAILING_GAP_PCT", 1.0)),
+            "tp_primary_exit_enabled": bool(cls._cfg_attr("AUTO_PAPER_TP_PRIMARY_ENABLED", False)),
+        }
+        name = str(cls._cfg_attr("AUTO_PAPER_EXIT_PROFILE", "mevcut") or "mevcut").strip().lower()
+        profiles = cls._cfg_attr("AUTO_PAPER_EXIT_PROFILES", {}) or {}
+        overlay = profiles.get(name)
+        if overlay is None:
+            name = "mevcut"
+            overlay = {}
+        base.update({k: v for k, v in dict(overlay).items() if k in base})
+        base["profile"] = name
+        return base
 
     @classmethod
     def min_net_exit_pct(cls, order_value: float | None = None) -> float:

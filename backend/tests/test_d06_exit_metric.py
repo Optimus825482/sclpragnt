@@ -90,11 +90,28 @@ class ExitPctDefinitionTests(unittest.TestCase):
 
 
 class RoundTripCostTests(unittest.TestCase):
-    """Maliyet tek kaynaktan gelir: `config.round_trip_cost()`."""
+    """Maliyet tek kaynaktan gelir: `config.round_trip_cost()`.
+
+    2026-10-16 (maliyet/çıkış): komisyon bacağı artık EFEKTİF oran (BNB
+    indirimi/override). Bu sınıftaki literal (%0.35) iddialar HAM taban oranı
+    sınar; setUp BNB modunu ve override'ı kapatır. BNB açık hâli ayrı testte.
+    """
+
+    def setUp(self):
+        for name, val in (("COMMISSION_BNB_MODE", False), ("COMMISSION_PCT_OVERRIDE", None)):
+            p = patch.object(type(config), name, val)
+            p.start()
+            self.addCleanup(p.stop)
 
     def test_default_cost_is_35_bps_in_percent(self):
-        """(0.0015 + 0.00025) * 2 * 100 = %0.35"""
+        """(0.0015 + 0.00025) * 2 * 100 = %0.35 (BNB kapalı)"""
         self.assertAlmostEqual(0.35, round_trip_cost_pct(), places=9)
+
+    def test_bnb_mode_discounts_commission_leg(self):
+        """BNB açık, %25 indirim: (0.0015×0.75 + 0.00025) * 2 * 100 = %0.275"""
+        with patch.object(type(config), "COMMISSION_BNB_MODE", True), \
+             patch.object(type(config), "COMMISSION_BNB_DISCOUNT_PCT", 25.0):
+            self.assertAlmostEqual(0.275, round_trip_cost_pct(), places=9)
 
     def test_tracks_config_change(self):
         """Komisyon değişirse ölçüm de değişir (sabit yazılmadı)."""
@@ -107,7 +124,7 @@ class RoundTripCostTests(unittest.TestCase):
         W6 money-math kapısı: value<=0 dalı yalnızca komisyon+slippage döndürür.
         """
         self.assertAlmostEqual(config.round_trip_cost(),
-                               config.COMMISSION_PCT * 2 + config.ESTIMATED_SLIPPAGE_PCT * 2,
+                               config.effective_commission_pct() * 2 + config.ESTIMATED_SLIPPAGE_PCT * 2,
                                places=12)
         # value<=0 -> saf maliyet (asgari net kâr terimi YOK)
         self.assertAlmostEqual(config.round_trip_cost(), config.min_net_exit_pct(-1.0), places=12)

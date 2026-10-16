@@ -43,12 +43,14 @@ class MinNetExitPctTests(unittest.TestCase):
 
     def test_negative_value_uses_pure_round_trip_cost(self):
         """Negatif notional anlamsızdır → asgari-net terimi uygulanmaz."""
-        expected = Config.COMMISSION_PCT * 2 + Config.ESTIMATED_SLIPPAGE_PCT * 2
+        # 2026-10-16 (maliyet/çıkış): komisyon bacağı EFEKTİF oran (BNB indirimi/override).
+        expected = Config.effective_commission_pct() * 2 + Config.ESTIMATED_SLIPPAGE_PCT * 2
         self.assertAlmostEqual(expected, Config.min_net_exit_pct(-5), places=12)
 
     def test_value_adds_min_expected_net_per_notional(self):
         value = 1000.0
-        expected = (Config.COMMISSION_PCT * 2 + Config.ESTIMATED_SLIPPAGE_PCT * 2
+        # 2026-10-16 (maliyet/çıkış): komisyon bacağı EFEKTİF oran (BNB indirimi/override).
+        expected = (Config.effective_commission_pct() * 2 + Config.ESTIMATED_SLIPPAGE_PCT * 2
                     + Config.MIN_EXPECTED_NET_PNL_TRY / value)
         self.assertAlmostEqual(expected, Config.min_net_exit_pct(value), places=12)
 
@@ -82,7 +84,10 @@ class TradeEconomicsTests(unittest.TestCase):
     def test_matches_canonical_round_trip_basis(self):
         """`trade_economics` ile `min_net_exit_pct` AYNI maliyet tabanını kullanmalı."""
         value = 1000.0
-        econ = mi.trade_economics(100.0, quantity=value / 100.0, spread_pct=0.0)
+        # 2026-10-16 (maliyet/çıkış): kanonik taban efektif komisyondur; trade_economics'in
+        # literal 0.0015 varsayılanı taban orandır — çağıran efektif oranı geçmeli.
+        econ = mi.trade_economics(100.0, quantity=value / 100.0, spread_pct=0.0,
+                                  commission_pct=Config.effective_commission_pct())
         canonical = Config.min_net_exit_pct(value) - Config.MIN_EXPECTED_NET_PNL_TRY / value
         self.assertAlmostEqual(canonical, econ["round_trip_cost_pct"], places=8)
 

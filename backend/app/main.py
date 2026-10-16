@@ -4215,9 +4215,26 @@ async def binance_fee_mode_get(request: Request):
     api_key, api_secret = await _decrypt_binance_creds(request)
     from app import binance_tr_private as _btr
     try:
-        return await asyncio.to_thread(_btr.get_fee_mode, api_key, api_secret)
+        res = await asyncio.to_thread(_btr.get_fee_mode, api_key, api_secret)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Binance TR komisyon bilgisi alınamadı: {exc}")
+    # 2026-10-16 (maliyet/çıkış): paper komisyon varsayımı (BNB modeli) ve hesapla
+    # farkı YALNIZ GÖSTERİLİR — config hesaptan otomatik DEĞİŞTİRİLMEZ (karar operatörün).
+    # `taker_commission` get_fee_mode'da ORAN'a normalize edilmiştir (0.001 = %0,1).
+    try:
+        from app import paper_ledger as _pl
+        model = _pl.commission_model()
+        res = dict(res or {})
+        res["paper_commission_model"] = model
+        taker = res.get("taker_commission")
+        eff = float(model.get("effective") or 0.0)
+        if isinstance(taker, (int, float)) and eff > 0:
+            res["account_vs_paper_diff_pct"] = round((float(taker) - eff) / eff * 100.0, 2)
+        else:
+            res["account_vs_paper_diff_pct"] = None
+    except Exception:  # noqa: BLE001 — model özeti hesap cevabını düşürmesin
+        logger.debug("fee-mode: paper komisyon modeli eklenemedi", exc_info=True)
+    return res
 
 
 @app.post("/api/binance/fee-mode")
