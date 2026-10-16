@@ -42,9 +42,9 @@ describe("confidenceBadge", () => {
 });
 
 describe("visibleMenu / isUserRole", () => {
-  it("varsayılan 8 öğe", () =>
+  it("varsayılan menü", () =>
     expect(visibleMenu([]).map((m) => m.id)).toEqual(
-      ["home", "notifications", "radar", "charts", "reports", "profile", "settings"]));
+      ["home", "notifications", "radar", "binance", "risk", "charts", "reports", "profile", "settings"]));
   it("otonom paper (portföy) kullanıcı menüsünde yok", () =>
     expect(visibleMenu([]).some((m) => m.id === "portfolio" || m.href === "/portfolio")).toBe(false));
   it("gizlenir", () => expect(visibleMenu(["charts"]).some((m) => m.id === "charts")).toBe(false));

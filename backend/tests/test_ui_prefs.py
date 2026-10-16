@@ -29,6 +29,9 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual([], ui_prefs.normalize_hidden(["portfolio"]))
         self.assertNotIn("portfolio", ui_prefs.MENU_IDS)
 
+    def test_binance_and_risk_menu_items_are_hideable(self):
+        self.assertEqual(["binance", "risk"], ui_prefs.normalize_hidden(["risk", "binance"]))
+
     def test_not_a_list_rejected(self):
         with self.assertRaises(ValueError):
             ui_prefs.normalize_hidden("charts")

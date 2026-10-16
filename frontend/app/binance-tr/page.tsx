@@ -10,6 +10,8 @@ import { useAuth } from "../lib/auth";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { useModalA11y } from "../lib/useModalA11y";
 import Link from "next/link";
+import { useIsUserView } from "../lib/adminView";
+import UserBinance from "../components/user/UserBinance";
 
 const BinancePositionChartModal = dynamic(() => import("./BinancePositionChartModal"), { ssr: false });
 
@@ -109,7 +111,7 @@ const fmtTime = (ts: number | null | undefined) => {
   });
 };
 
-export default function BinanceTrPage() {
+function AdvancedBinanceTrPage() {
   const { username } = useAuth();
   if (!username) {
     return (
@@ -2539,4 +2541,10 @@ function BinanceTrPageInner() {
       )}
     </main>
   );
+}
+
+/** Basit arayüzde sade kullanıcı sayfası, Gelişmiş (yönetici) arayüzde mevcut terminal. */
+export default function BinanceTrPage() {
+  const userView = useIsUserView();
+  return userView ? <UserBinance /> : <AdvancedBinanceTrPage />;
 }
