@@ -16,6 +16,7 @@ import { useLiveMessages } from "../lib/liveSocket";
 import { commissionPct, netOpenPnlTry, netOpenPnlPct } from "../lib/pnl";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { useModalA11y } from "../lib/useModalA11y";
+import { slTpMode, validateSlTpPrices } from "../lib/tradeUi";
 import IndicatorPicker, {
   findIndicatorEntry,
   CUSTOM_INDICATOR_ENTRIES,
@@ -50,6 +51,11 @@ interface Props {
   sellEnabled: boolean;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
   livePrice?: number | null;
+  /**
+   * true → çizgi sürükleme BİTİNCE emir otomatik gönderilmez; çizgiler bekleyen olarak kalır ve kullanıcı
+   * "Emirleri Güncelle" ile onaylar (basit arayüz: yanlışlıkla bırakılan çizgi gerçek emir üretmesin).
+   */
+  confirmBeforeSend?: boolean;
 }
 
 type Timeframe = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
@@ -148,6 +154,7 @@ export default function BinancePositionChartModal({
   sellEnabled,
   showToast,
   livePrice,
+  confirmBeforeSend = false,
 }: Props) {
   const symbolConcat = `${holding.asset}TRY`;
   const [timeframe, setTimeframe] = useState<Timeframe>("5m"); // Varsayılan M5
@@ -1033,6 +1040,7 @@ export default function BinancePositionChartModal({
   // Drag sırasındaki fiyatı ref'te tut — mouseUp callback'i stale closure'dan etkilenmesin
   const dragPriceRef = useRef<number | null>(null);
   const draggingTargetRef = useRef<"TP" | "SL" | null>(null);
+  const priceNowRef = useRef(0);
 
   const handleMouseDownOnHandle = (
     target: "TP" | "SL",
@@ -1074,23 +1082,23 @@ export default function BinancePositionChartModal({
       updateLineCoordinates();
 
       // Drag bitti → mevcut emri iptal edip yeni emri otomatik gönder
-      if (!finalDragPrice || !target || !sellEnabled) return;
+      if (!finalDragPrice || !target || !sellEnabled || confirmBeforeSend) return;
 
       // Hangi fiyatın ne olduğunu belirle — ref kullan (stale closure sorunu önlenir)
       const finalTp = target === "TP" ? finalDragPrice : (tpPriceRef.current ?? undefined);
       const finalSl = target === "SL" ? finalDragPrice : (slPriceRef.current ?? undefined);
 
       if (!finalTp && !finalSl) return;
-      if (finalTp && finalSl && finalTp <= finalSl) {
-        showToast("TP, SL'den büyük olmalıdır — emir gönderilmedi.", "error");
+      const ruleError = validateSlTpPrices(finalTp, finalSl, priceNowRef.current);
+      if (ruleError) {
+        showToast(`${ruleError} — emir gönderilmedi.`, "error");
         // Çizgiyi eski yerine döndür
         if (target === "TP") setPendingTp(null);
         else setPendingSl(null);
         return;
       }
 
-      const mode: "OCO" | "SL_ONLY" | "TP_ONLY" =
-        finalTp && finalSl ? "OCO" : finalSl ? "SL_ONLY" : "TP_ONLY";
+      const mode = slTpMode(finalTp, finalSl) as "OCO" | "SL_ONLY" | "TP_ONLY";
 
       setIsUpdating(true);
       try {
@@ -1148,7 +1156,7 @@ export default function BinancePositionChartModal({
       window.removeEventListener("touchcancel", handleTouchEnd);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draggingTarget]);
+  }, [draggingTarget, confirmBeforeSend]);
 
   // 7. Sağ Tık Bağlam Menüsü (Context Menu)
   const handleContextMenu = (e: React.MouseEvent) => {
@@ -1174,23 +1182,13 @@ export default function BinancePositionChartModal({
     const finalTp = pendingTp ?? tpPrice;
     const finalSl = pendingSl ?? slPrice;
 
-    if (!finalTp && !finalSl) {
-      showToast("En az bir Kâr Al (TP) veya Zarar Kes (SL) seviyesi belirlenmelidir", "error");
+    const ruleError = validateSlTpPrices(finalTp, finalSl, priceNowRef.current);
+    if (ruleError) {
+      showToast(ruleError, "error");
       return;
     }
-
-    let mode: "OCO" | "SL_ONLY" | "TP_ONLY" = "OCO";
-    if (finalTp && finalSl) {
-      mode = "OCO";
-      if (finalTp <= finalSl) {
-        showToast("Kâr Al (TP) fiyatı Zarar Kes (SL) fiyatından büyük olmalıdır", "error");
-        return;
-      }
-    } else if (finalSl) {
-      mode = "SL_ONLY";
-    } else {
-      mode = "TP_ONLY";
-    }
+    // İkisi birden → OCO (biri dolunca diğeri iptal olur); tek seviye → tekil emir.
+    const mode = slTpMode(finalTp, finalSl) as "OCO" | "SL_ONLY" | "TP_ONLY";
 
     setIsUpdating(true);
     setUpdateError(null);
@@ -1304,6 +1302,7 @@ export default function BinancePositionChartModal({
 
   // ---- POZİYON KAPAT (GİRİŞ çizgisi ✕) ----
   const priceNow = currentPrice ?? holding.price_try ?? 0;
+  priceNowRef.current = priceNow;
   const closeQtyNum = useMemo(() => {
     const n = parseFloat(closeQtyInput.replace(",", "."));
     if (!Number.isFinite(n) || n <= 0) return 0;
@@ -1923,7 +1922,7 @@ export default function BinancePositionChartModal({
             )}
 
             {/* Hızlı Yüzde Presets */}
-            <div className="hidden md:flex items-center gap-2 border-l border-bunker-800 pl-3">
+            <div className="flex flex-wrap items-center gap-2 border-l border-bunker-800 pl-3">
               <span className="text-[11px]">Hızlı SL:</span>
               {[-1, -2, -3, -5].map((pct) => (
                 <button

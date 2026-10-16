@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { call, type Holding, type OpenOrder, type RiskSettings } from "../../lib/tradeApi";
 import { fmtSignedTry, fmtTry } from "../../lib/tradeUi";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
@@ -24,6 +24,14 @@ export default function UserBinance() {
   const [todayPnl, setTodayPnl] = useState<number | null>(null);
   const [accountError, setAccountError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [toast, setToast] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((text: string, type: "success" | "error" | "info" = "info") => {
+    setToast({ text, type });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 5000);
+  }, []);
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   const loadSettings = useCallback(async () => {
     const r = await call<Settings>("GET", "/api/binance/settings");
@@ -87,6 +95,14 @@ export default function UserBinance() {
 
   return (
     <main className="space-y-4">
+      {toast && (
+        <div
+          role={toast.type === "error" ? "alert" : "status"}
+          className={`fixed left-1/2 top-3 z-[200] w-[min(92vw,28rem)] -translate-x-1/2 rounded-lg px-4 py-3 text-sm font-medium text-white shadow-lg ${toast.type === "error" ? "bg-neon-red" : toast.type === "success" ? "bg-neon-green" : "bg-bunker-800"}`}
+        >
+          {toast.text}
+        </div>
+      )}
       <header className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold text-white">Binance TR</h1>
@@ -127,7 +143,7 @@ export default function UserBinance() {
           />
           {configured && (
             <>
-              <HoldingsCard holdings={holdings} liveEnabled={settings.sell_enabled} onTraded={afterTrade} />
+              <HoldingsCard holdings={holdings} liveEnabled={settings.sell_enabled} onTraded={afterTrade} showToast={showToast} />
               <OpenOrdersCard orders={orders} loading={ordersLoading} onChanged={loadAccount} />
               <HistoryCard enabled={configured} refreshKey={refreshKey} />
             </>
