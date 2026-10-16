@@ -5,14 +5,19 @@ import dynamic from "next/dynamic";
 import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { localDateInput } from "../lib/format";
 import { useLiveMessages } from "../lib/liveSocket";
-import { commissionPct, netOpenPnlTry } from "../lib/pnl";
+import { commissionPct, netOpenPnlPct, netOpenPnlTry } from "../lib/pnl";
 import { useAuth } from "../lib/auth";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { useModalA11y } from "../lib/useModalA11y";
 import { newClientOrderId } from "../lib/tradeUi";
+import {
+  UncertainOrderError, ceilPriceStr, checkSlTpInputs, describeSellFill, exactQtyInput, orderFailureText, parseMoneyInput,
+  postJsonGuarded, qtyToInput, roundPriceStr, summarizeCancelAll, uncertainOrderText,
+} from "./orderSafety";
 import Link from "next/link";
 import { useIsUserView } from "../lib/adminView";
 import UserBinance from "../components/user/UserBinance";
+import FeeModeCard from "./FeeModeCard";
 
 const BinancePositionChartModal = dynamic(() => import("./BinancePositionChartModal"), { ssr: false });
 
@@ -112,6 +117,28 @@ const fmtTime = (ts: number | null | undefined) => {
   });
 };
 
+/** /api/binance/buy|sell|set-sl-tp yanıt gövdesi (yalnız kullanılan alanlar). */
+type OrderBody = {
+  ok?: boolean;
+  status?: string;
+  detail?: string;
+  order_id?: string | number | null;
+  executed_qty?: unknown;
+  avg_price?: unknown;
+  cummulative_quote_qty?: unknown;
+  partial?: unknown;
+  remaining_qty?: unknown;
+  dust_remaining?: unknown;
+};
+
+// 2026-10-16 (basit arayüz): TP/SL kâr-zarar önizlemesi artık kanonik NET formülle (gidiş-dönüş komisyonu düşülmüş) —
+// yerel brüt formül, aynı seviyenin grafikte/KPI'da farklı görünmesine yol açıyordu.
+function levelPreview(level: number, cost: number, qty: number) {
+  const totalDiff = netOpenPnlTry(cost, level, qty) ?? (level - cost) * qty;
+  const pct = netOpenPnlPct(cost, level, qty) ?? ((level - cost) / cost) * 100;
+  return { totalDiff, pct };
+}
+
 function AdvancedBinanceTrPage() {
   const { username } = useAuth();
   if (!username) {
@@ -172,6 +199,14 @@ function BinanceTrPageInner() {
   // İdempotent emir kimlikleri: kesin sonuç gelene kadar AYNI kimlik kullanılır (çift tıklama/yeniden deneme güvenli).
   const buyCidRef = useRef("");
   const sellCidRef = useRef("");
+  // 2026-10-16 (basit arayüz): yarışan yüklemeler (60 sn yoklama + emir sonrası yenileme + WS) birbirinin
+  // sonucunu ezmesin — yalnız EN SON başlatılan istek durumu günceller (eski yanıt güncel listeyi geri almaz).
+  const acctSeqRef = useRef(0);
+  const ordSeqRef = useRef(0);
+  const openOrdersSeqRef = useRef(0);
+  const tradesSeqRef = useRef(0);
+  // "Tümünü iptal" döngüsü sürerken ikinci tıklama/yoklama yeni döngü başlatmasın.
+  const cancelAllBusyRef = useRef(false);
   // Emir parametresi değişirse eski kimlik yeniden kullanılmaz (farklı emre eski sonucun dönmesini önler).
 
   // Pozisyonlar (Holdings)
@@ -188,11 +223,13 @@ function BinanceTrPageInner() {
 
   // Satış Modalı (Market Sell)
   const [sellFor, setSellFor] = useState<Holding | null>(null);
-  useEffect(() => { sellCidRef.current = ""; }, [sellFor]);
   const [sellQty, setSellQty] = useState("");
+  // Miktar da değişince yeni kimlik (farklı miktarlı emre eski emrin sonucu dönmesin) — alımdaki kuralla aynı.
+  useEffect(() => { sellCidRef.current = ""; }, [sellFor, sellQty]);
   const [sellBusy, setSellBusy] = useState(false);
   const [sellMsg, setSellMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [sellDone, setSellDone] = useState<{ order: string; asset: string; qty: string; price: string; total: string } | null>(null);
+  // 2026-10-16 (basit arayüz): `partial` → kısmi dolum; "SATIŞ TAMAMLANDI" denmez, kalan miktar gösterilir.
+  const [sellDone, setSellDone] = useState<{ order: string; asset: string; qty: string; price: string; total: string; partial: boolean; remaining: string | null } | null>(null);
 
   // Alım Modalı (Market Buy)
   const [buyOpen, setBuyOpen] = useState(false);
@@ -233,24 +270,32 @@ function BinanceTrPageInner() {
   // DEĞİLDİR: odak arka plandaki sayfada kalırsa klavye kullanıcısı farkında
   // olmadan arka sayfadaki butonları tetikleyebilir. Tek doğruluk kaynağı
   // `lib/useModalA11y` (monitoring sayfasındaki doğru desen de buraya taşındı).
+  // 2026-10-16 (basit arayüz): istek uçuştayken Esc/✕/İptal pencereyi KAPATMAZ — kapanırsa kullanıcı gerçek emrin
+  // sonucunu (özellikle hata/"belirsiz" mesajını) hiç görmezdi.
   const sltpA11y = useModalA11y(
     sltpModalOpen && !!sltpTarget,
-    () => setSltpModalOpen(false),
+    () => { if (!sltpBusy) setSltpModalOpen(false); },
     `SL / TP ve OCO emir yönetimi${sltpTarget ? ` — ${sltpTarget.asset}` : ""}`,
   );
   const sellA11y = useModalA11y(
     !!sellFor && sellEnabled,
-    () => { setSellFor(null); setSellMsg(null); setSellDone(null); },
+    () => { if (sellBusy) return; setSellFor(null); setSellMsg(null); setSellDone(null); },
     `Piyasa satışı onayı${sellFor ? ` — ${sellFor.asset}` : ""}`,
   );
-  const buyA11y = useModalA11y(buyOpen, () => setBuyOpen(false), "Piyasa alımı onayı");
+  const buyA11y = useModalA11y(buyOpen, () => { if (!buyBusy) setBuyOpen(false); }, "Piyasa alımı onayı");
   const settingsA11y = useModalA11y(settingsOpen, () => setSettingsOpen(false), "Binance TR API ayarları");
 
+  // 2026-10-16 (basit arayüz): tek zamanlayıcı (art arda toast'lar birbirini erken silmesin), unmount'ta temizlenir;
+  // hata/uyarı toast'ları gerçek emir sonucu taşıdığı için daha uzun kalır.
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
   const showToast = (text: string, type: "success" | "error" | "info" = "success") => {
-    setToast({ id: Date.now(), text, type });
-    setTimeout(() => {
-      setToast((prev) => (prev?.text === text ? null : prev));
-    }, 4500);
+    const id = Date.now();
+    setToast({ id, text, type });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setToast((prev) => (prev?.id === id ? null : prev));
+    }, type === "success" ? 4500 : 9000);
   };
 
   // Geçmiş İşlemler
@@ -392,28 +437,33 @@ function BinanceTrPageInner() {
   useEffect(() => { check(); }, [check]);
 
   const loadAcct = useCallback(async () => {
+    const seq = ++acctSeqRef.current;
     setAcctLoading(true);
     setAcctError("");
     try {
       const r = await apiRequest(`${API_BASE}/api/binance/account`, { cache: "no-store" });
       const d = await r.json().catch(() => ({}));
+      if (seq !== acctSeqRef.current) return; // 2026-10-16 (basit arayüz): daha yeni istek var, bu yanıt eski
       if (!r.ok) {
         throw new Error(d.detail || "Hesap bilgisi alınamadı");
       }
       setBalances(d.balances || []);
     } catch (e) {
-      setAcctError(e instanceof Error ? e.message : "Hesap bilgisi alınamadı");
+      if (seq === acctSeqRef.current) setAcctError(e instanceof Error ? e.message : "Hesap bilgisi alınamadı");
     } finally {
-      setAcctLoading(false);
+      if (seq === acctSeqRef.current) setAcctLoading(false);
     }
   }, []);
 
   const loadOrd = useCallback(async () => {
+    const seq = ++ordSeqRef.current;
     setOrdLoading(true);
     try {
       const r = await apiRequest(`${API_BASE}/api/binance/positions`, { cache: "no-store" });
+      if (seq !== ordSeqRef.current) return; // eski yanıt güncel listeyi geri almasın
       if (r.ok) {
         const d = await r.json();
+        if (seq !== ordSeqRef.current) return;
         setHoldings(d.holdings || []);
         if (d.balances && Array.isArray(d.balances) && d.balances.length > 0) {
           setBalances(d.balances);
@@ -422,34 +472,40 @@ function BinanceTrPageInner() {
       } else {
         markLoad("positions", `Varlıklar alınamadı (HTTP ${r.status}); gösterilen veri eski olabilir.`);
       }
-    } catch { markLoad("positions", "Varlıklar alınamadı (bağlantı hatası); gösterilen veri eski olabilir."); }
-    finally { setOrdLoading(false); }
+    } catch { if (seq === ordSeqRef.current) markLoad("positions", "Varlıklar alınamadı (bağlantı hatası); gösterilen veri eski olabilir."); }
+    finally { if (seq === ordSeqRef.current) setOrdLoading(false); }
   }, []);
 
   const loadOpenOrders = useCallback(async () => {
+    const seq = ++openOrdersSeqRef.current;
     setOpenOrdersLoading(true);
     try {
       const r = await apiRequest(`${API_BASE}/api/binance/open-orders`, { cache: "no-store" });
+      if (seq !== openOrdersSeqRef.current) return;
       if (r.ok) {
         const d = await r.json();
+        if (seq !== openOrdersSeqRef.current) return;
         setOpenOrders(d.orders || []);
         markLoad("open-orders", "");
       } else {
         markLoad("open-orders", `Açık emirler alınamadı (HTTP ${r.status}); liste eski olabilir.`);
       }
-    } catch { markLoad("open-orders", "Açık emirler alınamadı (bağlantı hatası); liste eski olabilir."); }
-    finally { setOpenOrdersLoading(false); }
+    } catch { if (seq === openOrdersSeqRef.current) markLoad("open-orders", "Açık emirler alınamadı (bağlantı hatası); liste eski olabilir."); }
+    finally { if (seq === openOrdersSeqRef.current) setOpenOrdersLoading(false); }
   }, []);
 
   const loadTrades = useCallback(async () => {
+    const seq = ++tradesSeqRef.current;
     setTrLoading(true);
     try {
       const r = await apiRequest(
         `${API_BASE}/api/binance/trades-day?date=${encodeURIComponent(tradeDay)}`,
         { cache: "no-store" }
       );
+      if (seq !== tradesSeqRef.current) return; // tarih değişti / daha yeni istek var
       if (r.ok) {
         const d = await r.json();
+        if (seq !== tradesSeqRef.current) return;
         setTrades(d.trades || []);
         setSymbolSummary((d.symbol_summary || []) as SymbolSummary[]);
         setDaily(d.daily || null);
@@ -458,8 +514,8 @@ function BinanceTrPageInner() {
       } else {
         markLoad("trades", `İşlem geçmişi alınamadı (HTTP ${r.status}).`);
       }
-    } catch { markLoad("trades", "İşlem geçmişi alınamadı (bağlantı hatası)."); }
-    finally { setTrLoading(false); }
+    } catch { if (seq === tradesSeqRef.current) markLoad("trades", "İşlem geçmişi alınamadı (bağlantı hatası)."); }
+    finally { if (seq === tradesSeqRef.current) setTrLoading(false); }
   }, [tradeDay, markLoad]);
 
   const refreshAccountData = useCallback(() => {
@@ -468,6 +524,15 @@ function BinanceTrPageInner() {
     loadOrd();
     loadOpenOrders();
   }, [configured, loadAcct, loadOrd, loadOpenOrders]);
+
+  // Her emir denemesinden (başarılı, hatalı VEYA belirsiz) sonra TÜM listeler tazelenir: set-sl-tp "iptal → kur"
+  // sırasıyla çalıştığı için hata sonrası da eski emirler iptal edilmiş olabilir; eski liste korumalı gibi görünürdü.
+  const refreshAfterOrder = useCallback(() => {
+    loadAcct();
+    loadOrd();
+    loadOpenOrders();
+    loadTrades();
+  }, [loadAcct, loadOrd, loadOpenOrders, loadTrades]);
 
   useEffect(() => {
     if (!configured) return;
@@ -506,11 +571,9 @@ function BinanceTrPageInner() {
       if (!price) return { ...h, volume_try: t?.quote_volume_try ?? h.volume_try ?? null };
       const net = netOpenPnlTry(h.avg_cost_try, price, h.total);
       const pnl_try = net !== null ? net : h.pnl_try;
-      const cost = Number(h.avg_cost_try);
-      // Getiri tabanı giriş değeridir (pnl.ts `netOpenPnlPct` ile aynı kural).
-      const pnl_pct = net !== null && Number.isFinite(cost) && cost > 0
-        ? (net / (cost * h.total)) * 100
-        : h.pnl_pct;
+      // 2026-10-16 (basit arayüz): getiri yüzdesi yerel formül yerine kanonik `netOpenPnlPct` (formül kayması olmasın).
+      const netPct = netOpenPnlPct(h.avg_cost_try, price, h.total);
+      const pnl_pct = net !== null && netPct !== null ? netPct : h.pnl_pct;
       return {
         ...h,
         price_try: price,
@@ -522,10 +585,23 @@ function BinanceTrPageInner() {
     });
   }, [holdings, liveTicks]);
 
+  // 2026-10-16 (basit arayüz): grafik modalı açılış anındaki kopyayı değil GÜNCEL satırı izler. Eski kopyayla SL/TP
+  // miktarı (`holding.total`) ve mevcut seviyeler bayat kalıyordu (ör. modal açıkken SL tetiklenip bakiye azalmışsa,
+  // fazla miktarlı emir gönderilirdi). Bağımlılıklar yalnız ilgili alanlar: WS fiyat akışı modalı yeniden çizmez.
+  const chartRow = chartFor ? holdings.find((h) => h.asset === chartFor.asset) : undefined;
+  const chartHolding = useMemo(
+    () => (chartFor ? { ...chartFor, ...(chartRow ?? {}) } : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chartFor, chartRow?.total, chartRow?.free, chartRow?.locked, chartRow?.avg_cost_try, chartRow?.active_tp_price, chartRow?.active_sl_price, chartRow?.has_active_order],
+  );
+
   // Filtrelenmiş Pozisyonlar
   const visibleHoldings = useMemo(() => {
     return mergedHoldings.filter((h) => {
-      if (hideSmall && h.value_try != null && h.value_try < 50) return false;
+      // 2026-10-16 (basit arayüz): "Korumasızlar" görünümü KPI'daki "N KORUMASIZ" ile aynı eşiği (10 TL) kullanır;
+      // aksi halde 10–50 TL arası korumasız pozisyon sayılır ama listede görünmezdi.
+      const smallCut = positionFilter === "unprotected" ? 10 : 50;
+      if (hideSmall && h.value_try != null && h.value_try < smallCut) return false;
       if (searchFilter.trim()) {
         const q = searchFilter.trim().toUpperCase();
         if (!h.asset.includes(q)) return false;
@@ -542,6 +618,17 @@ function BinanceTrPageInner() {
       return true;
     });
   }, [mergedHoldings, hideSmall, searchFilter, positionFilter]);
+
+  // 2026-10-16 (basit arayüz): boş liste nedenini ayırt et (yükleniyor / hata / hesap boş / filtre) — hepsi aynı
+  // "Filtreye uygun ... bulunamadı" metnini gösteriyordu ve ilk yüklemede yanıltıcıydı.
+  const positionsEmptyText =
+    holdings.length === 0
+      ? ordLoading
+        ? "Pozisyonlar yükleniyor…"
+        : loadErrors.positions
+          ? "Pozisyonlar alınamadı — yukarıdaki hata mesajına bakın."
+          : "Hesapta açık pozisyon yok."
+      : `Filtreye uygun açık pozisyon bulunamadı${hideSmall ? " (küçük bakiyeler gizli — 'Altını gizle' kutusunu kaldırın)" : ""}.`;
 
   // Üst Metrikler (KPIs)
   const totalValueTry = useMemo(() => {
@@ -600,7 +687,7 @@ function BinanceTrPageInner() {
   // Alım Modalı Hesaplamaları
   const buyTryFree = tryFreeBalance;
   const buyAmountNum = useMemo(() => {
-    const n = parseFloat(buyAmount.replace(",", "."));
+    const n = parseMoneyInput(buyAmount);
     return Number.isFinite(n) ? Math.min(Math.max(n, 0), buyTryFree) : 0;
   }, [buyAmount, buyTryFree]);
 
@@ -617,9 +704,11 @@ function BinanceTrPageInner() {
   // Satış Modalı Hesaplamaları
   const sellQtyNum = useMemo(() => {
     if (!sellFor) return 0;
-    const n = parseFloat(sellQty.replace(",", "."));
+    const n = parseMoneyInput(sellQty);
     return Number.isFinite(n) ? Math.min(Math.max(n, 0), sellFor.free) : 0;
   }, [sellQty, sellFor]);
+  // 2026-10-16 (basit arayüz): onay penceresindeki "anlık fiyat" açılış anındaki kopya (sellFor) değil canlı tick'tir.
+  const sellLivePrice = sellFor ? (Number(liveTicks[sellFor.asset]?.price) || sellFor.price_try || null) : null;
 
   // SL/TP Modalı Dinamik Hesaplamaları
   const currentTargetPrice = useMemo(() => {
@@ -629,29 +718,23 @@ function BinanceTrPageInner() {
 
   const sltpQtyNum = useMemo(() => {
     if (!sltpTarget) return 0;
-    const n = parseFloat(sltpQty.replace(",", "."));
+    const n = parseMoneyInput(sltpQty);
     const maxQty = sltpTarget.total; // Kilitli olanları da güncelleyebileceği için total
     return Number.isFinite(n) ? Math.min(Math.max(n, 0), maxQty) : 0;
   }, [sltpQty, sltpTarget]);
 
   const calculatedTpProfit = useMemo(() => {
-    const tp = parseFloat(sltpTpPrice.replace(",", "."));
+    const tp = parseMoneyInput(sltpTpPrice);
     if (!Number.isFinite(tp) || tp <= 0 || !currentTargetPrice || !sltpQtyNum) return null;
     const cost = sltpTarget?.avg_cost_try || currentTargetPrice;
-    const diff = tp - cost;
-    const totalDiff = diff * sltpQtyNum;
-    const pct = ((tp - cost) / cost) * 100;
-    return { totalDiff, pct };
+    return levelPreview(tp, cost, sltpQtyNum);
   }, [sltpTpPrice, currentTargetPrice, sltpQtyNum, sltpTarget]);
 
   const calculatedSlLoss = useMemo(() => {
-    const sl = parseFloat(sltpSlPrice.replace(",", "."));
+    const sl = parseMoneyInput(sltpSlPrice);
     if (!Number.isFinite(sl) || sl <= 0 || !currentTargetPrice || !sltpQtyNum) return null;
     const cost = sltpTarget?.avg_cost_try || currentTargetPrice;
-    const diff = sl - cost;
-    const totalDiff = diff * sltpQtyNum;
-    const pct = ((sl - cost) / cost) * 100;
-    return { totalDiff, pct };
+    return levelPreview(sl, cost, sltpQtyNum);
   }, [sltpSlPrice, currentTargetPrice, sltpQtyNum, sltpTarget]);
 
   const calculatedRrRatio = useMemo(() => {
@@ -808,25 +891,29 @@ function BinanceTrPageInner() {
     setBuyMsg(null);
     if (!buyCidRef.current) buyCidRef.current = newClientOrderId();
     try {
-      const r = await apiRequest(`${API_BASE}/api/binance/buy`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset, amount_try: buyAmountNum, confirmation: "REAL_BUY", notify: buyNotify, client_order_id: buyCidRef.current }),
+      // 2026-10-16 (basit arayüz): zaman aşımlı POST. Yanıt hiç gelmezse emir durumu BELİRSİZDİR — kimlik korunur
+      // (aynı pencereden yeniden denemek mükerrer emir üretmez) ve listeler tazelenir.
+      const { status, ok, body: d } = await postJsonGuarded<OrderBody>("/api/binance/buy", {
+        asset, amount_try: buyAmountNum, confirmation: "REAL_BUY", notify: buyNotify, client_order_id: buyCidRef.current,
       });
-      const d = await r.json().catch(() => ({}));
       // 202: emir daha önce gönderilmiş / sonucu belirsiz → AYNI kimlikle körlemesine tekrar denenmez.
-      if (r.status === 202 && d.status === "failed") buyCidRef.current = "";
-      if (!r.ok || !d.ok) throw new Error(d.detail || `Alım emri gönderilemedi (HTTP ${r.status})`);
+      if (status === 202 && d.status === "failed") buyCidRef.current = "";
+      if (!ok || !d.ok) throw new Error(orderFailureText("buy", status, d.detail));
       buyCidRef.current = "";
-      const qty = d.executed_qty != null ? fmtPrice(d.executed_qty, 6) : buyPrice ? fmtPrice(buyAmountNum / buyPrice, 6) : "—";
-      const price = d.avg_price != null ? fmtPrice(d.avg_price, d.avg_price < 1 ? 6 : 2) : buyPrice ? fmtPrice(buyPrice, buyPrice < 1 ? 6 : 2) : "—";
-      setBuyDone({ order: d.order_id ?? "—", asset, qty, price });
+      const executed = Number(d.executed_qty);
+      const avg = Number(d.avg_price);
+      const qty = executed > 0 ? fmtPrice(executed, 6) : buyPrice ? fmtPrice(buyAmountNum / buyPrice, 6) : "—";
+      const price = avg > 0 ? fmtPrice(avg, avg < 1 ? 6 : 2) : buyPrice ? fmtPrice(buyPrice, buyPrice < 1 ? 6 : 2) : "—";
+      setBuyDone({ order: String(d.order_id ?? "—"), asset, qty, price });
       showToast(`${asset} piyasa alımı başarıyla gerçekleşti!`, "success");
-      loadAcct();
-      loadOrd();
-      loadTrades();
+      refreshAfterOrder();
     } catch (e) {
-      setBuyMsg({ ok: false, text: e instanceof Error ? e.message : "Alım emri gönderilemedi" });
+      if (e instanceof UncertainOrderError) {
+        setBuyMsg({ ok: false, text: uncertainOrderText("buy", e.timedOut) });
+        refreshAfterOrder();
+      } else {
+        setBuyMsg({ ok: false, text: e instanceof Error ? e.message : "Alım emri gönderilemedi" });
+      }
     } finally {
       setBuyBusy(false);
     }
@@ -836,14 +923,14 @@ function BinanceTrPageInner() {
   const openSell = (h: Holding) => {
     sellCidRef.current = "";
     setSellFor(h);
-    setSellQty(String(h.free));
+    setSellQty(exactQtyInput(h.free));
     setSellMsg(null);
     setSellDone(null);
   };
 
   const confirmSell = async () => {
     if (!sellFor || sellBusy) return;
-    const qty = parseFloat(sellQty.replace(",", "."));
+    const qty = parseMoneyInput(sellQty);
     if (!Number.isFinite(qty) || qty <= 0) {
       setSellMsg({ ok: false, text: "Geçerli bir miktar girin." });
       return;
@@ -856,29 +943,36 @@ function BinanceTrPageInner() {
     setSellMsg(null);
     if (!sellCidRef.current) sellCidRef.current = newClientOrderId();
     try {
-      const r = await apiRequest(`${API_BASE}/api/binance/sell`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset: sellFor.asset, quantity: qty, confirmation: "REAL_SELL", client_order_id: sellCidRef.current }),
+      const { status, ok, body: d } = await postJsonGuarded<OrderBody>("/api/binance/sell", {
+        asset: sellFor.asset, quantity: qty, confirmation: "REAL_SELL", client_order_id: sellCidRef.current,
       });
-      const d = await r.json().catch(() => ({}));
-      if (r.status === 202 && d.status === "failed") sellCidRef.current = "";
-      if (!r.ok || !d.ok) throw new Error(d.detail || `Satış emri gönderilemedi (HTTP ${r.status})`);
+      if (status === 202 && d.status === "failed") sellCidRef.current = "";
+      if (!ok || !d.ok) throw new Error(orderFailureText("sell", status, d.detail));
       sellCidRef.current = "";
-      const donePrice = sellFor.price_try ?? 0;
+      // 2026-10-16 (basit arayüz): GERÇEK dolum (miktar/ortalama fiyat/kısmi dolum) gösterilir; ekrandaki eski fiyat varsayılmaz.
+      const fill = describeSellFill(d, qty, sellLivePrice);
+      const px = fill.price ?? 0;
       setSellDone({
-        order: d.order_id ?? "—",
+        order: String(d.order_id ?? "—"),
         asset: sellFor.asset,
-        qty: fmtPrice(qty, 6),
-        price: donePrice ? fmtPrice(donePrice, donePrice < 1 ? 6 : 2) : "—",
-        total: donePrice ? fmtPrice(qty * donePrice) : "—",
+        qty: fmtPrice(fill.qty ?? qty, 6),
+        price: px ? fmtPrice(px, px < 1 ? 6 : 2) : "—",
+        total: fill.total ? fmtPrice(fill.total) : "—",
+        partial: fill.partial,
+        remaining: fill.remaining ? fmtPrice(fill.remaining, 6) : null,
       });
-      showToast(`${sellFor.asset} satış emri tamamlandı.`, "success");
-      loadAcct();
-      loadOrd();
-      loadTrades();
+      showToast(
+        fill.partial ? `${sellFor.asset} satışı KISMİ doldu${fill.remaining ? ` (kalan ${fmtPrice(fill.remaining, 6)})` : ""}.` : `${sellFor.asset} satış emri tamamlandı.`,
+        fill.partial ? "info" : "success",
+      );
+      refreshAfterOrder();
     } catch (e) {
-      setSellMsg({ ok: false, text: e instanceof Error ? e.message : "Satış emri gönderilemedi" });
+      if (e instanceof UncertainOrderError) {
+        setSellMsg({ ok: false, text: uncertainOrderText("sell", e.timedOut) });
+        refreshAfterOrder();
+      } else {
+        setSellMsg({ ok: false, text: e instanceof Error ? e.message : "Satış emri gönderilemedi" });
+      }
     } finally {
       setSellBusy(false);
     }
@@ -890,25 +984,27 @@ function BinanceTrPageInner() {
     setSltpMode("OCO");
     setSltpMsg(null);
     const availableQty = h.free > 0 ? h.free : h.total;
-    setSltpQty(String(availableQty));
+    setSltpQty(exactQtyInput(availableQty));
 
     const curPrice = Number(liveTicks[h.asset]?.price || h.price_try || 0);
 
+    // 2026-10-16 (basit arayüz): fiyat basamağı sabit 2/6 yerine fiyata göre (`priceDecimals`); 1–10 TL arası
+    // coinlerde 2 hane %3'lük stop'u bozuyordu.
     if (h.active_tp_price) {
       setSltpTpPrice(String(h.active_tp_price));
     } else if (curPrice > 0) {
-      setSltpTpPrice(fmtPrice(curPrice * 1.05, curPrice < 1 ? 6 : 2).replace(/\./g, "").replace(",", "."));
+      setSltpTpPrice(roundPriceStr(curPrice * 1.05, curPrice));
     } else {
       setSltpTpPrice("");
     }
 
     if (h.active_sl_price) {
       setSltpSlPrice(String(h.active_sl_price));
-      setSltpSlLimitPrice(String(Number(h.active_sl_price * 0.995).toFixed(curPrice < 1 ? 6 : 2)));
+      setSltpSlLimitPrice(roundPriceStr(h.active_sl_price * 0.995, curPrice || h.active_sl_price));
     } else if (curPrice > 0) {
       const sl = curPrice * 0.97;
-      setSltpSlPrice(fmtPrice(sl, curPrice < 1 ? 6 : 2).replace(/\./g, "").replace(",", "."));
-      setSltpSlLimitPrice(fmtPrice(sl * 0.995, curPrice < 1 ? 6 : 2).replace(/\./g, "").replace(",", "."));
+      setSltpSlPrice(roundPriceStr(sl, curPrice));
+      setSltpSlLimitPrice(roundPriceStr(sl * 0.995, curPrice));
     } else {
       setSltpSlPrice("");
       setSltpSlLimitPrice("");
@@ -921,14 +1017,14 @@ function BinanceTrPageInner() {
   const applyTpPct = (pct: number) => {
     if (!currentTargetPrice) return;
     const target = currentTargetPrice * (1 + pct / 100);
-    setSltpTpPrice(target.toFixed(currentTargetPrice < 1 ? 6 : 2));
+    setSltpTpPrice(roundPriceStr(target, currentTargetPrice));
   };
 
   const applySlPct = (pct: number) => {
     if (!currentTargetPrice) return;
     const target = currentTargetPrice * (1 - Math.abs(pct) / 100);
-    setSltpSlPrice(target.toFixed(currentTargetPrice < 1 ? 6 : 2));
-    setSltpSlLimitPrice((target * 0.995).toFixed(currentTargetPrice < 1 ? 6 : 2));
+    setSltpSlPrice(roundPriceStr(target, currentTargetPrice));
+    setSltpSlLimitPrice(roundPriceStr(target * 0.995, currentTargetPrice));
   };
 
   const applyBreakEven = () => {
@@ -962,9 +1058,9 @@ function BinanceTrPageInner() {
       return;
     }
 
-    const precision = curPrice < 1 ? 6 : 2;
-    const slStr = bePrice.toFixed(precision);
-    const slLimitStr = (bePrice * 0.995).toFixed(precision);
+    // Yukarı yuvarla: aşağı yuvarlanan stop maliyet+komisyonun altına düşüp "kâr kilidi"ni boşa çıkarabilirdi.
+    const slStr = ceilPriceStr(bePrice, curPrice);
+    const slLimitStr = roundPriceStr(bePrice * 0.995, curPrice);
 
     setSltpSlPrice(slStr);
     setSltpSlLimitPrice(slLimitStr);
@@ -977,8 +1073,8 @@ function BinanceTrPageInner() {
   const applyQtyPct = (pct: number) => {
     if (!sltpTarget) return;
     const base = sltpTarget.free > 0 ? sltpTarget.free : sltpTarget.total;
-    const q = (base * pct) / 100;
-    setSltpQty(q.toFixed(6));
+    // Aşağı kes (toFixed yukarı yuvarlıyordu → bakiyeden büyük miktar); %100 = bakiyenin tamamı.
+    setSltpQty(pct === 100 ? exactQtyInput(base) : qtyToInput((base * pct) / 100));
   };
 
   const confirmSltp = async () => {
@@ -987,9 +1083,9 @@ function BinanceTrPageInner() {
       setSltpMsg({ ok: false, text: "Geçerli bir miktar girin." });
       return;
     }
-    const tp = parseFloat(sltpTpPrice.replace(",", "."));
-    const sl = parseFloat(sltpSlPrice.replace(",", "."));
-    const slLimit = parseFloat(sltpSlLimitPrice.replace(",", "."));
+    const tp = parseMoneyInput(sltpTpPrice);
+    const sl = parseMoneyInput(sltpSlPrice);
+    const slLimit = parseMoneyInput(sltpSlLimitPrice);
 
     if (sltpMode === "OCO") {
       if (!Number.isFinite(tp) || tp <= 0) {
@@ -1016,31 +1112,43 @@ function BinanceTrPageInner() {
       }
     }
 
+    // 2026-10-16 (basit arayüz): Binance TR kuralı TP > güncel fiyat > SL emirden ÖNCE istemcide de denetlenir
+    // (sunucu da iptalden önce reddeder; burada kullanıcı anında ve ağ turu harcamadan öğrenir).
+    const ruleError = checkSlTpInputs(sltpMode, tp, sl, currentTargetPrice);
+    if (ruleError) {
+      setSltpMsg({ ok: false, text: ruleError });
+      return;
+    }
+
     setSltpBusy(true);
     setSltpMsg(null);
     try {
-      const r = await apiRequest(`${API_BASE}/api/binance/set-sl-tp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          asset: sltpTarget.asset,
-          mode: sltpMode,
-          quantity: sltpQtyNum,
-          tp_price: tp,
-          sl_price: sl,
-          sl_limit_price: Number.isFinite(slLimit) && slLimit > 0 ? slLimit : undefined,
-          cancel_existing: sltpCancelExisting,
-        }),
+      // set-sl-tp idempotent DEĞİL ("iptal → kur"): ağ/zaman aşımı hatasında durum belirsizdir, aşağıda listeler tazelenir.
+      const { status, ok, body: d } = await postJsonGuarded<OrderBody>("/api/binance/set-sl-tp", {
+        asset: sltpTarget.asset,
+        mode: sltpMode,
+        quantity: sltpQtyNum,
+        tp_price: Number.isFinite(tp) ? tp : undefined,
+        sl_price: Number.isFinite(sl) ? sl : undefined,
+        sl_limit_price: Number.isFinite(slLimit) && slLimit > 0 ? slLimit : undefined,
+        cancel_existing: sltpCancelExisting,
       });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok || !d.ok) throw new Error(d.detail || `Emir oluşturulamadı (HTTP ${r.status})`);
+      if (!ok || !d.ok) throw new Error(orderFailureText("sltp", status, d.detail));
       showToast(`${sltpTarget.asset} için ${sltpMode} emri başarıyla kuruldu!`, "success");
       setSltpModalOpen(false);
       loadAcct();
       loadOrd();
       loadOpenOrders();
     } catch (e) {
-      setSltpMsg({ ok: false, text: e instanceof Error ? e.message : "Emir gönderilemedi" });
+      if (e instanceof UncertainOrderError) {
+        setSltpMsg({ ok: false, text: uncertainOrderText("sltp", e.timedOut) });
+      } else {
+        setSltpMsg({ ok: false, text: e instanceof Error ? e.message : "Emir gönderilemedi" });
+      }
+      // Başarısız istek de eski emirleri iptal etmiş olabilir → gerçek durumu göster (korumasız pozisyon uyarısı KPI'da).
+      loadAcct();
+      loadOrd();
+      loadOpenOrders();
     } finally {
       setSltpBusy(false);
     }
@@ -1070,11 +1178,13 @@ function BinanceTrPageInner() {
   };
 
   const handleCancelAllOrders = async () => {
-    if (openOrders.length === 0) return;
+    if (openOrders.length === 0 || cancelAllBusyRef.current) return;
     if (!window.confirm(`${openOrders.length} adet bekleyen emrin tamamını iptal etmek istediğinize emin misiniz?`)) return;
+    cancelAllBusyRef.current = true;
     setOpenOrdersLoading(true);
     let successCount = 0;
     let failCount = 0;
+    const attemptedIds = openOrders.map((o) => o.orderId);
     for (const ord of openOrders) {
       try {
         const r = await apiRequest(`${API_BASE}/api/binance/cancel-order`, {
@@ -1095,16 +1205,25 @@ function BinanceTrPageInner() {
     }
     // Gerçeği söyle: kısmi başarısızlık gizlenmez (aksi halde kullanıcı iptal
     // edildiğini sanıp korumasız pozisyonla kalır).
-    if (failCount === 0) {
-      showToast(`${successCount} emir başarıyla iptal edildi.`, "success");
-    } else if (successCount === 0) {
-      showToast(`${failCount} emir iptal EDİLEMEDİ — emirler hâlâ aktif olabilir.`, "error");
-    } else {
-      showToast(`${successCount} emir iptal edildi, ${failCount} emir iptal EDİLEMEDİ — emirler hâlâ aktif olabilir.`, "error");
-    }
+    // 2026-10-16 (basit arayüz): sonuç İSTEK sayılarına değil BORSADAKİ güncel listeye göre bildirilir — OCO'nun bir
+    // bacağı iptal edilince diğeri de düştüğü için ikinci bacağın "hata"sı sahte alarm üretiyordu; tersine ağ hatası
+    // yutulan bir emir de hâlâ açık görünür.
+    let stillOpen: number[] | null = null;
+    try {
+      const fresh = await apiRequest(`${API_BASE}/api/binance/open-orders`, { cache: "no-store" });
+      if (fresh.ok) {
+        const fd = await fresh.json();
+        const list = (fd.orders || []) as OpenOrder[];
+        stillOpen = list.map((o) => o.orderId);
+        setOpenOrders(list);
+      }
+    } catch { /* güncel liste alınamadı → istek sayılarıyla bildir */ }
+    const summary = summarizeCancelAll(attemptedIds, stillOpen, successCount, failCount);
+    showToast(summary.text, summary.level);
     loadOrd();
     loadOpenOrders();
     loadAcct();
+    cancelAllBusyRef.current = false;
     setOpenOrdersLoading(false);
   };
 
@@ -1112,9 +1231,16 @@ function BinanceTrPageInner() {
     <main className="page-shell">
       {/* Toast Bildirimi */}
       {toast && (
-        <div className="fixed top-5 right-5 z-[300] flex items-center gap-3 rounded-lg border border-bunker-700 bg-bunker-950 px-4 py-3 shadow-2xl backdrop-blur-md">
-          <span className={`h-2.5 w-2.5 rounded-full ${toast.type === "success" ? "bg-neon-green" : toast.type === "error" ? "bg-neon-red" : "bg-yellow-300"}`} />
-          <p className="font-mono text-xs font-medium text-white">{toast.text}</p>
+        <div
+          role={toast.type === "error" ? "alert" : "status"}
+          className="fixed top-5 right-5 z-[300] flex max-w-[min(92vw,28rem)] items-center gap-3 rounded-lg border border-bunker-700 bg-bunker-950 px-4 py-3 shadow-2xl backdrop-blur-md"
+        >
+          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${toast.type === "success" ? "bg-neon-green" : toast.type === "error" ? "bg-neon-red" : "bg-yellow-300"}`} />
+          <p className="font-mono text-xs font-medium text-white">
+            {/* Renk tek başına anlam taşımasın: durum metni de yazılır. */}
+            <span className="mr-1.5 font-bold">{toast.type === "success" ? "Başarılı:" : toast.type === "error" ? "Hata:" : "Bilgi:"}</span>
+            {toast.text}
+          </p>
         </div>
       )}
 
@@ -1248,12 +1374,13 @@ function BinanceTrPageInner() {
             {/* Günün Gerçekleşen K/Z */}
             <div className="card relative overflow-hidden">
               <div className={`absolute top-0 left-0 h-1 w-full ${(daily?.realized_pnl_try ?? 0) >= 0 ? "bg-neon-green/60" : "bg-neon-red/60"}`} />
-              <p className="eyebrow">GÜNLÜK NET K/Z</p>
-              <p className={`mt-1 font-mono text-xl font-bold ${(daily?.realized_pnl_try ?? 0) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                {(daily?.realized_pnl_try ?? 0) >= 0 ? "+" : "−"}₺{fmtPrice(Math.abs(daily?.realized_pnl_try ?? 0))}
+              <p className="eyebrow">GÜNLÜK NET K/Z ({tradeDay})</p>
+              {/* 2026-10-16 (basit arayüz): veri yokken/yüklenirken "+₺0,00" (sahte başabaş) yerine "—". */}
+              <p className={`mt-1 font-mono text-xl font-bold ${daily == null ? "text-bunker-muted" : daily.realized_pnl_try >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                {daily == null ? "—" : `${daily.realized_pnl_try >= 0 ? "+" : "−"}₺${fmtPrice(Math.abs(daily.realized_pnl_try))}`}
               </p>
               <p className="mt-0.5 text-[11px] text-bunker-muted">
-                {daily ? `${daily.wins} kazanç · ${daily.losses} kayıp` : "günlük işlem yok"}
+                {daily ? `${daily.wins} kazanç · ${daily.losses} kayıp` : trLoading ? "yükleniyor…" : loadErrors.trades ? "alınamadı" : "veri yok"}
               </p>
             </div>
 
@@ -1284,6 +1411,8 @@ function BinanceTrPageInner() {
               </p>
             </div>
           </div>
+
+          <div className="mt-4 max-w-sm"><FeeModeCard /></div>
 
           {/* SEKME NAVİGASYONU */}
           <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-b border-bunker-700 pb-2">
@@ -1411,8 +1540,8 @@ function BinanceTrPageInner() {
               {/* Pozisyonlar — Mobil Kart Görünümü (sm altı) */}
               <div className="space-y-2.5 sm:hidden">
                 {visibleHoldings.length === 0 ? (
-                  <div className="card p-6 text-center font-mono text-sm text-bunker-muted">
-                    Filtreye uygun açık pozisyon bulunamadı.
+                  <div className="card p-6 text-center font-mono text-sm text-bunker-muted" role="status">
+                    {positionsEmptyText}
                   </div>
                 ) : (
                   visibleHoldings.map((h) => {
@@ -1519,8 +1648,8 @@ function BinanceTrPageInner() {
               {/* Pozisyonlar Tablosu (Masaüstü) */}
               <div className="card !p-0 overflow-hidden hidden sm:block">
                 {visibleHoldings.length === 0 ? (
-                  <div className="p-8 text-center font-mono text-sm text-bunker-muted">
-                    Filtreye uygun açık pozisyon bulunamadı.
+                  <div className="p-8 text-center font-mono text-sm text-bunker-muted" role="status">
+                    {positionsEmptyText}
                   </div>
                 ) : (
                   <div className="table-scroll">
@@ -1793,7 +1922,14 @@ function BinanceTrPageInner() {
                     <input
                       type="date"
                       value={tradeDay}
-                      onChange={(e) => setTradeDay(e.target.value)}
+                      onChange={(e) => {
+                        // Eski günün satırları/K-Z yeni tarih etiketiyle görünmesin.
+                        setTradeDay(e.target.value);
+                        setTrades([]);
+                        setSymbolSummary([]);
+                        setDaily(null);
+                        setTrMeta(null);
+                      }}
                       className="input font-mono text-xs !py-1"
                     />
                   </label>
@@ -1814,8 +1950,8 @@ function BinanceTrPageInner() {
               </div>
 
               {symbolSummary.length === 0 && !trLoading ? (
-                <div className="card p-8 text-center font-mono text-sm text-bunker-muted">
-                  Seçilen tarihte gerçekleşen işlem kaydı bulunamadı.
+                <div className="card p-8 text-center font-mono text-sm text-bunker-muted" role="status">
+                  {loadErrors.trades ? "İşlem geçmişi alınamadı — yukarıdaki hata mesajına bakın." : "Seçilen tarihte gerçekleşen işlem kaydı bulunamadı."}
                 </div>
               ) : (
                 <div className="card !p-0 overflow-hidden">
@@ -1942,8 +2078,9 @@ function BinanceTrPageInner() {
                   <button
                     type="button"
                     onClick={() => setSltpModalOpen(false)}
+                    disabled={sltpBusy}
                     aria-label="SL / TP modalını kapat"
-                    className="rounded p-1 text-bunker-muted hover:bg-bunker-800 hover:text-white"
+                    className="rounded p-1 text-bunker-muted hover:bg-bunker-800 hover:text-white disabled:opacity-40"
                   >
                     ✕
                   </button>
@@ -2050,7 +2187,7 @@ function BinanceTrPageInner() {
                       <span className="eyebrow text-neon-green">🎯 TAKE PROFIT (KÂR AL HEDEF FİYATI)</span>
                       {calculatedTpProfit && (
                         <span className="font-mono text-[11px] font-bold text-neon-green">
-                          +{fmtPrice(calculatedTpProfit.pct, 1)}% (+₺{fmtPrice(calculatedTpProfit.totalDiff)})
+                          {calculatedTpProfit.pct >= 0 ? "+" : "−"}{fmtPrice(Math.abs(calculatedTpProfit.pct), 1)}% ({calculatedTpProfit.totalDiff >= 0 ? "+" : "−"}₺{fmtPrice(Math.abs(calculatedTpProfit.totalDiff))} net)
                         </span>
                       )}
                     </div>
@@ -2088,7 +2225,7 @@ function BinanceTrPageInner() {
                       <span className="eyebrow text-neon-red">🛑 STOP LOSS (ZARAR KES TETİK FİYATI)</span>
                       {calculatedSlLoss && (
                         <span className="font-mono text-[11px] font-bold text-neon-red">
-                          {fmtPrice(calculatedSlLoss.pct, 1)}% (−₺{fmtPrice(Math.abs(calculatedSlLoss.totalDiff))})
+                          {calculatedSlLoss.pct >= 0 ? "+" : "−"}{fmtPrice(Math.abs(calculatedSlLoss.pct), 1)}% ({calculatedSlLoss.totalDiff >= 0 ? "+" : "−"}₺{fmtPrice(Math.abs(calculatedSlLoss.totalDiff))} net)
                         </span>
                       )}
                     </div>
@@ -2098,9 +2235,9 @@ function BinanceTrPageInner() {
                         value={sltpSlPrice}
                         onChange={(e) => {
                           setSltpSlPrice(e.target.value);
-                          const val = parseFloat(e.target.value.replace(",", "."));
+                          const val = parseMoneyInput(e.target.value);
                           if (Number.isFinite(val) && val > 0) {
-                            setSltpSlLimitPrice((val * 0.995).toFixed(currentTargetPrice < 1 ? 6 : 2));
+                            setSltpSlLimitPrice(roundPriceStr(val * 0.995, currentTargetPrice || val));
                           }
                         }}
                         placeholder="Örn: 950.00"
@@ -2181,7 +2318,8 @@ function BinanceTrPageInner() {
                   <button
                     type="button"
                     onClick={() => setSltpModalOpen(false)}
-                    className="ui-button ui-button-secondary"
+                    disabled={sltpBusy}
+                    className="ui-button ui-button-secondary disabled:opacity-40"
                   >
                     İptal
                   </button>
@@ -2208,13 +2346,14 @@ function BinanceTrPageInner() {
                   </h2>
                   <button
                     type="button"
+                    disabled={sellBusy}
                     onClick={() => {
                       setSellFor(null);
                       setSellMsg(null);
                       setSellDone(null);
                     }}
                     aria-label="Piyasa satışı onay penceresini kapat"
-                    className="text-bunker-muted hover:text-white"
+                    className="text-bunker-muted hover:text-white disabled:opacity-40"
                   >
                     ✕
                   </button>
@@ -2222,11 +2361,16 @@ function BinanceTrPageInner() {
 
                 {sellDone ? (
                   <div className="space-y-3">
-                    <div className="rounded-lg border border-neon-green/40 bg-neon-green/10 px-4 py-3">
-                      <p className="eyebrow text-neon-green">SATIŞ TAMAMLANDI</p>
+                    <div className={`rounded-lg border px-4 py-3 ${sellDone.partial ? "border-yellow-400/50 bg-yellow-400/10" : "border-neon-green/40 bg-neon-green/10"}`}>
+                      <p className={`eyebrow ${sellDone.partial ? "text-yellow-300" : "text-neon-green"}`}>{sellDone.partial ? "KISMİ DOLUM — SATIŞ TAMAMLANMADI" : "SATIŞ TAMAMLANDI"}</p>
                       <p className="mt-1 font-mono text-sm text-white">
                         {sellDone.asset}: ₺{sellDone.price} birim fiyattan satıldı · {sellDone.qty} {sellDone.asset} (Toplam ₺{sellDone.total})
                       </p>
+                      {sellDone.partial && (
+                        <p className="mt-1 font-mono text-[11px] text-yellow-300">
+                          {sellDone.remaining ? `Kalan: ${sellDone.remaining} ${sellDone.asset}. ` : ""}Bakiyenizi ve Bekleyen Emirler sekmesini kontrol edin.
+                        </p>
+                      )}
                       <p className="mt-0.5 font-mono text-[11px] text-bunker-muted">Emir no: {sellDone.order}</p>
                     </div>
                     <div className="flex justify-end">
@@ -2246,9 +2390,9 @@ function BinanceTrPageInner() {
                 ) : (
                   <div className="space-y-3">
                     <div className="space-y-1 font-mono text-xs text-bunker-muted">
-                      <p>Anlık piyasa fiyatı: <span className="text-white">{sellFor.price_try != null ? `₺${fmtPrice(sellFor.price_try, sellFor.price_try < 1 ? 6 : 2)}` : "—"}</span></p>
+                      <p>Anlık piyasa fiyatı: <span className="text-white">{sellLivePrice != null ? `₺${fmtPrice(sellLivePrice, sellLivePrice < 1 ? 6 : 2)}` : "—"}</span></p>
                       <p>Boşta bakiye: <span className="text-white">{fmtPrice(sellFor.free, 6)} {sellFor.asset}</span></p>
-                      <p>Tahmini tutar: <span className="text-white font-bold">₺{fmtPrice(sellQtyNum * (sellFor.price_try ?? 0))}</span></p>
+                      <p>Tahmini tutar: <span className="text-white font-bold">{sellLivePrice != null ? `₺${fmtPrice(sellQtyNum * sellLivePrice)}` : "—"}</span></p>
                     </div>
 
                     <label>
@@ -2278,7 +2422,9 @@ function BinanceTrPageInner() {
                           <button
                             key={pct}
                             type="button"
-                            onClick={() => setSellQty(String(Number((sellFor.free * pct) / 100).toFixed(6)))}
+                            // 2026-10-16 (basit arayüz): toFixed(6) YUKARI yuvarlıyordu (0.1234567 → 0.123457 > bakiye);
+                            // %100 = bakiyenin tamamı (sunucu step'e keser), diğerleri aşağı kesilir.
+                            onClick={() => setSellQty(pct === 100 ? exactQtyInput(sellFor.free) : qtyToInput((sellFor.free * pct) / 100))}
                             className={`rounded-lg border px-2 py-1.5 font-mono text-[11px] font-bold transition-colors ${
                               pct === 100
                                 ? "border-neon-red/50 bg-neon-red/10 text-neon-red hover:bg-neon-red/25"
@@ -2304,11 +2450,12 @@ function BinanceTrPageInner() {
                     <div className="flex justify-end gap-2 pt-2">
                       <button
                         type="button"
+                        disabled={sellBusy}
                         onClick={() => {
                           setSellFor(null);
                           setSellMsg(null);
                         }}
-                        className="ui-button ui-button-secondary"
+                        className="ui-button ui-button-secondary disabled:opacity-40"
                       >
                         İptal
                       </button>
@@ -2333,7 +2480,7 @@ function BinanceTrPageInner() {
               <section ref={buyA11y.ref} tabIndex={-1} onKeyDown={buyA11y.onKeyDown} className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl outline-none">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="font-mono text-lg font-bold text-white">Piyasa Alımı Yap</h2>
-                  <button type="button" onClick={() => setBuyOpen(false)} aria-label="Piyasa alımı penceresini kapat" className="text-bunker-muted hover:text-white">✕</button>
+                  <button type="button" disabled={buyBusy} onClick={() => setBuyOpen(false)} aria-label="Piyasa alımı penceresini kapat" className="text-bunker-muted hover:text-white disabled:opacity-40">✕</button>
                 </div>
 
                 {buyDone ? (
@@ -2476,7 +2623,7 @@ function BinanceTrPageInner() {
                     )}
 
                     <div className="flex justify-end gap-2 pt-2">
-                      <button type="button" onClick={() => setBuyOpen(false)} className="ui-button ui-button-secondary">İptal</button>
+                      <button type="button" disabled={buyBusy} onClick={() => setBuyOpen(false)} className="ui-button ui-button-secondary disabled:opacity-40">İptal</button>
                       <button
                         type="button"
                         onClick={confirmBuy}
@@ -2569,15 +2716,16 @@ function BinanceTrPageInner() {
             </div>
           )}
           {/* MODAL: İNTERAKTİF POZİSYON GRAFİĞİ (TRADINGVIEW TARZI) */}
-          {chartFor && (
+          {chartFor && chartHolding && (
             <BinancePositionChartModal
-              holding={chartFor}
+              holding={chartHolding}
               livePrice={liveTicks[chartFor.asset]?.price ?? null}
               onClose={() => setChartFor(null)}
               onOrderUpdated={() => {
                 loadAcct();
                 loadOrd();
                 loadOpenOrders();
+                loadTrades();
               }}
               sellEnabled={sellEnabled}
               showToast={showToast}

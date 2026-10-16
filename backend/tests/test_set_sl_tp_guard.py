@@ -68,3 +68,69 @@ def test_oco_missing_one_price_rejected_before_cancel(env):
     with pytest.raises(HTTPException):
         call({"mode": "OCO", "tp_price": 110})
     assert env["cancel"] == []
+
+
+# --- 2026-10-16 (basit arayüz): iptalden SONRAKİ her hata eski stop emrini geri kurmalı --------------------------------
+
+def _balance(free, locked=0.0):
+    return patch("app.main.get_account_balance", MagicMock(return_value=[{"asset": "ADA", "free": str(free), "locked": str(locked)}]))
+
+
+def test_insufficient_qty_rejected_before_cancel_when_unreachable(env):
+    """İstenen miktar iptal edilse bile ulaşılamayacaksa (free+locked) hiçbir emir iptal edilmez."""
+    with _balance(5, 0):
+        with pytest.raises(HTTPException) as e:
+            call({"mode": "OCO", "tp_price": 110, "sl_price": 95, "quantity": 50})
+    assert e.value.status_code == 422 and "yetersiz" in e.value.detail
+    assert env["cancel"] == [] and env["stop"] == [] and env["oco"] == []
+
+
+def test_insufficient_free_after_cancel_restores_old_stop(env):
+    """Ön kontrolü geçer (kilitli miktar dahil) ama iptal sonrası bakiye hâlâ yetersizse: eski stop GERİ KURULUR, 422 döner."""
+    balances = [
+        [{"asset": "ADA", "free": "0", "locked": "5"}],   # ön kontrol: locked iptalle serbest kalacak sanılır
+        [{"asset": "ADA", "free": "1", "locked": "0"}],   # iptal sonrası gerçek durum: yetersiz
+    ]
+    with patch("app.main.get_account_balance", MagicMock(side_effect=balances)):
+        with pytest.raises(HTTPException) as e:
+            call({"mode": "OCO", "tp_price": 110, "sl_price": 95, "quantity": 5})
+    assert e.value.status_code == 422 and "yetersiz" in e.value.detail
+    assert "geri kuruldu" in e.value.detail
+    assert len(env["cancel"]) == 1 and env["oco"] == []
+    assert len(env["stop"]) == 1 and env["stop"][0][4] == 90.0  # eski stopPrice
+
+
+def test_place_failure_after_cancel_restores_old_stop(env):
+    with patch("app.main.place_oco_sell", MagicMock(side_effect=RuntimeError("borsa reddetti"))):
+        with pytest.raises(HTTPException) as e:
+            call({"mode": "OCO", "tp_price": 110, "sl_price": 95})
+    assert e.value.status_code == 502 and "geri kuruldu" in e.value.detail
+    assert len(env["cancel"]) == 1 and len(env["stop"]) == 1
+
+
+def test_restore_failure_is_reported_as_unprotected(env):
+    with patch("app.main.place_oco_sell", MagicMock(side_effect=RuntimeError("x"))), \
+         patch("app.main.place_stop_loss_sell", MagicMock(side_effect=RuntimeError("geri kurulamadı"))):
+        with pytest.raises(HTTPException) as e:
+            call({"mode": "OCO", "tp_price": 110, "sl_price": 95})
+    assert e.value.status_code == 502 and "KORUMASIZ" in e.value.detail
+
+
+def test_balance_fetch_failure_before_cancel_keeps_protection(env):
+    with patch("app.main.get_account_balance", MagicMock(side_effect=RuntimeError("ağ"))):
+        with pytest.raises(HTTPException) as e:
+            call({"mode": "OCO", "tp_price": 110, "sl_price": 95})
+    assert e.value.status_code == 502 and env["cancel"] == []
+
+
+def test_422_without_cancel_existing_does_not_touch_orders(env):
+    with _balance(1, 4):
+        with pytest.raises(HTTPException) as e:
+            call({"mode": "OCO", "tp_price": 110, "sl_price": 95, "cancel_existing": False, "quantity": 5})
+    assert e.value.status_code == 422 and env["cancel"] == [] and env["stop"] == []
+
+
+def test_success_path_cancel_then_place_unchanged(env):
+    res = call({"mode": "SL_ONLY", "sl_price": 95})
+    assert res["ok"] and res["mode"] == "SL_ONLY"
+    assert len(env["cancel"]) == 1 and len(env["stop"]) == 1 and env["stop"][0][4] == 95.0

@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
+import PortfolioBand from "./PortfolioBand";
 import RadarAlertModal from "./RadarAlertModal";
 import BottomNav from "./BottomNav";
 import { reconcilePushSubscription } from "../lib/push";
@@ -52,7 +53,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen">
       <div data-sidebar><Sidebar /></div>
       <main className="flex-1 min-w-0 min-h-screen overflow-y-auto">
-        <div data-topbar><TopBar /></div>
+        <div data-topbar><TopBar /><PortfolioBand /></div>
         <div className="content-shell">{children}</div>
       </main>
       <BottomNav />

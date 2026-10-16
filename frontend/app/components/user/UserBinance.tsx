@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useLiveMessages } from "../../lib/liveSocket";
 import { call, type Holding, type OpenOrder, type RiskSettings } from "../../lib/tradeApi";
 import { fmtSignedTry, fmtTry } from "../../lib/tradeUi";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
@@ -23,6 +24,9 @@ export default function UserBinance() {
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [todayPnl, setTodayPnl] = useState<number | null>(null);
   const [accountError, setAccountError] = useState("");
+  // 2026-10-16 (basit arayüz): açık emir / günlük K/Z yenilemesi başarısızsa sessizce eski veri gösterilmez.
+  const [ordersError, setOrdersError] = useState(false);
+  const [todayError, setTodayError] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [toast, setToast] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -56,7 +60,12 @@ export default function UserBinance() {
     } else {
       setAccountError(pos.error);
     }
-    if (ord.ok) setOrders(ord.body.orders || []);
+    if (ord.ok) {
+      setOrders(ord.body.orders || []);
+      setOrdersError(false);
+    } else {
+      setOrdersError(true);
+    }
     setOrdersLoading(false);
   }, []);
 
@@ -64,7 +73,12 @@ export default function UserBinance() {
     const d = new Date();
     const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const r = await call<Daily>("GET", `/api/binance/trades-day?date=${date}`);
-    if (r.ok) setTodayPnl(r.body.daily?.realized_pnl_try ?? null);
+    if (r.ok) {
+      setTodayPnl(r.body.daily?.realized_pnl_try ?? null);
+      setTodayError(false);
+    } else {
+      setTodayError(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -82,7 +96,18 @@ export default function UserBinance() {
     call("POST", "/api/binance/user-stream/start");
   }, [configured, loadAccount, loadToday]);
 
-  useVisibleInterval(() => { if (configured) loadAccount(); }, configured ? 20000 : null, { runOnVisible: false });
+  // Sekme öne gelince hemen tazele (arka planda beklerken emirler/bakiye eskimiş olabilir).
+  useVisibleInterval(() => { if (configured) { loadAccount(); loadToday(); } }, configured ? 20000 : null, { runOnVisible: true });
+
+  // Binance hesap/dolum olayı (WS): 1 sn debounce ile hesabı ve günlük sonucu tazele.
+  const wsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (wsTimer.current) clearTimeout(wsTimer.current); }, []);
+  const onLive = useCallback(() => {
+    if (!configured || (typeof document !== "undefined" && document.hidden)) return;
+    if (wsTimer.current) clearTimeout(wsTimer.current);
+    wsTimer.current = setTimeout(() => { wsTimer.current = null; loadAccount(); loadToday(); }, 1000);
+  }, [configured, loadAccount, loadToday]);
+  useLiveMessages(onLive, ["binance_account_update"]);
 
   const afterTrade = useCallback(() => {
     loadAccount();
@@ -128,6 +153,7 @@ export default function UserBinance() {
           <div className={`card p-4 ${todayPnl == null ? "" : todayPnl >= 0 ? "u-card-good" : "u-card-bad"}`}>
             <p className="text-sm font-medium text-bunker-muted">Bugünkü sonuç</p>
             <p className="mt-1 text-2xl font-bold text-white">{todayPnl == null ? "—" : fmtSignedTry(todayPnl)}</p>
+            {todayError && <p role="status" className="mt-1 text-xs text-yellow-300">yenilenemedi — gösterilen değer eski olabilir</p>}
           </div>
         </section>
       )}
@@ -144,6 +170,7 @@ export default function UserBinance() {
           {configured && (
             <>
               <HoldingsCard holdings={holdings} liveEnabled={settings.sell_enabled} onTraded={afterTrade} showToast={showToast} />
+              {ordersError && <p role="status" className="text-sm text-yellow-300">Bekleyen emirler yenilenemedi — liste eski olabilir (koruma emirlerini Binance TR’den doğrula).</p>}
               <OpenOrdersCard orders={orders} loading={ordersLoading} onChanged={loadAccount} />
               <HistoryCard enabled={configured} refreshKey={refreshKey} />
             </>

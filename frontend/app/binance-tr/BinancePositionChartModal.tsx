@@ -16,7 +16,11 @@ import { useLiveMessages } from "../lib/liveSocket";
 import { commissionPct, netOpenPnlTry, netOpenPnlPct } from "../lib/pnl";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { useModalA11y } from "../lib/useModalA11y";
-import { slTpMode, validateSlTpPrices } from "../lib/tradeUi";
+import { newClientOrderId, slTpMode, validateSlTpPrices } from "../lib/tradeUi";
+import {
+  UncertainOrderError, describeSellFill, exactQtyInput, orderFailureText, parseMoneyInput, postJsonGuarded, priceDecimals,
+  qtyToInput, ceilPriceStr, uncertainOrderText,
+} from "./orderSafety";
 import IndicatorPicker, {
   findIndicatorEntry,
   CUSTOM_INDICATOR_ENTRIES,
@@ -117,6 +121,13 @@ function fmtPrice(v?: number | null, decimals = 4): string {
   if (v < 1) return v.toFixed(4);
   if (v < 100) return v.toFixed(decimals > 2 ? 3 : 2);
   return v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** SL/TP çizgi etiketi: " (+1,23% | +₺45,60 net)"; giriş maliyeti yoksa boş (0 göstermek yanıltıcıdır). */
+function levelPnlLabel(pct: number | null, tryAmount: number | null): string {
+  if (pct == null || tryAmount == null) return "";
+  const sign = (n: number) => (n >= 0 ? "+" : "−");
+  return ` (${sign(pct)}${Math.abs(pct).toFixed(2)}% | ${sign(tryAmount)}₺${fmtPrice(Math.abs(tryAmount))} net)`;
 }
 
 // Grafik fiyat cetveli hassasiyeti — SEMBOL FİYATINA GÖRE (kullanıcı tercihi
@@ -278,6 +289,16 @@ export default function BinancePositionChartModal({
   const [draggingTarget, setDraggingTarget] = useState<"TP" | "SL" | null>(null);
   const [dragYPrice, setDragYPrice] = useState<number | null>(null);
 
+  // 2026-10-16 (basit arayüz): emir listesi dışarıdan değişince (SL/TP tetiklendi, başka yerden iptal/kurulum, liste
+  // tazelendi) çizgiler bayat kalmasın. Bekleyen (onaylanmamış) çizgi, sürükleme veya gönderim varken kullanıcının
+  // çalışması ezilmez; bağımlılık yalnız sunucu değerleri.
+  useEffect(() => {
+    if (isUpdating || draggingTarget || pendingTp != null || pendingSl != null) return;
+    commitTpPrice(holding.active_tp_price || null);
+    commitSlPrice(holding.active_sl_price || null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holding.active_tp_price, holding.active_sl_price]);
+
   // Sağ Tık (Context Menu) Durumu
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -337,15 +358,20 @@ export default function BinancePositionChartModal({
   // (anti-freeze watchdog ve TTL yenileme) zoom'u bozmasın diye.
   const loadKlines = useCallback(async (tf: Timeframe, opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
+    // 2026-10-16 (basit arayüz): hızlı TF değişiminde yavaş dönen ESKİ TF yanıtı yeni TF'in mumlarını ezmesin
+    // (aksi halde 1m mumları 1h serisine yazılır ve SL/TP çizgileri yanlış ölçekle çizilirdi).
+    const isStale = () => timeframeRef.current !== tf;
     try {
       const res = await apiRequest(
         `${API_BASE}/api/market-klines/${symbolConcat}?interval=${tf}&limit=250`
       );
+      if (isStale()) return;
       if (!res.ok) {
         console.warn(`Kline yüklenemedi: HTTP ${res.status}`);
         return;
       }
       const data = await res.json();
+      if (isStale()) return;
       if (Array.isArray(data?.candles) && data.candles.length > 0) {
         const parsed: CandleBar[] = [];
         const seen = new Set<number>();
@@ -425,7 +451,8 @@ export default function BinancePositionChartModal({
     } catch (err) {
       console.error("Kline yüklenemedi:", err);
     } finally {
-      if (!opts?.silent) setLoading(false);
+      // Bayat yanıt, yeni TF'in yükleme göstergesini kapatmasın.
+      if (!opts?.silent && !isStale()) setLoading(false);
     }
   }, [symbolConcat]);
 
@@ -762,15 +789,17 @@ export default function BinancePositionChartModal({
     const effectiveTp = pendingTp ?? tpPrice;
     if (tpLineRef.current) { try { series.removePriceLine(tpLineRef.current); } catch {} tpLineRef.current = null; }
     if (effectiveTp && effectiveTp > 0) {
-      const diffPct = entryPrice ? ((effectiveTp - entryPrice) / entryPrice) * 100 : 0;
-      const profitTry = entryPrice ? (effectiveTp - entryPrice) * holding.total : 0;
+      // 2026-10-16 (basit arayüz): etiket NET (komisyonlu, `lib/pnl.ts`) ve işaretli; eski brüt formül kâr-zarar
+      // önizlemesini sağ üstteki net K/Z ile çelişkili gösteriyordu, negatif TP'de "+-" basıyordu.
+      const diffPct = netOpenPnlPct(entryPrice, effectiveTp, holding.total);
+      const profitTry = netOpenPnlTry(entryPrice, effectiveTp, holding.total);
       tpLineRef.current = series.createPriceLine({
         price: effectiveTp,
         color: pendingTp ? "#22c55e" : "#10b981",
         lineWidth: 2,
         lineStyle: LineStyle.Solid,
         axisLabelVisible: true,
-        title: `🎯 TP: ₺${fmtPrice(effectiveTp)} (+${diffPct.toFixed(2)}% | +₺${fmtPrice(profitTry)})`,
+        title: `🎯 TP: ₺${fmtPrice(effectiveTp)}${levelPnlLabel(diffPct, profitTry)}`,
       });
     }
 
@@ -778,15 +807,15 @@ export default function BinancePositionChartModal({
     const effectiveSl = pendingSl ?? slPrice;
     if (slLineRef.current) { try { series.removePriceLine(slLineRef.current); } catch {} slLineRef.current = null; }
     if (effectiveSl && effectiveSl > 0) {
-      const diffPct = entryPrice ? ((effectiveSl - entryPrice) / entryPrice) * 100 : 0;
-      const lossTry = entryPrice ? (effectiveSl - entryPrice) * holding.total : 0;
+      const diffPct = netOpenPnlPct(entryPrice, effectiveSl, holding.total);
+      const lossTry = netOpenPnlTry(entryPrice, effectiveSl, holding.total);
       slLineRef.current = series.createPriceLine({
         price: effectiveSl,
         color: pendingSl ? "#f87171" : "#ef4444",
         lineWidth: 2,
         lineStyle: LineStyle.Solid,
         axisLabelVisible: true,
-        title: `🛑 SL: ₺${fmtPrice(effectiveSl)} (${diffPct.toFixed(2)}% | ₺${fmtPrice(lossTry)})`,
+        title: `🛑 SL: ₺${fmtPrice(effectiveSl)}${levelPnlLabel(diffPct, lossTry)}`,
       });
     }
 
@@ -1048,6 +1077,8 @@ export default function BinancePositionChartModal({
   ) => {
     e?.preventDefault?.();
     e?.stopPropagation?.();
+    // Emir gönderimi sürerken yeni sürükleme başlamaz: iki eşzamanlı "iptal → kur" birbirinin emrini silebilir.
+    if (isUpdating) return;
     draggingTargetRef.current = target;
     setDraggingTarget(target);
   };
@@ -1102,21 +1133,17 @@ export default function BinancePositionChartModal({
 
       setIsUpdating(true);
       try {
-        const res = await apiRequest(`${API_BASE}/api/binance/set-sl-tp`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            asset: holding.asset,
-            mode,
-            quantity: holding.total,
-            tp_price: finalTp || undefined,
-            sl_price: finalSl || undefined,
-            sl_limit_price: finalSl ? finalSl * 0.995 : undefined,
-            cancel_existing: true,
-          }),
+        // 2026-10-16 (basit arayüz): zaman aşımlı POST + okunur hata/"belirsiz" metni (orderSafety).
+        const { status, ok, body: d } = await postJsonGuarded<{ ok?: boolean; detail?: string }>("/api/binance/set-sl-tp", {
+          asset: holding.asset,
+          mode,
+          quantity: holding.total,
+          tp_price: finalTp || undefined,
+          sl_price: finalSl || undefined,
+          sl_limit_price: finalSl ? finalSl * 0.995 : undefined,
+          cancel_existing: true,
         });
-        const d = await res.json().catch(() => ({}));
-        if (!res.ok || !d.ok) throw new Error(d.detail || `Hata (${res.status})`);
+        if (!ok || !d.ok) throw new Error(orderFailureText("sltp", status, d.detail));
 
         // Başarı — state'i kesinleştir, pending'i temizle
         if (target === "TP") { commitTpPrice(finalDragPrice); setPendingTp(null); }
@@ -1127,7 +1154,9 @@ export default function BinancePositionChartModal({
         // Hata — çizgiyi eski fiyata döndür
         if (target === "TP") setPendingTp(null);
         else setPendingSl(null);
-        showToast(err.message || "Emir gönderilemedi", "error");
+        showToast(err instanceof UncertainOrderError ? uncertainOrderText("sltp", err.timedOut) : (err.message || "Emir gönderilemedi"), "error");
+        // "İptal → kur" yarıda kalmış olabilir: sunucudaki gerçek emir durumunu yeniden çek.
+        onOrderUpdated();
       } finally {
         setIsUpdating(false);
       }
@@ -1193,22 +1222,17 @@ export default function BinancePositionChartModal({
     setIsUpdating(true);
     setUpdateError(null);
     try {
-      const res = await apiRequest(`${API_BASE}/api/binance/set-sl-tp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          asset: holding.asset,
-          mode,
-          quantity: holding.total,
-          tp_price: finalTp || undefined,
-          sl_price: finalSl || undefined,
-          sl_limit_price: finalSl ? finalSl * 0.995 : undefined,
-          cancel_existing: true,
-        }),
+      const { status, ok, body: d } = await postJsonGuarded<{ ok?: boolean; detail?: string }>("/api/binance/set-sl-tp", {
+        asset: holding.asset,
+        mode,
+        quantity: holding.total,
+        tp_price: finalTp || undefined,
+        sl_price: finalSl || undefined,
+        sl_limit_price: finalSl ? finalSl * 0.995 : undefined,
+        cancel_existing: true,
       });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok || !d.ok) {
-        throw new Error(d.detail || `Emir güncellenemedi (${res.status})`);
+      if (!ok || !d.ok) {
+        throw new Error(orderFailureText("sltp", status, d.detail));
       }
 
       showToast(`${holding.asset} için ${mode} emri başarıyla güncellendi!`, "success");
@@ -1218,8 +1242,11 @@ export default function BinancePositionChartModal({
       setPendingSl(null);
       onOrderUpdated();
     } catch (err: any) {
-      setUpdateError(err.message || "Emir güncellenirken hata oluştu");
-      showToast(err.message || "Hata oluştu", "error");
+      const text = err instanceof UncertainOrderError ? uncertainOrderText("sltp", err.timedOut) : (err.message || "Emir güncellenirken hata oluştu");
+      setUpdateError(text);
+      showToast(text, "error");
+      // Hata sonrası da gerçek emir durumunu çek (eski emirler iptal edilmiş olabilir).
+      onOrderUpdated();
     } finally {
       setIsUpdating(false);
     }
@@ -1251,8 +1278,8 @@ export default function BinancePositionChartModal({
       return;
     }
 
-    const precision = curP < 1 ? 6 : 2;
-    const finalPrice = Number(bePrice.toFixed(precision));
+    // 2026-10-16 (basit arayüz): YUKARI yuvarla + fiyata göre basamak (1–10 TL coinlerde 2 hane stop'u maliyetin altına düşürüyordu).
+    const finalPrice = Number(ceilPriceStr(bePrice, curP));
     setPendingSl(finalPrice);
     showToast(`🔒 Break-Even stop belirlendi: ₺${fmtPrice(finalPrice)}. Kaydetmek için 'Onayla ve Kaydet'e tıklayın.`, "success");
   };
@@ -1304,17 +1331,30 @@ export default function BinancePositionChartModal({
   const priceNow = currentPrice ?? holding.price_try ?? 0;
   priceNowRef.current = priceNow;
   const closeQtyNum = useMemo(() => {
-    const n = parseFloat(closeQtyInput.replace(",", "."));
+    const n = parseMoneyInput(closeQtyInput);
     if (!Number.isFinite(n) || n <= 0) return 0;
     if (closeUnit === "asset") return Math.min(n, holding.free);
     // TRY modu: tutarı anlık fiyata bölerek adede çevir (satışta uç fark minimum).
     return priceNow > 0 ? Math.min(n / priceNow, holding.free) : 0;
   }, [closeQtyInput, closeUnit, priceNow, holding.free]);
 
+  // 2026-10-16 (basit arayüz): pozisyon kapatma satışı artık idempotent (`client_order_id`) — çift tıklama / zaman
+  // aşımı sonrası yeniden deneme ikinci bir gerçek satış üretmez. Kimlik, miktar/birim değişince ya da pencere açılınca yenilenir.
+  const closeCidRef = useRef("");
+  useEffect(() => { closeCidRef.current = ""; }, [closeQtyInput, closeUnit, closeModalOpen]);
+
+  // Odak tuzağı + Esc: dış modalın hook'u iç modal açıkken kapalı olduğu için bu pencere kendi a11y'sini kurar
+  // (eskiden Esc hiçbir şey yapmıyor, Tab arka plana kaçabiliyordu). İstek uçuştayken kapanmaz.
+  const closeA11y = useModalA11y(
+    closeModalOpen,
+    () => { if (!closeBusy) setCloseModalOpen(false); },
+    `Pozisyonu kapat: ${holding.asset}/TRY`,
+  );
+
   const openCloseModal = () => {
     setCloseUnit("asset");
     setCloseMsg(null);
-    setCloseQtyInput(String(Number(holding.free.toFixed(6))));
+    setCloseQtyInput(exactQtyInput(holding.free));
     setCloseModalOpen(true);
   };
 
@@ -1334,19 +1374,33 @@ export default function BinancePositionChartModal({
     }
     setCloseBusy(true);
     setCloseMsg(null);
+    if (!closeCidRef.current) closeCidRef.current = newClientOrderId();
     try {
-      const res = await apiRequest(`${API_BASE}/api/binance/sell`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset: holding.asset, quantity: closeQtyNum, confirmation: "REAL_SELL" }),
-      });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok || d.ok === false) throw new Error(d.detail || `Satış gönderilemedi (${res.status})`);
-      showToast(`${holding.asset} pozisyonu kapatıldı: ${fmtPrice(closeQtyNum, 6)} adet satıldı.`, "success");
+      const { status, ok, body: d } = await postJsonGuarded<Record<string, unknown> & { ok?: boolean; status?: string; detail?: string }>(
+        "/api/binance/sell",
+        { asset: holding.asset, quantity: closeQtyNum, confirmation: "REAL_SELL", client_order_id: closeCidRef.current },
+      );
+      // 202 = daha önce gönderilmiş / sonucu belirsiz; reddedilmişse bir sonraki deneme yeni kimlik alır.
+      if (status === 202 && d.status === "failed") closeCidRef.current = "";
+      if (!ok || d.ok === false) throw new Error(orderFailureText("sell", status, d.detail));
+      closeCidRef.current = "";
+      // Gerçek dolum bildirilir; kısmi dolumda "kapatıldı" denmez.
+      const fill = describeSellFill(d, closeQtyNum, priceNow);
+      if (fill.partial) {
+        showToast(`${holding.asset} satışı KISMİ doldu: ${fmtPrice(fill.qty ?? closeQtyNum, 6)} satıldı${fill.remaining ? `, kalan ${fmtPrice(fill.remaining, 6)}` : ""}. Bakiyeyi kontrol edin.`, "info");
+      } else {
+        showToast(`${holding.asset} pozisyonu kapatıldı: ${fmtPrice(fill.qty ?? closeQtyNum, 6)} adet satıldı.`, "success");
+      }
       setCloseModalOpen(false);
       onOrderUpdated();
     } catch (err: any) {
-      setCloseMsg({ ok: false, text: err.message || "Satış gönderilemedi" });
+      if (err instanceof UncertainOrderError) {
+        // Kimlik korunur: aynı pencereden yeniden denemek mükerrer satış üretmez. Gerçek durumu çek.
+        setCloseMsg({ ok: false, text: uncertainOrderText("sell", err.timedOut) });
+        onOrderUpdated();
+      } else {
+        setCloseMsg({ ok: false, text: err.message || "Satış gönderilemedi" });
+      }
     } finally {
       setCloseBusy(false);
     }
@@ -1858,8 +1912,9 @@ export default function BinancePositionChartModal({
                 type="button"
                 onClick={() => {
                   const baseP = currentPrice ?? contextMenu.price;
-                  setPendingTp(Number((baseP * 1.02).toFixed(4)));
-                  setPendingSl(Number((baseP * 0.98).toFixed(4)));
+                  // Sabit 4 hane 0.0005 gibi fiyatlarda ±%2'yi sıfırlıyordu (TP = fiyat → reddedilir).
+                  setPendingTp(Number((baseP * 1.02).toFixed(priceDecimals(baseP))));
+                  setPendingSl(Number((baseP * 0.98).toFixed(priceDecimals(baseP))));
                   closeContextMenu();
                   showToast("Simetrik OCO (±%2) seviyeleri belirlendi.", "info");
                 }}
@@ -1974,9 +2029,15 @@ export default function BinancePositionChartModal({
         <div
           className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
           onClick={() => !closeBusy && setCloseModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={closeA11y.label}
+          onKeyDown={closeA11y.onKeyDown}
         >
-          <div
-            className="w-full max-w-md rounded-2xl border border-cyan-500/40 bg-bunker-950 p-5 shadow-2xl"
+          <section
+            ref={closeA11y.ref}
+            tabIndex={-1}
+            className="w-full max-w-md rounded-2xl border border-cyan-500/40 bg-bunker-950 p-5 shadow-2xl outline-none"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-bunker-800 pb-3">
@@ -2063,9 +2124,9 @@ export default function BinancePositionChartModal({
                   type="button"
                   onClick={() => {
                     const base = holding.free;
-                    const q = (base * pct) / 100;
+                    // toFixed(6) yukarı yuvarlıyordu; %100 = bakiyenin tamamı, diğerleri aşağı kesilir.
                     setCloseUnit("asset");
-                    setCloseQtyInput(String(Number(q.toFixed(6))));
+                    setCloseQtyInput(pct === 100 ? exactQtyInput(base) : qtyToInput((base * pct) / 100));
                   }}
                   className={`rounded-lg border px-2 py-2 font-mono text-[11px] font-bold transition-colors ${
                     pct === 100
@@ -2116,7 +2177,7 @@ export default function BinancePositionChartModal({
                 {closeBusy ? "GÖNDERİLİYOR…" : `SAT — ${closeUnit === "asset" ? `${fmtPrice(closeQtyNum, 6)} ${holding.asset}` : `₺${fmtPrice(closeQtyNum * priceNow)}`}`}
               </button>
             </div>
-          </div>
+          </section>
         </div>
       )}
 

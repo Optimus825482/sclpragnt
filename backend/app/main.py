@@ -203,6 +203,8 @@ app.include_router(snapback_routes.router)
 app.include_router(user_prefs_routes.router)
 app.include_router(binance_trade_routes.router)
 app.include_router(journal_routes.router)
+from app.routers import portfolio_band as portfolio_band_routes
+app.include_router(portfolio_band_routes.router)
 
 
 _TTS_VOICE = "tr-TR-EmelNeural"
@@ -3999,6 +4001,30 @@ async def binance_cancel_order(payload: dict, request: Request):
         raise HTTPException(status_code=502, detail=f"Emir iptal edilemedi: {exc}")
 
 
+async def _restore_cancelled_stops(api_key: str, api_secret: str, symbol_u: str, asset: str,
+                                   cancelled: list[dict], fallback_qty: float, step: float, tick: float) -> list[dict]:
+    """set-sl-tp: iptal edilen eski emirlerden ZARAR KES (stop) olanları aynı parametrelerle geri kurar (en iyi çaba)."""
+    restored: list[dict] = []
+    for ex in cancelled:
+        try:
+            sp = float(ex.get("stopPrice") or 0)
+            if sp <= 0:
+                continue  # stop emri değil (saf limit TP) — geri kurmaya değmez
+            re_qty = float(ex.get("origQty") or 0) or fallback_qty
+            if step and step > 0:
+                re_qty = round(math.floor(re_qty / step) * step, 10)
+            if re_qty <= 0:
+                continue
+            limit_px = float(ex.get("price") or 0) or None
+            await asyncio.to_thread(
+                place_stop_loss_sell, api_key, api_secret, symbol_u, re_qty, sp, limit_px or None, step, tick)
+            restored.append({"orderId": ex.get("orderId"), "stopPrice": sp, "qty": re_qty})
+        except Exception as rexc:
+            logger.error("İptal edilen stop emri geri kurulamadı | asset=%s stop=%s | %s",
+                         asset, ex.get("stopPrice"), rexc)
+    return restored
+
+
 @app.post("/api/binance/set-sl-tp")
 async def binance_set_sl_tp(payload: dict, request: Request):
     """Açık pozisyona SL/TP/OCO emri kurar (oturum açmış kullanıcı)."""
@@ -4044,6 +4070,41 @@ async def binance_set_sl_tp(payload: dict, request: Request):
     if _rule_err:
         raise HTTPException(status_code=422, detail=_rule_err)
 
+    # 2026-10-16 (basit arayüz): İPTALDEN ÖNCE doğrulanabilen her şey burada doğrulanır; iptalden sonra oluşan HERHANGİ
+    # bir hata (bakiye yetersiz 422 dahil) eski stop emirlerinin geri kurulmasını tetikler (pozisyon korumasız kalmaz).
+    req_qty = payload.get("quantity")
+    try:
+        qty_req = None if req_qty in (None, "", "all") else float(req_qty)
+        sl_limit_price = float(payload.get("sl_limit_price") or 0) if payload.get("sl_limit_price") else None
+        tp_price = float(payload.get("tp_price") or 0)
+        sl_price = float(payload.get("sl_price") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Geçersiz miktar veya fiyat")
+    if qty_req is not None and qty_req <= 0:
+        raise HTTPException(status_code=422, detail="Miktar 0'dan büyük olmalı")
+    if mode == "OCO" and filters and filters.get("oco_enable") is False:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{symbol_u} paritesinde Binance TR OCO emri desteklenmiyor (ocoEnable=0). Lütfen 'Zarar Kes (SL)' veya 'Kâr Al (TP)' modunu tekil olarak kullanın."
+        )
+    step = float((filters or {}).get("step_size") or 0)
+    min_qty = float((filters or {}).get("min_qty") or 0)
+    tick = float((filters or {}).get("tick_size") or 0)
+
+    try:
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
+    row = next((b for b in balances if str(b.get("asset") or "").upper() == asset), None)
+    free = float(row.get("free", 0) or 0) if row else 0.0
+    locked = float(row.get("locked", 0) or 0) if row else 0.0
+    # Eski emirler iptal edilecekse kilitli miktar da serbest kalır; aksi halde yalnız boştaki bakiye kullanılabilir.
+    reachable = free + (locked if payload.get("cancel_existing") else 0.0)
+    if qty_req is None and reachable <= 0:
+        raise HTTPException(status_code=422, detail="Miktar 0'dan büyük olmalı")
+    if qty_req is not None and qty_req > reachable + 1e-9:
+        raise HTTPException(status_code=422, detail=f"Boşta bakiye yetersiz ({free:.6f} {asset} boşta). Mevcut açık emir varsa 'Önceki emirleri iptal et' seçeneğini işaretleyin.")
+
     # Mevcut açık satış emirlerini iptal etme (cancel_existing=True)
     #
     # DENETİM (2026-10-07): Binance TR'de yeni koruyucu emir ESKİ emir İPTAL
@@ -4065,50 +4126,34 @@ async def binance_set_sl_tp(payload: dict, request: Request):
         except Exception as exc:
             logger.warning("Eski emirler temizlenirken uyarı: %s", exc)
 
-    # Bakiye kontrolü
-    balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
-    row = next((b for b in balances if str(b.get("asset") or "").upper() == asset), None)
-    free = float(row.get("free", 0) or 0) if row else 0.0
-
-    req_qty = payload.get("quantity")
+    qty = 0.0
     try:
-        qty = free if req_qty in (None, "", "all") else float(req_qty)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=422, detail="Geçersiz miktar")
-    if qty <= 0:
-        raise HTTPException(status_code=422, detail="Miktar 0'dan büyük olmalı")
-    if qty > free + 1e-9:
-        raise HTTPException(status_code=422, detail=f"Boşta bakiye yetersiz ({free:.6f} {asset} boşta). Mevcut açık emir varsa 'Önceki emirleri iptal et' seçeneğini işaretleyin.")
+        if _cancelled_sells:
+            # İptal sonrası serbest kalan bakiyeyi yeniden oku (iptal öncesi değer kilitli miktarı içermez).
+            balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+            row = next((b for b in balances if str(b.get("asset") or "").upper() == asset), None)
+            free = float(row.get("free", 0) or 0) if row else 0.0
+        qty = free if qty_req is None else qty_req
+        if qty <= 0:
+            raise HTTPException(status_code=422, detail="Miktar 0'dan büyük olmalı")
+        if qty > free + 1e-9:
+            raise HTTPException(status_code=422, detail=f"Boşta bakiye yetersiz ({free:.6f} {asset} boşta). Mevcut açık emir varsa 'Önceki emirleri iptal et' seçeneğini işaretleyin.")
 
-    step = float((filters or {}).get("step_size") or 0)
-    min_qty = float((filters or {}).get("min_qty") or 0)
-    tick = float((filters or {}).get("tick_size") or 0)
+        # Miktar step_size'a göre küçüğe yuvarlanmalı (ör. F_TRY stepSize=1 → 64972.395 → 64972)
+        if step and step > 0:
+            qty = math.floor(qty / step) * step
+            qty = round(qty, 10)  # kayan nokta hatalarını temizle
 
-    # Miktar step_size'a göre küçüğe yuvarlanmalı (ör. F_TRY stepSize=1 → 64972.395 → 64972)
-    if step and step > 0:
-        qty = math.floor(qty / step) * step
-        qty = round(qty, 10)  # kayan nokta hatalarını temizle
+        if qty <= 0:
+            raise HTTPException(status_code=422, detail="Miktar step_size'a yuvarlandıktan sonra 0 oldu")
+        if min_qty and qty < min_qty:
+            raise HTTPException(status_code=422, detail=f"Miktar minimum lot büyüklüğünden ({min_qty}) küçük")
 
-    if qty <= 0:
-        raise HTTPException(status_code=422, detail="Miktar step_size'a yuvarlandıktan sonra 0 oldu")
-    if min_qty and qty < min_qty:
-        raise HTTPException(status_code=422, detail=f"Miktar minimum lot büyüklüğünden ({min_qty}) küçük")
-
-    tp_price = float(payload.get("tp_price") or 0)
-    sl_price = float(payload.get("sl_price") or 0)
-    sl_limit_price = float(payload.get("sl_limit_price") or 0) if payload.get("sl_limit_price") else None
-
-    try:
         if mode == "OCO":
             if tp_price <= 0 or sl_price <= 0:
                 raise HTTPException(status_code=422, detail="OCO için hem Kâr Al (TP) hem Zarar Kes (SL) fiyatı girilmelidir")
             if tp_price <= sl_price:
                 raise HTTPException(status_code=422, detail="Kâr Al (TP) fiyatı Zarar Kes (SL) fiyatından büyük olmalıdır")
-            if filters and filters.get("oco_enable") is False:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"{symbol_u} paritesinde Binance TR OCO emri desteklenmiyor (ocoEnable=0). Lütfen 'Zarar Kes (SL)' veya 'Kâr Al (TP)' modunu tekil olarak kullanın."
-                )
             res = await asyncio.to_thread(
                 place_oco_sell, api_key, api_secret, symbol_u, qty, tp_price, sl_price, sl_limit_price, step, tick
             )
@@ -4124,51 +4169,92 @@ async def binance_set_sl_tp(payload: dict, request: Request):
             res = await asyncio.to_thread(
                 place_limit_sell, api_key, api_secret, symbol_u, qty, tp_price, step, tick
             )
-    except HTTPException:
-        raise
     except Exception as exc:
-        import traceback
-        logger.error(
-            "BINANCE_SET_SL_TP HATA | asset=%s mode=%s qty=%s tp=%s sl=%s | %s\n%s",
-            asset, mode, qty,
-            payload.get("tp_price"), payload.get("sl_price"),
-            exc, traceback.format_exc()
-        )
+        is_http = isinstance(exc, HTTPException)
+        if not is_http:
+            import traceback
+            logger.error(
+                "BINANCE_SET_SL_TP HATA | asset=%s mode=%s qty=%s tp=%s sl=%s | %s\n%s",
+                asset, mode, qty,
+                payload.get("tp_price"), payload.get("sl_price"),
+                exc, traceback.format_exc()
+            )
+        if not _cancelled_sells:
+            if is_http:
+                raise
+            raise HTTPException(status_code=502, detail=f"Emir gönderilemedi: {exc}")
         # DENETİM (2026-10-07): Yeni emir yerleştirilemedi ama iptal ettiğimiz
         # eski emir(ler) gitti → pozisyon korumasız kalırdı. Yerleştirmeden önce
         # sakladığımız emirler arasında bir ZARAR KES (stop) varsa aynı
         # parametrelerle geri kurmayı dene; kurulursa kullanıcıya hangi emrin
         # geri konduğunu bildir, kurulamazsa açıkça "KORUMASIZ" uyarısı ver.
-        restored = []
-        for ex in _cancelled_sells:
-            try:
-                sp = float(ex.get("stopPrice") or 0)
-                if sp <= 0:
-                    continue  # stop emri değil (saf limit TP) — geri kurmaya değmez
-                re_qty = float(ex.get("origQty") or 0) or qty
-                if step and step > 0:
-                    re_qty = round(math.floor(re_qty / step) * step, 10)
-                if re_qty <= 0:
-                    continue
-                limit_px = float(ex.get("price") or 0) or None
-                await asyncio.to_thread(
-                    place_stop_loss_sell, api_key, api_secret, symbol_u, re_qty, sp, limit_px or None, step, tick)
-                restored.append({"orderId": ex.get("orderId"), "stopPrice": sp, "qty": re_qty})
-            except Exception as rexc:
-                logger.error("İptal edilen stop emri geri kurulamadı | asset=%s stop=%s | %s",
-                             asset, ex.get("stopPrice"), rexc)
-        detail = f"Emir gönderilemedi: {exc}"
+        # 2026-10-16: bu yol artık iptalden SONRAKİ doğrulama hatalarını (bakiye yetersiz 422 vb.) da kapsar.
+        restored = await _restore_cancelled_stops(api_key, api_secret, symbol_u, asset, _cancelled_sells, qty, step, tick)
+        base = exc.detail if is_http else f"Emir gönderilemedi: {exc}"
+        detail = str(base)
         if restored:
             detail += f" | İptal edilen {len(restored)} stop emri geri kuruldu (pozisyon korumalı)"
-        elif _cancelled_sells:
+        else:
             detail += " | UYARI: iptal edilen eski emirler geri kurulamadı — pozisyon KORUMASIZ olabilir, kontrol edin"
-        raise HTTPException(status_code=502, detail=detail)
+        raise HTTPException(status_code=exc.status_code if is_http else 502, detail=detail)
 
     _actor, _actor_role = _session_identity(request)
     await log_user_action(_actor, _actor_role, "trade", f"BINANCE_TR_SET_{mode}",
                           target=asset, details={"asset": asset, "mode": mode, **res}, request=request)
     return {"ok": True, "mode": mode, **res}
 
+
+
+@app.get("/api/binance/fee-mode")
+async def binance_fee_mode_get(request: Request):
+    """Binance TR komisyon modu (BNB ile komisyon) — salt okunur.
+
+    Binance TR API'sinde BNB-burn ucu yok: `bnb_burn_supported=false`,
+    `spot_bnb_burn=null`. Komisyon oranları ve BNB bakiyesi hesap cevabından gelir.
+    """
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    from app import binance_tr_private as _btr
+    try:
+        return await asyncio.to_thread(_btr.get_fee_mode, api_key, api_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR komisyon bilgisi alınamadı: {exc}")
+
+
+@app.post("/api/binance/fee-mode")
+async def binance_fee_mode_set(payload: dict, request: Request):
+    """BNB ile komisyon modunu değiştirir (gövde: {"spot_bnb_burn": bool, "confirm": true}).
+
+    Binance TR bu işlem için API ucu sunmuyor → 501 ve açıklayıcı mesaj döner.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("spot_bnb_burn"), bool):
+        raise HTTPException(status_code=400, detail="spot_bnb_burn true/false olmalı")
+    if payload.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="Komisyon modu değişikliği için confirm=true gerekli")
+    spot_bnb_burn = payload["spot_bnb_burn"]
+
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
+    if not sell_ok:
+        if sell_source == "panel":
+            raise HTTPException(status_code=403, detail="Gerçek Binance işlemleri kapalı — Ayarlar > 'GERÇEK SATIŞ' anahtarını açın")
+        raise HTTPException(status_code=403, detail="Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış")
+
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    from app import binance_tr_private as _btr
+    try:
+        res = await asyncio.to_thread(_btr.set_fee_mode, api_key, api_secret, spot_bnb_burn)
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=501, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Komisyon modu değiştirilemedi: {exc}")
+
+    _actor, _actor_role = _session_identity(request)
+    await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_SET_FEE_MODE",
+                          target="BNB", details={"spot_bnb_burn": spot_bnb_burn}, request=request)
+    return {"ok": True, **(res if isinstance(res, dict) else {})}
 
 
 @app.get("/api/binance/trades-day")

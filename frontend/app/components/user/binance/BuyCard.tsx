@@ -3,10 +3,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { call, type TradePlanResponse } from "../../../lib/tradeApi";
 import {
   AMOUNT_CHIPS, describeOpenResult, errorText, fmtPrice, fmtPct, fmtQty, fmtTry, hasBlockingWarnings,
-  newClientOrderId, normalizeSymbol, parseTrNumber, suggestSymbols, rrLabel, scenarioTexts, suggestionSourceLabel,
+  normalizeSymbol, parseTrNumber, suggestSymbols, rrLabel, scenarioTexts, suggestionSourceLabel,
   type OpenResult,
 } from "../../../lib/tradeUi";
+import { UncertainOrderError, orderFailureText, postJsonGuarded, uncertainOrderText } from "../../../binance-tr/orderSafety";
 import ConfirmDialog from "./ConfirmDialog";
+import UncertainOrderNotice from "./UncertainOrderNotice";
+import { buyIntentKey, describeOrderLookup, intentId, isDefinitiveReject, resetIntent, type IntentRef } from "./orderIntent";
 
 type Props = {
   liveEnabled: boolean;
@@ -30,7 +33,13 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<(OpenResult & { clientOrderId: string }) | null>(null);
   const [protectBusy, setProtectBusy] = useState(false);
-  const clientId = useRef("");
+  // 2026-10-16 (basit arayüz): client_order_id "emir niyeti" (sembol+tutar) başına BİR kez üretilir; ağ hatası sonrası
+  // tekrar denemede aynı kimlik kullanılır (mükerrer alım olmaz). Yalnız kesin sonuçta / niyet değişince yenilenir.
+  const intent = useRef<IntentRef>({ key: "", id: "" });
+  const sendLock = useRef(false);
+  const [uncertain, setUncertain] = useState<{ cid: string; key: string; symbol: string; text: string } | null>(null);
+  const [lookup, setLookup] = useState("");
+  const [lookupBusy, setLookupBusy] = useState(false);
   const [allSymbols, setAllSymbols] = useState<string[]>([]);
   const [showSuggest, setShowSuggest] = useState(false);
   useEffect(() => {
@@ -78,29 +87,75 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
   };
 
   const openConfirm = () => {
-    clientId.current = newClientOrderId();
+    if (plan) intentId(intent.current, buyIntentKey(plan.symbol, plan.amount_try));
     setResult(null);
     setConfirmOpen(true);
   };
 
   const confirmBuy = async () => {
-    if (!plan || sending) return;
+    if (!plan || sending || sendLock.current) return;
+    sendLock.current = true;
     setSending(true);
-    const r = await call<Record<string, unknown>>("POST", "/api/binance/open-position", {
-      symbol: plan.symbol,
-      amount_try: plan.amount_try,
-      sl_pct: plan.plan.sl_pct,
-      rr: plan.plan.rr,
-      client_order_id: clientId.current,
-      confirmation: "REAL_OPEN",
-    });
-    setSending(false);
-    setConfirmOpen(false);
-    if (!r.ok && r.status !== 202) {
-      setError(errorText(r.error));
-      return;
+    setError("");
+    const cid = intentId(intent.current, buyIntentKey(plan.symbol, plan.amount_try));
+    try {
+      const r = await postJsonGuarded<Record<string, unknown> & { detail?: unknown }>("/api/binance/open-position", {
+        symbol: plan.symbol,
+        amount_try: plan.amount_try,
+        sl_pct: plan.plan.sl_pct,
+        rr: plan.plan.rr,
+        client_order_id: cid,
+        confirmation: "REAL_OPEN",
+      });
+      if (r.status === 202) {
+        // Sonucu belirsiz / işleniyor: AYNI kimlik korunur (yeni kimlik mükerrer alım demektir).
+        setUncertain(null);
+        setConfirmOpen(false);
+        setResult({ ...describeOpenResult(r.status, r.body as never), clientOrderId: cid });
+        onTraded();
+        return;
+      }
+      if (!r.ok) {
+        const text = orderFailureText("buy", r.status, r.body.detail);
+        if (isDefinitiveReject(r.status, r.body.detail)) {
+          resetIntent(intent.current);
+          setUncertain(null);
+          setConfirmOpen(false);
+          setError(text);
+        } else {
+          // 408/504/gövdesiz 5xx: emir borsaya ulaşmış olabilir → pencere açık, aynı kimlik, sorgulama önerilir.
+          setUncertain({ cid, key: intent.current.key, symbol: plan.symbol, text });
+          setLookup("");
+          onTraded();
+        }
+        return;
+      }
+      resetIntent(intent.current);
+      setUncertain(null);
+      setConfirmOpen(false);
+      setResult({ ...describeOpenResult(r.status, r.body as never), clientOrderId: cid });
+      onTraded();
+    } catch (e) {
+      if (e instanceof UncertainOrderError) {
+        setUncertain({ cid, key: intent.current.key, symbol: plan.symbol, text: uncertainOrderText("buy", e.timedOut) });
+        setLookup("");
+        onTraded();
+      } else {
+        setError("Alım emri gönderilemedi");
+        setConfirmOpen(false);
+      }
+    } finally {
+      sendLock.current = false;
+      setSending(false);
     }
-    setResult({ ...describeOpenResult(r.status, r.body as never), clientOrderId: clientId.current });
+  };
+
+  const queryOrderStatus = async () => {
+    if (!uncertain || lookupBusy) return;
+    setLookupBusy(true);
+    const r = await call<Record<string, unknown>>("GET", `/api/binance/order-status?symbol=${encodeURIComponent(uncertain.symbol)}&client_id=${encodeURIComponent(uncertain.cid)}`);
+    setLookupBusy(false);
+    setLookup(describeOrderLookup(r));
     onTraded();
   };
 
@@ -118,6 +173,9 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
   };
 
   const scen = plan ? scenarioTexts({ ...plan.plan }) : null;
+  // Belirsiz kalmış bir alım varken BAŞKA niyetle (farklı sembol/tutar) onaya geçilmez: aynı alıma dönülürse yeni kimlik üretilip mükerrer alım olabilirdi.
+  const planKey = plan ? buyIntentKey(plan.symbol, plan.amount_try) : "";
+  const lockedByUncertain = !!uncertain && uncertain.key !== planKey;
   const blocked = !!plan && hasBlockingWarnings(plan.warnings);
 
   return (
@@ -206,6 +264,10 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
 
       {error && <p role="alert" className="text-sm text-neon-red">{error}</p>}
 
+      {uncertain && !confirmOpen && (
+        <UncertainOrderNotice text={uncertain.text} lookup={lookup} lookupBusy={lookupBusy} onLookup={queryOrderStatus} onDismiss={() => { setUncertain(null); setLookup(""); }} />
+      )}
+
       {plan && scen && (
         <div className="space-y-3" aria-live="polite">
           <div className="rounded-lg border border-bunker-700 p-3 text-sm text-white">
@@ -241,8 +303,9 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
           <p className="text-xs text-bunker-muted">{plan.disclaimer} Komisyon dahil tahmindir; ani fiyat hareketlerinde gerçekleşen sonuç farklı olabilir.</p>
 
           {!liveEnabled && <p className="text-sm text-white">Canlı işlem kapalı. Alım yapmak için aşağıdaki Bağlantı bölümünden aç.</p>}
+          {lockedByUncertain && <p className="text-sm text-yellow-300">Önceki alımın durumu belirsiz. Önce “Durumu sorgula” ile kontrol et ya da bildirimi kapat.</p>}
           <button
-            type="button" onClick={openConfirm} disabled={!liveEnabled || blocked}
+            type="button" onClick={openConfirm} disabled={!liveEnabled || blocked || lockedByUncertain}
             className="ui-button-primary min-h-[52px] w-full rounded-lg px-4 text-base disabled:opacity-50"
           >
             Onayla ve al
@@ -263,7 +326,7 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
       )}
 
       <ConfirmDialog
-        open={confirmOpen} title="Alımı onayla" confirmLabel="Evet, al" busy={sending}
+        open={confirmOpen} title="Alımı onayla" confirmLabel={uncertain ? "Aynı emri tekrar gönder" : "Evet, al"} busy={sending}
         onConfirm={confirmBuy} onClose={() => setConfirmOpen(false)}
       >
         {plan && (
@@ -271,6 +334,7 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
             <p><strong>{plan.symbol}</strong> için <strong>{fmtTry(plan.amount_try)}</strong> tutarında piyasa alımı yapılacak.</p>
             <p>Alım gerçekleşince otomatik emirler kurulur: {fmtPrice(plan.plan.sl_price)} altında zarar durdur, {fmtPrice(plan.plan.tp_price)} üstünde kâr al.</p>
             <p className="text-bunker-muted">Bu işlem gerçek paranla yapılır ve geri alınamaz.</p>
+            {uncertain && <UncertainOrderNotice text={uncertain.text} lookup={lookup} lookupBusy={lookupBusy} onLookup={queryOrderStatus} />}
           </>
         )}
       </ConfirmDialog>
