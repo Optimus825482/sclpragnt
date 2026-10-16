@@ -148,3 +148,40 @@ describe("suggestSymbols USDT çiftleri", () => {
   it("USDT çiftleri önerilmez (yalnız TL ile işlem)", () =>
     expect(suggestSymbols(["ADATRY", "ADAUSDT"], "ada")).toEqual(["ADA"]));
 });
+
+import { filterSmallBalances, groupTradesBySymbol } from "./tradeUi";
+
+describe("groupTradesBySymbol", () => {
+  const trades = [
+    { symbol: "ADA_TRY", price: "10", qty: "10", quoteQty: "100", time: 1, isBuyer: true },
+    { symbol: "ADA_TRY", price: "20", qty: "30", quoteQty: "600", time: 2, isBuyer: true },
+    { symbol: "ADA_TRY", price: "25", qty: "20", quoteQty: "500", time: 3, isBuyer: false, realized_pnl_try: 40 },
+    { symbol: "XRP_TRY", price: "5", qty: "4", quoteQty: "20", time: 5, isBuyer: false, realized_pnl_try: -2 },
+  ];
+  const g = groupTradesBySymbol(trades);
+  it("aynı sembol tek satır, en son işlem üstte", () => {
+    expect(g.map((x) => x.symbol)).toEqual(["XRP/TRY", "ADA/TRY"]);
+    expect(g[1].count).toBe(3);
+  });
+  it("ağırlıklı ortalama = toplam tutar / toplam adet", () => {
+    expect(g[1].buyQty).toBe(40);
+    expect(g[1].buyAvg).toBeCloseTo(17.5);   // 700 / 40, basit ortalama (15) DEĞİL
+    expect(g[1].sellAvg).toBeCloseTo(25);
+  });
+  it("K/Z toplanır, yön yoksa null", () => {
+    expect(g[1].pnl).toBe(40);
+    expect(g[0].buyAvg).toBeNull();
+    expect(groupTradesBySymbol([{ symbol: "A_TRY", price: 1, qty: 1, quoteQty: 1, time: 1, isBuyer: true }])[0].pnl).toBeNull();
+  });
+  it("boş liste ve eksik tutar", () => {
+    expect(groupTradesBySymbol([])).toEqual([]);
+    expect(groupTradesBySymbol([{ symbol: "B_TRY", price: "2", qty: "3", quoteQty: "", time: 1, isBuyer: true }])[0].buyQuote).toBe(6);
+  });
+});
+
+describe("filterSmallBalances", () => {
+  const items = [{ value_try: 10 }, { value_try: 50 }, { value_try: 300 }, { value_try: null }];
+  it("50 TL altını gizler, bilinmeyeni göstermez gizlemez", () =>
+    expect(filterSmallBalances(items, true).map((x) => x.value_try)).toEqual([50, 300, null]));
+  it("kapalıyken hepsi", () => expect(filterSmallBalances(items, false)).toHaveLength(4));
+});

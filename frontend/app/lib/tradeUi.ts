@@ -180,3 +180,60 @@ export function suggestSymbols(all: readonly string[], query: string, limit = 8)
   const contains = assets.filter((a) => !a.startsWith(q) && a.includes(q)).sort();
   return [...starts, ...contains].slice(0, limit);
 }
+
+export type TradeLike = {
+  symbol: string;
+  price: string | number;
+  qty: string | number;
+  quoteQty: string | number;
+  time: number;
+  isBuyer: boolean;
+  realized_pnl_try?: number | null;
+};
+
+export type SymbolGroup = {
+  symbol: string;
+  buyQty: number;
+  buyQuote: number;
+  buyAvg: number | null;
+  sellQty: number;
+  sellQuote: number;
+  sellAvg: number | null;
+  pnl: number | null;
+  count: number;
+  lastTime: number;
+};
+
+const num = (v: unknown) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+/** Aynı sembolün işlemlerini tek satırda toplar. Ortalama fiyat = toplam tutar / toplam adet (ağırlıklı ortalama). */
+export function groupTradesBySymbol(trades: readonly TradeLike[]): SymbolGroup[] {
+  const map = new Map<string, SymbolGroup>();
+  for (const t of trades) {
+    const key = String(t.symbol || "").replace("_", "/");
+    if (!key) continue;
+    const g = map.get(key) ?? { symbol: key, buyQty: 0, buyQuote: 0, buyAvg: null, sellQty: 0, sellQuote: 0, sellAvg: null, pnl: null, count: 0, lastTime: 0 };
+    const qty = num(t.qty);
+    const quote = num(t.quoteQty) || qty * num(t.price);
+    if (t.isBuyer) { g.buyQty += qty; g.buyQuote += quote; }
+    else { g.sellQty += qty; g.sellQuote += quote; }
+    if (t.realized_pnl_try != null && Number.isFinite(Number(t.realized_pnl_try))) g.pnl = (g.pnl ?? 0) + Number(t.realized_pnl_try);
+    g.count += 1;
+    g.lastTime = Math.max(g.lastTime, num(t.time));
+    map.set(key, g);
+  }
+  return Array.from(map.values())
+    .map((g) => ({ ...g, buyAvg: g.buyQty > 0 ? g.buyQuote / g.buyQty : null, sellAvg: g.sellQty > 0 ? g.sellQuote / g.sellQty : null }))
+    .sort((a, b) => b.lastTime - a.lastTime);
+}
+
+export const SMALL_BALANCE_TRY = 50;
+
+/** Değeri eşiğin altındaki bakiyeleri ayıklar. Değeri bilinmeyenler (fiyat yok) gizlenmez. */
+export function filterSmallBalances<T extends { value_try: number | null }>(items: readonly T[], hide: boolean, min = SMALL_BALANCE_TRY): T[] {
+  if (!hide) return [...items];
+  return items.filter((h) => h.value_try == null || !Number.isFinite(Number(h.value_try)) || Number(h.value_try) >= min);
+}

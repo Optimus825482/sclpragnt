@@ -1,7 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
 import { call, type Holding } from "../../../lib/tradeApi";
-import { errorText, fmtPct, fmtPrice, fmtQty, fmtSignedTry, fmtTry, newClientOrderId } from "../../../lib/tradeUi";
+import { SMALL_BALANCE_TRY, errorText, filterSmallBalances, fmtPct, fmtPrice, fmtQty, fmtSignedTry, fmtTry, newClientOrderId } from "../../../lib/tradeUi";
 import ConfirmDialog from "./ConfirmDialog";
 
 const CHIPS = [25, 50, 75, 100];
@@ -15,8 +15,11 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props)
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const clientId = useRef("");
+  const [hideSmall, setHideSmall] = useState(true);
 
-  const coins = holdings.filter((h) => h.asset !== "TRY" && h.total > 0);
+  const allCoins = holdings.filter((h) => h.asset !== "TRY" && h.total > 0);
+  const coins = filterSmallBalances(allCoins, hideSmall);
+  const hiddenCount = allCoins.length - coins.length;
   const qty = target ? target.free * (chip / 100) : 0;
 
   const sell = async () => {
@@ -55,9 +58,13 @@ export default function HoldingsCard({ holdings, liveEnabled, onTraded }: Props)
         <h2 id="sat-baslik" className="text-lg font-bold text-white">Elindekiler ve Sat</h2>
         <p className="text-sm text-bunker-muted">Satmak istediğin coinin yanındaki düğmeye dokun.</p>
       </div>
+      <label className="flex min-h-[44px] items-center gap-2 text-sm text-white">
+        <input type="checkbox" checked={hideSmall} onChange={(e) => setHideSmall(e.target.checked)} className="h-5 w-5" />
+        {SMALL_BALANCE_TRY} TL’den düşük bakiyeleri gizle{hideSmall && hiddenCount > 0 ? ` (${hiddenCount} gizli)` : ""}
+      </label>
       {error && <p role="alert" className="text-sm text-neon-red">{error}</p>}
       {done && <p role="status" className="text-sm text-neon-green">{done}</p>}
-      {coins.length === 0 && <p className="text-sm text-bunker-muted">Şu an elinde coin yok.</p>}
+      {coins.length === 0 && <p className="text-sm text-bunker-muted">{hiddenCount > 0 ? "Gösterilecek bakiye yok; küçük bakiyeler gizli." : "Şu an elinde coin yok."}</p>}
       <ul className="divide-y divide-bunker-800">
         {coins.map((h) => (
           <li key={h.asset} className="flex flex-wrap items-center justify-between gap-2 py-3">
