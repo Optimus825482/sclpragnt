@@ -12,7 +12,7 @@ from app import binance_tr_private as btp
 def _reset_caches():
     btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0,
                                "filters": {}})
-    btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
+    btp._open_orders_caches.clear()
     btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
     btp._balance_cache.clear()
     btp._cooldown_until = 0.0
@@ -21,7 +21,7 @@ def _reset_caches():
     yield
     btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0,
                                "filters": {}})
-    btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
+    btp._open_orders_caches.clear()
     btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
     btp._balance_cache.clear()
     btp._cooldown_until = 0.0
@@ -409,7 +409,7 @@ def test_open_orders_sweep_is_bounded_and_reports_partial(caplog):
     symbols = [f"C{i}_TRY" for i in range(btp._OPEN_ORDERS_SWEEP_MAX + 25)]
     btp._symbols_cache.update({"symbols": symbols, "underscore_by_concat": {},
                                "expires": 1e12, "filters": {}})
-    btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
+    btp._open_orders_caches.clear()
     seen = []
 
     def fake_signed(method, path, params, api_key, api_secret, **kwargs):
@@ -430,7 +430,7 @@ def test_open_orders_sweep_reports_symbol_failures(caplog):
     """#33: `except Exception: continue` sessizce eksik liste üretiyordu."""
     btp._symbols_cache.update({"symbols": ["A_TRY", "B_TRY"], "underscore_by_concat": {},
                                "expires": 1e12, "filters": {}})
-    btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
+    btp._open_orders_caches.clear()
 
     def fake_signed(method, path, params, api_key, api_secret, **kwargs):
         if "symbol" not in params:
