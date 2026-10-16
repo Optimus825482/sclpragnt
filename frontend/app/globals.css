@@ -617,3 +617,13 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 @keyframes pband-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .pband-skeleton { animation: none; } }
 @media (max-width: 768px) { .portfolio-band { display: none; } }
+
+/* 2026-10-17 (basit arayüz): büyük boy portföy bandı — menüyle aynı içerik genişliğine hizalı,
+   daha okunur değerler. UserShell'deki yapışkan blokta UserNav'ın altında durur. */
+.pband-lg .portfolio-band { min-height: 3.6rem; gap: .75rem; padding: .55rem max(1.5rem, calc((100% - 64rem) / 2 + 1rem)); background: rgb(8 12 20 / .96); box-shadow: 0 6px 16px rgb(0 0 0 / .25); }
+.pband-lg .pband-source { font-size: .68rem; padding: .32rem .6rem; }
+.pband-lg .pband-tile { gap: .3rem; padding: .3rem .9rem; min-width: 9.5rem; }
+.pband-lg .pband-label { font-size: .62rem; }
+.pband-lg .pband-value { font-size: 1.08rem; }
+.pband-lg .pband-sub { font-size: .8rem; }
+.pband-lg .pband-error { font-size: .8rem; }
