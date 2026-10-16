@@ -1580,6 +1580,18 @@ async def _broadcast_trade(data: dict):
 # ---------------------------------------------------------------------------
 # Settings API
 # ---------------------------------------------------------------------------
+def _allowed_modes_from_config() -> list[str]:
+    """2026-10-16 (tarama güncellemesi): `AUTO_PAPER_ALLOWED_MODES` → liste.
+
+    Çağrı anında okunur (test/çalışma anı override'ı). Virgüllü metin ya da
+    yinelenebilir; boş girdiler atılır, sıra ve tekillik korunur. Boş sonuç =
+    TÜM modlar (mod kapısı `allowed_modes` boşken herkesi geçirir).
+    """
+    raw = getattr(config, "AUTO_PAPER_ALLOWED_MODES", "trend_devam")
+    parts = raw.split(",") if isinstance(raw, str) else list(raw or [])
+    return list(dict.fromkeys(str(p).strip() for p in parts if str(p).strip()))[:20]
+
+
 async def get_default_settings() -> dict:
     return {
         "enabled": True,
@@ -1653,7 +1665,14 @@ async def get_default_settings() -> dict:
         # DIKKAT (migration): mevcut DB `auto_paper_settings` satiri bu
         # varsayilani EZER (get_auto_paper_settings DB-over-defaults birlestirir).
         # Kayitli bir liste tek seferlik duzeltilmezse eski davranis surer.
-        "allowed_modes": ["trend_devam", "unified"],
+        #
+        # 2026-10-16 (tarama güncellemesi): sabit `["trend_devam", "unified"]`
+        # yerine env `AUTO_PAPER_ALLOWED_MODES` (varsayılan "trend_devam").
+        # Kanıt (7 günlük bildirim ölçümü, 279 ölçülebilir, 5m mum): trend_devam
+        # n=150 hit60 %52.7 net 0.00; unified n=41 hit60 %19.5 (kayıtlı hedef
+        # isabeti %3.7); notr net −1.09; v_donusu 0/10 → `unified` listeden
+        # çıkar. Boş env = TÜM modlar (eski davranış). Kayıt: docs/DENEY_KAYDI.md.
+        "allowed_modes": _allowed_modes_from_config(),
         # BILDIRIM DEDUP (2026-10-07). Ayni sembolde kisa sure once giris
         # yapildiysa tekrar girmez (0 = kapali). Ayni sinyal 5 dakikada birden
         # fazla kanaldan geliyor; her biri ayri pozisyon aciyordu.

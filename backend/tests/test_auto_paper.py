@@ -926,7 +926,9 @@ class AutoPaperModeFilterTests(unittest.TestCase):
         defaults = asyncio.run(get_default_settings())
         self.assertIn("allowed_modes", defaults)
         self.assertIn("dedup_cooldown_minutes", defaults)
-        self.assertEqual(defaults["allowed_modes"], ["trend_devam", "unified"])
+        # 2026-10-16 (tarama güncellemesi): `unified` çıkarıldı — 7 günlük bildirim
+        # ölçümünde hit60 %19.5 (trend_devam %52.7); AUTO_PAPER_ALLOWED_MODES env.
+        self.assertEqual(defaults["allowed_modes"], ["trend_devam"])
         self.assertEqual(defaults["dedup_cooldown_minutes"], 60.0)
 
 

@@ -531,6 +531,38 @@ class Config:
     COMBINED_RISING_START_HOUR = max(0, min(23, int(os.getenv("COMBINED_RISING_START_HOUR", "0"))))
     COMBINED_RISING_END_HOUR = max(0, min(23, int(os.getenv("COMBINED_RISING_END_HOUR", "23"))))
     # ------------------------------------------------------------------
+    # 2026-10-16 (tarama güncellemesi): KANITA DAYALI LİSTE POLİTİKASI
+    # Kaynak: docs/BACKTEST_RAPORU_7G_2026-10-16.md §2.5/§3 ve
+    # docs/RADAR_TARAMA_ANALIZI_2026-10-15.md §3 (14k+ journal satırı).
+    # Üç anahtar da `gate_candidate` / `_combined_quality_score` içinde ÇAĞRI
+    # ANINDA okunur (getattr(config, ...)); kayıt: docs/DENEY_KAYDI.md.
+    # ------------------------------------------------------------------
+    # (1) Kaynak AİLESİ kara listesi (virgüllü). Adayın TÜM kaynak etiketleri
+    # bu kümedeyse `gate_candidate` "aile devre dışı: ..." ile bloklar (satır
+    # UI'da `blocked_by` ile gri kalır; gönderilen listeye / bildirime girmez).
+    # Kanıt: short_squeeze n=9166 hit %0.1 lift 0.01; snapback n=347 lift 0.00.
+    # `fusion` (n=35, lift 0.00 ama GA geniş) BİLEREK dahil değil. Velocity /
+    # jump / macd_mtf da taşıyan aday BLOKLANMAZ. Boş değer = kara liste kapalı.
+    RADAR_DISABLED_SOURCE_FAMILIES = os.getenv(
+        "RADAR_DISABLED_SOURCE_FAMILIES", "short_squeeze,snapback").strip()
+    # (2) Liste SKOR TABANI. Alan: journal `unified_candidate_outcomes.scan_score`
+    # = `unified_scan._combined_quality_score` KALİTE puanı (0-99; panel 0-100
+    # DEĞİL). Ölçüm: scan_score < 70 → lift 0.21; 85+ → lift 3.5-4.4.
+    # `COMBINED_RISING_MIN_SCORE` (kullanıcı ayarı, vars. 10) AYNI alandadır;
+    # etkin taban max(ikisi) — bu ölçülen taban, öteki kullanıcı ayarı. 0 = kapalı.
+    # Varsayılan KAPALI (0): "<70 → lift 0.21" ölçümü büyük ölçüde short_squeeze
+    # satırlarından (n=9166, ufuk 0) geliyor; 7 günlük bildirim ölçümünde tek kaynaklı
+    # velocity (kalite tavanı ~66) en iyi aile (hit60 %42.5). Kara liste devreye
+    # girdikten 14 gün sonra lift yeniden ölçülmeden taban açılmaz (DENEY_KAYDI).
+    RADAR_LIST_MIN_SCAN_SCORE = max(0.0, float(
+        os.getenv("RADAR_LIST_MIN_SCAN_SCORE", "").strip() or "0.0"))
+    # (3) jump+velocity UYUM BONUSU: kaynaklar HEM `jump` HEM `velocity` içeriyorsa
+    # kalite puanına eklenir (tavan 99 korunur). Replay'de tek pozitif alt küme
+    # (n≈190, isabet ~%65, ort. net +0.13) — HİPOTEZ düzeyi, n küçük → varsayılan
+    # 0.0 (KAPALI). Açmak için ör. 8.0.
+    RADAR_JUMP_VELOCITY_BONUS = max(0.0, float(
+        os.getenv("RADAR_JUMP_VELOCITY_BONUS", "").strip() or "0"))
+    # ------------------------------------------------------------------
     # KOMBİNE PAPER PORTFÖY (2026-10-11 kullanıcı kararı) — WhatsApp'a gönderilen
     # kombine liste adayları AYRI bir 5.000 TL sanal portföyde OTONOM paper
     # işlemle açılır. Mevcut otonom paper'dan BAĞIMSIZ (kendi cüzdanı, kendi
@@ -1146,6 +1178,15 @@ class Config:
     # kapanislari ort -%1,08 uretiyordu (bkz. teshis §2); sinyalin gercek
     # yukselisine nefes payi birakmak zarari kesiyor, asiri tasima da yok.
     AUTO_PAPER_MAX_HOLD_MINUTES = float(os.getenv("AUTO_PAPER_MAX_HOLD_MINUTES", "120.0"))
+    # 2026-10-16 (tarama güncellemesi): otonom paper MOD listesi env'den
+    # (virgüllü). Eski gömülü varsayılan `trend_devam,unified` idi. 7 günlük
+    # bildirim ölçümü (279 ölçülebilir bildirim, 5m mum): trend_devam n=150
+    # hit60 %52.7 net 0.00; unified n=41 hit60 %19.5 (kayıtlı hedef isabeti
+    # %3.7); notr net −1.09 (stop %18); v_donusu 0/10 → yalnız `trend_devam`.
+    # Boş değer = TÜM modlar (eski davranış). DİKKAT: DB `auto_paper_settings`
+    # kayıtlı listesi bu varsayılanı EZER (get_auto_paper_settings). Kayıt:
+    # docs/DENEY_KAYDI.md.
+    AUTO_PAPER_ALLOWED_MODES = os.getenv("AUTO_PAPER_ALLOWED_MODES", "trend_devam").strip()
     # 2026-10-15 (denetim düzeltmesi, madde 14): auto_paper içine gömülü sabitler
     # tek config kaynağına taşındı. Varsayılanlar ESKİ gömülü değerlerle aynı —
     # davranış değişmedi, yalnız env ile ayarlanabilir oldu.
