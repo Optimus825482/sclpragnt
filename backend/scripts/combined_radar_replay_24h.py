@@ -1402,11 +1402,11 @@ def main() -> None:
     parser.add_argument("--sweep", action="store_true",
                         help="sabit TP/SL ızgarasını aynı pencerelerde tara (kenar var mı?)")
     parser.add_argument("--sweep-targets", type=str, default="0.5,0.75,1,1.5,2,3,4,6",
-                        help="tarama hedef% listesi (virgülle)")
+                        help="tarama hedef%% listesi (virgülle)")
     parser.add_argument("--sweep-sls", type=str, default="0.5,0.75,1,1.5,2,3",
-                        help="tarama stop% listesi (virgülle)")
+                        help="tarama stop%% listesi (virgülle)")
     parser.add_argument("--sweep-gaps", type=str, default="0.3,0.6,1.0,1.5",
-                        help="tarama ratchet (breakeven gap) % listesi — MFE koruma boyutu")
+                        help="tarama ratchet (breakeven gap) %% listesi — MFE koruma boyutu")
     args = parser.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()] or None

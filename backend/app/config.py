@@ -985,6 +985,10 @@ class Config:
     # Binance TR spot komisyonu (Bronz/Standart taker %0.15) - işlem başına
     COMMISSION_PCT = float(os.getenv("COMMISSION_PCT", "0.0015"))
     ESTIMATED_SLIPPAGE_PCT = 0.00025
+    # 2026-10-16 (backtest onarımı): scripts/run_portfolio_backtest.py tam (gidiş-dönüş
+    # değil, tek seferlik) spread'i KESİR olarak okur; her dolumda spread/2 uygulanır.
+    # Eski varsayım %0,1 (docs/AUDIT_FIX_REPORT_2026-08-25). Yalnız araştırma/backtest.
+    BACKTEST_ASSUMED_SPREAD_PCT = float(os.getenv("BACKTEST_ASSUMED_SPREAD_PCT", "0.001"))
     MIN_EXPECTED_NET_PNL_TRY = 0.5
     # LLM paper-entry gate: an entry is blocked when the live top-of-book spread
     # exceeds this percent (thin-orderbook protection for low-price TRY pairs).

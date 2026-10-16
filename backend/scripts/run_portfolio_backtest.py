@@ -20,6 +20,18 @@ from app.binance_tr_public import historical_klines, orderbook, ticker_24h, trad
 from app.config import config
 from app.technical_analysis import _adx, _bollinger, _cci, _ema, _mfi, _price_action_setup, calculate_snapshot
 
+# 2026-10-16 (backtest onarımı): BB-MFI sabitleri 2026-09-04'te config.py'den
+# kaldırıldı. Bu araştırma betiği yalnızca eksik olanları (Pine v3 profiliyle
+# uyumlu varsayılanlarla) yerinde tamamlar; config.py'ye ve canlı yola dokunmaz.
+for _name, _value in {
+    "ACTIVE_STRATEGY": "BB_MFI_MEAN_REVERSION",
+    "BB_MFI_BB_PERIOD": 21, "BB_MFI_BB_STD_DEV": 2.0, "BB_MFI_MFI_PERIOD": 16, "BB_MFI_RSI_PERIOD": 13,
+    "BB_MFI_STOP_LOSS_PCT": 0.08882, "BB_MFI_TAKE_PROFIT_PCT": 0.02317,
+    "SYMBOL_ACTIVITY_MAX_SPREAD_PCT": 0.30,
+}.items():
+    if not hasattr(config, _name):
+        setattr(config, _name, _value)
+
 
 def iso(ts):
     return datetime.fromtimestamp(ts, timezone.utc).isoformat()
@@ -531,7 +543,7 @@ async def load_market(symbols, days, data_source, start_ts, end_ts, interval="5m
 
 def feature_snapshot(analyzer, window):
     closes, highs, lows, volumes = (window[key] for key in ("closes", "highs", "lows", "volumes"))
-    bb = analyzer.calculate_bollinger_bands(closes, config.BB_MFI_BB_PERIOD, config.BB_MFI_BB_STD_DEV)
+    bb = _bollinger(closes, config.BB_MFI_BB_PERIOD, config.BB_MFI_BB_STD_DEV)
     return {
         "close": closes[-1],
         "bb_lower": bb["lower"] if bb else None,
@@ -561,7 +573,7 @@ def strategy_decision(analyzer, window, symbol, version):
     minimum = max(profile["bb_period"], profile.get("mfi_period", 0) + 1, profile["rsi_period"] + 1)
     if min(len(closes), len(highs), len(lows), len(volumes)) < minimum:
         return None
-    bb = analyzer.calculate_bollinger_bands(closes, profile["bb_period"], profile["bb_std"])
+    bb = _bollinger(closes, profile["bb_period"], profile["bb_std"])
     rsi = analyzer.calculate_rsi(closes, profile["rsi_period"])
     if not bb or rsi is None:
         return None
@@ -677,7 +689,7 @@ def replay_features(analyzer, window, version):
     if not profile:
         return feature_snapshot(analyzer, window)
     closes, highs, lows, volumes = (window[key] for key in ("closes", "highs", "lows", "volumes"))
-    bb = analyzer.calculate_bollinger_bands(closes, profile["bb_period"], profile["bb_std"])
+    bb = _bollinger(closes, profile["bb_period"], profile["bb_std"])
     return {"close": closes[-1], "bb_lower": bb["lower"] if bb else None,
             "bb_upper": bb["upper"] if bb else None,
             "rsi": analyzer.calculate_rsi(closes, profile["rsi_period"]),
