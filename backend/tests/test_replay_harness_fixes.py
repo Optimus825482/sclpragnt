@@ -176,3 +176,43 @@ def test_reference_profiles_pass_validation(rpb):
 def test_module_docstring_and_warning_mark_it_as_reference(rpb):
     assert "REFERANS" in (rpb.__doc__ or "")
     assert "ÖLÇMEZ" in rpb._REFERENCE_WARNING
+
+
+# ---------------------------------------------------------------- (4) calibrate_combined_paper
+@pytest.fixture
+def ccp():
+    return importlib.import_module("calibrate_combined_paper")
+
+
+def test_calibrate_pg_bars_reads_historical_candles(ccp, monkeypatch):
+    rows = [("aaatry", 2_000_000, 12.0, 8.0, 10.0), ("AAATRY", 2_300_000, 13.0, 9.0, 0.0)]
+
+    class _Cur:
+        def fetchall(self):
+            return rows
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params=None):
+            _Conn.last = (sql, params)
+            return _Cur()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(connect=lambda *a, **k: _Conn()))
+    out = ccp._load_pg_bars({"AAATRY"}, 1_000.0, 3_000.0)
+    sql, params = _Conn.last
+    assert "historical_candles" in sql and "timeframe='5m'" in sql
+    assert params == (["AAATRY"], 1_000_000, 3_000_000)
+    assert out == {"AAATRY": [{"open_time": 2_000.0, "high": 12.0, "low": 8.0, "close": 10.0}]}
+
+
+def test_calibrate_pg_bars_without_url_or_symbols_is_empty(ccp, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert ccp._load_pg_bars({"AAATRY"}, 0.0, 1.0) == {}
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    assert ccp._load_pg_bars(set(), 0.0, 1.0) == {}
