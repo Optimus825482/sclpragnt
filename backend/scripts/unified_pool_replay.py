@@ -45,7 +45,22 @@ _TAKER_COST = 0.35
 _MAKER_COST = 0.10
 
 
-def _load_candidates(days: float, db_url: str) -> list[dict]:
+# 2026-10-16 (rescan harness): aday kaynağı filtresi. Canlı journal (vel-...) ile
+# çevrimdışı yeniden tarama (rescan:...) aynı tabloda; varsayılan 'live' eski davranış.
+_CANDIDATE_SOURCE_SQL = {
+    "live": "AND candidate_id NOT LIKE 'rescan:%%' ",
+    "rescan": "AND candidate_id LIKE 'rescan:%%' ",
+    "all": "",
+}
+
+
+def _candidate_source_sql(source: str) -> str:
+    if source not in _CANDIDATE_SOURCE_SQL:
+        raise ValueError(f"bilinmeyen aday kaynağı: {source!r}")
+    return _CANDIDATE_SOURCE_SQL[source]
+
+
+def _load_candidates(days: float, db_url: str, source: str = "live") -> list[dict]:
     import psycopg
     since = time.time() - days * 86400.0
     out = []
@@ -53,7 +68,9 @@ def _load_candidates(days: float, db_url: str) -> list[dict]:
         for ts, sym, px, tgt, profile, ret3, atr in conn.execute(
             "SELECT created_at, symbol, price, target_pct, candidate_id, ret3_pct, atr_pct "
             "FROM velocity_candidates "
-            "WHERE passes=true AND created_at>=%s AND price>0 ORDER BY created_at", (since,)):
+            "WHERE passes=true AND created_at>=%s AND price>0 "
+            + _candidate_source_sql(source) +
+            "ORDER BY created_at", (since,)):
             try:
                 from app.routers.velocity import _velocity_horizon_from_candidate_id as _h
                 out.append({"ts": float(ts), "sym": str(sym).upper(), "price": float(px),
@@ -237,6 +254,8 @@ def main() -> int:
     ap.add_argument("--db-url", default=os.getenv("DATABASE_URL", "").strip())
     ap.add_argument("--out", default="work/unified_pool_replay.json")
     # 2026-10-16 (harness onarımı): mum kaynağı seçimi; auto = sqlite → postgres → REST.
+    ap.add_argument("--candidates-source", choices=("live", "rescan", "all"), default="live",
+                    help="aday kaynağı: live (vel-... journal), rescan (çevrimdışı yeniden tarama), all")
     ap.add_argument("--price-source", choices=_PRICE_SOURCES, default="auto",
                     help="5m mum kaynağı: auto (sqlite→postgres→rest), sqlite, postgres, rest")
     # 2026-10-15 (radar iyileştirme): zaman-durdurma ölçümü. Verilmezse (None) eski davranış.
@@ -248,7 +267,8 @@ def main() -> int:
     if not args.db_url:
         sys.exit("HATA: --db-url verilmedi ve DATABASE_URL ortam değişkeni tanımlı değil")
     print("=== BİRLEŞİK HAVUZ REPLAY (Aşama B) ===")
-    cands = _load_candidates(args.days, args.db_url)
+    cands = _load_candidates(args.days, args.db_url, source=args.candidates_source)
+    print(f"  aday kaynağı: {args.candidates_source}")
     print(f"  aday (passes=true): {len(cands)}")
     if not cands:
         print("aday yok"); return 1

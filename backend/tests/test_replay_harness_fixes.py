@@ -216,3 +216,22 @@ def test_calibrate_pg_bars_without_url_or_symbols_is_empty(ccp, monkeypatch):
     assert ccp._load_pg_bars({"AAATRY"}, 0.0, 1.0) == {}
     monkeypatch.setenv("DATABASE_URL", "postgresql://x")
     assert ccp._load_pg_bars(set(), 0.0, 1.0) == {}
+
+
+
+# ---------------------------------------------------------------- (5) rescan entegrasyonu
+def test_horizon_parser_reads_rescan_ids():
+    from app.routers.velocity import _velocity_horizon_from_candidate_id as h
+    assert h("rescan:BTCTRY:1760000000000:15") == 15
+    assert h("rescan:BTCTRY:1760000000000:5") == 5
+    assert h("rescan:BTCTRY:1760000000000:999") == 5
+    assert h("vel-15dk-%3-abc") == 15
+
+
+def test_candidate_source_sql_filters(upr, ccp):
+    for mod in (upr, ccp):
+        assert "NOT LIKE 'rescan:%%'" in mod._candidate_source_sql("live")
+        assert mod._candidate_source_sql("rescan").strip().startswith("AND candidate_id LIKE")
+        assert mod._candidate_source_sql("all") == ""
+        with pytest.raises(ValueError):
+            mod._candidate_source_sql("x")

@@ -57,7 +57,22 @@ DEFAULT_CFG = {"sl_pct": 1.0, "trail_trigger_pct": 2.0, "trail_gap_pct": 1.0,
                "no_profit_min": 30.0, "max_hold_min": 120.0, "tp_base": 3.0}
 
 
-def _load_candidates(hours: float) -> list[dict]:
+# 2026-10-16 (rescan harness): aday kaynağı filtresi. Canlı journal (vel-...) ile
+# çevrimdışı yeniden tarama (rescan:...) aynı tabloda; varsayılan 'live' eski davranış.
+_CANDIDATE_SOURCE_SQL = {
+    "live": "AND candidate_id NOT LIKE 'rescan:%%' ",
+    "rescan": "AND candidate_id LIKE 'rescan:%%' ",
+    "all": "",
+}
+
+
+def _candidate_source_sql(source: str) -> str:
+    if source not in _CANDIDATE_SOURCE_SQL:
+        raise ValueError(f"bilinmeyen aday kaynağı: {source!r}")
+    return _CANDIDATE_SOURCE_SQL[source]
+
+
+def _load_candidates(hours: float, source: str = "live") -> list[dict]:
     """PG'den passes=true adayları çek (fiyat+zaman+hedef+skor+rank).
 
     Giriş taraması (`--entry-scan`) skor/rank/atr alanlarını da kullanır; bu
@@ -70,7 +85,9 @@ def _load_candidates(hours: float) -> list[dict]:
         cur = conn.execute(
             "SELECT created_at, symbol, price, target_pct, velocity_score, atr_pct, rank "
             "FROM velocity_candidates "
-            "WHERE passes=true AND created_at >= %s AND price > 0 ORDER BY created_at",
+            "WHERE passes=true AND created_at >= %s AND price > 0 "
+            + _candidate_source_sql(source) +
+            "ORDER BY created_at",
             (since,))
         for ts, sym, px, tgt, score, atr, rank in cur.fetchall():
             try:
@@ -312,6 +329,8 @@ async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=3600.0)
     ap.add_argument("--fetch", action="store_true", help="eksikleri REST'ten çek")
+    ap.add_argument("--candidates-source", choices=("live", "rescan", "all"), default="live",
+                    help="aday kaynağı: live (vel-... journal), rescan (çevrimdışı yeniden tarama), all")
     ap.add_argument("--entry-scan", action="store_true",
                     help="giriş seçici taraması (skor/rank/ATR/top-N) — çıkış grid'ini atlar")
     ap.add_argument("--commission", type=float, default=0.0015)
@@ -328,7 +347,8 @@ async def main() -> int:
                 "time_stop_min_profit_pct": args.time_stop_min_profit_pct}
 
     print("=== OTONOM PAPER KALİBRASYON ===")
-    cands = _load_candidates(args.hours)
+    cands = _load_candidates(args.hours, source=args.candidates_source)
+    print(f"aday kaynağı: {args.candidates_source}")
     print(f"aday (passes=true): {len(cands)}")
     if len(cands) < 100:
         print("YETERSİZ VERİ"); return 1
