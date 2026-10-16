@@ -10,10 +10,12 @@ function KpiCard({ title, data }: { title: string; data: KpiData }) {
   const evaluated = Number(data?.evaluated ?? 0);
   const rate = data?.success_rate;
   const hasRate = evaluated > 0 && rate != null && Number.isFinite(Number(rate));
+  // Oran → renk: ≥%50 yeşil, ≥%30 amber, altı kırmızı; ölçüm yoksa nötr.
+  const tone = !hasRate ? "wait" : Number(rate) >= 50 ? "good" : Number(rate) >= 30 ? "warn" : "bad";
   return (
-    <div className="card p-4">
-      <p className="text-sm text-bunker-muted">{title}</p>
-      <p className="mt-1 text-3xl font-semibold text-white">{hasRate ? `%${Number(rate).toFixed(0)}` : "—"}</p>
+    <div className={`card u-card-${tone} p-4`}>
+      <p className="text-sm font-medium text-bunker-muted">{title}</p>
+      <p className={`mt-1 text-3xl font-bold u-num-${tone}`}>{hasRate ? `%${Number(rate).toFixed(0)}` : "—"}</p>
       <p className="mt-1 text-sm text-bunker-muted">
         {evaluated === 0
           ? "Henüz ölçülmedi"

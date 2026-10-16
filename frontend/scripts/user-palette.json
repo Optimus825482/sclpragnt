@@ -1,0 +1,16 @@
+{
+  "_not": "Kullanıcı (light) arayüzü renkleri — TEK kaynak. node scripts/gen-light-theme.mjs bunu CSS'e çevirir; app/lib/userPalette.test.ts kontrastı doğrular (WCAG AA).",
+  "page": "#eef2fb",
+  "card": "#ffffff",
+  "ink": "#0b1220",
+  "muted": "#475569",
+  "line": "#d5dcec",
+  "line2": "#b9c4dc",
+  "brand": "#4338ca",
+  "brandText": "#ffffff",
+  "good": { "fg": "#065f46", "bg": "#d1fae5", "solid": "#046c4e" },
+  "warn": { "fg": "#92400e", "bg": "#fef3c7", "solid": "#a14e08" },
+  "bad": { "fg": "#991b1b", "bg": "#fee2e2", "solid": "#b91c1c" },
+  "info": { "fg": "#1e40af", "bg": "#dbeafe", "solid": "#1d4ed8" },
+  "wait": { "fg": "#334155", "bg": "#e2e8f0", "solid": "#475569" }
+}

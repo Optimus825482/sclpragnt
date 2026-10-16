@@ -20,9 +20,9 @@ export default function RegimeBanner() {
   const n = regimeNotice(regime);
   if (!n.active) return null;
   return (
-    <div role="status" className="rounded-xl border border-neon-yellow/40 bg-neon-yellow/10 p-3 text-sm">
-      <p className="font-semibold text-neon-yellow">{n.title}</p>
-      <p className="mt-1 text-bunker-muted">{n.detail}</p>
+    <div role="status" className="card u-card-warn p-3 text-sm">
+      <p className="font-bold u-num-warn">{n.title}</p>
+      <p className="mt-1 text-white">{n.detail}</p>
     </div>
   );
 }

@@ -3,11 +3,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../app", import.meta.url));
+const PALETTE = JSON.parse(readFileSync(new URL("./user-palette.json", import.meta.url), "utf8"));
+const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
 const MAP = {
-  "bunker-950": [245, 247, 251], "bunker-900": [255, 255, 255], "bunker-800": [227, 232, 242],
-  "bunker-700": [203, 211, 227], "bunker-600": [139, 148, 173], "bunker-muted": [91, 100, 120],
-  "neon-green": [15, 138, 78], "neon-greenHover": [11, 110, 62], "neon-red": [200, 40, 40],
-  "neon-yellow": [166, 110, 8], white: [15, 23, 42], black: [15, 23, 42],
+  "bunker-950": rgb(PALETTE.page), "bunker-900": rgb(PALETTE.card), "bunker-800": rgb(PALETTE.line),
+  "bunker-700": rgb(PALETTE.line2), "bunker-600": rgb(PALETTE.muted), "bunker-muted": rgb(PALETTE.muted),
+  "neon-green": rgb(PALETTE.good.solid), "neon-greenHover": rgb(PALETTE.good.fg), "neon-red": rgb(PALETTE.bad.solid),
+  "neon-yellow": rgb(PALETTE.warn.solid), white: rgb(PALETTE.ink), black: rgb(PALETTE.ink),
 };
 const PROPS = { bg: "background-color", text: "color", border: "border-color", divide: "border-color" };
 const re = /\b(bg|text|border|divide)-(bunker-(?:950|900|800|700|600|muted)|neon-(?:greenHover|green|red|yellow)|white|black)(?:\/(\d{1,3}))?(?![\w-])/g;
@@ -61,3 +63,27 @@ for (const [cls, rgb] of [...extra].sort()) {
 const header = "/* ÜRETİLDİ: node scripts/gen-light-theme.mjs — elle düzenleme yapma; elle kurallar user-theme.manual.css'te. */\n";
 writeFileSync(join(ROOT, "user-theme.generated.css"), header + rules.join("\n") + "\n");
 console.log(`${rules.length} kural üretildi`);
+
+// ---- Anlamsal sınıflar (rozet, sayı, çubuk, düğme) + CSS değişkenleri: palet JSON'undan ----
+const tones = ["good", "warn", "bad", "info", "wait"];
+const vars = [`--u-page:${PALETTE.page}`, `--u-card:${PALETTE.card}`, `--u-ink:${PALETTE.ink}`, `--u-muted:${PALETTE.muted}`,
+  `--u-line:${PALETTE.line}`, `--u-brand:${PALETTE.brand}`, `--u-brand-text:${PALETTE.brandText}`,
+  ...tones.flatMap((t) => [`--u-${t}-fg:${PALETTE[t].fg}`, `--u-${t}-bg:${PALETTE[t].bg}`, `--u-${t}:${PALETTE[t].solid}`])];
+const sem = [
+  `[data-theme="light"]{${vars.join(";")}}`,
+  `[data-theme="light"] .u-chip{display:inline-flex;align-items:center;gap:.3rem;padding:.2rem .65rem;border-radius:999px;font-size:.75rem;font-weight:700;line-height:1.2;white-space:nowrap}`,
+  ...tones.flatMap((t) => [
+    `[data-theme="light"] .u-chip-${t}{background:${PALETTE[t].bg};color:${PALETTE[t].fg}}`,
+    `[data-theme="light"] .u-num-${t}{color:${PALETTE[t].solid}}`,
+    `[data-theme="light"] .u-bar-${t}{background:${PALETTE[t].solid}}`,
+    `[data-theme="light"] .card.u-card-${t}{border-top:4px solid ${PALETTE[t].solid};background:linear-gradient(180deg,${PALETTE[t].bg} 0,${PALETTE.card} 70%)}`,
+  ]),
+  `[data-theme="light"] .u-btn-brand{background:${PALETTE.brand};color:${PALETTE.brandText};font-weight:700}`,
+  `[data-theme="light"] .u-chip-brand{background:${PALETTE.brand};color:${PALETTE.brandText}}`,
+  `[data-theme="light"] .u-seg-on{background:${PALETTE.brand};color:${PALETTE.brandText}}`,
+  `[data-theme="light"] .u-seg-off{background:${PALETTE.card};color:${PALETTE.ink};border:1px solid ${PALETTE.line}}`,
+];
+writeFileSync(join(ROOT, "user-palette.generated.css"),
+  "/* ÜRETİLDİ: node scripts/gen-light-theme.mjs (kaynak: scripts/user-palette.json) */" + String.fromCharCode(10)
+  + sem.join(String.fromCharCode(10)) + String.fromCharCode(10));
+console.log(`palet CSS: ${sem.length} kural`);

@@ -21,7 +21,7 @@ export default function UserBottomNav({ hidden }: { hidden: string[] }) {
               href={m.href}
               aria-current={isActive(m.href) ? "page" : undefined}
               className={`touch-target flex min-h-[44px] flex-col items-center justify-center text-xs ${
-                isActive(m.href) ? "text-neon-green" : "text-bunker-muted"
+                isActive(m.href) ? "font-bold text-[color:var(--u-brand)]" : "text-bunker-muted"
               }`}
             >
               <span aria-hidden className="text-lg">{m.icon}</span>

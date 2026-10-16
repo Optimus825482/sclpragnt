@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { useIsUserView } from "../lib/adminView";
+import UserSignalReport from "../components/user/UserSignalReport";
 import SymbolLink from "../components/SymbolLink";
 import MacdMtfTab from "./MacdMtfTab";
 import LlmVsRulesTab from "./LlmVsRulesTab";
@@ -1748,7 +1750,7 @@ function SelfLearningTab() {
 /* ==========================================================================
    ANA SAYFA (REPORTS PAGE)
    ========================================================================== */
-export default function ReportsPage() {
+function AdminReportsPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
   const [tab, setTab] = useState<"overview" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "daily_rising" | "combined_paper" | "advanced">("overview");
@@ -1928,4 +1930,10 @@ export default function ReportsPage() {
       )}
     </main>
   );
+}
+
+/** Kullanıcılar (ve Basit görünümdeki admin) yalnız ayrıntılı sinyal başarı raporunu görür; yönetici raporları Gelişmiş görünümde. */
+export default function ReportsPage() {
+  const userView = useIsUserView();
+  return userView ? <UserSignalReport /> : <AdminReportsPage />;
 }
