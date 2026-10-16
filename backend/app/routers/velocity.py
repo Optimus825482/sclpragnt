@@ -229,6 +229,12 @@ def _velocity_ml_feature_dict(closes, highs, lows, vols):
 def _velocity_horizon_from_candidate_id(candidate_id: str) -> int:
     """'vel-5dk-%2-...' / 'vel-15dk-%3-...' / 'vel-30dk-%1-...' adından ufuk dakikasını çıkarır."""
     cid = str(candidate_id or "")
+    # 2026-10-16 (rescan harness): 'rescan:{SYM}:{tick_ms}:{h}' → son parça ufuk dakikası.
+    if cid.startswith("rescan:"):
+        tail = cid.rsplit(":", 1)[-1]
+        if tail.isdigit() and int(tail) in VELOCITY_PROFILES:
+            return int(tail)
+        return 5
     for h, prof in VELOCITY_PROFILES.items():
         if cid.startswith(f"vel-{prof['label']}"):
             return int(h)

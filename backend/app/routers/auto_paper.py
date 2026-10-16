@@ -54,6 +54,29 @@ _SL_COOLDOWN_MINUTES_DEFAULT = float(getattr(config, "AUTO_PAPER_SL_COOLDOWN_MIN
 _LOOP_STARTUP_DELAY_SEC = float(getattr(config, "AUTO_PAPER_LOOP_STARTUP_DELAY_SEC", 30.0))
 #: Yalnız config'de AUTO_PAPER_TRAILING_GAP_PCT yoksa kullanılan taban (canlı config 1.0).
 _TRAILING_GAP_FALLBACK_PCT = 0.3
+
+
+def _exit_defaults() -> dict:
+    """2026-10-16 (maliyet/çıkış): SL / trailing / TP-primary VARSAYILANLARI (profil uygulanmış).
+
+    `config.auto_paper_exit_defaults()` sarmalayıcısı — `AUTO_PAPER_EXIT_PROFILE`
+    (`mevcut` | `kalibre`) yalnız varsayılanları değiştirir. Öncelik: DB'ye
+    kaydedilmiş admin ayarı (`settings[...]`) > profil > config/env sabiti.
+    Config eski ise (fonksiyon yok) sabitlere düşer; davranış değişmez.
+    """
+    fn = getattr(config, "auto_paper_exit_defaults", None)
+    if callable(fn):
+        try:
+            return dict(fn())
+        except Exception:  # noqa: BLE001 — profil çözümlenemezse eski sabitler
+            logger.debug("auto_paper: çıkış profili çözümlenemedi, sabitlere düşüldü", exc_info=True)
+    return {
+        "stop_loss_pct": float(config.AUTO_PAPER_SL_PCT_DEFAULT),
+        "trailing_trigger_pct": float(config.AUTO_PAPER_TRAILING_TRIGGER_PCT),
+        "trailing_gap_pct": float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", _TRAILING_GAP_FALLBACK_PCT)),
+        "tp_primary_exit_enabled": bool(getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", False)),
+        "profile": "mevcut",
+    }
 #: Madde 1: REST de başarısızken zorla kapanış için max_hold çarpanı.
 _STALE_FORCE_CLOSE_FACTOR = float(getattr(config, "AUTO_PAPER_STALE_FORCE_CLOSE_FACTOR", 1.5))
 # 2026-10-15 (radar iyileştirme): zaman-durdurma (time-stop) — VARSAYILAN KAPALI (0).
@@ -867,7 +890,8 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
                             balance=round(balance, 2),
                             balance_pct=round(balance_pct * 100, 2))
 
-        sl_pct = float(settings.get("stop_loss_pct", config.AUTO_PAPER_SL_PCT_DEFAULT)) / 100.0
+        # 2026-10-16 (maliyet/çıkış): varsayılan SL çıkış profilinden (DB ayarı önce).
+        sl_pct = float(settings.get("stop_loss_pct", _exit_defaults()["stop_loss_pct"])) / 100.0
         target_pct = _effective_target_pct(notification)
         if target_pct <= 0:
             target_pct = float(settings.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT))
@@ -1334,7 +1358,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
 
     # TP-primary cikis (2026-10-09: VARSAYILAN KAPALI — bkz. get_default_settings
     # yorumu ve work/ab_tp_cancel.py). Acikken trailing/breakeven'DEN ONCE degerlendirilir.
-    tp_primary_exit_enabled = bool((settings or {}).get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", False)))
+    # 2026-10-16 (maliyet/çıkış): varsayılanlar çıkış profilinden (DB ayarı önce).
+    _exit_def = _exit_defaults()
+    tp_primary_exit_enabled = bool((settings or {}).get("tp_primary_exit_enabled", _exit_def["tp_primary_exit_enabled"]))
     if tp_primary_exit_enabled and not tp_cancelled and take_profit is not None and current_price >= take_profit:
         # D-08 (2026-09-12): TP dolumu TETİK fiyatından (gap-through: min(price, tp)).
         await _close_trade(trade_id, symbol, paper_ledger.exit_fill("take_profit", current_price, take_profit),
@@ -1369,7 +1395,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # Breakeven kontrolü (isteğe bağlı — erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI, 2026-09-22 Erkan kararı).
     breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False)))
-    BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", _TRAILING_GAP_FALLBACK_PCT))
+    BREAKEVEN_TRAIL_GAP_PCT = float(_exit_def["trailing_gap_pct"])  # 2026-10-16 (maliyet/çıkış): profil
     if breakeven_enabled:
         breakeven_activated = bool(trade.get("breakeven_activated", False))
 
@@ -1399,7 +1425,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         elif is_master_surge:
             BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40))
         else:
-            BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "AUTO_PAPER_TRAILING_GAP_PCT", _TRAILING_GAP_FALLBACK_PCT))
+            BREAKEVEN_TRAIL_GAP_PCT = float(_exit_def["trailing_gap_pct"])  # 2026-10-16 (maliyet/çıkış): profil
         # In-memory breakeven stop: DB'ye yazılan değerle aynı turdaki koruma
         # kontrolü arasında gecikme olmasın.
         current_breakeven_stop = float(trade.get("breakeven_stop") or 0)
@@ -1433,8 +1459,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # ayarlardan kapatılabilir (trailing_enabled=false).
     trailing_enabled = bool((settings or {}).get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED))
     if trailing_enabled:
-        trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT))
-        trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT))
+        # 2026-10-16 (maliyet/çıkış): varsayılanlar çıkış profilinden (DB ayarı önce).
+        trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", _exit_def["trailing_trigger_pct"]))
+        trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", _exit_def["trailing_gap_pct"]))
 
         # B2: Dynamic trailing trigger tied to TP target (Tavan korumalı)
         dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False)))
@@ -1759,11 +1786,16 @@ def _allowed_modes_from_config() -> list[str]:
 
 
 async def get_default_settings() -> dict:
+    # 2026-10-16 (maliyet/çıkış): SL / trailing varsayılanları çıkış profilinden
+    # (`AUTO_PAPER_EXIT_PROFILE`: mevcut | kalibre). DB'deki kayıtlı ayar
+    # `get_auto_paper_settings` birleştirmesinde bu varsayılanları EZER.
+    _exit_def = _exit_defaults()
     return {
         "enabled": True,
         "min_score": config.AUTO_PAPER_MIN_SCORE_DEFAULT,
         "balance_pct": config.AUTO_PAPER_BALANCE_PCT_DEFAULT,
-        "stop_loss_pct": config.AUTO_PAPER_SL_PCT_DEFAULT,
+        "stop_loss_pct": _exit_def["stop_loss_pct"],
+        "exit_profile": _exit_def.get("profile", "mevcut"),
         "default_target_pct": config.AUTO_PAPER_DEFAULT_TARGET_PCT,
         # Hedef tavanı (2026-10-07): bildirimin kendi target_pct'i bunu aşarsa
         # TP bu değere çekilir. Env: AUTO_PAPER_MAX_TARGET_PCT. 0 = sınırsız.
@@ -1772,8 +1804,8 @@ async def get_default_settings() -> dict:
         "breakeven_enabled": getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False),
         "breakeven_trigger_pct": config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT,
         "trailing_enabled": config.AUTO_PAPER_TRAILING_ENABLED,
-        "trailing_trigger_pct": config.AUTO_PAPER_TRAILING_TRIGGER_PCT,
-        "trailing_gap_pct": config.AUTO_PAPER_TRAILING_GAP_PCT,
+        "trailing_trigger_pct": _exit_def["trailing_trigger_pct"],
+        "trailing_gap_pct": _exit_def["trailing_gap_pct"],
         "reopen_after_protect_close": config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE,
         # TP-CANCEL-ON-TRAIL (2026-10-09): trailing devreye girdiginde sabit TP
         # IPTAL edilir. A/B kaniti B lehine (work/ab_tp_cancel.py) ama muhafazakar
@@ -1887,12 +1919,13 @@ async def update_settings_endpoint(payload: dict, request: Request):
                 "allowed_modes", "dedup_cooldown_minutes")
     existing = await get_auto_paper_settings()
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
+    _exit_def = _exit_defaults()  # 2026-10-16 (maliyet/çıkış): profil varsayılanları (payload/DB önce)
 
     settings = {
         "enabled": bool(merged.get("enabled", True)),
         "min_score": max(0.0, min(100.0, float(merged.get("min_score", config.AUTO_PAPER_MIN_SCORE_DEFAULT)))),
         "balance_pct": max(1.0, min(100.0, float(merged.get("balance_pct", config.AUTO_PAPER_BALANCE_PCT_DEFAULT)))),
-        "stop_loss_pct": max(0.1, min(20.0, float(merged.get("stop_loss_pct", config.AUTO_PAPER_SL_PCT_DEFAULT)))),
+        "stop_loss_pct": max(0.1, min(20.0, float(merged.get("stop_loss_pct", _exit_def["stop_loss_pct"])))),
         "default_target_pct": max(0.5, min(20.0, float(merged.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT)))),
         # 0 = sınırsız (eski davranış, geriye dönük uyum). Üst sınır 20.
         "max_target_pct": max(0.0, min(20.0, float(merged.get("max_target_pct", getattr(config, "AUTO_PAPER_MAX_TARGET_PCT", 0.0))))),
@@ -1905,13 +1938,13 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "breakeven_enabled": bool(merged.get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False))),
         "breakeven_trigger_pct": max(0.5, min(10.0, float(merged.get("breakeven_trigger_pct", config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT)))),
         "trailing_enabled": bool(merged.get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED)),
-        "trailing_trigger_pct": max(0.5, min(20.0, float(merged.get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT)))),
+        "trailing_trigger_pct": max(0.5, min(20.0, float(merged.get("trailing_trigger_pct", _exit_def["trailing_trigger_pct"])))),
         # Breakeven ratchet'i artık config.AUTO_PAPER_TRAILING_GAP_PCT'ten okunuyor,
         # dolayısıyla trailing gap'i ondan daha gevşek ayarlamak fiilen etki eder;
         # üst sınır 2026-09-27'de 0.6 → 2.0'ye çıkarıldı (Erkan kararı).
-        "trailing_gap_pct": max(0.1, min(2.0, float(merged.get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT)))),
+        "trailing_gap_pct": max(0.1, min(2.0, float(merged.get("trailing_gap_pct", _exit_def["trailing_gap_pct"])))),
         "reopen_after_protect_close": bool(merged.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)),
-        "tp_primary_exit_enabled": bool(merged.get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", False))),
+        "tp_primary_exit_enabled": bool(merged.get("tp_primary_exit_enabled", _exit_def["tp_primary_exit_enabled"])),
         "tp_cancel_on_trail": bool(merged.get("tp_cancel_on_trail", getattr(config, "AUTO_PAPER_TP_CANCEL_ON_TRAIL", False))),
         "dynamic_breakeven_enabled": bool(merged.get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False))),
         "dynamic_trailing_enabled": bool(merged.get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False))),

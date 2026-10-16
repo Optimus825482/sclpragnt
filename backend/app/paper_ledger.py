@@ -18,9 +18,12 @@ uygulanmaz.
 """
 from __future__ import annotations
 
+import logging
 import time
 
 from app.config import config
+
+logger = logging.getLogger("scalper.paper_ledger")
 
 #: Tetikle çıkan kapanışlar: dolum tetik fiyatıyla anlık fiyatın KÖTÜSÜ (min).
 TRIGGER_EXITS = frozenset({"take_profit", "stop_loss", "breakeven_stop", "trailing_stop"})
@@ -35,8 +38,60 @@ def slippage_pct() -> float:
 
 
 def commission_pct() -> float:
-    """Tek kaynak: `config.COMMISSION_PCT` (bacak başına kesir, ör. 0.0015)."""
+    """Tek kaynak: EFEKTİF bacak başı komisyon (kesir).
+
+    2026-10-16 (maliyet/çıkış): artık `config.COMMISSION_PCT` ham değeri DEĞİL,
+    `config.effective_commission_pct()` — öncelik
+    COMMISSION_PCT_OVERRIDE > BNB modu (taban × (1 − indirim/100)) > taban.
+    Varsayılanlarla 0.0015 × 0.75 = 0.001125. auto_paper / combined_paper /
+    analyzer hepsi buradan okur; `config.COMMISSION_PCT`'yi doğrudan okuyan
+    yer kalırsa BNB indirimi oraya yansımaz (database.py raporlama satırları
+    bilinçli olarak dokunulmadı — bkz. DENEY_KAYDI 2026-10-16).
+    """
+    eff = getattr(config, "effective_commission_pct", None)
+    if callable(eff):
+        try:
+            return float(eff())
+        except Exception:  # noqa: BLE001 — config bozuksa taban orana düş
+            pass
     return float(getattr(config, "COMMISSION_PCT", 0.0015))
+
+
+def commission_model() -> dict:
+    """2026-10-16 (maliyet/çıkış): UI/log için komisyon modeli özeti.
+
+    {base, bnb_mode, discount_pct, override, effective, round_trip} — hepsi
+    KESİR (round_trip = 2×efektif + 2×kayma). Kaynak `commission_pct()`.
+    """
+    base = float(getattr(config, "COMMISSION_PCT", 0.0015))
+    override = getattr(config, "COMMISSION_PCT_OVERRIDE", None)
+    try:
+        override = float(override) if override is not None else None
+    except (TypeError, ValueError):
+        override = None
+    effective = commission_pct()
+    return {
+        "base": base,
+        "bnb_mode": bool(getattr(config, "COMMISSION_BNB_MODE", False)),
+        "discount_pct": float(getattr(config, "COMMISSION_BNB_DISCOUNT_PCT", 0.0) or 0.0),
+        "override": override,
+        "effective": effective,
+        "round_trip": 2.0 * effective + 2.0 * slippage_pct(),
+    }
+
+
+def _log_commission_model_once() -> None:
+    """Başlangıçta efektif komisyon modelini bir kez logla (import anında)."""
+    try:
+        m = commission_model()
+        logger.info(
+            "paper komisyon modeli: efektif %%%.4f/bacak (taban %%%.4f, BNB modu %s, indirim %%%.1f, override %s) | gidiş-dönüş %%%.4f",
+            m["effective"] * 100, m["base"] * 100, "AÇIK" if m["bnb_mode"] else "KAPALI",
+            m["discount_pct"], "yok" if m["override"] is None else f"{m['override'] * 100:.4f}%",
+            m["round_trip"] * 100,
+        )
+    except Exception:  # noqa: BLE001 — log asla import'u düşürmesin
+        logger.debug("paper komisyon modeli loglanamadı", exc_info=True)
 
 
 def max_ticker_age_sec() -> float:
@@ -116,3 +171,7 @@ def settle_close(entry_price: float, exit_price: float, quantity: float,
         "pnl": pnl,
         "pnl_pct": pnl_pct,
     }
+
+
+# 2026-10-16 (maliyet/çıkış): efektif komisyon modeli başlangıçta bir kez loglanır.
+_log_commission_model_once()

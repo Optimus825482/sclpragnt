@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.config import config
+from app import paper_ledger
 from app.routers import auto_paper
 
 import pytest  # noqa: E402
@@ -46,7 +47,8 @@ def _make_notification(symbol="APTEST", score=60.0, target_pct=2.0, price=100.0,
 def _make_open_trade(symbol="APTEST", entry=100.0, target_pct=2.0, sl_pct=3.0):
     # Erkan kararı (2026-09-18): açılış TP'si işaretlidir (NET hedef) — mark-up =
     # gidiş-dönüş komisyon + SATIŞ dolma payı. Fixture bunu birebir saklar.
-    markup = 2 * config.COMMISSION_PCT + config.ESTIMATED_SLIPPAGE_PCT
+    # 2026-10-16 (maliyet/çıkış): komisyon EFEKTİF oran (BNB indirimi) — paper_ledger tek kaynak.
+    markup = 2 * paper_ledger.commission_pct() + config.ESTIMATED_SLIPPAGE_PCT
     return {
         "id": 1,
         "symbol": symbol,
@@ -223,7 +225,8 @@ class AutoPaperOpenPositionTpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(self.calls))
         # Erkan kararı (2026-09-18): TP NET hedeftir — mark-up = gidiş-dönüş
         # komisyon (2×%0.15) + SATIŞ dolma payı (%0.025): %4 hedef → 104.325
-        expected_tp = 100.0 * (1 + 4.0 / 100 + 2 * config.COMMISSION_PCT + config.ESTIMATED_SLIPPAGE_PCT)
+        # 2026-10-16 (maliyet/çıkış): komisyon bacağı efektif oran (paper_ledger.commission_pct).
+        expected_tp = 100.0 * (1 + 4.0 / 100 + 2 * paper_ledger.commission_pct() + config.ESTIMATED_SLIPPAGE_PCT)
         self.assertAlmostEqual(expected_tp, self.calls[0]["new_tp"], places=6)
 
     async def test_lower_target_does_not_rewrite_tp(self):

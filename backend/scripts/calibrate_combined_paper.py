@@ -57,7 +57,22 @@ DEFAULT_CFG = {"sl_pct": 1.0, "trail_trigger_pct": 2.0, "trail_gap_pct": 1.0,
                "no_profit_min": 30.0, "max_hold_min": 120.0, "tp_base": 3.0}
 
 
-def _load_candidates(hours: float) -> list[dict]:
+# 2026-10-16 (rescan harness): aday kaynağı filtresi. Canlı journal (vel-...) ile
+# çevrimdışı yeniden tarama (rescan:...) aynı tabloda; varsayılan 'live' eski davranış.
+_CANDIDATE_SOURCE_SQL = {
+    "live": "AND candidate_id NOT LIKE 'rescan:%%' ",
+    "rescan": "AND candidate_id LIKE 'rescan:%%' ",
+    "all": "",
+}
+
+
+def _candidate_source_sql(source: str) -> str:
+    if source not in _CANDIDATE_SOURCE_SQL:
+        raise ValueError(f"bilinmeyen aday kaynağı: {source!r}")
+    return _CANDIDATE_SOURCE_SQL[source]
+
+
+def _load_candidates(hours: float, source: str = "live") -> list[dict]:
     """PG'den passes=true adayları çek (fiyat+zaman+hedef+skor+rank).
 
     Giriş taraması (`--entry-scan`) skor/rank/atr alanlarını da kullanır; bu
@@ -70,7 +85,9 @@ def _load_candidates(hours: float) -> list[dict]:
         cur = conn.execute(
             "SELECT created_at, symbol, price, target_pct, velocity_score, atr_pct, rank "
             "FROM velocity_candidates "
-            "WHERE passes=true AND created_at >= %s AND price > 0 ORDER BY created_at",
+            "WHERE passes=true AND created_at >= %s AND price > 0 "
+            + _candidate_source_sql(source) +
+            "ORDER BY created_at",
             (since,))
         for ts, sym, px, tgt, score, atr, rank in cur.fetchall():
             try:
@@ -308,27 +325,48 @@ def _entry_scan(train: list[dict], test: list[dict], bars: dict, *,
     return results
 
 
-async def main() -> int:
+def _tstat(res: list[dict]) -> float | None:
+    """Ortalama net getirinin t-istatistiği (tek örneklem, 0'a karşı)."""
+    x = [r["net_pct"] for r in res]
+    if len(x) < 3:
+        return None
+    sd = statistics.stdev(x)
+    return round(statistics.mean(x) / (sd / len(x) ** 0.5), 2) if sd else None
+
+
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=3600.0)
     ap.add_argument("--fetch", action="store_true", help="eksikleri REST'ten çek")
+    ap.add_argument("--candidates-source", choices=("live", "rescan", "all"), default="live",
+                    help="aday kaynağı: live (vel-... journal), rescan (çevrimdışı yeniden tarama), all")
     ap.add_argument("--entry-scan", action="store_true",
                     help="giriş seçici taraması (skor/rank/ATR/top-N) — çıkış grid'ini atlar")
     ap.add_argument("--commission", type=float, default=0.0015)
     ap.add_argument("--slippage", type=float, default=0.00025)
+    ap.add_argument("--label", default="",
+                    help="serbest metin etiketi: rapor başlığında ve JSON'da yansıtılır")
     ap.add_argument("--out", default="work/combined_paper_calibration.json")
     # 2026-10-15 (radar iyileştirme): zaman-durdurma ölçümü. Verilmezse (None) eski davranış.
     ap.add_argument("--time-stop-min", type=float, default=None,
                     help="bu dk sonra kâr eşiğin altındaysa kapat (boş = kapalı)")
     ap.add_argument("--time-stop-min-profit-pct", type=float, default=0.0,
                     help="time-stop için minimum kâr %% (varsayılan 0.0)")
-    args = ap.parse_args()
+    return ap
+
+
+async def main() -> int:
+    args = _build_parser().parse_args()
     # Taban konfig: CLI time-stop'u tüm (grid dışı) varyantlara taşır.
     base_cfg = {**DEFAULT_CFG, "time_stop_min": args.time_stop_min,
                 "time_stop_min_profit_pct": args.time_stop_min_profit_pct}
 
     print("=== OTONOM PAPER KALİBRASYON ===")
-    cands = _load_candidates(args.hours)
+    if args.label:
+        print(f"etiket: {args.label}")
+    print(f"komisyon (bacak başı): {args.commission} | slipaj: {args.slippage}")
+    cands = _load_candidates(args.hours, source=args.candidates_source)
+    print(f"aday kaynağı: {args.candidates_source}")
     print(f"aday (passes=true): {len(cands)}")
     if len(cands) < 100:
         print("YETERSİZ VERİ"); return 1
@@ -436,7 +474,31 @@ async def main() -> int:
     baseline_test_ev = base_te["ev_pct"] or 0.0
     improved = bool(winner and (winner["test"]["ev_pct"] or 0) > max(baseline_test_ev, 0))
 
+    # Ek sınav hücreleri (t-istatistiği ile): taban, kalibre (SL0.8/trig1.0/gap0.8),
+    # zaman-durdurma varyantları ve eğitimdeki en iyi — maliyet duyarlılığı karşılaştırması için.
+    def _cell(cfg: dict, name: str) -> dict:
+        res = _simulate_population(test, bars_by_sym, cfg,
+                                   commission_pct=args.commission, slippage_pct=args.slippage)
+        m = _metrics(res)
+        return {"name": name, "n": m["n"], "ev_pct": m["ev_pct"], "win_rate": m["win_rate"],
+                "payoff": m["payoff"], "t": _tstat(res)}
+    extra_test = [_cell(base_cfg, "baseline sl1.0/trig2.0/gap1.0")]
+    for cfg in grid:
+        if (cfg.get("sl_pct"), cfg.get("trail_trigger_pct"), cfg.get("trail_gap_pct")) == (0.8, 1.0, 0.8)                 and not cfg.get("name"):
+            extra_test.append(_cell(cfg, "kalibre sl0.8/trig1.0/gap0.8"))
+        elif cfg.get("name"):
+            extra_test.append(_cell(cfg, cfg["name"]))
+    if scored:
+        c0 = scored[0][0]
+        extra_test.append(_cell(c0, f"best_train sl{c0['sl_pct']}/trig{c0['trail_trigger_pct']}/gap{c0['trail_gap_pct']}"))
+    print("\n-- ek sınav hücreleri (t-istatistikli) --")
+    for e in extra_test:
+        print(f"    {e['name']:34s} TEST EV {e['ev_pct']}% win {e['win_rate']}% payoff {e['payoff']} n={e['n']} t={e['t']}")
+
     report = {
+        "label": args.label,
+        "commission": args.commission, "slippage": args.slippage,
+        "extra_test": extra_test,
         "generated_at": time.time(),
         "hours": args.hours,
         "candidates_total": len(cands), "candidates_covered": len(covered),

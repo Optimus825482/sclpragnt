@@ -174,7 +174,8 @@ class ProfitLockRoundTripCostTests(unittest.IsolatedAsyncioTestCase):
         entry = pos["entry_price"]
         await self._run_ladder(pos, entry * 1.006)
         gross_fraction = (pos["system_stop_price"] - entry) / entry
-        round_trip = config.COMMISSION_PCT * 2
+        # 2026-10-16 (maliyet/çıkış): kilit zemini EFEKTİF komisyon (BNB indirimi) üzerine kurulur.
+        round_trip = config.effective_commission_pct() * 2
         self.assertGreaterEqual(
             gross_fraction, round_trip,
             f"kilit gross'u {gross_fraction*100:.4f}% < round-trip {round_trip*100:.4f}%")

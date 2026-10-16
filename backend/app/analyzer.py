@@ -624,8 +624,10 @@ class ScalpAnalyzer:
                     # VELOCITY_PROFIT_LOCK_PCT ise yüzde birimindedir (/100).
                     # TEK DOĞRULUK KAYNAĞI: round-trip maliyet formülü
                     # config.min_net_exit_pct — burada yeni formül uydurulmaz.
-                    # İçerdiği bileşenler: 2 × COMMISSION_PCT (GİRİŞ + ÇIKIŞ
-                    # bacağı) + 2 × ESTIMATED_SLIPPAGE_PCT + asgari net kâr
+                    # İçerdiği bileşenler: 2 × EFEKTİF komisyon (GİRİŞ + ÇIKIŞ
+                    # bacağı; 2026-10-16 (maliyet/çıkış): BNB indirimi/override
+                    # dahil, config.effective_commission_pct) + 2 ×
+                    # ESTIMATED_SLIPPAGE_PCT + asgari net kâr
                     # payı (MIN_EXPECTED_NET_PNL_TRY / order_value).
                     # ESKİ HATA: önceki kod yalnızca GİRİŞ komisyonunu
                     # ekliyordu → üretilen gross %0.160, gereken round-trip
@@ -821,7 +823,8 @@ class ScalpAnalyzer:
         # kullanır); yeni formül uydurulmaz.
         fill_price = paper_ledger.sell_fill(price)
         sell_value = pos["quantity"] * fill_price
-        commission = sell_value * config.COMMISSION_PCT
+        # 2026-10-16 (maliyet/çıkış): efektif oran (BNB indirimi/override) — tek kaynak paper_ledger.
+        commission = sell_value * paper_ledger.commission_pct()
         try_balance = await database.get_wallet_balance("TRY")
         trade = await self._record_trade(symbol, pos, fill_price, reason, commission)
         sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": fill_price,
@@ -889,7 +892,8 @@ class ScalpAnalyzer:
         """Kapanan pozisyonu işlem geçmişine kaydet (komisyon dahil)."""
         entry = pos["entry_price"]
         entry_context = dict(pos.get("entry_context") or {})
-        buy_commission = (pos["quantity"] * entry) * config.COMMISSION_PCT
+        # 2026-10-16 (maliyet/çıkış): giriş bacağı da efektif oranla (açılıştaki debit ile aynı kaynak).
+        buy_commission = (pos["quantity"] * entry) * paper_ledger.commission_pct()
         total_commission = buy_commission + commission
         pnl = (exit_price - entry) * pos["quantity"] - total_commission
         pnl_pct = (pnl / (entry * pos["quantity"])) * 100 if entry else 0.0
@@ -1423,7 +1427,7 @@ class ScalpAnalyzer:
                          "liquidity": details if self.market else {},
                          "expected_gross_pnl_try": expected_gross if self.market else None,
                          "expected_net_pnl_try": expected_net if self.market else None,
-                         "commission_pct": config.COMMISSION_PCT,
+                         "commission_pct": paper_ledger.commission_pct(),  # 2026-10-16 (maliyet/çıkış): efektif oran
                          "estimated_slippage_pct": config.ESTIMATED_SLIPPAGE_PCT,
                          "profit_target_pct": planned_take_profit_pct,
                          "stop_loss_pct": planned_stop_loss_pct,
@@ -1506,7 +1510,10 @@ class ScalpAnalyzer:
         # burada (snapshot'lardan SONRA) yapılır.
         entry_price = paper_ledger.entry_fill(entry_price)
         quantity = order_value / entry_price
-        commission = order_value * config.COMMISSION_PCT
+        # 2026-10-16 (maliyet/çıkış): açılış komisyonu efektif oranla — kapanıştaki
+        # `_record_trade` giriş bacağını aynı oranla yeniden hesapladığından cüzdan
+        # debit'i ile işlem kaydı tutarlı kalır (ham COMMISSION_PCT kullanılsaydı sapardı).
+        commission = order_value * paper_ledger.commission_pct()
 
         next_cash = try_balance - order_value - commission
 

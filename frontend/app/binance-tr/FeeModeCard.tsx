@@ -3,6 +3,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 
+/** 2026-10-16 (maliyet/çıkış): paper motorlarının komisyon varsayımı (kesirler, 0.001 = %0,1). */
+type PaperCommissionModel = {
+  base: number;
+  bnb_mode: boolean;
+  discount_pct: number;
+  override: number | null;
+  effective: number;
+  round_trip?: number;
+};
+
 type FeeMode = {
   bnb_burn_supported: boolean;
   spot_bnb_burn: boolean | null;
@@ -10,7 +20,13 @@ type FeeMode = {
   taker_commission: number | null;
   bnb_balance: number | null;
   source?: string;
+  paper_commission_model?: PaperCommissionModel | null;
+  /** Hesap taker komisyonu ile paper varsayımı farkı (%; + = hesap daha pahalı). */
+  account_vs_paper_diff_pct?: number | null;
 };
+
+/** Hesap taker komisyonu paper varsayımından bu yüzdeden fazla saparsa uyarı gösterilir. */
+const PAPER_DIFF_WARN_PCT = 20;
 
 /** BNB bakiyesi bu eşiğin altındaysa (ve tahmini günlük komisyon verilmediyse) uyarı gösterilir. */
 const BNB_LOW_THRESHOLD = 0.005;
@@ -85,6 +101,10 @@ export default function FeeModeCard({ estimatedDailyFeeBnb }: { estimatedDailyFe
   const lowThreshold =
     estimatedDailyFeeBnb != null && estimatedDailyFeeBnb > 0 ? estimatedDailyFeeBnb : BNB_LOW_THRESHOLD;
   const bnbLow = bnb != null && bnb < lowThreshold;
+  // 2026-10-16 (maliyet/çıkış): paper komisyon varsayımı + hesapla fark uyarısı.
+  const paperModel = data?.paper_commission_model ?? null;
+  const paperDiff = data?.account_vs_paper_diff_pct ?? null;
+  const paperDiffWarn = paperDiff != null && Number.isFinite(paperDiff) && Math.abs(paperDiff) > PAPER_DIFF_WARN_PCT;
 
   return (
     <div className="card relative overflow-hidden">
@@ -120,6 +140,27 @@ export default function FeeModeCard({ estimatedDailyFeeBnb }: { estimatedDailyFe
           {bnbLow && (
             <p className="mt-1 text-[11px] text-yellow-400">
               BNB bakiyesi düşük — BNB ile komisyon açıksa indirim uygulanamaz, komisyon işlem varlığından düşer.
+            </p>
+          )}
+          {paperModel && (
+            <p
+              className="mt-0.5 font-mono text-[11px] text-bunker-muted"
+              title={
+                paperModel.override != null
+                  ? `COMMISSION_PCT_OVERRIDE=${paperModel.override}`
+                  : `taban ${pct(paperModel.base)} × (1 − ${paperModel.discount_pct}% BNB indirimi)`
+              }
+            >
+              Paper komisyon varsayımı: {pct(paperModel.effective)} (BNB modu {paperModel.bnb_mode ? "açık" : "kapalı"}
+              {paperModel.override != null ? ", override" : ""})
+            </p>
+          )}
+          {paperDiffWarn && paperDiff != null && (
+            <p className="mt-1 text-[11px] text-yellow-400">
+              Hesap taker komisyonu ({pct(data.taker_commission)}) paper varsayımından %
+              {Math.abs(paperDiff).toLocaleString("tr-TR", { maximumFractionDigits: 1 })}{" "}
+              {paperDiff > 0 ? "daha yüksek" : "daha düşük"} — COMMISSION_PCT_OVERRIDE / COMMISSION_BNB_DISCOUNT_PCT ile
+              hizalayın (otomatik değiştirilmez).
             </p>
           )}
           <div className="mt-2">

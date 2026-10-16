@@ -45,7 +45,22 @@ _TAKER_COST = 0.35
 _MAKER_COST = 0.10
 
 
-def _load_candidates(days: float, db_url: str) -> list[dict]:
+# 2026-10-16 (rescan harness): aday kaynağı filtresi. Canlı journal (vel-...) ile
+# çevrimdışı yeniden tarama (rescan:...) aynı tabloda; varsayılan 'live' eski davranış.
+_CANDIDATE_SOURCE_SQL = {
+    "live": "AND candidate_id NOT LIKE 'rescan:%%' ",
+    "rescan": "AND candidate_id LIKE 'rescan:%%' ",
+    "all": "",
+}
+
+
+def _candidate_source_sql(source: str) -> str:
+    if source not in _CANDIDATE_SOURCE_SQL:
+        raise ValueError(f"bilinmeyen aday kaynağı: {source!r}")
+    return _CANDIDATE_SOURCE_SQL[source]
+
+
+def _load_candidates(days: float, db_url: str, source: str = "live") -> list[dict]:
     import psycopg
     since = time.time() - days * 86400.0
     out = []
@@ -53,7 +68,9 @@ def _load_candidates(days: float, db_url: str) -> list[dict]:
         for ts, sym, px, tgt, profile, ret3, atr in conn.execute(
             "SELECT created_at, symbol, price, target_pct, candidate_id, ret3_pct, atr_pct "
             "FROM velocity_candidates "
-            "WHERE passes=true AND created_at>=%s AND price>0 ORDER BY created_at", (since,)):
+            "WHERE passes=true AND created_at>=%s AND price>0 "
+            + _candidate_source_sql(source) +
+            "ORDER BY created_at", (since,)):
             try:
                 from app.routers.velocity import _velocity_horizon_from_candidate_id as _h
                 out.append({"ts": float(ts), "sym": str(sym).upper(), "price": float(px),
@@ -230,13 +247,15 @@ def _paired_t(a: list[float], b: list[float]) -> float:
     return round((statistics.mean(a) - statistics.mean(b)) / se, 2) if se else 0.0
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=float, default=15.0)
     # 2026-10-15 (denetim düzeltmesi): sabit DB kimlik bilgisi kaldırıldı; DATABASE_URL zorunlu.
     ap.add_argument("--db-url", default=os.getenv("DATABASE_URL", "").strip())
     ap.add_argument("--out", default="work/unified_pool_replay.json")
     # 2026-10-16 (harness onarımı): mum kaynağı seçimi; auto = sqlite → postgres → REST.
+    ap.add_argument("--candidates-source", choices=("live", "rescan", "all"), default="live",
+                    help="aday kaynağı: live (vel-... journal), rescan (çevrimdışı yeniden tarama), all")
     ap.add_argument("--price-source", choices=_PRICE_SOURCES, default="auto",
                     help="5m mum kaynağı: auto (sqlite→postgres→rest), sqlite, postgres, rest")
     # 2026-10-15 (radar iyileştirme): zaman-durdurma ölçümü. Verilmezse (None) eski davranış.
@@ -244,11 +263,24 @@ def main() -> int:
                     help="bu dk sonra kâr eşiğin altındaysa kapat (boş = kapalı)")
     ap.add_argument("--time-stop-min-profit-pct", type=float, default=0.0,
                     help="time-stop için minimum kâr %% (varsayılan 0.0)")
+    # 2026-10-16 (BNB indirimi ölçümü): round-trip maliyet CLI'dan; varsayılanlar eski sabitler.
+    ap.add_argument("--taker-cost-pct", type=float, default=_TAKER_COST,
+                    help="taker round-trip maliyet %% (varsayılan 0.35 = 0.15x2 komisyon + 0.025x2 slipaj)")
+    ap.add_argument("--maker-cost-pct", type=float, default=_MAKER_COST,
+                    help="maker round-trip maliyet %% (varsayılan 0.10)")
+    return ap
+
+
+def main() -> int:
+    ap = _build_parser()
     args = ap.parse_args()
+    taker_cost, maker_cost = args.taker_cost_pct, args.maker_cost_pct
     if not args.db_url:
         sys.exit("HATA: --db-url verilmedi ve DATABASE_URL ortam değişkeni tanımlı değil")
     print("=== BİRLEŞİK HAVUZ REPLAY (Aşama B) ===")
-    cands = _load_candidates(args.days, args.db_url)
+    print(f"  maliyet (round-trip %): taker={taker_cost} maker={maker_cost}")
+    cands = _load_candidates(args.days, args.db_url, source=args.candidates_source)
+    print(f"  aday kaynağı: {args.candidates_source}")
     print(f"  aday (passes=true): {len(cands)}")
     if not cands:
         print("aday yok"); return 1
@@ -306,8 +338,8 @@ def main() -> int:
     split = int(len(cands) * 0.6)
     tr, te = cands[:split], cands[split:]
 
-    results = {}
-    for cost_name, cost in (("taker", _TAKER_COST), ("maker", _MAKER_COST)):
+    results = {"cost_pct": {"taker": taker_cost, "maker": maker_cost}}
+    for cost_name, cost in (("taker", taker_cost), ("maker", maker_cost)):
         # MEVCUT: tüm passes adayları
         cur_te = _sim_stream(te, cost)
         # BİRLEŞİK: confluence vekili kapısı
@@ -335,14 +367,14 @@ def main() -> int:
                 f"{sum(1 for v in byday.values() if statistics.mean(v) > 0)}/{len(byday)}")
 
     # t-testi: her iki aday akışı vs mevcut (taker)
-    cur = [r["net_pct"] for r in _sim_stream(te, _TAKER_COST)]
-    uni = [r["net_pct"] for r in _sim_stream([c for c in te if _confluence(c)], _TAKER_COST)]
-    sc = [r["net_pct"] for r in _sim_stream([c for c in te if _pool_score(c) >= thr], _TAKER_COST)]
+    cur = [r["net_pct"] for r in _sim_stream(te, taker_cost)]
+    uni = [r["net_pct"] for r in _sim_stream([c for c in te if _confluence(c)], taker_cost)]
+    sc = [r["net_pct"] for r in _sim_stream([c for c in te if _pool_score(c) >= thr], taker_cost)]
     results["paired_t_birlesik_vs_mevcut"] = _paired_t(uni, cur)
     results["paired_t_skortop_vs_mevcut"] = _paired_t(sc, cur)
 
     # Sembol yoğunlaşması (skor-top)
-    sc_rows = _sim_stream([c for c in te if _pool_score(c) >= thr], _TAKER_COST)
+    sc_rows = _sim_stream([c for c in te if _pool_score(c) >= thr], taker_cost)
     cnt = defaultdict(int)
     for r in sc_rows:
         cnt[r["sym"]] += 1

@@ -437,7 +437,10 @@ class LadderParityTests(unittest.TestCase):
     def test_cost_wall_states_gross_edge_arithmetic(self):
         """Karar iddia değil ARİTMETİK: brüt = net + gidiş-dönüş maliyet."""
         cost = self.replay.round_trip_cost_pct()
-        self.assertAlmostEqual(0.35, cost, places=9)   # YÜZDE ölçeği (kesir DEĞİL)
+        # 2026-10-16 (maliyet/çıkış): maliyet EFEKTİF komisyondan (BNB indirimi) —
+        # BNB açık: 0.275, kapalı: 0.35. Literal yerine config türevi.
+        self.assertAlmostEqual((config.effective_commission_pct() + config.ESTIMATED_SLIPPAGE_PCT) * 200,
+                               cost, places=9)   # YÜZDE ölçeği (kesir DEĞİL)
         result = {"streams": {"velocity_only": self._stream()}, "limitations": []}
         text = self.replay._report_text(result)
         self.assertIn("MALİYET DUVARI", text)
@@ -452,7 +455,11 @@ class LadderParityTests(unittest.TestCase):
         dökümünü AYNI sayıdan türetmeli — ayrı ayrı okurlarsa ayrışabilirler
         (ölçüldü: örneği yamalamak `cost`'u değiştirmiyor, dökümü değiştiriyordu).
         """
-        with patch.object(type(config), "COMMISSION_PCT", 0.01):
+        # 2026-10-16 (maliyet/çıkış): ham taban oranı sınamak için BNB indirimi ve
+        # override de kapatılır (yoksa 0.01 × 0.75 ile 1.550% çıkar).
+        with patch.object(type(config), "COMMISSION_PCT", 0.01), \
+             patch.object(type(config), "COMMISSION_BNB_MODE", False), \
+             patch.object(type(config), "COMMISSION_PCT_OVERRIDE", None):
             text = self.replay._report_text(
                 {"streams": {"velocity_only": self._stream()}, "limitations": []})
         self.assertIn("2.050%", text)     # (0.01 + 0.00025) * 2 * 100
