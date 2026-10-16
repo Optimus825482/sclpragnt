@@ -194,11 +194,13 @@ from app.routers import auto_paper as auto_paper_routes
 from app.routers import macd_monitor as macd_monitor_routes
 from app.routers import snapback as snapback_routes
 from app.routers import user_prefs as user_prefs_routes
+from app.routers import binance_trade as binance_trade_routes
 from app.routers import journal as journal_routes
 app.include_router(auto_paper_routes.router)
 app.include_router(macd_monitor_routes.router)
 app.include_router(snapback_routes.router)
 app.include_router(user_prefs_routes.router)
+app.include_router(binance_trade_routes.router)
 app.include_router(journal_routes.router)
 
 
