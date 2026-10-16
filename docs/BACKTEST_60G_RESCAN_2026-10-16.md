@@ -46,8 +46,26 @@ Net birebir aynı (z = 0.13); isabette rescan biraz muhafazakâr (z = −4.7; e�
 | Skor-top (üst %50) | 96.122 | %34.9 | −0.48 | skor seçici değil (30 ve 7 günle aynı) |
 | Kombine kalibrasyon (`--hours 1440 --candidates-source rescan`) | _(bölüm 4.1)_ | | | |
 
-### 4.1 Kalibrasyon sonucu
-_(koşu tamamlanınca dolduruldu, aşağıya bakın)_
+### 4.1 Kalibrasyon ve BNB maliyeti (30 gün, canlı ve rescan adayları)
+60 günlük kalibrasyon koşusu (465 k aday × 51 konfigürasyon, saf Python) kullanıcı kararıyla iptal edildi; çıkış geometrisi sorusu 30 günlük pencerede, üç maliyet düzeyinde ve iki aday kaynağında ölçüldü. Maliyet düzeyleri: %0.35 (bugün), %0.275 (BNB %25 indirim, komisyon %0.1125/bacak), %0.20 (komisyon %0.075/bacak, kullanıcının alt tahmini).
+
+**Birleşik havuz replay'i (sınav, `--days 30`)**
+| Kaynak | n | %0.35 | %0.275 (BNB) | %0.20 |
+|---|---|---|---|---|
+| Canlı journal | 48.219 | −0.480 (kazanma %42.4) | −0.405 (%43.8) | −0.330 (%45.2) |
+| Rescan | 100.808 | −0.475 (%34.7) | −0.400 (%36.6) | −0.325 (%38.1) |
+
+**Kombine kalibrasyon (sınav EV %/işlem, walk-forward)**
+| Kaynak | n aday | Komisyon/bacak | Baseline (SL 1.0/2.0/1.0) | `kalibre` (SL 0.8/1.0/0.8) = en iyi | Kazanma (kalibre) | Payoff |
+|---|---|---|---|---|---|---|
+| Canlı | 120.546 | 0.15 % | −0.251 | −0.158 | %41.4 | 1.07 |
+| Canlı | 120.546 | 0.1125 % (BNB) | −0.179 | **−0.089** | %41.7 | 1.19 |
+| Canlı | 120.546 | 0.075 % | −0.100 | **−0.013** | %42.0 | 1.35 |
+| Rescan | 252.838 | 0.15 % | −0.364 | −0.270 | %39.7 | 0.89 |
+| Rescan | 252.838 | 0.1125 % (BNB) | −0.292 | −0.202 | %40.0 | 1.01 |
+| Rescan | 252.838 | 0.075 % | −0.213 | −0.127 | %40.3 | 1.15 |
+
+Altı koşunun altısında karar `KEEP_DEFAULT_NO_EDGE` (hiçbir hücre sınavda pozitif değil). Doğrusal yaklaşımla canlı adaylarda `kalibre` profilinin başabaş komisyonu ≈ **%0.066/bacak**; rescan adaylarında ≈ %0.0 (ulaşılamaz). BNB indirimi + kalibre profili canlı adayları sıfıra çok yaklaştırıyor (−0.09 … −0.01) ama geçirmiyor.
 
 ## 5. Değerlendirme
 1. **60 günlük veriyle de aynı sonuç, daha kesin:** tarama algoritması yükselme potansiyelini şanstan iyi yakalıyor (9/9 hafta, iki rejimde), fakat bu isabet maliyet sonrası net getiriye **dönüşmüyor** (0/24 gün pozitif, 185 k işlem).
