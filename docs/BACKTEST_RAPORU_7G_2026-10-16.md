@@ -129,3 +129,59 @@ Unified akış −0.444 (n=2042). Combined velocity'yi 5/7 gün geçiyor ama far
 - `unified_pool_replay` ajan sarmalayıcısıyla koştu (repoda düzeltme yok); `run_portfolio_backtest` canlı stratejiyi ölçmüyor.
 - Journal yalnız 14–16 Ekim; kova analizi için özellik CSV'si yok.
 - Ham çıktılar scratchpad'de (`backtest/{unified_pool,calibrate,portfolio,radar_replay,realized}/`), repoya alınmadı.
+
+---
+
+## 6. Tarama Algoritması Başarı Ölçümü ve Güncellemeler (aynı gün, öğleden sonra)
+
+### 6.1 Onarılmış harness ile yeniden koşum
+Harness onarımından sonra (`--price-source auto`: postgres 82 + REST 157 = 239/239 sembol; `--max-journal-rows 0`) sonuçlar yön değiştirmedi:
+
+| | Dün | Bugün |
+|---|---|---|
+| Birleşik havuz: n / ort. net | 6539 / −0.420 | 14660 / −0.473 |
+| Birleşik havuz: TP % | 27.7 | 27.5 |
+| Radar replay combined: n / ort. net | 1355 / −0.437 | 1375 / −0.431 |
+| Velocity-only: n / ort. net | 20125 / −0.483 | 20383 / −0.480 |
+| `jump+velocity` çakışması: n / kazanma / ort. net | 95 / %66.3 / +0.129 | 97 / %66.0 / +0.153 |
+
+Dünkü 83 sembollük örnek hafif iyimserdi; kapsam tamamlanınca EV biraz kötüleşti. Journal kesilmesi 3 günde yalnız %4–5 veri kaybettiriyormuş.
+
+### 6.2 Aile başarısı, 7 gün (bildirimler, 5m mumla yeniden ölçüm)
+586 bildirimden 279'u ölçülebildi (66 sembolün mumu yok: AMP, LUMIA, SKL, OGN, WAL, ERA gibi en çok bildirim üretenler dahil → seçilim yanlılığı). 60 dk ufuk, net proxy = TP/SL −3 %/ufuk sonu − %0.35.
+
+| Aile | n | hit60 % [CI95] | Ort. MFE60 | Net proxy |
+|---|---|---|---|---|
+| velocity (tek başına) | 146 | 42.5 [35–51] | 4.60 | **−0.15** |
+| velocity (tüm) | 207 | 45.4 [39–52] | 4.57 | −0.32 |
+| rising | 38 | 36.8 [23–53] | 2.86 | −0.29 |
+| jump | 98 | 37.8 [29–48] | 3.40 | −0.74 |
+| early | 97 | 37.1 [28–47] | 3.38 | −0.77 |
+
+| Mode | n | hit60 % | Net proxy |
+|---|---|---|---|
+| trend_devam | 150 | 52.7 | 0.00 |
+| trend_devam + skor ≥95 | 80 | 61 [50–71] | **+0.13** |
+| unified | 41 | 19.5 | — (kayıtlı hedef isabeti %3.7) |
+| notr | — | — | −1.09 (stop %18) |
+| v_donusu | 10 | 0 | — |
+
+Skor kovası: 85–95 hit %35.2 (n128), 95+ %48.9 (n131); <70 %30 (n20). precision@5 = 0.47, @10 = 0.50 (taban %41; günler arası 0–1). Spearman(skor, MFE60) 0.12; Spearman(skor, net60) 0.01. Velocity adayları (16.330, kendi ufku/hedefi): 5 dk hit %17 net −0.38; 15 dk %33 / −0.36; 60 dk %42 / −0.64; skor arttıkça hit artıyor ama net kötüleşiyor (SL'ye takılma artıyor). Journal çapraz kontrolü aynı kaba sırayı veriyor (jump ≈ velocity ≈ early > rising; macd_mtf journal'da en iyi ama bildirimde ölçülemedi).
+
+**Yorum:** velocity ve özellikle `trend_devam` tutulacak; `unified`, `notr`, `v_donusu` modları ve `short_squeeze`/`snapback`/`fusion` aileleri kesilecek; skor **taban** olarak işe yarıyor (85–95 → 95+ geçişinde hit 35 → 49), **sıralayıcı** olarak değil (P@k tabana yakın, net ile ilişki yok, 95+ kovasının çoğu tam 100). En umut veren küme `trend_devam + skor ≥95` ve replay'deki `jump+velocity` çakışması; ikisi de n<100, iki güne ve MAGIC gibi az sembole yaslanıyor.
+
+### 6.3 Yapılan algoritma güncellemeleri (commit edildi)
+| Değişiklik | Yer | Varsayılan | Kanıt |
+|---|---|---|---|
+| Aile kara listesi `RADAR_DISABLED_SOURCE_FAMILIES` — tüm etiketleri listedeyse `gate_candidate` bloklar, satır `blocked_by` ile kalır | monitoring.py `_family_block_reason`, unified_scan.py kombine yol | `short_squeeze,snapback` (**açık**) | short_squeeze n9166 hit %0.1 lift 0.01; snapback lift 0.00 |
+| Otonom paper mod listesi `AUTO_PAPER_ALLOWED_MODES` (env) | config.py, auto_paper.py `_allowed_modes_from_config` | `trend_devam` (**açık**; eski `trend_devam,unified`) | unified hit60 %19.5 vs trend_devam %52.7 |
+| Liste skor tabanı `RADAR_LIST_MIN_SCAN_SCORE` (journal `scan_score` = kalite 0-99 alanında; etkin taban max(env, kullanıcı `min_score`)) | config.py, monitoring.py `_score_floor_block_reason`, `_send_combined_list` | 0 (**kapalı**) | "<70 lift 0.21" short_squeeze ile karışık; tek kaynaklı velocity (kalite ≤66) en iyi aile → 70 tabanı onu keserdi |
+| `jump+velocity` uyum bonusu `RADAR_JUMP_VELOCITY_BONUS` (kalite puanına ekleme, tavan 99) | config.py, unified_scan.py `_jump_velocity_bonus` | 0.0 (**kapalı**) | n≈97, kazanma %66, +0.15; hipotez düzeyi |
+
+Dikkat: DB'de kayıtlı `auto_paper_settings.allowed_modes` varsa yeni varsayılanı **ezer**; canlıda tek seferlik ayar düzeltmesi gerekir. Tüm satırlar `docs/DENEY_KAYDI.md`'de; 14 gün sonra `radar_lift_analysis --days 14` ile (short_squeeze hariç) yeniden ölçüm.
+
+### 6.4 Sonraki ölçüm adımları
+1. Kara liste + mod kısıtı sonrası 14 günlük journal ile aile lift'lerini yeniden hesapla; `<70` kovası short_squeeze'siz de lift<1 ise tabanı 70 ile aç.
+2. `trend_devam + skor ≥95` ve `jump+velocity` için ayrı sayaçlar; n≥300 olmadan bonus/öncelik açma.
+3. Mumu olmayan 66 sembol için `historical_candles` doldurma (REST backfill) — bildirim ölçümünün yarısı bu yüzden eksik.
+4. Velocity adaylarının kayıtlı `touched_target` (%50) ile mum yeniden ölçümü (%17–33) arasındaki fark araştırılmalı (pencere tanımı).
