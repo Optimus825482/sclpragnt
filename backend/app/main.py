@@ -39,6 +39,7 @@ from app.correlation import CorrelationMonitor, cluster_exposure
 from app.promotion import pipeline as promotion_pipeline
 from app import universe_registry
 from app import database
+from app import order_requests
 from app import binance_tr_user_stream
 from app import runtime_deps
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook, top_gainers
@@ -3653,7 +3654,15 @@ async def binance_sell(payload: dict, request: Request):
         raise HTTPException(status_code=422, detail=f"Miktar minimum lotun altında (min {min_qty or 'bilinmiyor'})")
 
     try:
-        result = await asyncio.to_thread(place_market_sell, api_key, api_secret, symbol_u, qty)
+        cid = await order_requests.begin(int(user["id"]), payload.get("client_order_id"), symbol_u,
+                                         {"kind": "sell", "asset": asset, "quantity": qty})
+    except order_requests.Replay as rp:
+        return _order_replay_response(rp)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        result = await asyncio.to_thread(place_market_sell, api_key, api_secret, symbol_u, qty,
+                                         None, cid)
     except BinanceTrPartialFillError as exc:
         # P1-8 (2026-10-07): kısmi dolum BİR HATA DEĞİLDİR — emir borsada kabul
         # edilmiş ve `executed_qty` kadar dolmuştur. Eskiden bu istisna genel
@@ -3679,7 +3688,9 @@ async def binance_sell(payload: dict, request: Request):
             "Binance TR SATIŞ kısmi doldu: %s istenen=%s dolan=%s kalan=%s",
             symbol_u, exc.requested_qty, exc.executed_qty, result.get("remaining_qty"))
     except Exception as exc:
+        await order_requests.fail(int(user["id"]), cid, str(exc), isinstance(exc, BinanceTrAmbiguousOrderError))
         raise HTTPException(status_code=502, detail=f"Satış emri gönderilemedi: {exc}")
+    await order_requests.complete(int(user["id"]), cid, result)
     # PERFORMANS (2026-09-27): TTL uzatılan FIFO maliyet cache'ini emir sonrası
     # tazele — satış FIFO kuyruğunu değiştirir, eski maliyet yanlış PnL üretir.
     _invalidate_binance_cost_cache(int(user["id"]))
@@ -3771,11 +3782,20 @@ async def binance_buy(payload: dict, request: Request):
             raise HTTPException(status_code=422, detail=f"USDT bakiyesi yetersiz (boşta {usdt_free:.2f} USDT)")
 
     try:
+        cid = await order_requests.begin(int(user["id"]), payload.get("client_order_id"), symbol_u,
+                                         {"kind": "buy", "asset": asset, "amount_try": quote_qty})
+    except order_requests.Replay as rp:
+        return _order_replay_response(rp)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
         result = await asyncio.to_thread(
             place_market_buy, api_key, api_secret, symbol_u, quote_qty,
-            min_notional if quote_asset != "USDT" else None)
+            min_notional if quote_asset != "USDT" else None, cid)
     except Exception as exc:
+        await order_requests.fail(int(user["id"]), cid, str(exc), isinstance(exc, BinanceTrAmbiguousOrderError))
         raise HTTPException(status_code=502, detail=f"Alım emri gönderilemedi: {exc}")
+    await order_requests.complete(int(user["id"]), cid, result)
     # PERFORMANS (2026-09-27): alım yeni FIFO lotu ekler → maliyet cache'i tazele.
     _invalidate_binance_cost_cache(int(user["id"]))
     _actor, _actor_role = _session_identity(request)
@@ -3817,6 +3837,19 @@ async def _send_admin_trade_push(username: str, symbol_u: str, result: dict) -> 
     except Exception as notify_exc:
         # Bildirim arızası başarılı emri BOZMAMALI; yalnız loglanır.
         logger.warning("Admin işlem bildirimi gönderilemedi: %s", notify_exc)
+
+
+def _order_replay_response(rp):
+    """Aynı client_order_id ile gelen yinelenen al/sat isteği: gerçek emir gönderilmez."""
+    if rp.stored:
+        return {"ok": True, **rp.stored, "idempotent_replay": True}
+    from fastapi.responses import JSONResponse
+    if rp.status == order_requests.FAILED:
+        detail = "Bu emir borsa tarafından reddedilmişti. Bilgileri düzeltip yeni bir istek olarak gönderebilirsiniz."
+    else:
+        detail = ("Bu emir daha önce gönderildi ve sonucu henüz belli değil. Tekrar göndermeyin; "
+                  "açık emirler ve işlem geçmişinden kontrol edin.")
+    return JSONResponse(status_code=202, content={"ok": False, "status": rp.status, "detail": detail})
 
 
 def _fmt_tr_price(value: float) -> str:
