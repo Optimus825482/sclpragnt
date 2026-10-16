@@ -197,6 +197,16 @@ async def handle_global_detection(detection: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         logger.error("global_lead_lag: bildirim kaydı başarısız (%s): %s", tr_symbol, exc)
 
+    # 2026-10-16 (sinyal politikası): lavabo blokladıysa (policy_blocked) yayın ve push
+    # yapılmaz; otonom paper girişi bildirim politikasından bağımsızdır ve sürer.
+    if notif_entry.get("policy_blocked"):
+        logger.info("global_lead_lag: bildirim politikayla düşürüldü (%s): %s",
+                    tr_symbol, notif_entry.get("policy_blocked"))
+        trade_outcome = await _open_tr_paper_trade(
+            analyzer, tr_symbol, tr_price, target_pct, horizon_minutes, detection, score)
+        return {"status": "policy_blocked", "reason": notif_entry.get("policy_blocked"),
+                "tr_symbol": tr_symbol, "global_symbol": global_symbol, "trade": trade_outcome}
+
     # 5) Arayüze yayın — TR bildirimi zarfı, Global alanı YOK.
     try:
         from app.ws_runtime import ws_manager

@@ -941,8 +941,12 @@ class LlmVerdictWriteBackTests(unittest.IsolatedAsyncioTestCase):
         """DB hatası bildirim akışını (WS yayını) durdurmamalı."""
         update = AsyncMock(side_effect=RuntimeError("db down"))
         broadcast = AsyncMock(return_value=None)
-        await self._run({"symbol": "HEMITRY", "price": 1.23, "id": 7,
-                         "score": 72.0}, update, broadcast=broadcast)
+        # 2026-10-16 (sinyal politikası): `llm_ikinci_goz` modu varsayılan olarak
+        # bildirimden çıkarıldı; bu test WS yayın yolunu ölçtüğü için politikayı açar.
+        from app.config import config as _cfg
+        with patch.object(_cfg, "RADAR_NOTIFY_DISABLED_MODES", ""):
+            await self._run({"symbol": "HEMITRY", "price": 1.23, "id": 7,
+                             "score": 72.0}, update, broadcast=broadcast)
         broadcast.assert_awaited_once()
 
 

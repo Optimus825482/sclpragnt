@@ -5203,6 +5203,23 @@ async def save_monitoring_notifications(entries):
             return None
     if not entries:
         return 0
+    # 2026-10-16 (sinyal politikası): ortak bildirim politikası — tüm üreticiler
+    # (monitoring _notify, global_lead_lag, llm ikinci göz, hızlı yol) buradan geçer.
+    # Bloklananlar tabloya YAZILMAZ; entry'ye `policy_blocked` nedeni işlenir (çağıran
+    # push/WS'ten önce bakabilir). Politika hatası fail-open (bildirimi düşürmez).
+    # Journal'da bildirim satırı için `blocked_by` yolu yok (yalnız aday tablosunda) →
+    # INFO log + `notification_policy.get_stats()` sayacı.
+    try:
+        from app import notification_policy
+        entries, _blocked = notification_policy.apply(list(entries))
+        for _be, _reason in _blocked:
+            _be["policy_blocked"] = _reason
+            logger.info("bildirim politikası: ENGELLENDİ symbol=%s mode=%s score=%s neden=%s",
+                        _be.get("symbol"), _be.get("mode"), _be.get("score"), _reason)
+    except Exception as _exc:
+        logger.warning("bildirim politikası değerlendirilemedi (geçiriliyor): %s", _exc)
+    if not entries:
+        return 0
     now = time.time()
     def op(conn):
         saved = 0

@@ -1970,6 +1970,19 @@ async def _notify(candidates_list, settings) -> list:
         _db_lat = (_s_t1 - _s_t0) * 1000
         _monitoring_state.setdefault("_db_latencies", []).append(_db_lat)
         _monitoring_state["_db_latencies"] = _monitoring_state["_db_latencies"][-20:]
+    # 2026-10-16 (sinyal politikası): lavaboda (save_monitoring_notifications) bloklanan
+    # bildirimler `policy_blocked` taşır; push / WhatsApp / otonom paper / WS / LLM ikinci
+    # göz yollarına GİRMEZ. Politika bildirim politikasıdır; otonom giriş kuralları
+    # (AUTO_PAPER_ALLOWED_MODES) ayrıdır ve burada dokunulmaz.
+    _policy_blocked = [n for n in notified if n.get("policy_blocked")]
+    if _policy_blocked:
+        for n in _policy_blocked:
+            logger.info("bildirim politikası: %s (mod=%s) teslimden düşürüldü — %s",
+                        n.get("symbol"), n.get("mode"), n.get("policy_blocked"))
+        notified = [n for n in notified if not n.get("policy_blocked")]
+        new_notifs = [n for n in new_notifs if not n.get("policy_blocked")]
+        if not notified:
+            return []
     # Sessiz saat bilgisi bildirim nesnesine işaretlenir (UI geçmişte görür).
     for n in notified:
         n["quiet_hours"] = bool(quiet)
@@ -2140,7 +2153,14 @@ async def _llm_second_eye_task(notif: dict) -> None:
             return
     except Exception:
         pass
-    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    # 2026-10-16 (sinyal politikası): zarf modu devre dışıysa push/WS yapılmaz; karar
+    # (fail-open giriş dahil) aşağıda aynen sürer, yalnız kullanıcıya bildirim gitmez.
+    from app import notification_policy as _notif_policy
+    _policy_reason = _notif_policy.evaluate(envelope)
+    if _policy_reason:
+        envelope["policy_blocked"] = _policy_reason
+        logger.info("LLM ikinci göz zarfı politikayla düşürüldü %s: %s", sym, _policy_reason)
+    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip()) and not _policy_reason
     if vapid_configured:
         ok = await _send_push(envelope)
         envelope["push_success"] = ok
@@ -2173,7 +2193,8 @@ async def _llm_second_eye_task(notif: dict) -> None:
         _dnotif["llm_reasons"] = reasons
         await _post_llm_second_eye_entry(_dnotif, envelope)
     try:
-        await ws_manager.broadcast({"type": "monitoring_alert", "data": [envelope]})
+        if not envelope.get("policy_blocked"):  # 2026-10-16 (sinyal politikası)
+            await ws_manager.broadcast({"type": "monitoring_alert", "data": [envelope]})
         logger.info("LLM ikinci göz kararı yayınlandı: %s → %s",
                     sym, str(envelope.get("llm_verdict")))
     except Exception as exc:
@@ -2231,6 +2252,9 @@ def _defer_open_for_llm_second_eye(notif: dict) -> bool:
     döner; görev FAIL-OPEN ile girişi yine yapar.
     """
     if not isinstance(notif, dict) or not notif.get("id"):
+        return False
+    # 2026-10-16 (giriş gecikmesi): erteleme bayrağa bağlı, varsayılan KAPALI (bkz. config).
+    if not getattr(config, "AUTO_PAPER_LLM_SECOND_EYE_DEFER", False):
         return False
     try:
         return bool(llm_second_eye.eligible(notif))
@@ -2443,6 +2467,11 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
         }])
     except Exception as exc:
         logger.warning("unified fast notify velocity adayı kaydedilemedi %s: %s", sym, exc)
+    # 2026-10-16 (sinyal politikası): lavabo blokladıysa (policy_blocked) hızlı yol
+    # teslimi (geçmiş, push, otonom paper, WS) yapılmaz; ölçüm kaydı yukarıda alındı.
+    if notif.get("policy_blocked"):
+        logger.info("hızlı yol bildirimi politikayla düşürüldü %s: %s", sym, notif.get("policy_blocked"))
+        return notif
     _monitoring_state["history"] = ([notif] + _monitoring_state["history"])[:HISTORY_LIMIT]
     # Tek tip teslim: tag radar-{sym} + push + WS + otonom paper.
     notif["tag"] = f"radar-{sym}"

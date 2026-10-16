@@ -211,7 +211,10 @@ class LlmGatedEntryTests(unittest.TestCase):
         opened = self._ctx()
         notif = _radar_notif("BTCTRY")
         notif["id"] = 123
-        _run(monitoring._deliver_scan_notifications([notif]))
+        # 2026-10-16 (giriş gecikmesi): erteleme artık bayrağa bağlı ve varsayılan KAPALI;
+        # bu test erteleme yolunu doğruladığı için bayrağı açar.
+        with patch.object(monitoring.config, "AUTO_PAPER_LLM_SECOND_EYE_DEFER", True):
+            _run(monitoring._deliver_scan_notifications([notif]))
         opened.assert_not_awaited()               # giriş LLM kararına ertelendi (P1-3)
         self.assertTrue(notif.get("_llm_entry_deferred"))
 
