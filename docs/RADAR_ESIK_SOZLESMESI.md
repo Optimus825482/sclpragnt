@@ -54,3 +54,14 @@ Açıkça: mevcut sinyal ayarı bu sınırı aşamaz.
 | C. Seyrek, yüksek kaliteli sinyal (yalnız `trend_devam` + lead-lag teyitli) | Sinyal sayısı azalır; bildirim sıklığı düşer | Bu alt kümede net EV > 0, tüm evrene göre lift ≥ 1 ve sembol-dışı-bırakma testinde ayakta kalmalı; bağımsız olay sayısı önceden tanımlanmış bir alt sınırı (öneri: en az 100) geçmeli. Mevcut CSV'de yalnız yaklaşık 76 bağımsız olay var; bu yetersiz. |
 
 Durum (2026-10-15): üç seçeneğin hiçbiri uygulanmadı ve hiçbiri için kanıt koşulu sağlanmadı.
+
+## Periyodik ölçüm
+
+Eşik ve kapı kararları haftalık olarak aynı araçlarla yeniden ölçülür (ayrıntı: README "Periyodik ölçüm"):
+
+- `backend/scripts/radar_periodic_review.py --days 14` → `docs/reviews/RADAR_REVIEW_<tarih>.md`: aktif `RADAR_*`/`AUTO_PAPER_*` bayrakları, lift raporu, bildirim sonuç raporu, kova analizi ve KARAR listesi (lift<1 aileler, şans altı modlar, skor tabanı kontrolü).
+- `backend/scripts/notification_outcomes_report.py` — kural 1 ve 2'nin kanıt aracı: aile/mode/skor kovası hit60'ı, aynı sembolde eşleşmiş rastgele anlardan oluşan **şans tabanı** ve "güncel politika" karşı-olgusalı (`--modes-disabled`, `--unified-min-score`). Karar ölçütü hit60'ın şans tabanına farkı (pp) ve net60'tır; `n < 30` satırlar sonuç çıkarmaya uygun değildir.
+- `backend/scripts/horizon_grid_report.py` — seçenek B (uzun ufuk) için H×T×S×maliyet ızgarası; en iyi hücrenin t'si çok hücre denendiği için şişiktir, A→B / B→A örneklem-dışı sütunları ve şans tabanı farkı birlikte okunur.
+- Eski dönemlere ait (kaldırılmış) stratejiler `--source signals` raporunda tarih aralığıyla ayrı gösterilir; güncel politika kararında kullanılmaz.
+
+Rapor KARAR maddeleri öneridir; uygulanması yine `docs/DENEY_KAYDI.md` satırı gerektirir (kural 4).
