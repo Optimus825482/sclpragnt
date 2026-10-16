@@ -173,15 +173,17 @@ def test_place_market_sell_sends_side_1_type_2():
     assert params["side"] == 1
     assert params["type"] == 2
     assert params["quantity"] == "0.16"
-    # #30 idempotency: emir bir clientOrderId taşır ve POST idempotent=False ile
-    # atılır (timeout sonrası ikinci emir gönderilmez).
-    assert params["clientOrderId"]
+    # Güncel sözleşme (7057253c, resmi /open/v1 API): emir `clientId` taşır —
+    # yalnız durum sorgusu/mutabakat içindir, dedupe anahtarı DEĞİLDİR. Tekrar
+    # güvenliği `idempotent=False` ile sağlanır (belirsiz sonuçta ikinci emir yok).
+    assert params["clientId"]
+    assert "clientOrderId" not in params
     assert sr.call_args[1].get("idempotent") is False
     # #36/P1-8: dolum doğrulaması dönen sözlükte raporlanır (cevap executedQty
     # taşımadığında istenen miktar tam dolum kabul edilir).
     assert {k: result[k] for k in ("order_id", "symbol", "quantity", "client_order_id")} == {
         "order_id": "42", "symbol": "BTC_USDT", "quantity": "0.16",
-        "client_order_id": params["clientOrderId"]}
+        "client_order_id": params["clientId"]}
     assert result["executed_qty"] == 0.16
     assert result["remaining_qty"] == 0.0
     assert result["partial"] is False
@@ -250,34 +252,39 @@ def test_reconcile_sell_fill_flags_dust_remainder():
     assert not pms.called
 
 
-def test_signed_post_retries_5xx_when_idempotency_key_present():
-    """#36/P1-8: clientOrderId varsa 5xx yeniden denemesi borsada dedupe edilir."""
+def test_signed_post_is_not_retried_after_a_500_even_with_client_id():
+    """Binance TR clientId benzersizlik garantisi vermez (7057253c): clientId
+    veya `idempotency_key` varlığı 5xx sonrası emir tekrarını AÇMAZ; sonuç
+    belirsiz sayılır ve çağıran clientId ile durumu sorgular."""
     calls = {"n": 0}
 
     def flaky(url, headers=None):
         calls["n"] += 1
-        if calls["n"] == 1:
-            raise urllib.error.HTTPError(url, 500, "boom", {}, None)
-        return {"code": 0, "data": {"orderId": "5"}}
+        raise urllib.error.HTTPError(url, 500, "boom", {}, None)
 
     with mock.patch.object(btp, "_server_time_offset_ms", return_value=0.0), \
          mock.patch.object(btp, "_http_post_json", side_effect=flaky), \
-         mock.patch.object(btp.time, "sleep"):
-        result = btp._signed_request(
-            "POST", "/open/v1/orders",
-            {"symbol": "BTC_TRY", "clientOrderId": "sa-fixed-1"},
-            "k", "s", idempotent=False)
-    assert result == {"orderId": "5"}
-    assert calls["n"] == 2
+         mock.patch.object(btp.time, "sleep") as sleeper:
+        with pytest.raises(btp.BinanceTrAmbiguousOrderError) as ei:
+            btp._signed_request(
+                "POST", "/open/v1/orders",
+                {"symbol": "BTC_TRY", "clientId": "sa-fixed-1"},
+                "k", "s", idempotent=False, idempotency_key="sa-fixed-1")
+    assert calls["n"] == 1
+    assert not sleeper.called
+    assert ei.value.client_order_id == "sa-fixed-1"
+    assert ei.value.symbol == "BTC_TRY"
 
 
-def test_place_market_buy_is_idempotent_and_keeps_client_order_id():
+def test_place_market_buy_keeps_client_id_and_disables_post_retry():
     with mock.patch.object(btp, "_signed_request", return_value={"orderId": "77"}) as sr:
-        btp.place_market_buy("k", "s", "BTC_TRY", 100.0, client_order_id="bu-fixed-1")
+        out = btp.place_market_buy("k", "s", "BTC_TRY", 100.0, client_order_id="bu-fixed-1")
     params = sr.call_args[0][2]
-    # Çağıranın verdiği anahtar korunur → aynı iş mantığının yeniden
-    # denemesi borsada ikinci bir emir oluşturmaz.
-    assert params["clientOrderId"] == "bu-fixed-1"
+    # Çağıranın verdiği id `clientId` olarak korunur (durum sorgusu/mutabakat
+    # için); dedupe değildir, bu yüzden POST tekrarı kapalıdır.
+    assert params["clientId"] == "bu-fixed-1"
+    assert "clientOrderId" not in params
+    assert out["client_order_id"] == "bu-fixed-1"
     assert sr.call_args[1].get("idempotent") is False
 
 
@@ -292,10 +299,12 @@ def test_signed_post_is_not_retried_after_a_timeout():
     with mock.patch.object(btp, "_server_time_offset_ms", return_value=0.0), \
          mock.patch.object(btp, "_http_post_json", side_effect=timeout) as sleeper_spy, \
          mock.patch.object(btp.time, "sleep"):
-        with pytest.raises(RuntimeError, match="TEKRAR GÖNDERİLMEDİ"):
-            btp._signed_request("POST", "/open/v1/orders", {"symbol": "BTC_TRY"},
+        with pytest.raises(btp.BinanceTrAmbiguousOrderError, match="tekrar gönderilmedi") as ei:
+            btp._signed_request("POST", "/open/v1/orders",
+                                {"symbol": "BTC_TRY", "clientId": "sa-fixed-2"},
                                 "k", "s", idempotent=False)
     assert calls["n"] == 1
+    assert ei.value.client_order_id == "sa-fixed-2"
 
 
 def test_signed_post_is_not_retried_after_a_500():
