@@ -40,7 +40,15 @@ import {
 /* H-02: null/NaN K/Z NÖTR renkte olmalı (proje kuralı: yeşil=kâr, kırmızı=zarar,
  * veri yok=nötr). `?? 0` ile 0'a çevirip yeşile boyamak yasak. */
 const pnlToneClass = (v?: number | null) =>
-    v == null || !Number.isFinite(v) ? "text-bunker-muted" : v >= 0 ? "text-neon-green" : "text-red-400";
+    v == null || !Number.isFinite(v) ? "text-bunker-muted" : v >= 0 ? "text-neon-green" : "text-neon-red";
+/* Kâr/zarar rozeti: yeşil zemin = kâr, kırmızı zemin = zarar, veri yok = nötr. */
+const pnlPillClass = (v?: number | null) =>
+    v == null || !Number.isFinite(v) ? "bg-bunker-800/60" : v >= 0 ? "bg-neon-green/15" : "bg-neon-red/15";
+const pnlArrow = (v?: number | null) => (v == null || !Number.isFinite(v) ? "" : v >= 0 ? "▲ " : "▼ ");
+/* Güncel fiyat, giriş fiyatına göre renklenir (long: üstü yeşil, altı kırmızı). */
+const priceVsEntryClass = (cur?: number | null, entry?: number | null) =>
+    cur == null || entry == null || !Number.isFinite(cur) || !Number.isFinite(entry) || cur === entry
+        ? "text-white" : cur > entry ? "text-neon-green" : "text-neon-red";
 const pnlPctText = (v?: number | null) =>
     v == null || !Number.isFinite(v) ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 const pnlTryText = (v?: number | null) => {
@@ -2033,11 +2041,13 @@ export default function ChartsPage() {
                                             </td>
                                             <td className="px-4 py-2 text-bunker-muted">{time}</td>
                                             <td className="px-4 py-2 text-bunker-muted">{formatPrice(p.entry)}</td>
-                                            <td className="px-4 py-2 text-white">{p.current == null ? "—" : formatPrice(p.current)}</td>
+                                            <td className={`px-4 py-2 font-semibold ${priceVsEntryClass(p.current, p.entry)}`}>{p.current == null ? "—" : formatPrice(p.current)}</td>
                                             <td className="px-4 py-2 text-bunker-muted">{entryValue > 0 ? money(entryValue) : "—"}</td>
-                                            <td className={`px-4 py-2 text-right font-bold ${pnlToneClass(pnlTry ?? pnl)}`}>
-                                                <div>{pnlPctText(pnl)}</div>
-                                                <div className="text-xs mt-1">{pnlTryText(pnlTry)}</div>
+                                            <td className="px-4 py-2 text-right">
+                                                <div className={`inline-block rounded-md px-2 py-1 font-bold ${pnlToneClass(pnlTry ?? pnl)} ${pnlPillClass(pnlTry ?? pnl)}`}>
+                                                    <div>{pnlArrow(pnl)}{pnlPctText(pnl)}</div>
+                                                    <div className="text-xs mt-0.5">{pnlTryText(pnlTry)}</div>
+                                                </div>
                                             </td>
                                             <td className="px-3 py-2 text-right">
                                                 <button
@@ -2082,10 +2092,10 @@ export default function ChartsPage() {
                                         <div className="mt-1 text-[10px] font-mono text-bunker-muted truncate">{strategyLabelFor(p)}</div>
                                         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-xs">
                                             <span className="text-bunker-muted">G {formatPrice(p.entry)}</span>
-                                            <span className="text-white">GÜ {p.current == null ? "—" : formatPrice(p.current)}</span>
+                                            <span className={`font-semibold ${priceVsEntryClass(p.current, p.entry)}`}>GÜ {p.current == null ? "—" : formatPrice(p.current)}</span>
                                             {entryValue > 0 && <span className="text-bunker-muted">{money(entryValue)}</span>}
-                                            <span className={`font-bold ${pnlToneClass(pnlTry ?? pnl)}`}>
-                                                {pnlPctText(pnl)} {pnlTryText(pnlTry)}
+                                            <span className={`rounded-md px-1.5 py-0.5 font-bold ${pnlToneClass(pnlTry ?? pnl)} ${pnlPillClass(pnlTry ?? pnl)}`}>
+                                                {pnlArrow(pnl)}{pnlPctText(pnl)} {pnlTryText(pnlTry)}
                                             </span>
                                         </div>
                                     </div>
