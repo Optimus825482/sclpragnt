@@ -43,6 +43,12 @@ import app.config as config_module  # noqa: E402
 from app.routers import auto_paper  # noqa: E402
 from app.routers import velocity  # noqa: E402
 
+import pytest  # noqa: E402
+
+# Üretim kopyasının canlı içeriğinden (ayarlar, açık pozisyonlar) bağımsız koş;
+# fixture: backend/conftest.py::isolated_db_state
+pytestmark = pytest.mark.usefixtures("isolated_db_state")
+
 _BACKEND = ROOT
 _VELOCITY_SRC = (_BACKEND / "app" / "routers" / "velocity.py").read_text(encoding="utf-8")
 _AUTO_PAPER_SRC = (_BACKEND / "app" / "routers" / "auto_paper.py").read_text(encoding="utf-8")
@@ -765,7 +771,10 @@ class AsyncReopenTests(unittest.IsolatedAsyncioTestCase):
         trade = {"id": 1, "symbol": "APTEST", "status": "open", "entry_price": 100.0,
                  "quantity": 1.0, "entry_time": time.time() - 60, "notification_id": "nid-1"}
         started = MagicMock()
-        with patch.object(auto_paper.database, "get_auto_paper_trade", AsyncMock(return_value=trade)), \
+        # 2026-09-29'dan beri `reopen_after_protect_close` varsayılanı KAPALI
+        # (config.py); bu test yeniden açma AÇIKKEN davranışı sınar → açıkça aç.
+        with patch.object(config, "AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE", True), \
+             patch.object(auto_paper.database, "get_auto_paper_trade", AsyncMock(return_value=trade)), \
              patch.object(auto_paper.database, "close_auto_paper_trade", AsyncMock(return_value=True)), \
              patch.object(auto_paper, "_broadcast_trade", AsyncMock()), \
              patch.object(auto_paper, "_maybe_reopen_after_protect_close", AsyncMock()) as reopen_mock, \
@@ -777,6 +786,19 @@ class AsyncReopenTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(started.call_args.kwargs.get("single_pass"))
         # _maybe_reopen doğrudan await EDİLMEMELİ (senkron değil).
         reopen_mock.assert_not_awaited()
+
+    async def test_close_trade_does_not_reopen_when_setting_is_off(self):
+        """Varsayılan (kapalı) ayarda koruma kapanışı sonrası yeniden açma planlanmaz."""
+        trade = {"id": 1, "symbol": "APTEST", "status": "open", "entry_price": 100.0,
+                 "quantity": 1.0, "entry_time": time.time() - 60, "notification_id": "nid-1"}
+        started = MagicMock()
+        with patch.object(config, "AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE", False), \
+             patch.object(auto_paper.database, "get_auto_paper_trade", AsyncMock(return_value=trade)), \
+             patch.object(auto_paper.database, "close_auto_paper_trade", AsyncMock(return_value=True)), \
+             patch.object(auto_paper, "_broadcast_trade", AsyncMock()), \
+             patch.object(auto_paper, "_start_background", started):
+            await auto_paper._close_trade(1, "APTEST", 101.0, time.time(), "trailing_stop")
+        started.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

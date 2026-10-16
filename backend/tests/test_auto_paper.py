@@ -20,6 +20,12 @@ if str(ROOT) not in sys.path:
 from app.config import config
 from app.routers import auto_paper
 
+import pytest  # noqa: E402
+
+# Üretim kopyasının canlı içeriğinden (ayarlar, açık pozisyonlar) bağımsız koş;
+# fixture: backend/conftest.py::isolated_db_state
+pytestmark = pytest.mark.usefixtures("isolated_db_state")
+
 
 def _make_notification(symbol="APTEST", score=60.0, target_pct=2.0, price=100.0, notif_id=None):
     # `mode` (2026-10-07): varsayılan `trend_devam` — otonom katmanın varsayılan
@@ -926,7 +932,9 @@ class AutoPaperModeFilterTests(unittest.TestCase):
         defaults = asyncio.run(get_default_settings())
         self.assertIn("allowed_modes", defaults)
         self.assertIn("dedup_cooldown_minutes", defaults)
-        self.assertEqual(defaults["allowed_modes"], ["trend_devam", "unified"])
+        # 2026-10-16 (tarama güncellemesi): `unified` çıkarıldı — 7 günlük bildirim
+        # ölçümünde hit60 %19.5 (trend_devam %52.7); AUTO_PAPER_ALLOWED_MODES env.
+        self.assertEqual(defaults["allowed_modes"], ["trend_devam"])
         self.assertEqual(defaults["dedup_cooldown_minutes"], 60.0)
 
 

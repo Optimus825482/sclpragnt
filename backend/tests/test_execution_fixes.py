@@ -16,6 +16,12 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 os.environ.setdefault("DB_BACKEND", "sqlite")
 
+import pytest  # noqa: E402
+
+# Üretim kopyasının canlı içeriğinden (ayarlar, açık pozisyonlar) bağımsız koş;
+# fixture: backend/conftest.py::isolated_db_state
+pytestmark = pytest.mark.usefixtures("isolated_db_state")
+
 
 def _kline(n=60, start=100.0, step=0.1):
     """Deterministik, yeterli uzunlukta (n mum) OHLCV sözlüğü."""

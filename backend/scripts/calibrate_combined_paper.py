@@ -106,6 +106,35 @@ def _load_sqlite_bars(symbols: set[str], since_s: float, until_s: float) -> dict
     return bars
 
 
+def _load_pg_bars(symbols: set[str], since_s: float, until_s: float) -> dict:
+    """2026-10-16 (harness onarımı): Postgres `historical_candles` (5m, open_time ms).
+
+    `scripts/backfill_historical_candles.py` ile doldurulan tablo; sqlite'ta olmayan
+    semboller REST'e gitmeden buradan tamamlanır (30 günlük koşu dakikalar yerine
+    saniyeler sürer). DATABASE_URL yoksa boş döner.
+    """
+    bars: dict[str, list] = {}
+    url = os.getenv("DATABASE_URL", "").strip()
+    if not url or not symbols:
+        return bars
+    import psycopg
+    try:
+        with psycopg.connect(url, connect_timeout=8) as conn:
+            cur = conn.execute(
+                "SELECT symbol, open_time, high, low, close FROM historical_candles "
+                "WHERE timeframe='5m' AND symbol = ANY(%s) AND open_time >= %s AND open_time <= %s "
+                "ORDER BY symbol, open_time",
+                (sorted(symbols), int(since_s * 1000), int(until_s * 1000)))
+            for sym, ot, h, lo, cl in cur.fetchall():
+                if cl and cl > 0:
+                    bars.setdefault(str(sym).upper(), []).append(
+                        {"open_time": float(ot) / 1000.0, "high": float(h),
+                         "low": float(lo), "close": float(cl)})
+    except Exception as exc:
+        print(f"  Postgres mum okuması başarısız: {type(exc).__name__}: {exc}")
+    return bars
+
+
 async def _fetch_missing(symbols: set[str], have: set[str], days_back: int) -> dict:
     """Yerel önbellekte olmayan semboller için Binance TR'den 5m mum çek."""
     from app.binance_tr_public import historical_klines
@@ -312,6 +341,13 @@ async def main() -> int:
     print(f"yerel sqlite kapsamı: {len(have)}/{len(symbols)} sembol")
 
     bars_by_sym = dict(local)
+    # 2026-10-16 (harness onarımı): sqlite'ta olmayanlar önce Postgres'ten.
+    pg = _load_pg_bars(symbols - have, t0 - 300, t1 + 3 * 3600)
+    for s_, b_ in pg.items():
+        if b_:
+            bars_by_sym[s_] = b_
+    have = {s_ for s_, b_ in bars_by_sym.items() if b_}
+    print(f"Postgres sonrası kapsam: {len(have)}/{len(symbols)} sembol")
     if args.fetch:
         days = max(2, int((t1 - t0) / 86400) + 2)
         rest = await _fetch_missing(symbols, have, days)

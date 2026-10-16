@@ -39,6 +39,8 @@ KULLANIM:
 """
 from __future__ import annotations
 
+import logging
+
 import argparse
 import asyncio
 import json
@@ -772,13 +774,35 @@ def _fuse_cluster(symbol: str, cluster: list[tuple]) -> dict:
     }
 
 
+#: 2026-10-16 (harness onarımı): journal okuma bütçesi. 0/None = sınırsız; DB tarafı
+#: `LIMIT %s` beklediği için "sınırsız" çok büyük bir sayı ile ifade edilir.
+_UNLIMITED_JOURNAL_ROWS = 1_000_000_000
+
+
+def _journal_limit(max_rows) -> int:
+    """`--max-journal-rows` → DB LIMIT değeri (0/None/geçersiz → sınırsız)."""
+    try:
+        n = int(max_rows or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return n if n > 0 else _UNLIMITED_JOURNAL_ROWS
+
+
+def _truncation_flags(counts: dict, limit: int) -> dict:
+    """Akış başına 'bütçe doldu mu' bayrağı; sınırsız bütçede hepsi False."""
+    if limit >= _UNLIMITED_JOURNAL_ROWS:
+        return {k: False for k in counts}
+    return {k: int(v) >= int(limit) for k, v in counts.items()}
+
+
 async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
                        confluence_window: int | None, skip_fetch: bool,
                        out_path: str | None = None, log=None, progress=None,
                        sweep: bool = False, sweep_targets: list[float] | None = None,
                        sweep_sls: list[float] | None = None,
                        sweep_gaps: list[float] | None = None,
-                       offset_hours: float = 0) -> dict:
+                       offset_hours: float = 0,
+                       max_journal_rows: int = 0) -> dict:
     """Birleşik radar replay'inin ÇEKİRDEĞİ (DB bağlantısını AÇMAZ/KAPATMAZ).
 
     Uygulama içi arka plan işi bu fonksiyonu çağırır; CLI `run()` ise burayı
@@ -808,7 +832,8 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     # dönemleri kapsıyordu (aralarında ~25 saat boşluk ölçüldü), `confluence`
     # yapısal olarak 0 çıkıyordu ve raporun LIFT satırı iki FARKLI dönemi
     # kıyaslıyordu. Artık ikisi de zaman pencereli + ARTAN sırada.
-    journal_limit = 20000
+    # 2026-10-16 (harness onarımı): sabit 20000 yerine `--max-journal-rows` (0 = sınırsız).
+    journal_limit = _journal_limit(max_journal_rows)
     velocity_rows = await database.list_velocity_candidates_since(
         since, until, limit=journal_limit)
     rising_rows = await database.list_rising_alerts_since(
@@ -826,15 +851,16 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     # KIRPILMA TESPİTİ: satır sayısı bütçeye dayandıysa akış EKSİKTİR (pencere
     # sonuna ulaşılamamış olabilir) → raporda açıkça bildirilir, sessizce
     # "tam veri" gibi sunulmaz.
-    truncated = {
-        "velocity": len(velocity_rows) >= journal_limit,
-        "rising": len(rising_rows) >= journal_limit,
-        "macd": len(macd_rows) >= journal_limit,
-    }
+    truncated = _truncation_flags({
+        "velocity": len(velocity_rows), "rising": len(rising_rows), "macd": len(macd_rows),
+    }, journal_limit)
     if any(truncated.values()):
-        _emit(log, f"[replay] UYARI: journal bütçesi doldu (velocity="
-                   f"{len(velocity_rows)}, rising={len(rising_rows)}, macd={len(macd_rows)}"
-                   f" / {journal_limit}) → o akış pencerenin tamamını kapsamıyor olabilir.")
+        _msg = (f"[replay] UYARI: journal bütçesi doldu (velocity="
+                f"{len(velocity_rows)}, rising={len(rising_rows)}, macd={len(macd_rows)}"
+                f" / {journal_limit}) → o akış pencerenin tamamını kapsamıyor olabilir; "
+                f"`--max-journal-rows 0` ile sınırsız okuyun.")
+        _emit(log, _msg)
+        logging.getLogger("scalper.replay").warning(_msg)
 
     if symbols:
         wanted = {str(s).replace("_", "").upper() for s in symbols}
@@ -1093,7 +1119,8 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
               sweep: bool = False, sweep_targets: list[float] | None = None,
               sweep_sls: list[float] | None = None,
               sweep_gaps: list[float] | None = None,
-              offset_hours: float = 0) -> dict:
+              offset_hours: float = 0,
+              max_journal_rows: int = 0) -> dict:
     """CLI sarmalayıcı: DB bağlantısını açar/kapatır, çekirdeği çağırır.
 
     Uygulama İÇİ arka plan işi bunu DEĞİL `build_report`'u kullanır — uygulama
@@ -1105,7 +1132,8 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
                                   skip_fetch, out_path=out_path,
                                   sweep=sweep, sweep_targets=sweep_targets,
                                   sweep_sls=sweep_sls, sweep_gaps=sweep_gaps,
-                                  offset_hours=offset_hours)
+                                  offset_hours=offset_hours,
+                                  max_journal_rows=max_journal_rows)
     finally:
         await database.close_db()
 
@@ -1396,17 +1424,19 @@ def main() -> None:
                              "(--offset-hours > 0 gerektirir)")
     parser.add_argument("--symbols", type=str, default="", help="virgülle ayrılmış sembol filtresi")
     parser.add_argument("--max-signals", type=int, default=400, help="akış başına ölçülecek en fazla sinyal")
+    parser.add_argument("--max-journal-rows", type=int, default=0,
+                        help="journal okuma bütçesi (akış başına satır); 0 = sınırsız (eski sabit 20000)")
     parser.add_argument("--confluence-window", type=int, default=None, help="çakışma penceresi (sn)")
     parser.add_argument("--skip-fetch", action="store_true", help="kline çekmeden yalnız sayım")
     parser.add_argument("--out", type=str, default="", help="JSON çıktı yolu")
     parser.add_argument("--sweep", action="store_true",
                         help="sabit TP/SL ızgarasını aynı pencerelerde tara (kenar var mı?)")
     parser.add_argument("--sweep-targets", type=str, default="0.5,0.75,1,1.5,2,3,4,6",
-                        help="tarama hedef% listesi (virgülle)")
+                        help="tarama hedef%% listesi (virgülle)")
     parser.add_argument("--sweep-sls", type=str, default="0.5,0.75,1,1.5,2,3",
-                        help="tarama stop% listesi (virgülle)")
+                        help="tarama stop%% listesi (virgülle)")
     parser.add_argument("--sweep-gaps", type=str, default="0.3,0.6,1.0,1.5",
-                        help="tarama ratchet (breakeven gap) % listesi — MFE koruma boyutu")
+                        help="tarama ratchet (breakeven gap) %% listesi — MFE koruma boyutu")
     args = parser.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()] or None
@@ -1426,12 +1456,14 @@ def main() -> None:
             oos = await run(args.hours, symbols, args.max_signals, args.confluence_window,
                             args.skip_fetch, oos_path, sweep=args.sweep,
                             sweep_targets=sweep_targets, sweep_sls=sweep_sls,
-                            sweep_gaps=sweep_gaps, offset_hours=args.offset_hours)
+                            sweep_gaps=sweep_gaps, offset_hours=args.offset_hours,
+                            max_journal_rows=args.max_journal_rows)
             if args.compare_oos and args.offset_hours:
                 base = await run(args.hours, symbols, args.max_signals, args.confluence_window,
                                  args.skip_fetch, out_path, sweep=args.sweep,
                                  sweep_targets=sweep_targets, sweep_sls=sweep_sls,
-                                 sweep_gaps=sweep_gaps, offset_hours=0)
+                                 sweep_gaps=sweep_gaps, offset_hours=0,
+                                 max_journal_rows=args.max_journal_rows)
                 print("\n".join(attach_oos_comparison(base, oos)))
             elif args.compare_oos:
                 print("UYARI: --compare-oos icin --offset-hours > 0 gerekir; atlandi.")

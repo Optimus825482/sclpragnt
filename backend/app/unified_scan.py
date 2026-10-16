@@ -108,6 +108,41 @@ def _radar_family_bonus(c: dict) -> tuple[float, list[str]]:
     return min(6.0, bonus), fam
 
 
+def _source_label_set(c: dict) -> set[str]:
+    """2026-10-16 (tarama güncellemesi): adayın kaynak etiketleri (küçük harf).
+
+    `sources` (radar bildirim yolu) + `unified_sources` (füzyon/kombine) +
+    `signal_sources` (kombine satır). `monitoring._candidate_source_labels`
+    ile aynı anlam; burada yerel kopya (modül döngüsü yok).
+    """
+    out: set[str] = set()
+    for key in ("sources", "unified_sources", "signal_sources"):
+        vals = c.get(key) or []
+        if isinstance(vals, str):
+            vals = [vals]
+        for s in vals:
+            if s:
+                out.add(str(s).strip().lower())
+    return out
+
+
+def _jump_velocity_bonus(c: dict) -> float:
+    """2026-10-16 (tarama güncellemesi): jump+velocity UYUM bonusu.
+
+    `RADAR_JUMP_VELOCITY_BONUS` (vars. 0.0 = KAPALI) > 0 ve kaynaklar HEM
+    `jump` HEM `velocity` içeriyorsa o kadar puan; aksi halde 0. Kanıt:
+    7 günlük replay'de tek pozitif alt küme (n≈190, isabet ~%65, ort. net
+    +0.13) — n küçük, hipotez düzeyi; bu yüzden varsayılan kapalı.
+    """
+    try:
+        bonus = float(getattr(config, "RADAR_JUMP_VELOCITY_BONUS", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        bonus = 0.0
+    if bonus <= 0:
+        return 0.0
+    return bonus if {"jump", "velocity"} <= _source_label_set(c) else 0.0
+
+
 def _combined_quality_score(c: dict) -> tuple[float, int, int]:
     """Kombine KALİTE PUANI (0-99, doygunluğa GİRMEZ).
 
@@ -116,7 +151,13 @@ def _combined_quality_score(c: dict) -> tuple[float, int, int]:
       * çok-kaynak teyidi (0..3 motor)         : her kaynak +8 (max +24)
       * Master Surge katman sayısı (0..4)      : her katman +4 (max +16)
       * radar aile bonusu (Faz 3.2, 0..+6)     : kanıta dayalı ensemble
+      * jump+velocity uyum bonusu (2026-10-16) : `RADAR_JUMP_VELOCITY_BONUS`,
+        varsayılan 0 (kapalı); bkz. `_jump_velocity_bonus`
     Üst sınır 99 → "100 = kesin garanti" yanılgısı oluşmaz.
+
+    Bu puan `combined_scan_rows` satırının `scan_score`/`quality_score` alanı
+    ve journal `unified_candidate_outcomes.scan_score` kolonudur (0-99 KALİTE;
+    panel 0-100 değil) — `RADAR_LIST_MIN_SCAN_SCORE` tabanı bu alana uygulanır.
 
     Döner: (puan, teyit_motor_sayısı, surge_katman_sayısı).
     """
@@ -125,7 +166,9 @@ def _combined_quality_score(c: dict) -> tuple[float, int, int]:
     ms = c.get("master_surge") if isinstance(c.get("master_surge"), dict) else {}
     layers = int(ms.get("confluence_count") or 0)
     fam_bonus, _fam = _radar_family_bonus(c)
-    score = panel * 0.6 + min(3, sources) * 8 + min(4, layers) * 4 + fam_bonus
+    # 2026-10-16 (tarama güncellemesi): uyum bonusu; 99 tavanı aşağıda korunur.
+    jv_bonus = _jump_velocity_bonus(c)
+    score = panel * 0.6 + min(3, sources) * 8 + min(4, layers) * 4 + fam_bonus + jv_bonus
     return round(min(99.0, max(0.0, score)), 1), sources, layers
 
 
@@ -458,7 +501,10 @@ async def combined_scan_rows() -> list[dict]:
         # 2026-10-15 (radar düzeltmesi): `_notify` ile AYNI kapı. Süzülen satır
         # listeden DÜŞMEZ — `blocked_by` ile UI'da gri kalır; gönderilen TOP N
         # ve combined_paper bu satırları almaz (monitoring._send_combined_list).
-        blocked_by = mo.gate_candidate(c)
+        # 2026-10-16 (tarama güncellemesi): kalite puanı (= journal `scan_score`)
+        # kapıya açıkça geçer → skor tabanı AYNI alanda; aile kara listesi de bu
+        # kapıdadır (short_squeeze/snapback-tek satırlar burada bloklanır).
+        blocked_by = mo.gate_candidate(c, scan_score=quality)
         signal_sources = list(dict.fromkeys(
             [str(source) for source in (c.get("signal_sources") or []) if source]
             + [str(source) for source in (c.get("unified_sources") or []) if source]

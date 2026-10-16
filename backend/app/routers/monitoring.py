@@ -1218,7 +1218,69 @@ def _master_surge_block_reason(c: dict) -> str | None:
     return _master_surge_hard_block_reason(c)
 
 
-def gate_candidate(c: dict) -> str | None:
+def _disabled_source_families() -> set[str]:
+    """2026-10-16 (tarama güncellemesi): `RADAR_DISABLED_SOURCE_FAMILIES` → küme.
+
+    Çağrı anında okunur (çalışma anı / test override'ı); virgüllü metin ya da
+    yinelenebilir kabul edilir; boş → kara liste KAPALI.
+    """
+    raw = getattr(config, "RADAR_DISABLED_SOURCE_FAMILIES", "short_squeeze,snapback")
+    parts = raw.split(",") if isinstance(raw, str) else list(raw or [])
+    return {str(p).strip().lower() for p in parts if str(p).strip()}
+
+
+def _family_block_reason(c: dict) -> str | None:
+    """2026-10-16 (tarama güncellemesi): aile kara listesi (kanıt: 14k+ journal
+    satırında short_squeeze n=9166 lift 0.01, snapback n=347 lift 0.00).
+
+    Adayın TÜM kaynak etiketleri (`sources` + `unified_sources` +
+    `signal_sources`) kara listedeyse blok; velocity/jump/macd_mtf gibi başka
+    bir aile de taşıyorsa BLOKLANMAZ. Etiketi hiç olmayan aday bloklanmaz.
+    """
+    disabled = _disabled_source_families()
+    if not disabled:
+        return None
+    labels = set(_candidate_source_labels(c))
+    extra = c.get("signal_sources") or []
+    if isinstance(extra, str):
+        extra = [extra]
+    labels.update(str(s).strip().lower() for s in extra if s)
+    if labels and labels <= disabled:
+        return "aile devre dışı: " + ",".join(sorted(labels))
+    return None
+
+
+def _score_floor_block_reason(c: dict, scan_score=None) -> str | None:
+    """2026-10-16 (tarama güncellemesi): liste skor tabanı (`RADAR_LIST_MIN_SCAN_SCORE`).
+
+    Alan: journal `unified_candidate_outcomes.scan_score` ile AYNI değer —
+    `unified_scan._combined_quality_score` KALİTE puanı (0-99). Kombine yol
+    puanı `scan_score=` ile açıkça geçirir; yoksa adayın `scan_score` /
+    `quality_score` alanı okunur. Alan YOKSA (radar bildirim yolu adayları
+    yalnız ham/panel skor taşır) taban UYGULANMAZ — ölçülen lift bu alana
+    aittir, başka ölçeğe taşınmaz. 0 = kapalı.
+    """
+    try:
+        floor = float(getattr(config, "RADAR_LIST_MIN_SCAN_SCORE", 70.0) or 0.0)
+    except (TypeError, ValueError):
+        floor = 0.0
+    if floor <= 0:
+        return None
+    value = scan_score
+    if value is None:
+        value = c.get("scan_score") if c.get("scan_score") is not None else c.get("quality_score")
+    if value is None:
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    if score < floor:
+        return f"skor tabanı altı ({score:.1f} < {floor:g})"
+    return None
+
+
+def gate_candidate(c: dict, scan_score=None) -> str | None:
     """2026-10-15 (radar düzeltmesi): TEK aday kapısı — bildirim (`_notify`) ve
     kombine liste (`unified_scan.combined_scan_rows`) AYNI kapıdan geçer.
 
@@ -1233,6 +1295,14 @@ def gate_candidate(c: dict) -> str | None:
     Füzyon-tek adaylar (`unified_pass`) radar `passes` kapısından muaftır;
     `passes` alanı olmayan kaynak satırları (rising/pulse/snapback/squeeze)
     yalnız master-surge ve bayrak kapılarına tabidir.
+
+    2026-10-16 (tarama güncellemesi): kanıta dayalı iki kapı daha, sıranın
+    SONUNDA (risk nedenleri daha bilgilendirici olduğu için önce onlar):
+      * aile kara listesi (`RADAR_DISABLED_SOURCE_FAMILIES`) →
+        "aile devre dışı: short_squeeze" — `_family_block_reason`;
+      * skor tabanı (`RADAR_LIST_MIN_SCAN_SCORE`, journal `scan_score` alanı;
+        `scan_score=` parametresi kombine yoldan kalite puanını taşır) →
+        "skor tabanı altı (65.0 < 70)" — `_score_floor_block_reason`.
     """
     if not isinstance(c, dict):
         return None
@@ -1253,6 +1323,13 @@ def gate_candidate(c: dict) -> str | None:
         return str(exhausted)
     if c.get("rejection_wick"):
         return "ust_fitil_tuzagi"
+    # 2026-10-16 (tarama güncellemesi): aile kara listesi + skor tabanı.
+    family_block = _family_block_reason(c)
+    if family_block:
+        return family_block
+    floor_block = _score_floor_block_reason(c, scan_score)
+    if floor_block:
+        return floor_block
     return None
 
 
@@ -3311,6 +3388,19 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     await _record_unified_outcomes(cands)
     n = int(cfg.get("top_n", 3) or 3)
     min_score = float(cfg.get("min_score", 10.0))
+    # 2026-10-16 (tarama güncellemesi): AYNI alanda (`scan_score` = kalite
+    # 0-99, journal ile aynı) İKİ taban vardır ve ikisi bilerek ayrı tutulur:
+    #   * `min_score` (COMBINED_RISING_MIN_SCORE, vars. 10) KULLANICI AYARIDIR
+    #     (admin panelden yükseltilebilir);
+    #   * `RADAR_LIST_MIN_SCAN_SCORE` (vars. 70) ÖLÇÜLEN tabandır (lift 0.21 vs
+    #     3.5-4.4) ve `gate_candidate` bunu `blocked_by` ile işaretler.
+    # Etkin taban max(ikisi): kullanıcı ölçülen tabanın altına inemez, üstüne
+    # çıkabilir.
+    try:
+        _measured_floor = float(getattr(config, "RADAR_LIST_MIN_SCAN_SCORE", 70.0) or 0.0)
+    except (TypeError, ValueError):
+        _measured_floor = 0.0
+    min_score = max(min_score, _measured_floor)
     # EŞİK HER ADAYA UYGULANIR (kullanıcı geri bildirimi 2026-10-12): eskiden
     # yalnız 1. adayın (en iyi) puanı kontrol ediliyordu; en iyi aday eşiği
     # geçince ALTINDAKİLER (ör. 75 < eşik 80) de listeye giriyordu. Artık eşiğin
