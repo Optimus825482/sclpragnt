@@ -1,9 +1,9 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { call, type TradePlanResponse } from "../../../lib/tradeApi";
 import {
   AMOUNT_CHIPS, describeOpenResult, errorText, fmtPrice, fmtPct, fmtQty, fmtTry, hasBlockingWarnings,
-  newClientOrderId, normalizeSymbol, parseTrNumber, rrLabel, scenarioTexts, suggestionSourceLabel,
+  newClientOrderId, normalizeSymbol, parseTrNumber, suggestSymbols, rrLabel, scenarioTexts, suggestionSourceLabel,
   type OpenResult,
 } from "../../../lib/tradeUi";
 import ConfirmDialog from "./ConfirmDialog";
@@ -31,6 +31,14 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
   const [result, setResult] = useState<(OpenResult & { clientOrderId: string }) | null>(null);
   const [protectBusy, setProtectBusy] = useState(false);
   const clientId = useRef("");
+  const [allSymbols, setAllSymbols] = useState<string[]>([]);
+  const [showSuggest, setShowSuggest] = useState(false);
+  useEffect(() => {
+    call<{ symbols?: string[] }>("GET", "/api/market-symbols").then((r) => {
+      if (r.ok && Array.isArray(r.body.symbols)) setAllSymbols(r.body.symbols);
+    });
+  }, []);
+  const suggestions = useMemo(() => suggestSymbols(allSymbols, query), [allSymbols, query]);
 
   const invalidate = () => {
     setPlan(null);
@@ -122,15 +130,34 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
       {!configured && <p className="text-sm text-white">Alım yapmak için önce Ayarlar’dan Binance TR anahtarını ekle.</p>}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="block text-sm text-white">
-          Coin
+        <div className="relative text-sm text-white">
+          <label htmlFor="coin-input">Coin</label>
           <input
-            type="text" value={query} placeholder="Örn. ADA" autoCapitalize="characters" spellCheck={false}
-            onChange={(e) => { setQuery(e.target.value); invalidate(); }}
+            id="coin-input" type="text" value={query} placeholder="Örn. ADA (en az 3 harf yaz)" autoCapitalize="characters" spellCheck={false}
+            autoComplete="off" role="combobox" aria-expanded={showSuggest && suggestions.length > 0} aria-controls="coin-oneriler" aria-autocomplete="list"
+            onChange={(e) => { setQuery(e.target.value); setShowSuggest(true); invalidate(); }}
+            onFocus={() => setShowSuggest(true)}
+            onBlur={() => setTimeout(() => setShowSuggest(false), 150)}
+            onKeyDown={(e) => { if (e.key === "Escape") setShowSuggest(false); }}
             className="input mt-1 block min-h-[48px] w-full rounded-lg border px-3 text-base"
           />
+          {showSuggest && suggestions.length > 0 && (
+            <ul id="coin-oneriler" role="listbox" className="card absolute left-0 right-0 z-20 mt-1 max-h-60 overflow-auto p-1 shadow-lg">
+              {suggestions.map((s) => (
+                <li key={s} role="option" aria-selected={false}>
+                  <button
+                    type="button" onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { setQuery(s); setShowSuggest(false); invalidate(); }}
+                    className="flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-base font-semibold text-white hover:bg-bunker-800"
+                  >
+                    {s}<span className="ml-1 font-normal text-bunker-muted">/ TL</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <span className="mt-1 block text-xs text-bunker-muted">{symbol ? `İşlem çifti: ${symbol}` : "TL çifti otomatik eklenir"}</span>
-        </label>
+        </div>
         <div className="text-sm text-white">
           <span id="tutar-etiket">Tutar</span>
           <div className="mt-1 flex flex-wrap gap-2" role="group" aria-labelledby="tutar-etiket">

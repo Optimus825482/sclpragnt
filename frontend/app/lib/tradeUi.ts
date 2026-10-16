@@ -170,3 +170,13 @@ export function hasBlockingWarnings(warnings: string[] | null | undefined): bool
 }
 
 export const AMOUNT_CHIPS: readonly number[] = [25, 50, 100];
+
+/** Öneri listesi: en az 3 harfte başlar; önce öneki eşleşenler, sonra içerenler. Dönüş: coin adları (TRY'siz). */
+export function suggestSymbols(all: readonly string[], query: string, limit = 8): string[] {
+  const q = String(query ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/TRY$/, "");
+  if (q.length < 3) return [];
+  const assets = Array.from(new Set(all.filter((s) => !String(s).toUpperCase().endsWith("USDT")).map((s) => String(s).toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/TRY$/, "")).filter((s) => s && s !== "TRY")));
+  const starts = assets.filter((a) => a.startsWith(q)).sort();
+  const contains = assets.filter((a) => !a.startsWith(q) && a.includes(q)).sort();
+  return [...starts, ...contains].slice(0, limit);
+}
