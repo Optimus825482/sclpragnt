@@ -235,3 +235,22 @@ def test_candidate_source_sql_filters(upr, ccp):
         assert mod._candidate_source_sql("all") == ""
         with pytest.raises(ValueError):
             mod._candidate_source_sql("x")
+
+
+# ---------------------------------------------------------------- (6) BNB indirimi: maliyet bayrakları
+def test_pool_replay_cost_flags_default_and_override(upr):
+    p = upr._build_parser()
+    d = p.parse_args([])
+    assert d.taker_cost_pct == 0.35 and d.maker_cost_pct == 0.10
+    a = p.parse_args(["--taker-cost-pct", "0.275", "--maker-cost-pct", "0.05"])
+    assert a.taker_cost_pct == 0.275 and a.maker_cost_pct == 0.05
+
+
+def test_calibrate_label_commission_flags_and_tstat(ccp):
+    p = ccp._build_parser()
+    d = p.parse_args([])
+    assert d.label == "" and d.commission == 0.0015
+    a = p.parse_args(["--label", "bnb-25", "--commission", "0.001125"])
+    assert a.label == "bnb-25" and a.commission == 0.001125
+    assert ccp._tstat([{"net_pct": 1.0}, {"net_pct": 2.0}, {"net_pct": 3.0}]) == 3.46
+    assert ccp._tstat([{"net_pct": 1.0}]) is None

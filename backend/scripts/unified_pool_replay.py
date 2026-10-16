@@ -247,7 +247,7 @@ def _paired_t(a: list[float], b: list[float]) -> float:
     return round((statistics.mean(a) - statistics.mean(b)) / se, 2) if se else 0.0
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=float, default=15.0)
     # 2026-10-15 (denetim düzeltmesi): sabit DB kimlik bilgisi kaldırıldı; DATABASE_URL zorunlu.
@@ -263,10 +263,22 @@ def main() -> int:
                     help="bu dk sonra kâr eşiğin altındaysa kapat (boş = kapalı)")
     ap.add_argument("--time-stop-min-profit-pct", type=float, default=0.0,
                     help="time-stop için minimum kâr %% (varsayılan 0.0)")
+    # 2026-10-16 (BNB indirimi ölçümü): round-trip maliyet CLI'dan; varsayılanlar eski sabitler.
+    ap.add_argument("--taker-cost-pct", type=float, default=_TAKER_COST,
+                    help="taker round-trip maliyet %% (varsayılan 0.35 = 0.15x2 komisyon + 0.025x2 slipaj)")
+    ap.add_argument("--maker-cost-pct", type=float, default=_MAKER_COST,
+                    help="maker round-trip maliyet %% (varsayılan 0.10)")
+    return ap
+
+
+def main() -> int:
+    ap = _build_parser()
     args = ap.parse_args()
+    taker_cost, maker_cost = args.taker_cost_pct, args.maker_cost_pct
     if not args.db_url:
         sys.exit("HATA: --db-url verilmedi ve DATABASE_URL ortam değişkeni tanımlı değil")
     print("=== BİRLEŞİK HAVUZ REPLAY (Aşama B) ===")
+    print(f"  maliyet (round-trip %): taker={taker_cost} maker={maker_cost}")
     cands = _load_candidates(args.days, args.db_url, source=args.candidates_source)
     print(f"  aday kaynağı: {args.candidates_source}")
     print(f"  aday (passes=true): {len(cands)}")
@@ -326,8 +338,8 @@ def main() -> int:
     split = int(len(cands) * 0.6)
     tr, te = cands[:split], cands[split:]
 
-    results = {}
-    for cost_name, cost in (("taker", _TAKER_COST), ("maker", _MAKER_COST)):
+    results = {"cost_pct": {"taker": taker_cost, "maker": maker_cost}}
+    for cost_name, cost in (("taker", taker_cost), ("maker", maker_cost)):
         # MEVCUT: tüm passes adayları
         cur_te = _sim_stream(te, cost)
         # BİRLEŞİK: confluence vekili kapısı
@@ -355,14 +367,14 @@ def main() -> int:
                 f"{sum(1 for v in byday.values() if statistics.mean(v) > 0)}/{len(byday)}")
 
     # t-testi: her iki aday akışı vs mevcut (taker)
-    cur = [r["net_pct"] for r in _sim_stream(te, _TAKER_COST)]
-    uni = [r["net_pct"] for r in _sim_stream([c for c in te if _confluence(c)], _TAKER_COST)]
-    sc = [r["net_pct"] for r in _sim_stream([c for c in te if _pool_score(c) >= thr], _TAKER_COST)]
+    cur = [r["net_pct"] for r in _sim_stream(te, taker_cost)]
+    uni = [r["net_pct"] for r in _sim_stream([c for c in te if _confluence(c)], taker_cost)]
+    sc = [r["net_pct"] for r in _sim_stream([c for c in te if _pool_score(c) >= thr], taker_cost)]
     results["paired_t_birlesik_vs_mevcut"] = _paired_t(uni, cur)
     results["paired_t_skortop_vs_mevcut"] = _paired_t(sc, cur)
 
     # Sembol yoğunlaşması (skor-top)
-    sc_rows = _sim_stream([c for c in te if _pool_score(c) >= thr], _TAKER_COST)
+    sc_rows = _sim_stream([c for c in te if _pool_score(c) >= thr], taker_cost)
     cnt = defaultdict(int)
     for r in sc_rows:
         cnt[r["sym"]] += 1
