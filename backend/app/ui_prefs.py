@@ -1,7 +1,7 @@
 """Kullanıcı menü tercihleri — doğrulama (saf). Kimlikler frontend `MENU_ITEMS` ile AYNIDIR."""
 
 MENU_IDS: tuple[str, ...] = (
-    "home", "notifications", "radar", "charts", "reports", "profile", "settings")
+    "home", "notifications", "radar", "binance", "risk", "charts", "reports", "profile", "settings")
 LOCKED_IDS: frozenset[str] = frozenset({"home", "settings"})
 # Menüden KALDIRILMIŞ kimlikler (2026-10-16: otonom paper/portföy kullanıcı arayüzünden çıktı). Eski kayıtlı
 # tercihlerde kalmış olabilir; hata değil, sessizce yok sayılır (aksi halde PUT 422 verirdi).

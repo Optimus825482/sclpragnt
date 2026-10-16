@@ -21,3 +21,40 @@ def validate_client_order_id(value) -> str:
     if not _CID_RE.match(text):
         raise ValueError("client_order_id 8-64 karakter olmalı (harf, rakam, _ ve -)")
     return text
+
+
+class Replay(Exception):
+    """Aynı client_order_id ile gelen ikinci istek: gerçek emir GÖNDERİLMEZ. `stored` varsa önceki sonuçtur."""
+
+    def __init__(self, status: str, stored: dict | None):
+        super().__init__(status)
+        self.status = status
+        self.stored = stored
+
+
+async def begin(user_id: int, client_order_id, symbol: str, summary: dict) -> str | None:
+    """Basit al/sat uçları için idempotent koruma. id verilmemişse (eski istemci) None döner ve koruma yoktur.
+
+    Geçersiz id → ValueError. Aynı (kullanıcı, id) daha önce alındıysa → Replay.
+    """
+    if client_order_id in (None, ""):
+        return None
+    from app import database  # tembel: döngüsel import yok, testlerde monkeypatch edilebilir
+    cid = validate_client_order_id(client_order_id)
+    if await database.claim_order_request(user_id, cid, symbol, summary):
+        return cid
+    row = await database.get_order_request(user_id, cid) or {}
+    stored = row.get("result") if row.get("status") == DONE else None
+    raise Replay(str(row.get("status") or IN_PROGRESS), stored or None)
+
+
+async def complete(user_id: int, cid: str | None, result: dict) -> None:
+    if cid:
+        from app import database
+        await database.finish_order_request(user_id, cid, DONE, result)
+
+
+async def fail(user_id: int, cid: str | None, error: str, ambiguous: bool) -> None:
+    if cid:
+        from app import database
+        await database.finish_order_request(user_id, cid, UNKNOWN if ambiguous else FAILED, {"error": str(error)[:300]})

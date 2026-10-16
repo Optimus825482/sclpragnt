@@ -44,6 +44,8 @@ export const MENU_ITEMS: readonly MenuItem[] = [
   { id: "home", href: "/", label: "Ana sayfa", icon: "🏠", locked: true },
   { id: "notifications", href: "/notifications", label: "Bildirimler", icon: "🔔" },
   { id: "radar", href: "/monitoring", label: "Radar", icon: "📡" },
+  { id: "binance", href: "/binance-tr", label: "Binance TR", icon: "💱" },
+  { id: "risk", href: "/risk", label: "Risk Merkezi", icon: "🛡️" },
   { id: "charts", href: "/charts", label: "Grafik", icon: "📈" },
   { id: "reports", href: "/reports", label: "Raporlar", icon: "📋" },
   { id: "profile", href: "/profile", label: "Profil", icon: "👤" },
