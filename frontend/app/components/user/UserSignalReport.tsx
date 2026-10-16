@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import SymbolLink from "../SymbolLink";
 import { getJSON } from "../../lib/api";
 import { fmtDateTime, formatPrice } from "../../lib/format";
@@ -119,6 +120,8 @@ export default function UserSignalReport() {
     <div className="space-y-5">
       <header>
         <h1 className="text-xl font-bold text-white">Sinyal başarı raporu</h1>
+        {/* 2026-10-17 (basit arayüz): Bildirimler menüden kalktı; tam liste buradan erişilir. */}
+        <Link href="/notifications" className="mt-1 inline-flex min-h-[44px] items-center text-sm text-neon-green">Tüm bildirimler →</Link>
         <p className="mt-1 text-sm text-bunker-muted">
           Sistemin gönderdiği bildirimler hedefe ulaştı mı? Ölçüm bildirim fiyatından, ufuk süresi boyunca ulaşılan en yüksek getiriye göre yapılır.
         </p>

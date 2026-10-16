@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Poppins, Inter, JetBrains_Mono } from "next/font/google";
+import { Poppins, Inter, JetBrains_Mono, Roboto } from "next/font/google";
 import "./globals.css";
 import "./user-theme.generated.css";
 import "./user-palette.generated.css";
@@ -13,6 +13,8 @@ export const BUILD_ID = process.env.NEXT_PUBLIC_BUILD_ID || "dev";
 // self-hosted, optimize edilmiş font (CLS + FCP iyileşir).
 const poppins = Poppins({ subsets: ["latin"], weight: ["600", "700"], variable: "--font-display", display: "swap" });
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "700"], variable: "--font-sans", display: "swap" });
+// 2026-10-17 (basit arayüz): uygulama genelinde Roboto (latin-ext = Türkçe karakterler).
+const roboto = Roboto({ subsets: ["latin", "latin-ext"], weight: ["400", "500", "700"], variable: "--font-roboto", display: "swap" });
 const jetbrains = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", display: "swap" });
 
 export const metadata: Metadata = {
@@ -49,7 +51,7 @@ export default function RootLayout({
     <html lang="tr" className="dark" suppressHydrationWarning data-build-id={BUILD_ID}>
       <head><meta name="mobile-web-app-capable" content="yes" /><meta name="build-id" content={BUILD_ID} /></head>
       {/* Extension noise lands on <body> too; same suppression, children unaffected. */}
-      <body suppressHydrationWarning className={`${poppins.variable} ${inter.variable} ${jetbrains.variable}`}>
+      <body suppressHydrationWarning className={`${roboto.variable} ${poppins.variable} ${inter.variable} ${jetbrains.variable}`}>
         <AuthGate>
         <AppShell>{children}</AppShell>
         </AuthGate>

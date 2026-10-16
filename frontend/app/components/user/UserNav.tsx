@@ -3,12 +3,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "../../lib/auth";
 import { visibleMenu } from "../../lib/userUi";
-import { useAdminView } from "../../lib/adminView";
 
 export default function UserNav({ hidden }: { hidden: string[] }) {
   const pathname = usePathname();
-  const { username, role, logout } = useAuth();
-  const { setView } = useAdminView();
+  const { username, logout } = useAuth();
   return (
     // 2026-10-17 (basit arayüz): yapışkanlık UserShell'deki ortak bloğa taşındı; menü tek
     // satır (sarmalama yok), öğeler eşit yükseklikte, sağ grup sabit genişlikte.
@@ -31,11 +29,7 @@ export default function UserNav({ hidden }: { hidden: string[] }) {
           );
         })}
         <div className="ml-auto flex shrink-0 items-center gap-2 pl-3">
-          {role === "admin" && (
-            <button type="button" onClick={() => setView("advanced")} className="ui-button ui-button-secondary h-9 whitespace-nowrap px-3 text-xs" title="Mevcut yönetim arayüzüne dön">
-              Gelişmiş görünüm
-            </button>
-          )}
+          {/* 2026-10-17 (basit arayüz): "Gelişmiş görünüm" anahtarı Ayarlar sayfasının en altına taşındı. */}
           <span className="max-w-[9rem] truncate text-sm text-bunker-muted" title={username || ""}>{username}</span>
           <button
             type="button"

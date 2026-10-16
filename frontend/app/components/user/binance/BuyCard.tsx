@@ -9,7 +9,7 @@ import {
 import { UncertainOrderError, orderFailureText, postJsonGuarded, uncertainOrderText } from "../../../binance-tr/orderSafety";
 import ConfirmDialog from "./ConfirmDialog";
 import UncertainOrderNotice from "./UncertainOrderNotice";
-import { buyIntentKey, describeOrderLookup, intentId, isDefinitiveReject, resetIntent, type IntentRef } from "./orderIntent";
+import { buyIntentKey, describeOrderLookup, intentId, isDefinitiveReject, resetIntent, type IntentRef, retryWhileGatewayUnavailable } from "./orderIntent";
 
 type Props = {
   liveEnabled: boolean;
@@ -153,7 +153,9 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
   const queryOrderStatus = async () => {
     if (!uncertain || lookupBusy) return;
     setLookupBusy(true);
-    const r = await call<Record<string, unknown>>("GET", `/api/binance/order-status?symbol=${encodeURIComponent(uncertain.symbol)}&client_id=${encodeURIComponent(uncertain.cid)}`);
+    // 2026-10-17 (basit arayüz): ağ geçidi "meşgul/başlatılıyor" dönerse 3 kez (4 sn ara) yeniden dene.
+    const r = await retryWhileGatewayUnavailable(() =>
+      call<Record<string, unknown>>("GET", `/api/binance/order-status?symbol=${encodeURIComponent(uncertain.symbol)}&client_id=${encodeURIComponent(uncertain.cid)}`));
     setLookupBusy(false);
     setLookup(describeOrderLookup(r));
     onTraded();

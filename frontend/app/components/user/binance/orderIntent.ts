@@ -46,10 +46,37 @@ export function isDefinitiveReject(status: number, detail: unknown): boolean {
   return status >= 400;
 }
 
+type CallResult = { ok: boolean; status: number; error: string; body: unknown };
+
+/** 2026-10-17 (basit arayüz): nginx'in ürettiği "Backend servisi şu an meşgul veya
+ *  başlatılıyor" yanıtı (503, status:"unavailable") — backend'e ulaşılamadı demektir
+ *  (deploy / yeniden başlatma / bayat upstream). Emir hatası DEĞİLDİR. */
+export function isGatewayUnavailable(r: CallResult): boolean {
+  if (r.status !== 503) return false;
+  const body = (r.body ?? {}) as { status?: unknown; detail?: unknown };
+  const text = `${String(body.status ?? "")} ${String(body.detail ?? "")} ${r.error ?? ""}`.toLowerCase();
+  return text.includes("unavailable") || text.includes("meşgul") || text.includes("başlatılıyor");
+}
+
+/** Ağ geçidi "unavailable" dönerse birkaç saniye bekleyip yeniden dener (yalnız okuma sorguları için). */
+export async function retryWhileGatewayUnavailable<R extends CallResult>(
+  fn: () => Promise<R>, attempts = 3, delayMs = 4000,
+): Promise<R> {
+  let last = await fn();
+  for (let i = 1; i < attempts && isGatewayUnavailable(last); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    last = await fn();
+  }
+  return last;
+}
+
 /** `/api/binance/order-status` yanıtını (ya da hata metnini) kullanıcıya anlatır. */
 export function describeOrderLookup(r: { ok: boolean; status: number; error: string; body: unknown }): string {
   if (!r.ok) {
     if (r.status === 0) return "Sorgu da gönderilemedi (bağlantı yok). Birazdan tekrar sorgulayın; sonuç öğrenilmeden yeniden göndermeyin.";
+    if (isGatewayUnavailable(r)) {
+      return "Sunucuya ulaşılamadı (backend yeniden başlıyor ya da geçici kesinti). Bu bir emir hatası değil; emir borsaya ulaşmamış olabilir. 10–20 sn sonra \"Durumu sorgula\"ya tekrar basın; sonuç öğrenilmeden yeniden göndermeyin.";
+    }
     return `Sorgu başarısız: ${r.error}. Emir yine de borsada olabilir; Bekleyen Emirler ve Geçmiş’i kontrol edin.`;
   }
   const order = (r.body as { order?: Record<string, unknown> } | null)?.order;

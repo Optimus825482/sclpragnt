@@ -1,12 +1,14 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../../lib/api";
-import { MENU_ITEMS } from "../../lib/userUi";
+import { MENU_ITEMS, SETTINGS_TABS, parseSettingsTab, type SettingsTabId } from "../../lib/userUi";
 import { useUiPrefs } from "../../lib/useUiPrefs";
 import { ensurePushSubscription, pushPermissionState } from "../../lib/push";
 import { useAuth } from "../../lib/auth";
 import AdminViewSwitch from "../AdminViewSwitch";
+import ProfilePanel from "../ProfilePanel";
 
+const TAB_KEY = "scalper:user-settings-tab";
 const CARD = "rounded-xl border border-bunker-700 bg-bunker-900 p-4";
 
 function MenuSection() {
@@ -30,7 +32,7 @@ function MenuSection() {
       <h2 id="menu-baslik" className="text-base font-semibold text-white">Menü</h2>
       <p className="mt-1 text-sm text-bunker-muted">Görmek istemediğin sayfaları menüden gizleyebilirsin.</p>
       <ul className="mt-3 divide-y divide-bunker-800">
-        {MENU_ITEMS.map((item) => {
+        {MENU_ITEMS.filter((item) => !item.legacy).map((item) => {
           const visible = item.locked ? true : !hidden.includes(item.id);
           return (
             <li key={item.id} className="flex min-h-[44px] items-center justify-between gap-3 py-2">
@@ -214,18 +216,70 @@ function NotificationSection() {
 
 export default function UserSettings() {
   const { role } = useAuth();
+  // 2026-10-17 (basit arayüz): Profil artık sekme; ?tab= (örn. /settings?tab=profile) > localStorage > "genel".
+  const [tab, setTab] = useState<SettingsTabId>("genel");
+  useEffect(() => {
+    let next: SettingsTabId | null = null;
+    try {
+      next = parseSettingsTab(new URLSearchParams(window.location.search).get("tab"));
+    } catch {
+      /* yok say */
+    }
+    if (!next) {
+      try {
+        next = parseSettingsTab(window.localStorage.getItem(TAB_KEY));
+      } catch {
+        /* localStorage yok */
+      }
+    }
+    if (next) setTab(next);
+  }, []);
+  const selectTab = (id: SettingsTabId) => {
+    setTab(id);
+    try {
+      window.localStorage.setItem(TAB_KEY, id);
+    } catch {
+      /* yok sayılır */
+    }
+  };
   return (
     <div className="mx-auto max-w-2xl space-y-4 p-4">
       <h1 className="text-xl font-semibold text-white">Ayarlar</h1>
+      <div role="tablist" aria-label="Ayar sekmeleri" className="flex flex-wrap gap-2">
+        {SETTINGS_TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            id={`ayar-sekme-${t.id}`}
+            aria-selected={tab === t.id}
+            aria-controls={`ayar-panel-${t.id}`}
+            onClick={() => selectTab(t.id)}
+            className={`min-h-[44px] rounded-lg px-4 text-sm font-semibold ${tab === t.id ? "u-seg-on" : "u-seg-off"}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" id={`ayar-panel-${tab}`} aria-labelledby={`ayar-sekme-${tab}`} className="space-y-4">
+        {tab === "genel" && (
+          <>
+            <MenuSection />
+            <BinanceSection />
+          </>
+        )}
+        {tab === "bildirim" && <NotificationSection />}
+        {tab === "profil" && <ProfilePanel embedded />}
+      </div>
       {role === "admin" && (
-        <section className={CARD} aria-label="Arayüz seçimi">
-          <AdminViewSwitch />
-          <p className="mt-2 text-sm text-bunker-muted">Basit: kullanıcıların gördüğü arayüz. Gelişmiş: mevcut yönetim arayüzü.</p>
+        <section className="rounded-xl border border-bunker-800 bg-bunker-900/60 p-4" aria-label="Yönetici arayüz seçimi">
+          <h2 className="text-sm font-medium text-bunker-muted">Yönetici: gelişmiş arayüze geç</h2>
+          <div className="mt-2">
+            <AdminViewSwitch />
+          </div>
+          <p className="mt-2 text-xs text-bunker-muted">Basit: kullanıcıların gördüğü arayüz. Gelişmiş: mevcut yönetim arayüzü.</p>
         </section>
       )}
-      <MenuSection />
-      <BinanceSection />
-      <NotificationSection />
     </div>
   );
 }

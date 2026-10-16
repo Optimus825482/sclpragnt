@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { confidenceBadge, isUserRole, isUserView, pctChange, regimeNotice, statusLabel, visibleMenu, windowEnd } from "./userUi";
+import { MENU_ITEMS, SETTINGS_TABS, parseSettingsTab, confidenceBadge, isUserRole, isUserView, pctChange, regimeNotice, statusLabel, visibleMenu, windowEnd } from "./userUi";
 
 describe("pctChange", () => {
   it("hesaplar", () => expect(pctChange(100, 103)).toBeCloseTo(3, 6));
@@ -44,7 +44,14 @@ describe("confidenceBadge", () => {
 describe("visibleMenu / isUserRole", () => {
   it("varsayılan menü", () =>
     expect(visibleMenu([]).map((m) => m.id)).toEqual(
-      ["home", "notifications", "radar", "binance", "risk", "charts", "reports", "profile", "settings"]));
+      ["home", "radar", "binance", "risk", "charts", "reports", "settings"]));
+  it("Bildirimler ve Profil menüde yok ama kimlikleri korunur", () => {
+    // 2026-10-17 (basit arayüz): içerikleri Raporlar / Ayarlar sekmesine taşındı.
+    const ids = visibleMenu([]).map((m) => m.id);
+    expect(ids).not.toContain("notifications");
+    expect(ids).not.toContain("profile");
+    expect(MENU_ITEMS.map((m) => m.id)).toEqual(expect.arrayContaining(["notifications", "profile"]));
+  });
   it("otonom paper (portföy) kullanıcı menüsünde yok", () =>
     expect(visibleMenu([]).some((m) => m.id === "portfolio" || m.href === "/portfolio")).toBe(false));
   it("gizlenir", () => expect(visibleMenu(["charts"]).some((m) => m.id === "charts")).toBe(false));
@@ -95,4 +102,20 @@ describe("regimeNotice", () => {
     expect(n.active).toBe(true);
     expect(n.gapPct).toBeNull();
   });
+});
+
+describe("parseSettingsTab", () => {
+  // 2026-10-17 (basit arayüz): Ayarlar sekmeleri; ?tab= ve localStorage değeri doğrulanır.
+  it("geçerli değerler", () => {
+    expect(parseSettingsTab("profil")).toBe("profil");
+    expect(parseSettingsTab("genel")).toBe("genel");
+    expect(parseSettingsTab("bildirim")).toBe("bildirim");
+  });
+  it("?tab=profile (İngilizce) profil sekmesine eşlenir", () => expect(parseSettingsTab("profile")).toBe("profil"));
+  it("geçersiz/boş → null", () => {
+    expect(parseSettingsTab("x")).toBeNull();
+    expect(parseSettingsTab(null)).toBeNull();
+    expect(parseSettingsTab(undefined)).toBeNull();
+  });
+  it("sekme listesi", () => expect(SETTINGS_TABS.map((t) => t.id)).toEqual(["genel", "bildirim", "profil"]));
 });

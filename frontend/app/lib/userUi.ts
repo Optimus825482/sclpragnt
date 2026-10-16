@@ -37,24 +37,40 @@ export function confidenceBadge(score: number | null | undefined): "Yüksek" | "
   return "Düşük";
 }
 
-export type MenuItem = { id: string; href: string; label: string; icon: string; locked?: boolean };
+// 2026-10-17 (basit arayüz): `legacy` = menüde GÖSTERİLMEZ ama kimlik backend MENU_IDS'te kalır ve
+// rota doğrudan bağlantıyla çalışır (Bildirimler içeriği Raporlar'da; Profil, Ayarlar sekmesi).
+export type MenuItem = { id: string; href: string; label: string; icon: string; locked?: boolean; legacy?: boolean };
 
 /** Kimlikler backend `app/ui_prefs.py` MENU_IDS ile AYNIDIR. */
 export const MENU_ITEMS: readonly MenuItem[] = [
   { id: "home", href: "/", label: "Ana sayfa", icon: "🏠", locked: true },
-  { id: "notifications", href: "/notifications", label: "Bildirimler", icon: "🔔" },
+  { id: "notifications", href: "/notifications", label: "Bildirimler", icon: "🔔", legacy: true },
   { id: "radar", href: "/monitoring", label: "Radar", icon: "📡" },
   { id: "binance", href: "/binance-tr", label: "Binance TR", icon: "💱" },
   { id: "risk", href: "/risk", label: "Risk Merkezi", icon: "🛡️" },
   { id: "charts", href: "/charts", label: "Grafik", icon: "📈" },
   { id: "reports", href: "/reports", label: "Raporlar", icon: "📋" },
-  { id: "profile", href: "/profile", label: "Profil", icon: "👤" },
+  { id: "profile", href: "/profile", label: "Profil", icon: "👤", legacy: true },
   { id: "settings", href: "/settings", label: "Ayarlar", icon: "⚙️", locked: true },
 ];
 
+// 2026-10-17 (basit arayüz): Ayarlar sayfası sekmeleri (Profil artık burada).
+export type SettingsTabId = "genel" | "bildirim" | "profil";
+export const SETTINGS_TABS: readonly { id: SettingsTabId; label: string }[] = [
+  { id: "genel", label: "Genel" },
+  { id: "bildirim", label: "Bildirim" },
+  { id: "profil", label: "Profil" },
+];
+
+/** ?tab= veya localStorage değerini sekme kimliğine çevirir; tanınmazsa null. "profile" takma adı desteklenir. */
+export function parseSettingsTab(v: string | null | undefined): SettingsTabId | null {
+  if (v === "profile") return "profil";
+  return SETTINGS_TABS.some((t) => t.id === v) ? (v as SettingsTabId) : null;
+}
+
 export function visibleMenu(hidden: string[]): MenuItem[] {
   const set = new Set(hidden);
-  return MENU_ITEMS.filter((m) => m.locked || !set.has(m.id));
+  return MENU_ITEMS.filter((m) => !m.legacy && (m.locked || !set.has(m.id)));
 }
 
 export function isUserRole(role: string | null): boolean {

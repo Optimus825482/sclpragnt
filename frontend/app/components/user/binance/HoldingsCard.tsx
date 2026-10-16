@@ -11,8 +11,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import UncertainOrderNotice from "./UncertainOrderNotice";
 import {
   describeOrderLookup, holdingNetPnl, intentId, isDefinitiveReject, minNotionalError, priceAgeInfo, resetIntent, sellIntentKey,
-  sellStatusSymbols, type IntentRef,
-} from "./orderIntent";
+  sellStatusSymbols, type IntentRef, retryWhileGatewayUnavailable } from "./orderIntent";
 
 const CHIPS = [25, 50, 75, 100];
 
@@ -178,7 +177,9 @@ export default function HoldingsCard({ holdings, loading = false, liveEnabled, o
     setLookupBusy(true);
     let last: Awaited<ReturnType<typeof call<Record<string, unknown>>>> | null = null;
     for (const symbol of sellStatusSymbols(uncertain.asset)) {
-      const r = await call<Record<string, unknown>>("GET", `/api/binance/order-status?symbol=${symbol}&client_id=${encodeURIComponent(uncertain.cid)}`);
+      // 2026-10-17 (basit arayüz): ağ geçidi "meşgul/başlatılıyor" dönerse 3 kez (4 sn ara) yeniden dene.
+      const r = await retryWhileGatewayUnavailable(() =>
+        call<Record<string, unknown>>("GET", `/api/binance/order-status?symbol=${symbol}&client_id=${encodeURIComponent(uncertain.cid)}`));
       last = r;
       const found = r.ok && Object.keys(((r.body as { order?: object }).order ?? {})).length > 0;
       if (found) break;
