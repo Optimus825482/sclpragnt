@@ -1483,3 +1483,73 @@ def get_common_symbols(api_key: str = "", api_secret: str = "") -> dict:
     """GET /open/v1/common/symbols — sembol filtreleri, lot büyüklükleri vb. (public)."""
     payload = _http_get_json(f"{REST_BASE}/open/v1/common/symbols")
     return _unwrap(payload) if isinstance(payload, dict) else payload
+
+
+# ---------------------------------------------------------------------------
+# Komisyon modu (BNB ile komisyon indirimi) — salt okunur
+# ---------------------------------------------------------------------------
+# ARAŞTIRMA (2026-10-16, binance.tr/apidocs): Binance TR open/v1 API'sinde
+# BNB-burn okuma/yazma ucu YOKTUR (global /sapi/v1/bnbBurn'ün TR karşılığı
+# yok). Hesap komisyonu yalnız GET /open/v1/account/spot cevabındaki
+# makerCommission / takerCommission / fiatMakerCommission / fiatTakerCommission
+# alanlarından okunabilir; BNB bakiyesi accountAssets içinden gelir.
+# Bu yüzden `spot_bnb_burn` her zaman None (bilinmiyor) döner ve mod
+# değiştirilemez.
+FEE_MODE_SOURCE = "/open/v1/account/spot"
+BNB_BURN_UNSUPPORTED_MSG = (
+    "Binance TR API'de BNB komisyon modu değiştirme ucu yok; "
+    "Binance TR web ayarlarından değiştirin"
+)
+
+
+def _commission_to_fraction(value) -> float | None:
+    """Komisyon alanını orana (0.001 = %0,1) çevirir.
+
+    Doküman birim belirtmiyor: global API gibi baz puan tam sayısı (ör. 10 →
+    %0,1) veya zaten ondalık oran (0.001) gelebilir. 1 ve üzeri değerler baz
+    puan sayılır; 0 ≤ değer < 1 oran kabul edilir. Geçersiz/negatif → None.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v) or v < 0:
+        return None
+    return v / 10000.0 if v >= 1 else v
+
+
+def get_fee_mode(api_key: str, api_secret: str) -> dict:
+    """Hesabın komisyon bilgisi + BNB bakiyesi (GET /open/v1/account/spot).
+
+    Döner: {bnb_burn_supported, spot_bnb_burn, maker_commission,
+    taker_commission, fiat_maker_commission, fiat_taker_commission,
+    bnb_balance, source}. Komisyonlar ORAN olarak (0.001 = %0,1).
+    """
+    data = _signed_request("GET", FEE_MODE_SOURCE, None, api_key, api_secret)
+    if not isinstance(data, dict):
+        data = {}
+    bnb_balance: float | None = 0.0
+    assets = data.get("accountAssets")
+    if isinstance(assets, list):
+        total = 0.0
+        for a in assets:
+            if isinstance(a, dict) and str(a.get("asset") or "").upper() == "BNB":
+                total += _qty_to_float(a.get("free")) + _qty_to_float(a.get("locked"))
+        bnb_balance = total
+    else:
+        bnb_balance = None
+    return {
+        "bnb_burn_supported": False,
+        "spot_bnb_burn": None,
+        "maker_commission": _commission_to_fraction(data.get("makerCommission")),
+        "taker_commission": _commission_to_fraction(data.get("takerCommission")),
+        "fiat_maker_commission": _commission_to_fraction(data.get("fiatMakerCommission")),
+        "fiat_taker_commission": _commission_to_fraction(data.get("fiatTakerCommission")),
+        "bnb_balance": bnb_balance,
+        "source": FEE_MODE_SOURCE,
+    }
+
+
+def set_fee_mode(api_key: str, api_secret: str, spot_bnb_burn: bool) -> dict:
+    """BNB ile komisyon modunu değiştirir — Binance TR'de böyle bir uç yok."""
+    raise NotImplementedError(BNB_BURN_UNSUPPORTED_MSG)
