@@ -186,6 +186,168 @@ _AUTO_PAPER_STATE = {
     "consecutive_errors": 0,
 }
 
+# ---------------------------------------------------------------------------
+# 2026-10-16 (giriş gecikmesi): bildirim -> paper dolum gecikmesi ve giriş kayması
+# ÖLÇÜMÜ. 30 günlük ölçüm: tek umut verici alt küme (trend_devam + skor>=95,
+# brüt +0,26%) bildirimden 1 adet 5m mum sonra girilince kenarını yitiriyor
+# (brüt -0,07%) → bildirim `detected_at` ile dolum arasındaki saniyeler kârlılığı
+# belirliyor. Bu blok YALNIZ gözlemdir; giriş davranışı değişmez.
+# NOT: `auto_paper_trades` tablosunda `entry_context` kolonu YOKTUR (şema
+# doğrulandı; migration eklenmedi). Bu yüzden kayıt (a) süreç içi halka
+# tamponda ve (b) logda tutulur; kalıcı ölçüm `monitoring_notifications`
+# join'inden (`/api/auto-paper/stats` ve scripts/entry_latency_report.py) gelir.
+# ---------------------------------------------------------------------------
+from collections import deque  # noqa: E402
+
+_ENTRY_LATENCY_LOG: "deque[dict]" = deque(maxlen=200)
+_ENTRY_LATENCY_STATS_LIMIT = 200
+#: "Yüksek gecikme" payı eşiği (sn) — stats bloğundaki `share_over_15s`.
+_ENTRY_LATENCY_SHARE_SEC = 15.0
+
+
+def compute_entry_latency_sec(entry_time, detected_at) -> float | None:
+    """`entry_time - detected_at` (sn). ms epoch (>1e11) saniyeye çevrilir.
+
+    Geçersiz/eksik girdi veya zaman makinesi (negatif fark) → None/0'a kırpılmaz:
+    negatif fark saat kayması demektir, ölçüm dışı bırakılır (None).
+    """
+    try:
+        et = float(entry_time or 0)
+        dt = float(detected_at or 0)
+    except (TypeError, ValueError):
+        return None
+    if et > 1e11:
+        et /= 1000.0
+    if dt > 1e11:
+        dt /= 1000.0
+    if et <= 0 or dt <= 0:
+        return None
+    lat = et - dt
+    return lat if lat >= 0 else None
+
+
+def compute_entry_slippage_pct(entry_price, notification_price) -> float | None:
+    """`(entry_price / notification.price - 1) * 100` (yüzde; + = bildirimden pahalı giriş)."""
+    try:
+        ep = float(entry_price or 0)
+        np_ = float(notification_price or 0)
+    except (TypeError, ValueError):
+        return None
+    if ep <= 0 or np_ <= 0:
+        return None
+    return (ep / np_ - 1.0) * 100.0
+
+
+def _pctile(sorted_vals: list, q: float) -> float | None:
+    """Doğrusal enterpolasyonlu yüzdelik (q 0-100); boş liste → None."""
+    if not sorted_vals:
+        return None
+    if len(sorted_vals) == 1:
+        return float(sorted_vals[0])
+    k = (len(sorted_vals) - 1) * (q / 100.0)
+    lo = int(math.floor(k))
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return float(sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (k - lo))
+
+
+def summarize_entry_latency(rows: list, share_sec: float = _ENTRY_LATENCY_SHARE_SEC) -> dict:
+    """Satırlardan (``latency_sec``, ``slippage_pct``) `entry_latency` stats bloğu.
+
+    Her satır dict; ``latency_sec``/``slippage_pct`` None olabilir (o ölçüm dışı).
+    n = geçerli gecikme sayısı.
+    """
+    lats = sorted(float(r["latency_sec"]) for r in rows if r.get("latency_sec") is not None)
+    slips = sorted(float(r["slippage_pct"]) for r in rows if r.get("slippage_pct") is not None)
+    n = len(lats)
+    over = sum(1 for v in lats if v > share_sec)
+    return {
+        "n": n,
+        "median_latency_sec": (round(_pctile(lats, 50), 2) if lats else None),
+        "p90_latency_sec": (round(_pctile(lats, 90), 2) if lats else None),
+        "max_latency_sec": (round(lats[-1], 2) if lats else None),
+        "median_slippage_pct": (round(_pctile(slips, 50), 4) if slips else None),
+        "share_over_15s": (round(over / n, 4) if n else None),
+        "share_threshold_sec": share_sec,
+        "slippage_n": len(slips),
+    }
+
+
+def record_entry_latency(symbol: str, trade_id, entry_time, entry_price, notification: dict,
+                         market_price=None) -> dict:
+    """Açılışta gecikme/kayma ölç, halka tampona yaz, eşik aşılırsa WARNING bas.
+
+    Hiçbir koşulda istisna fırlatmaz (gözlem, girişi bozmamalı).
+    """
+    try:
+        latency = compute_entry_latency_sec(entry_time, notification.get("detected_at"))
+        slippage = compute_entry_slippage_pct(entry_price, notification.get("price"))
+        # Saf piyasa kayması (modelin giriş kayması hariç): ticker / bildirim fiyatı.
+        drift = compute_entry_slippage_pct(market_price, notification.get("price")) if market_price else None
+        rec = {
+            "trade_id": trade_id,
+            "symbol": symbol,
+            "mode": notification.get("mode"),
+            "entry_time": float(entry_time or 0),
+            "entry_latency_sec": (round(latency, 2) if latency is not None else None),
+            "entry_slippage_pct": (round(slippage, 4) if slippage is not None else None),
+            "market_drift_pct": (round(drift, 4) if drift is not None else None),
+            # summarize_entry_latency ortak anahtarları
+            "latency_sec": latency,
+            "slippage_pct": slippage,
+        }
+        _ENTRY_LATENCY_LOG.append(rec)
+        warn_sec = float(getattr(config, "AUTO_PAPER_ENTRY_LATENCY_WARN_SEC", 15.0))
+        if latency is not None and latency > warn_sec:
+            logger.warning("auto_paper %s: GİRİŞ GECİKMESİ yüksek %.1fs > %.0fs (kayma %s%%, "
+                           "bildirim=%s) — bildirim→dolum gecikmesi kenarı eritir",
+                           symbol, latency, warn_sec,
+                           (f"{slippage:+.3f}" if slippage is not None else "?"),
+                           notification.get("id"))
+        else:
+            logger.info("auto_paper %s: giriş gecikmesi=%ss kayma=%s%%", symbol,
+                        (f"{latency:.1f}" if latency is not None else "?"),
+                        (f"{slippage:+.3f}" if slippage is not None else "?"))
+        return rec
+    except Exception as exc:  # pragma: no cover - savunma
+        logger.debug("auto_paper %s: giriş gecikmesi ölçümü atlandı: %s", symbol, exc)
+        return {}
+
+
+async def _fetch_recent_entry_latency_rows(limit: int = _ENTRY_LATENCY_STATS_LIMIT) -> list[dict]:
+    """Son `limit` trade'in dolum zamanı/fiyatı + bildirimin detected_at/fiyatı (DB join)."""
+    def op(conn):
+        cur = conn.execute(
+            "SELECT t.id, t.symbol, t.entry_time, t.entry_price, n.detected_at, n.price AS notif_price "
+            "FROM auto_paper_trades t JOIN monitoring_notifications n ON n.id = t.notification_id "
+            "ORDER BY t.id DESC LIMIT ?", (int(limit),))
+        out = []
+        for r in cur.fetchall():
+            out.append({
+                "trade_id": r["id"], "symbol": r["symbol"],
+                "latency_sec": compute_entry_latency_sec(r["entry_time"], r["detected_at"]),
+                "slippage_pct": compute_entry_slippage_pct(r["entry_price"], r["notif_price"]),
+            })
+        return out
+    return await database._run_db(op)
+
+
+async def get_entry_latency_block(limit: int = _ENTRY_LATENCY_STATS_LIMIT) -> dict:
+    """`/api/auto-paper/stats` `entry_latency` bloğu: DB join (kalıcı), olmazsa halka tampon."""
+    source = "db_join"
+    try:
+        rows = await _fetch_recent_entry_latency_rows(limit)
+    except Exception as exc:
+        logger.debug("entry_latency DB join atlandı: %s", exc)
+        rows = []
+    if not rows:
+        source = "memory_ring"
+        rows = list(_ENTRY_LATENCY_LOG)[-limit:]
+    block = summarize_entry_latency(rows)
+    block["source"] = source
+    block["warn_sec"] = float(getattr(config, "AUTO_PAPER_ENTRY_LATENCY_WARN_SEC", 15.0))
+    return block
+
+
 #: Stop loss sonrası sembol bazında aşırı işlem (churn/peş peşe kayıp) koruma süreleri {symbol: expire_timestamp}
 _stop_loss_cooldowns: dict[str, float] = {}
 #: Kârlı kapanış (take_profit/trailing_stop) sonrası kârı geri vermeme (post-win churn) koruma süreleri {symbol: expire_timestamp}
@@ -873,6 +1035,10 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         trade_id = trade["id"]
         # trade_id'yi sinyale geri yazamayız (transaction kapandı); id'yi state'te tut
         _AUTO_PAPER_STATE["total_opened"] += 1
+        # 2026-10-16 (giriş gecikmesi): bildirim→dolum gecikmesi + giriş kayması
+        # ölçümü (yalnız gözlem; hata girişi bozmaz).
+        record_entry_latency(symbol, trade_id, now, fill_entry, notification,
+                             market_price=current_price)
 
         # Açılan sembolü anında akış evrenine ekle (market.symbols içinde kalsın ve WS/tazelik verisi canlı aksın)
         try:
@@ -1843,6 +2009,12 @@ async def get_stats_endpoint(day: str | None = None, include_archived: bool = Fa
     stats = await database.get_auto_paper_stats(
         day=day, ignore_reports_baseline=include_archived)
     reset_at = await database.get_reset_cutoff()
+    # 2026-10-16 (giriş gecikmesi): son 200 trade için bildirim→dolum gecikmesi/kayma.
+    try:
+        entry_latency = await get_entry_latency_block()
+    except Exception as exc:
+        logger.debug("entry_latency bloğu atlandı: %s", exc)
+        entry_latency = {"n": 0, "error": str(exc)}
     return {
         "paper_only": True,
         "day": day or "today",
@@ -1850,6 +2022,7 @@ async def get_stats_endpoint(day: str | None = None, include_archived: bool = Fa
         "reset_at": reset_at,
         "include_archived": include_archived,
         "state": dict(_AUTO_PAPER_STATE),
+        "entry_latency": entry_latency,
     }
 
 
