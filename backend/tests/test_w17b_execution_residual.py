@@ -43,6 +43,12 @@ import app.config as config_module  # noqa: E402
 from app.routers import auto_paper  # noqa: E402
 from app.routers import velocity  # noqa: E402
 
+import pytest  # noqa: E402
+
+# Üretim kopyasının canlı içeriğinden (ayarlar, açık pozisyonlar) bağımsız koş;
+# fixture: backend/conftest.py::isolated_db_state
+pytestmark = pytest.mark.usefixtures("isolated_db_state")
+
 _BACKEND = ROOT
 _VELOCITY_SRC = (_BACKEND / "app" / "routers" / "velocity.py").read_text(encoding="utf-8")
 _AUTO_PAPER_SRC = (_BACKEND / "app" / "routers" / "auto_paper.py").read_text(encoding="utf-8")

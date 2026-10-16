@@ -31,6 +31,7 @@ yapıp değeri GERİ KOYMAZ; bu tür sızıntılar testleri KAYNAK/varış sıra
 bağımlı hale getirir. Fixture her testten sonra ortamı başa döndürür.
 """
 import os
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -53,3 +54,54 @@ def _isolate_environment():
     finally:
         os.environ.clear()
         os.environ.update(saved)
+
+
+# Üretim kopyasının CANLI içeriğine bağlı testleri ayıran opt-in fixture.
+#
+# 2026-10-16: DATABASE_URL bir üretim kopyasına işaret ettiğinde auto_paper /
+# yürütme testleri 12 yerde kırılıyordu: `llm_settings.auto_paper_settings`
+# (min_score=85, reopen kapalı ...) kod varsayılanlarını eziyor, açık
+# auto_paper pozisyonları ve `positions` satırları giriş kapılarını kapatıyor,
+# üstüne `test_execution_fixes` gerçek `save_position` ile `positions`'a
+# TESTTRY satırı yazıp bırakıyordu. Aşağıdaki fixture OKUMA tarafını
+# "boş/varsayılan veritabanı"na sabitler, YAZMA tarafını no-op yapar: test
+# sonucu DB'nin içeriğine bağlı olmaz ve DB'ye hiçbir şey yazılmaz.
+#
+# Neden `_run_db` yerine fonksiyon düzeyinde? (Bkz. yukarıdaki not 2.) Testler
+# zaten `patch.object(database, "<fonksiyon>", ...)` ile fonksiyon düzeyinde
+# yamalar; burada aynı seviyede, tek yerde ve açık varsayılanlarla yapılır.
+# Bir test belirli bir okumayı kendi `patch`'iyle ezebilir (iç içe patch,
+# fixture'ın değerinin üstüne biner ve çıkışta ona döner).
+#
+# Kullanım (test modülünün başında):
+#     pytestmark = pytest.mark.usefixtures("isolated_db_state")
+_ISOLATED_DB_READS = {
+    # Ayar okuması: anahtar için `default` döner → kod varsayılanları geçerli.
+    "get_llm_setting": lambda: AsyncMock(side_effect=lambda key, default=None: default),
+    "load_positions": lambda: AsyncMock(return_value={}),
+    "get_open_auto_paper_trade": lambda: AsyncMock(return_value=None),
+    "list_auto_paper_trades": lambda: AsyncMock(return_value=[]),
+    "get_last_auto_paper_stop_loss_time": lambda: AsyncMock(return_value=None),
+    "get_last_auto_paper_entry_time": lambda: AsyncMock(return_value=None),
+    "get_last_auto_paper_winning_trade_time": lambda: AsyncMock(return_value=None),
+    "get_recent_auto_paper_trade_by_notification": lambda: AsyncMock(return_value=None),
+    "get_recent_auto_paper_trade_by_notification_key": lambda: AsyncMock(return_value=None),
+}
+_ISOLATED_DB_WRITES = (
+    "set_llm_setting", "save_position", "delete_position", "save_signal",
+    "save_decision_log",
+)
+
+
+@pytest.fixture
+def isolated_db_state(monkeypatch):
+    """`app.database` okumalarını boş/varsayılan duruma sabitle, yazmaları kapat."""
+    from app import database
+
+    for name, make_mock in _ISOLATED_DB_READS.items():
+        if hasattr(database, name):
+            monkeypatch.setattr(database, name, make_mock())
+    for name in _ISOLATED_DB_WRITES:
+        if hasattr(database, name):
+            monkeypatch.setattr(database, name, AsyncMock(return_value=None))
+    yield database

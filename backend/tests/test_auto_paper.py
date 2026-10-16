@@ -20,6 +20,12 @@ if str(ROOT) not in sys.path:
 from app.config import config
 from app.routers import auto_paper
 
+import pytest  # noqa: E402
+
+# Üretim kopyasının canlı içeriğinden (ayarlar, açık pozisyonlar) bağımsız koş;
+# fixture: backend/conftest.py::isolated_db_state
+pytestmark = pytest.mark.usefixtures("isolated_db_state")
+
 
 def _make_notification(symbol="APTEST", score=60.0, target_pct=2.0, price=100.0, notif_id=None):
     # `mode` (2026-10-07): varsayılan `trend_devam` — otonom katmanın varsayılan
