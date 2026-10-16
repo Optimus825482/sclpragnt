@@ -185,3 +185,79 @@ Dikkat: DB'de kayıtlı `auto_paper_settings.allowed_modes` varsa yeni varsayıl
 2. `trend_devam + skor ≥95` ve `jump+velocity` için ayrı sayaçlar; n≥300 olmadan bonus/öncelik açma.
 3. Mumu olmayan 66 sembol için `historical_candles` doldurma (REST backfill) — bildirim ölçümünün yarısı bu yüzden eksik.
 4. Velocity adaylarının kayıtlı `touched_target` (%50) ile mum yeniden ölçümü (%17–33) arasındaki fark araştırılmalı (pencere tanımı).
+
+---
+
+## 7. 30 Günlük Ölçüm (16 Eylül – 16 Ekim 2026)
+
+**Ölçülen şey:** yükselme potansiyeli olan sembolü tespit edip bildirim gönderen sistemin isabeti (otonom işlem kârı değil). Önce 5 dakikalık mumlar 303 sembol için 30 gün geriye dolduruldu (`scripts/backfill_historical_candles.py`, 2.49 M satır, %100 kapsama, 16.5 dk). Bildirim ölçümü mum kapsamı **tam** (3597/3597).
+
+### 7.1 Bildirim tespit sistemi: şansa karşı
+"Şans" = aynı sembolde, aynı hedefle, bildirim anındaki 30 dk volatilite ve getirisi benzer rastgele anlar. hit = ufukta MFE ≥ bildirilen hedef.
+
+| Grup | n | hit30 | hit60 [CI95] | hit120 | Med. MFE/MAE60 | Net60 proxy | Şans hit60 |
+|---|---|---|---|---|---|---|---|
+| Tümü | 3597 | 33.1 | **39.9** [38–42] | 47.2 | 1.99 / −2.66 | −0.57 | 28.8 |
+| Tekrarsız (sembol/60 dk) | 1869 | 31.0 | 38.8 | 45.7 | 1.82 / −2.23 | −0.48 | 27.0 |
+| H38 (kısmi) | 575 | 49.6 | 57.2 | 63.1 | | −0.38 | 39.2 |
+| H39 | 636 | 26.3 | 33.3 | 40.6 | | −0.56 | 21.9 |
+| H40 | 946 | 28.2 | 35.6 | 43.9 | | −0.69 | 25.7 |
+| H41 | 1087 | 33.3 | 39.3 | 46.3 | | −0.55 | 29.8 |
+| H42 (kısmi) | 353 | 30.9 | 36.8 | 45.0 | | −0.65 | 29.3 |
+
+- Dedektör **şanstan iyi**: 60 dk isabet 11 puan üstte ve 5 haftanın 5'inde pozitif (7–18 puan). Rejim etkisi büyük (H38 %57, H39 %33).
+- **Net kazanç yok:** net60 −0.57, şans tabanı −0.49. Bildirimler yükselişi haber veriyor ama −%3 stop + %0.35 maliyetle kâra çevrilemiyor.
+- Gün-içi precision@5 = 0.60, @10 = 0.58 (gün tabanı %39) — 7 güne göre daha iyi; Spearman(skor, MFE60) 0.19.
+
+### 7.2 Aile, mod, skor (hit60; şans = eşleşmiş)
+
+| Grup | n | hit60 | Şans | Net60 |
+|---|---|---|---|---|
+| velocity | 1087 | **48.6** | 41.1 | −0.67 |
+| global | 907 | 40.5 | 30.8 | −0.58 |
+| rising | 1153 | 41.2 | 26.4 | −0.47 |
+| jump / early | ~1600 | 39.4 / 39.3 | 26.8 | −0.56 |
+| jump+early+rising+velocity | 227 | **59.9** | 52.8 | −0.68 |
+| jump+early (yalnız) | 169 | 18.9 | 8.6 | −0.51 |
+| **trend_devam** | 1021 | **53.6** | 39.4 | **−0.34** |
+| global_lead_lag | 717 | 38.5 | 30.6 | −0.64 |
+| unified | 1170 | 32.8 | 19.1 | −0.39 |
+| notr | 406 | 41.1 | **45.9** (şansın altı) | −1.25 |
+| llm_ikinci_goz | 258 | 22.1 | 19.5 | −1.00 |
+| Skor <70 / 70–85 / 85–95 / 95–99.9 / 100+ | 344 / 327 / 1772 / 523 / 631 | 29.1 / 41.6 / 36.7 / 39.4 / **54.4** | 21.9 / 28.5 / 26.5 / 29.9 / 42.6 | −0.78 / −0.39 / −0.61 / −0.61 / −0.41 |
+
+`llm_verdict` (FAKE %41 vs DEVAM %30) ve `macd_mtf` (GÜÇLÜ %37 vs etiketsiz %41) doğrulamaları isabeti **yükseltmiyor**. Saat 21–23 bandı en zayıf (%31). Skor taban olarak yalnız `trend_devam` içinde çalışıyor (95+ %62.3 vs altı %44.1, ρ 0.24); `unified`/`notr`/`llm_ikinci_goz`'da skor–MFE ilişkisi yok (unified'da 85–95, 70–85'ten kötü: %25 vs %48).
+
+### 7.3 Güncellenmiş kapıların 30 güne geriye dönük etkisi
+
+| Senaryo | n (pay) | hit60 | Şans | Net60 | Haftalık hit60 (H38–H42) |
+|---|---|---|---|---|---|
+| Orijinal | 3597 | 39.9 | 28.8 | −0.57 | 57 / 33 / 36 / 39 / 37 |
+| a) short_squeeze/snapback kara listesi | 3597 (%100) | 39.9 | 28.8 | −0.57 | aynı (bu aileler bildirim üretmemiş) |
+| b) mod kısıtı (unified, notr, v_donusu dışarı) | 1996 (%55) | 44.1 | 33.1 | −0.53 | 71 / 52 / 39 / 43 / 45 |
+| d) b + skor ≥95 | 747 (%21) | **55.3** | 42.1 | **−0.32** | 72 / 73 / 45 / 57 / 50 |
+| e) b + yalnız trend_devam | 1021 (%28) | 53.6 | 39.4 | −0.34 | 71 / 58 / 40 / 57 / 45 |
+
+Kapılar 5 haftanın 5'inde isabeti yükseltiyor; şansa göre fark b'de değişmiyor (+8), d/e'de +11'e çıkıyor ve net60 şans tabanını (−0.64) geçiyor. Bedeli hacim: günde 116 bildirimden 24–33'e.
+**Çapraz kontrol:** uygulamanın kendi etiketiyle (n=706) uyum hit60'ta %84; `HEDEFE_ULTI` etiketlilerin %99'u mumda da hit; mumda hit olanların yalnız %59'u uygulamada etiketli (uygulama kaçırıyor; `global_lead_lag` ve `llm_ikinci_goz` hiç etiketlenmiyor).
+
+### 7.4 Replay ve kalibrasyon, 30 gün (120.876 aday, 295/295 sembol Postgres'ten)
+
+| Ölçüm | n (sınav) | TP/Kazanma % | Ort. net %/işlem | Not |
+|---|---|---|---|---|
+| Birleşik havuz replay (mevcut) | 48.351 | TP 30.3 | −0.48 (medyan −0.35) | 10/10 gün, 2/2 hafta negatif; birleşik = mevcut; skortop −0.53 |
+| Kalibrasyon baseline (SL 1.0/trig 2.0/gap 1.0) | 48.351 | kazanma 33.4 | −0.25 | KEEP_DEFAULT_NO_EDGE |
+| En iyi: SL 0.8/trig 1.0/gap 0.8 | 48.344 | 41.4 | −0.158 | 51 konfigürasyonun hiçbiri pozitif değil |
+| time_stop_15 / 20 (eğitim) | 72.525 | 28.7 / 30.8 | −0.246 / −0.245 | baseline eğitim −0.257; etkisiz |
+| Giriş taraması: skor ≥p85 / ATR ≥p70 / top-1 | 11.920 / 8.859 / 378 | — | −0.138 / **−0.019** / −0.606 | NO_ENTRY_EDGE; top-N en kötü |
+
+7 güne göre: aynı yön, daha büyük örneklemle daha kesin (t ≈ −62). ATR ≥p70 filtresi başabaşa en yakın (−0.02), tek dikkat çeken giriş özelliği.
+
+### 7.5 30 günün özeti
+1. Tespit sistemi **gerçek bir sinyal** taşıyor (şans +11 puan, her hafta), ama **kârlı değil**: brüt kenar komisyon ve −%3 stop asimetrisinin altında kalıyor.
+2. Sinyali taşıyanlar `trend_devam` modu, velocity ailesi ve dört-kaynaklı çakışma; `notr` şansın altında, `unified` ve `llm_ikinci_goz` zayıf, LLM/MACD doğrulamaları katkısız.
+3. Bugünkü mod kısıtı doğru yönde (5/5 hafta); `trend_devam + skor ≥95` en güçlü aday (n=747, isabet %55, net −0.32).
+4. Çıkış geometrisi değişikliği ve zaman-stop 30 günde de edge üretmiyor; giriş seçicide yalnız ATR ≥p70 başabaşa yakın.
+5. Ölçüm altyapısı artık 30 gün ve tam kapsama ile saniyeler içinde koşuyor (`--price-source`, Postgres mum okuması); darboğaz REST çekimiydi, paralellik değil.
+
+**Sonraki adım önerileri:** (i) `RADAR_LIST_MIN_SCAN_SCORE`'u yalnız `trend_devam` için 95'e bağlayan mod-bazlı taban; (ii) `notr` ve `llm_ikinci_goz` modlarını bildirimden çıkar (`notr` şansın altı); (iii) giriş filtresi olarak ATR ≥p70'i replay'de A/B; (iv) uygulamanın outcome etiketlemesini `global_lead_lag` ve `llm_ikinci_goz` için de aç; (v) net kârlılık için ürün kararı (komisyon/ufuk) değişmedi.
