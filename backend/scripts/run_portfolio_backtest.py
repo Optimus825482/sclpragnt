@@ -1,4 +1,9 @@
-"""Chronological shared-wallet replay of the live BB-MFI paper strategy."""
+"""REFERANS BACKTEST — eski BB-MFI mean-reversion stratejisinin ortak-cüzdan replay'i.
+
+UYARI (2026-10-16): BB-MFI stratejisi 2026-09-04'te canlı koddan kaldırıldı. Bu
+betik yalnız TARİHSEL REFERANS içindir (Pine v1/v2/v3 profilleri); canlı
+velocity/LLM radar hattını ÖLÇMEZ. `--pine-version current` artık açık hata verir.
+"""
 
 import argparse
 import asyncio
@@ -31,6 +36,21 @@ for _name, _value in {
 }.items():
     if not hasattr(config, _name):
         setattr(config, _name, _value)
+
+
+_REFERENCE_WARNING = ("REFERANS BACKTEST: 2026-09-04'te kaldırılan eski BB-MFI mean-reversion "
+                      "stratejisini oynatır; canlı velocity/LLM radar hattını ÖLÇMEZ. "
+                      "Profil: --pine-version v1|v2|v3 (varsayılan v3).")
+
+
+def _validate_pine_version(version: str) -> str:
+    """2026-10-16 (harness onarımı): `current` sessizce v3'e düşmez, açık hata verir."""
+    if version == "current" and not hasattr(ScalpAnalyzer, "strategy_bb_mfi_mean_reversion"):
+        raise SystemExit(
+            "HATA: --pine-version current desteklenmiyor: canlı BB-MFI stratejisi 2026-09-04'te "
+            "kaldırıldı (analyzer.strategy_bb_mfi_mean_reversion yok). Referans replay için "
+            "--pine-version v3 (ya da v1/v2) verin.")
+    return version
 
 
 def iso(ts):
@@ -71,7 +91,7 @@ def apply_live_parity_72h_profile(args):
     # 72 saatlik karar penceresi + indikatör warm-up; daha kısa indirme ile
     # pencerenin ilk günü sessizce atlanır ve parity bozulur.
     args.fetch_days = max(int(args.fetch_days), 4)
-    args.pine_version = "current"
+    args.pine_version = _validate_pine_version("current")
     requested_symbols = [str(symbol).replace("_", "").upper() for symbol in (args.symbols or [])]
     args.symbols = requested_symbols if args.live_parity_keep_symbols and requested_symbols else [str(symbol).replace("_", "").upper() for symbol in config.SYMBOLS]
     args.use_all_requested = True
@@ -1419,7 +1439,7 @@ async def run(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=_REFERENCE_WARNING)
     parser.add_argument("--symbols", nargs="*")
     parser.add_argument("--live-parity-72h", action="store_true",
                         help="Aktif BB-MFI paper ayarlarını dondurur ve 72 saatlik, salt-okunur ortak cüzdan replay çalıştırır")
@@ -1432,7 +1452,8 @@ if __name__ == "__main__":
     parser.add_argument("--use-all-requested", action="store_true", help="Verilen tarama evrenini güncel ACTIVE filtresi uygulamadan replay et")
     parser.add_argument("--interval", choices=("1m", "3m", "5m", "15m"), default="5m")
     parser.add_argument("--data-source", choices=("public", "historical-db"), default="public")
-    parser.add_argument("--pine-version", choices=("current", "v1", "v2", "v3"), default="current")
+    parser.add_argument("--pine-version", choices=("current", "v1", "v2", "v3"), default="v3",
+                        help="BB-MFI profili (referans). 'current' kaldırılmış canlı stratejiyi ister → açık hata")
     parser.add_argument("--mtf-feature-gate", choices=("none", "high-tf", "research-score", "bullish-count", "all-5", "all-5-volume-flow", "acetry-rule", "acetry-rule-relaxed"), default="none",
                         help="M1/M5/M15/H1/H4 causal entry feature gate; research only")
     parser.add_argument("--fetch-days", type=int, default=2, help="Feature warmup dahil public candle window")
@@ -1549,6 +1570,7 @@ if __name__ == "__main__":
     parser.add_argument("--remaining-cash-sizing", action="store_true", help="Her girişte toplam özsermaye yerine kalan kullanılabilir nakdin yüzdesini kullan")
     parser.add_argument("--output", default="portfolio-replay-latest.json")
     args = parser.parse_args()
+    _validate_pine_version(args.pine_version)
     if args.activity_refresh_minutes <= 0:
         parser.error("--activity-refresh-minutes pozitif olmalıdır")
     if args.live_parity_end_hours_ago < 0:
