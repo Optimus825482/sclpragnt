@@ -64,16 +64,108 @@ def _load_candidates(days: float, db_url: str) -> list[dict]:
     return out
 
 
-def _load_prices(syms: set[str]) -> dict:
+_PRICE_SOURCES = ("auto", "sqlite", "postgres", "rest")
+
+
+def _load_prices_sqlite(syms: set[str]) -> dict:
+    """work/market_cache.sqlite (`klines`, 5m). Dosya yoksa boş döner."""
+    if not os.path.exists(_DB):
+        return {}
     conn = sqlite3.connect(_DB)
     out: dict = {}
-    for sym, ot, h, l, c in conn.execute(
-        "SELECT symbol, open_time, high, low, close FROM klines "
-        "WHERE interval='5m' ORDER BY symbol, open_time"):
-        s = str(sym).upper()
-        if s in syms and c and c > 0:
-            out.setdefault(s, []).append((float(ot) / 1000.0, float(h), float(l), float(c)))
-    conn.close()
+    try:
+        for sym, ot, h, l, c in conn.execute(
+            "SELECT symbol, open_time, high, low, close FROM klines "
+            "WHERE interval='5m' ORDER BY symbol, open_time"):
+            s = str(sym).upper()
+            if s in syms and c and c > 0:
+                out.setdefault(s, []).append((float(ot) / 1000.0, float(h), float(l), float(c)))
+    finally:
+        conn.close()
+    return out
+
+
+def _load_prices_postgres(syms: set[str], db_url: str) -> dict:
+    """2026-10-16 (harness onarımı): Postgres `historical_candles` (5m, open_time ms)."""
+    if not db_url or not syms:
+        return {}
+    import psycopg
+    out: dict = {}
+    with psycopg.connect(db_url, connect_timeout=8) as conn:
+        for sym, ot, h, l, c in conn.execute(
+            "SELECT symbol, open_time, high, low, close FROM historical_candles "
+            "WHERE timeframe='5m' AND symbol = ANY(%s) ORDER BY symbol, open_time",
+            (sorted(syms),)):
+            s = str(sym).upper()
+            if c and c > 0:
+                out.setdefault(s, []).append((float(ot) / 1000.0, float(h), float(l), float(c)))
+    return out
+
+
+def _bars_from_klines(rows) -> list:
+    """Binance kline satırları [open_ms, open, high, low, close, ...] → (ts, high, low, close)."""
+    bars = []
+    for k in rows or []:
+        try:
+            bars.append((float(k[0]) / 1000.0, float(k[2]), float(k[3]), float(k[4])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return bars
+
+
+def _load_prices_rest(syms: set[str], days: float) -> dict:
+    """Binance TR REST (son çare; ağ gerektirir). `klines()` sembolü kendisi normalize eder."""
+    if not syms:
+        return {}
+    import asyncio
+    from app.binance_tr_public import historical_klines
+
+    async def _one(sym: str):
+        try:
+            rows = await historical_klines(sym, "5m", max(1, int(days) + 1))
+        except Exception as exc:  # ağ/limit hatası: sembol atlanır, replay sürer
+            print(f"  REST {sym}: {exc}")
+            return sym, []
+        return sym, _bars_from_klines(rows)
+
+    async def _all():
+        res = await asyncio.gather(*[_one(s) for s in sorted(syms)])
+        return {s: b for s, b in res if b}
+
+    return asyncio.run(_all())
+
+
+def _load_prices(syms: set[str], *, source: str = "auto", db_url: str = "",
+                 days: float = 15.0) -> dict:
+    """Mum kaynağı seçimi (2026-10-16 harness onarımı).
+
+    `auto`: sqlite → postgres → REST; her adım yalnız EKSİK sembolleri tamamlar.
+    Eski davranış yalnız sqlite idi ve dosya yoksa `unable to open database file`
+    ile düşüyordu.
+    """
+    if source not in _PRICE_SOURCES:
+        raise ValueError(f"bilinmeyen fiyat kaynağı: {source!r} (geçerli: {_PRICE_SOURCES})")
+    out: dict = {}
+    coverage: dict[str, int] = {}
+    order = ["sqlite", "postgres", "rest"] if source == "auto" else [source]
+    for step in order:
+        missing = {s for s in syms if s not in out}
+        if not missing:
+            break
+        try:
+            if step == "sqlite":
+                got = _load_prices_sqlite(missing)
+            elif step == "postgres":
+                got = _load_prices_postgres(missing, db_url)
+            else:
+                got = _load_prices_rest(missing, days)
+        except Exception as exc:
+            print(f"  fiyat kaynağı {step} başarısız: {exc}")
+            got = {}
+        got = {s: b for s, b in got.items() if s in missing and b}
+        out.update(got)
+        coverage[step] = len(got)
+    print("  fiyat kaynakları: " + ", ".join(f"{k}={v}" for k, v in coverage.items()))
     return out
 
 
@@ -144,6 +236,9 @@ def main() -> int:
     # 2026-10-15 (denetim düzeltmesi): sabit DB kimlik bilgisi kaldırıldı; DATABASE_URL zorunlu.
     ap.add_argument("--db-url", default=os.getenv("DATABASE_URL", "").strip())
     ap.add_argument("--out", default="work/unified_pool_replay.json")
+    # 2026-10-16 (harness onarımı): mum kaynağı seçimi; auto = sqlite → postgres → REST.
+    ap.add_argument("--price-source", choices=_PRICE_SOURCES, default="auto",
+                    help="5m mum kaynağı: auto (sqlite→postgres→rest), sqlite, postgres, rest")
     # 2026-10-15 (radar iyileştirme): zaman-durdurma ölçümü. Verilmezse (None) eski davranış.
     ap.add_argument("--time-stop-min", type=float, default=None,
                     help="bu dk sonra kâr eşiğin altındaysa kapat (boş = kapalı)")
@@ -158,7 +253,7 @@ def main() -> int:
     if not cands:
         print("aday yok"); return 1
     syms = {c["sym"] for c in cands}
-    prices = _load_prices(syms)
+    prices = _load_prices(syms, source=args.price_source, db_url=args.db_url, days=args.days)
     print(f"  fiyat kapsamı: {len(prices)}/{len(syms)} sembol")
 
     # Çok-kaynak teyidi vekili: aynı sembol ±15 dk pencerede >=2 kez işaretlendiyse
