@@ -83,7 +83,7 @@ SCALPER_ADMIN_PASSWORD=x PYTHONIOENCODING=utf-8 DATABASE_URL=postgresql://... \
 
 Bayraklar: `--universe {all,top-gainers-daily}`, `--no-discovery`, `--prof-atr {db,default,5m=0.1,15m=0.1}`,
 `--spread-mode {known,unknown}`, `--learned-target {off,db}`, `--rank-limit 10`, `--journal-cap 20` (0=hepsi),
-`--tol-min 5` (doğrulama eşleşme toleransı). 1m verisi olmayan semboller atlanır (başlıkta sayılır).
+`--tol-min 5` (doğrulama eşleşme toleransı). **Analiz bayrağı** `--no-exhaustion-gate` (2026-10-17): MFI/RSI üst kapısı kapalı koşar; satırlara `exhausted`/`rsi`/`mfi` eklenir (`scripts/radar_shield_rescan_analysis.py` kullanır); canlı eşikler değişmez. 1m verisi olmayan semboller atlanır (başlıkta sayılır).
 
 ## Çıktı şekli
 

@@ -366,7 +366,15 @@ def main(argv=None) -> int:
     ap.add_argument("--rank-limit", type=int, default=10, help="canlı monitoring limit (rank verilen ilk N)")
     ap.add_argument("--journal-cap", type=int, default=20, help="tick+ufuk başına yazılan geçen aday (0=hepsi)")
     ap.add_argument("--db-url", default="")
+    ap.add_argument("--no-exhaustion-gate", action="store_true",
+                    help="ANALİZ: MFI/RSI aşırı alım kapısını kapat (VELOCITY_MFI_UPPER/RSI_UPPER=inf); "
+                         "satırlardaki `exhausted` alanı canlıda elenecek adayı etiketler")
     args = ap.parse_args(argv)
+    if args.no_exhaustion_gate:
+        # Yalnız bu süreçte; `scan_symbol_at_tick` eşikleri `V.` üzerinden çağrı anında okur.
+        V.VELOCITY_MFI_UPPER = float("inf")
+        V.VELOCITY_RSI_UPPER = float("inf")
+        print("[rescan] ANALİZ MODU: aşırı alım kapısı (MFI/RSI üst eşik) KAPALI")
     return run(args)
 
 

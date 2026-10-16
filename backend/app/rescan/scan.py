@@ -382,6 +382,11 @@ def to_journal_row(cand: dict, *, rank: int | None) -> dict:
         "rank": rank,
         "mode": cand.get("mode"),
         "block_reason": cand.get("block_reason"),
+        # 2026-10-17 (rejim kalkanı analizi): aşırı alım kapısı KAPALI koşuda hangi adayın
+        # canlıda `mfi/rsi_asiri_alim` ile eleneceğini etiketlemek için (JSONL'de düz alan).
+        "exhausted": cand.get("exhausted"),
+        "rsi": cand.get("rsi"),
+        "mfi": cand.get("mfi"),
         "pool_source": cand.get("pool_source"),
         "change_24h": cand.get("change_24h"),
         "m5_pattern": cand.get("m5_pattern"),
