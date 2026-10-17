@@ -5456,6 +5456,15 @@ async def save_monitoring_notifications(entries):
     return await _run_db(op)
 
 
+async def get_last_push_sent_at() -> float | None:
+    """2026-10-18 sessizlik nabzı: son BAŞARILI push'un detected_at'i (yeniden başlatmada sayaç buradan sürer)."""
+    def op(conn):
+        row = conn.execute("SELECT MAX(detected_at) FROM monitoring_notifications WHERE sent_via_push").fetchone()
+        value = row[0] if row else None
+        return float(value) if value is not None else None
+    return await _run_db(op)
+
+
 async def mark_monitoring_push_sent(notification_id):
     """Ertelenen push gerçekten gönderildiğinde DB etiketini True'ya çevir.
 

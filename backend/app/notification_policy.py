@@ -186,6 +186,58 @@ def heartbeat_pick(blocked_entries, now: float, last_push_ts: float | None) -> d
     return best
 
 
+def heartbeat_due(now: float, last_push_ts: float | None, last_attempt_ts: float | None = None) -> bool:
+    """Nabız süresi doldu mu? Hem son başarılı push'tan hem son nabız denemesinden ≥ süre geçmiş olmalı."""
+    try:
+        minutes = int(_cfg("RADAR_NOTIFY_HEARTBEAT_MINUTES", 0) or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    if minutes <= 0 or last_push_ts is None:
+        return False
+    window = minutes * 60
+    if (now - float(last_push_ts)) < window:
+        return False
+    if last_attempt_ts is not None and (now - float(last_attempt_ts)) < window:
+        return False
+    return True
+
+
+def heartbeat_candidate_pick(candidates, score_of, skip_symbols=None) -> dict | None:
+    """2026-10-18 (düzeltme): nabız adayı = TARAMA LİSTESİNDEKİ en yüksek skorlu aday (eşik/teyit şartı aranmaz).
+
+    Kapalı modlar ve teyit kuralının hariç tuttuğu modlar (unified) aday olmaz; `skip_symbols` (BEKLİYOR
+    bildirimi olan semboller) atlanır; fiyatı olmayan aday atlanır. Saf: hiçbir şeyi değiştirmez.
+    """
+    skip = {str(x).upper() for x in (skip_symbols or ())}
+    excluded = _disabled_modes() | _csv_set("RADAR_NOTIFY_CONFIRM_EXCLUDED_MODES", "unified")
+    best = None
+    best_score = -1.0
+    for c in candidates or []:
+        if not isinstance(c, dict):
+            continue
+        sym = str(c.get("symbol") or "").upper()
+        if not sym or sym in skip:
+            continue
+        mode = str(c.get("mode") or "").strip().lower()
+        if mode and mode in excluded:
+            continue
+        try:
+            price = float(c.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 0:
+            continue
+        try:
+            score = float(score_of(c))
+        except Exception:  # noqa: BLE001
+            continue
+        if score != score:
+            continue
+        if score > best_score:
+            best, best_score = c, score
+    return best
+
+
 def shadow_match(entry: dict) -> str | None:
     """GÖLGE kural (yalnız kayıt): ≥2 kaynak ∧ mod = trend_devam → kural adı, aksi halde None."""
     if not isinstance(entry, dict) or not _flag("RADAR_NOTIFY_SHADOW_RULE_ENABLED", True):

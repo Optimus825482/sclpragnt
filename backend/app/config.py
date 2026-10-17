@@ -632,7 +632,7 @@ class Config:
     # 2026-10-18 SESSİZLİK NABZI (kullanıcı kararı): bu kadar dakika hiç push gitmediyse, son taramanın
     # politikaya (yalnız teyit nedeniyle) takılan en yüksek skorlu adayı "TEYİTSİZ · " başlığıyla push
     # edilir. Sessiz saatte ve boot grace'te çalışmaz; unified / kapalı modlar aday olmaz. 0 = kapalı.
-    RADAR_NOTIFY_HEARTBEAT_MINUTES = max(0, int(os.getenv("RADAR_NOTIFY_HEARTBEAT_MINUTES", "").strip() or "30"))
+    RADAR_NOTIFY_HEARTBEAT_MINUTES = max(0, int(os.getenv("RADAR_NOTIFY_HEARTBEAT_MINUTES", "").strip() or "15"))  # 2026-10-18: 30 → 15 (kullanıcı)
     # ------------------------------------------------------------------
     # KOMBİNE PAPER PORTFÖY (2026-10-11 kullanıcı kararı) — WhatsApp'a gönderilen
     # kombine liste adayları AYRI bir 5.000 TL sanal portföyde OTONOM paper

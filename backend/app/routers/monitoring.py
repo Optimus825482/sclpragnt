@@ -1403,6 +1403,60 @@ def _master_surge_gate_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+async def _heartbeat_notification(candidates_list, notified, settings, quiet: bool, now: float,
+                                  now_mono: float, pending_by_symbol) -> dict | None:
+    """2026-10-18 SESSİZLİK NABZI (düzeltilmiş): RADAR_NOTIFY_HEARTBEAT_MINUTES boyunca hiç başarılı push
+    gitmediyse ve bu turda push gidecek yeni bildirim yoksa, TARAMA LİSTESİNDEKİ en yüksek skorlu aday
+    (eşik/teyit şartı aranmaz; kapalı modlar ve unified hariç) "TEYİTSİZ · " başlığıyla bildirim olarak
+    üretilir. Sayaç yeniden başlatmada DB'deki son başarılı push'tan sürer; nabız denemesi de süreyi
+    yeniler (push başarısız olsa da her turda tekrar atmaz). Sessiz saatte ve VAPID yokken çalışmaz.
+    Otonom paper / ölçüm yolları değişmez. Dönüş: bildirim sözlüğü ya da None.
+    """
+    try:
+        minutes = int(getattr(config, "RADAR_NOTIFY_HEARTBEAT_MINUTES", 0) or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    if minutes <= 0 or quiet or not _vapid_configured():
+        return None
+    if any(not n.get("updated") and not n.get("policy_blocked") for n in notified):
+        return None  # bu turda zaten push gidecek
+    last = _monitoring_state.get("_last_push_ts")
+    if last is None:
+        try:
+            last = await database.get_last_push_sent_at()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sessizlik nabzı: son push zamanı okunamadı: %s", exc)
+            last = None
+        if last is None:
+            last = _monitoring_state.get("_boot_time") or now
+        _monitoring_state["_last_push_ts"] = float(last)
+    if not _notification_policy.heartbeat_due(now, last, _monitoring_state.get("_last_heartbeat_ts")):
+        return None
+
+    def _score_of(c: dict) -> float:
+        if c.get("unified_pass"):
+            return _num(c.get("unified_score"), 0.0) or 0.0
+        return normalize_score(_num(c.get("velocity_score", 0), 0.0) or 0.0)
+
+    pick = _notification_policy.heartbeat_candidate_pick(
+        candidates_list, _score_of, skip_symbols=set((pending_by_symbol or {}).keys()))
+    if pick is None:
+        return None
+    sym = str(pick.get("symbol") or "").upper()
+    notif = _build_notification(sym, pick, settings)
+    notif["updated"] = False
+    notif["sent_via_push"] = False
+    _notification_policy.mark_tier(notif, _notification_policy.TIER_HEARTBEAT)
+    _monitoring_state["_last_heartbeat_ts"] = now
+    _monitoring_state["notified_symbols"][sym] = now_mono
+    base_px = _num(notif.get("price"), 0.0) or 0.0
+    if base_px > 0:
+        _monitoring_state["notified_prices"][sym] = base_px
+    logger.info("sessizlik nabzı: %.0f dk push yok → tarama listesinin en yüksek skorlu adayı %s (skor %s) teyitsiz push",
+                (now - float(last)) / 60, sym, notif.get("score"))
+    return notif
+
+
 def _target_gates_skipped() -> bool:
     """2026-10-18: ölçülmüş hedef modunda `min_target_pct` ayarı ve R/R kapısı uygulanmaz.
 
@@ -2055,6 +2109,16 @@ async def _notify(candidates_list, settings) -> list:
     # bildirimler `policy_blocked` taşır; push / WhatsApp / otonom paper / WS / LLM ikinci
     # göz yollarına GİRMEZ. Politika bildirim politikasıdır; otonom giriş kuralları
     # (AUTO_PAPER_ALLOWED_MODES) ayrıdır ve burada dokunulmaz.
+    # 2026-10-18 SESSİZLİK NABZI: politikaya takılanlar aşağıda düşer; nabız adayı BURADA eklenir
+    # (tarama listesinin en yüksek skorlusu; `notify_tier=teyitsiz` lavaboda yeniden bloklanmaz).
+    try:
+        _hb = await _heartbeat_notification(candidates_list, notified, settings, quiet, now, now_mono, pending_by_symbol)
+    except Exception as exc:  # noqa: BLE001 — nabız hiçbir zaman tarama turunu düşürmez
+        logger.warning("sessizlik nabzı hatası: %s", exc)
+        _hb = None
+    if _hb is not None:
+        _hb["quiet_hours"] = bool(quiet)
+        notified.append(_hb)
     _policy_blocked = [n for n in notified if n.get("policy_blocked")]
     if _policy_blocked:
         for n in _policy_blocked:
@@ -2175,24 +2239,8 @@ async def _deliver_scan_notifications(notified: list) -> None:
 
     quiet = bool(notified[0].get("quiet_hours"))
     vapid_configured = _vapid_configured()
-    # 2026-10-18 SESSİZLİK NABZI: bu turda politikadan geçen yeni bildirim yoksa ve
-    # RADAR_NOTIFY_HEARTBEAT_MINUTES boyunca hiç push gitmediyse, yalnız teyit nedeniyle takılan en
-    # yüksek skorlu aday "TEYİTSİZ · " başlığıyla push edilir. Sayaç boot'ta başlar (ilk nabız en erken
-    # boot + süre); sessiz saatte ve VAPID yokken çalışmaz. Otonom paper / ölçüm yolları değişmez.
-    if new_notifs and not quiet and vapid_configured and not in_boot_grace:
-        _passing = [n for n in new_notifs if not n.get("policy_blocked")]
-        if not _passing:
-            _last = _monitoring_state.get("_last_push_ts")
-            if _last is None:
-                _monitoring_state["_last_push_ts"] = boot_time
-                _last = boot_time
-            _pick = _notification_policy.heartbeat_pick(
-                [n for n in new_notifs if n.get("policy_blocked")], time.time(), _last)
-            if _pick is not None:
-                _notification_policy.mark_tier(_pick, _notification_policy.TIER_HEARTBEAT)
-                logger.info("sessizlik nabzı: %.0f dk push yok → %s (skor %s, %s) teyitsiz push",
-                            (time.time() - float(_last)) / 60, _pick.get("symbol"), _pick.get("score"),
-                            _pick.get("policy_blocked"))
+    # (2026-10-18) Sessizlik nabzı artık `_notify` içinde kurulur (`_heartbeat_notification`): politikaya
+    # takılan adaylar bu aşamaya hiç ulaşmadığından eski blok hiç çalışmıyordu.
     # BİRLEŞİK RADAR (Aşama 2): tek tip bildirim. Radar push'u `radar-{sym}` tag'i
     # ile gider ve bu turda push edilen semboller kaydedilir — yükseliş teslimatı
     # aynı sembol için İKİNCİ push atmaz.

@@ -371,62 +371,87 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class HeartbeatTests(_Base):
-    """2026-10-18 SESSİZLİK NABZI teslim aşaması: süre dolduysa yalnız teyit nedeniyle takılan en iyi aday push edilir."""
+class HeartbeatTests(unittest.TestCase):
+    """2026-10-18 SESSİZLİK NABZI (düzeltilmiş): `_notify` içinde, tarama listesinin en yüksek skorlu adayı."""
 
     def setUp(self):
-        super().setUp()
         from app.config import config
         for name, val in (("RADAR_NOTIFY_CONFIRM_RULE_ENABLED", True),
                           ("RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE", 0.0),
-                          ("RADAR_NOTIFY_HEARTBEAT_MINUTES", 30)):
+                          ("RADAR_NOTIFY_HEARTBEAT_MINUTES", 15),
+                          ("MONITORING_RR_ENABLED", False),
+                          ("MONITORING_DEBOUNCE_SCANS", 0)):
             p = patch.object(config, name, val)
             p.start()
             self.addCleanup(p.stop)
-        monitoring._monitoring_state["_boot_time"] = time.time() - 3600
-        monitoring._monitoring_state["_last_push_ts"] = time.time() - 31 * 60
+        for key in ("history", "candidate_streak", "pending_targets", "notified_prices", "notified_scores", "notified_symbols"):
+            monitoring._monitoring_state[key] = {} if key != "history" else []
+        monitoring._monitoring_state["_last_push_ts"] = time.time() - 16 * 60
+        monitoring._monitoring_state.pop("_last_heartbeat_ts", None)
+        monitoring._notify_last_sent_at.clear()
+        monitoring._notify_daily_count.clear()
+        self.last_push_db = AsyncMock(return_value=None)
+        for p in (patch.object(monitoring.database, "get_pending_monitoring_notifications", new=AsyncMock(return_value={})),
+                  patch.object(monitoring.database, "get_last_push_sent_at", new=self.last_push_db),
+                  patch.object(monitoring, "_record_history", new=AsyncMock(return_value=None)),
+                  patch.object(monitoring, "_vapid_configured", new=lambda: True)):
+            p.start()
+            self.addCleanup(p.stop)
+        self.settings = {"enabled": True, "min_score": 99.0, "min_target_pct": 0.0,
+                         "quiet_hours_start": None, "quiet_hours_end": None}
 
-    def _blocked_pair(self):
-        a = _notif("AAATRY", score=80.0, sources=["velocity"], title="AAATRY +%2 potansiyel")
-        b = _notif("BBBTRY", score=92.0, sources=["jump", "early"], title="BBBTRY +%3 potansiyel")
-        u = _notif("UUUTRY", score=99.0, mode="unified", sources=["velocity", "jump"], title="UUUTRY")
-        notification_policy.precheck([a, b, u])
-        self.assertTrue(a["policy_blocked"] and b["policy_blocked"] and u["policy_blocked"])
-        return a, b, u
+    @staticmethod
+    def _cands():
+        return [
+            {"symbol": "LOWTRY", "velocity_score": 300.0, "target_pct": 1.0, "price": 2.0, "mode": "trend_devam", "sources": ["velocity"]},
+            {"symbol": "TOPTRY", "velocity_score": 900.0, "target_pct": 1.0, "price": 3.0, "mode": "trend_devam", "sources": ["velocity"]},
+            {"symbol": "NOTRTRY", "velocity_score": 5000.0, "target_pct": 1.0, "price": 4.0, "mode": "notr", "sources": ["velocity"]},
+            {"symbol": "UNITRY", "velocity_score": 9000.0, "target_pct": 1.0, "price": 5.0, "mode": "unified", "sources": ["velocity", "jump"]},
+        ]
 
-    def test_due_heartbeat_pushes_best_confirm_blocked_with_prefix(self):
-        a, b, u = self._blocked_pair()
-        _run(monitoring._deliver_scan_notifications([a, b, u]))
-        self.send.assert_awaited_once()
-        sent = self.send.await_args.args[0]
-        self.assertIs(sent, b)
-        self.assertEqual(sent["title"], "TEYİTSİZ · BBBTRY +%3 potansiyel")
-        self.assertEqual(sent["notify_tier"], "teyitsiz")
-        self.assertTrue(sent["sent_via_push"])
-        self.broadcast.assert_awaited_once()
-        self.assertEqual([n["symbol"] for n in self.broadcast.await_args.args[0]["data"]], ["BBBTRY"])
+    def test_due_heartbeat_emits_top_scoring_allowed_candidate(self):
+        out = _run(monitoring._notify(self._cands(), self.settings))
+        self.assertEqual(1, len(out))
+        hb = out[0]
+        self.assertEqual("TOPTRY", hb["symbol"])              # notr ve unified aday olmaz; eşik (min_score 99) aranmaz
+        self.assertEqual("teyitsiz", hb["notify_tier"])
+        self.assertTrue(hb["title"].startswith("TEYİTSİZ · "))
+        self.assertFalse(hb.get("policy_blocked"))
+        self.assertIsNone(notification_policy.evaluate(hb))     # lavabo yeniden bloklamaz
+        self.assertIn("TOPTRY", monitoring._monitoring_state["notified_symbols"])
 
-    def test_not_due_sends_nothing(self):
-        monitoring._monitoring_state["_last_push_ts"] = time.time() - 10 * 60
-        a, b, u = self._blocked_pair()
-        _run(monitoring._deliver_scan_notifications([a, b, u]))
-        self.send.assert_not_awaited()
-        self.assertEqual(b["title"], "BBBTRY +%3 potansiyel")
+    def test_not_due_emits_nothing(self):
+        monitoring._monitoring_state["_last_push_ts"] = time.time() - 5 * 60
+        self.assertEqual([], _run(monitoring._notify(self._cands(), self.settings)))
+
+    def test_attempt_throttles_next_cycle(self):
+        self.assertEqual(1, len(_run(monitoring._notify(self._cands(), self.settings))))
+        self.assertEqual([], _run(monitoring._notify(self._cands(), self.settings)))   # aynı tur tekrarı: nabız denemesi süreyi yeniler
+
+    def test_counter_resumes_from_db_after_restart(self):
+        monitoring._monitoring_state.pop("_last_push_ts", None)
+        self.last_push_db.return_value = time.time() - 60          # 1 dk önce push gitmiş (DB)
+        self.assertEqual([], _run(monitoring._notify(self._cands(), self.settings)))
+        self.last_push_db.assert_awaited()
+        monitoring._monitoring_state.pop("_last_push_ts", None)
+        self.last_push_db.return_value = time.time() - 20 * 60     # 20 dk önce
+        self.assertEqual(1, len(_run(monitoring._notify(self._cands(), self.settings))))
 
     def test_passing_notification_suppresses_heartbeat(self):
-        a, b, u = self._blocked_pair()
-        ok = _notif("OKTRY", score=90.0, sources=["velocity", "jump"], title="OKTRY +%2 potansiyel")
-        notification_policy.precheck([ok])
-        self.assertFalse(ok.get("policy_blocked"))
-        _run(monitoring._deliver_scan_notifications([a, b, u, ok]))
-        self.send.assert_awaited_once()
-        self.assertIs(self.send.await_args.args[0], ok)
-        self.assertNotIn("notify_tier", b)
+        from app.config import config
+        settings = dict(self.settings, min_score=1.0)
+        cands = [{"symbol": "OKTRY", "velocity_score": 900.0, "target_pct": 1.0, "price": 3.0,
+                  "mode": "trend_devam", "sources": ["velocity", "jump"]}]
+        # `_build_notification` kaynakları aday bayraklarından türetir (burada yalnız velocity) → teyit kuralı
+        # bu test için kapatılır ki normal bildirim politikadan geçsin; nabız o zaman devreye girmemeli.
+        with patch.object(config, "RADAR_NOTIFY_CONFIRM_RULE_ENABLED", False):
+            out = _run(monitoring._notify(cands, settings))
+        self.assertEqual(["OKTRY"], [n["symbol"] for n in out])
+        self.assertNotIn("notify_tier", out[0])
 
-    def test_counter_starts_at_boot(self):
-        monitoring._monitoring_state.pop("_last_push_ts", None)
-        monitoring._monitoring_state["_boot_time"] = time.time() - 5 * 60
-        a, b, u = self._blocked_pair()
-        _run(monitoring._deliver_scan_notifications([a, b, u]))
-        self.send.assert_not_awaited()
-        self.assertAlmostEqual(monitoring._monitoring_state["_last_push_ts"], monitoring._monitoring_state["_boot_time"])
+    def test_quiet_hours_or_flag_off_emits_nothing(self):
+        from app.config import config
+        with patch.object(config, "RADAR_NOTIFY_HEARTBEAT_MINUTES", 0):
+            self.assertEqual([], _run(monitoring._notify(self._cands(), self.settings)))
+        with patch.object(monitoring, "_in_quiet_hours", new=lambda s: True):
+            self.assertEqual([], _run(monitoring._notify(self._cands(), self.settings)))

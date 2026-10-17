@@ -225,7 +225,7 @@ class SingleSourceTierTests(unittest.TestCase):
             x.stop()
 
     def test_default_floor(self):
-        self.assertEqual(config.RADAR_NOTIFY_HEARTBEAT_MINUTES, 30)
+        self.assertEqual(config.RADAR_NOTIFY_HEARTBEAT_MINUTES, 15)   # 2026-10-18: 30 → 15 (kullanıcı)
 
     def test_velocity_only_high_score_passes_with_prefix(self):
         e = {"mode": "trend_devam", "score": 91.0, "sources": ["velocity"], "title": "ABCTRY +%2 potansiyel"}
@@ -311,3 +311,41 @@ class HeartbeatTests(unittest.TestCase):
         kept, blocked = np_.apply([pick] + [e for e in es if e is not pick])
         self.assertEqual([k["symbol"] for k in kept], ["B"])
         self.assertEqual(len(blocked), 3)
+
+
+class HeartbeatCandidateTests(unittest.TestCase):
+    """2026-10-18 (düzeltme): nabız adayı tarama listesinden; süre hem son push hem son denemeye bakar."""
+
+    def setUp(self):
+        self._p = [mock.patch.object(config, "RADAR_NOTIFY_HEARTBEAT_MINUTES", 15),
+                   mock.patch.object(config, "RADAR_NOTIFY_CONFIRM_RULE_ENABLED", True)]
+        for x in self._p:
+            x.start()
+
+    def tearDown(self):
+        for x in reversed(self._p):
+            x.stop()
+
+    def test_due(self):
+        now = 100_000.0
+        self.assertTrue(np_.heartbeat_due(now, now - 16 * 60))
+        self.assertFalse(np_.heartbeat_due(now, now - 14 * 60))
+        self.assertFalse(np_.heartbeat_due(now, None))
+        self.assertFalse(np_.heartbeat_due(now, now - 30 * 60, last_attempt_ts=now - 5 * 60))
+        self.assertTrue(np_.heartbeat_due(now, now - 30 * 60, last_attempt_ts=now - 16 * 60))
+        with mock.patch.object(config, "RADAR_NOTIFY_HEARTBEAT_MINUTES", 0):
+            self.assertFalse(np_.heartbeat_due(now, 0.0))
+
+    def test_candidate_pick_filters_and_takes_max(self):
+        cands = [
+            {"symbol": "A", "mode": "trend_devam", "price": 1.0, "s": 50},
+            {"symbol": "B", "mode": "trend_devam", "price": 1.0, "s": 80},
+            {"symbol": "C", "mode": "notr", "price": 1.0, "s": 99},
+            {"symbol": "D", "mode": "unified", "price": 1.0, "s": 99},
+            {"symbol": "E", "mode": "trend_devam", "price": 0, "s": 99},
+            {"symbol": "F", "mode": "trend_devam", "price": 1.0, "s": 95},
+        ]
+        pick = np_.heartbeat_candidate_pick(cands, lambda c: c["s"], skip_symbols={"F"})
+        self.assertEqual("B", pick["symbol"])
+        self.assertIsNone(np_.heartbeat_candidate_pick([], lambda c: 1))
+        self.assertIsNone(np_.heartbeat_candidate_pick([{"symbol": "X", "mode": "trend_devam", "price": 1.0}], lambda c: float("nan")))
