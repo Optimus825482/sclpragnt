@@ -101,7 +101,27 @@ export const chartPriceFormat = (value: number) => {
     return { type: "price" as const, precision, minMove: Number(`1e-${precision}`) };
 };
 
-export type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showPressure: boolean; showMonitoringLines: boolean };
+export type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showPressure: boolean; showMonitoringLines: boolean; v?: number };
+export type DisplayFlags = Omit<DisplaySettings, "v">;
+
+// 2026-10-17: grafik ayarlarının varsayılanı — Pozisyonlar ve alıcı/satıcı basıncı açık, SL/TP ve
+// formasyonlar kapalı. Sayfa ziyaret edilen her sembolde o anki ayarları otomatik kaydettiği için
+// eski kayıtlar çoğunlukla kullanıcı seçimi değil eski varsayılandı → sürüm işareti (v) olmayan
+// kayıtlar yok sayılır ve yeni varsayılan uygulanır; v ≥ DISPLAY_VERSION kayıtlar kullanıcı seçimidir.
+export const DISPLAY_VERSION = 2;
+export const DEFAULT_DISPLAY: DisplayFlags = {
+    showPositions: true, showStopTakeProfit: false, showPatterns: false, showPressure: true, showMonitoringLines: true,
+};
+
+/** Kayıtlı görünüm ayarı → uygulanacak bayraklar (eski/sürümsüz kayıt → varsayılan). */
+export function resolveDisplay(saved: Partial<DisplaySettings> | null | undefined): DisplayFlags {
+    if (!saved || typeof saved !== "object" || Number(saved.v ?? 0) < DISPLAY_VERSION) return { ...DEFAULT_DISPLAY };
+    const pick = (k: keyof DisplayFlags) => (typeof saved[k] === "boolean" ? (saved[k] as boolean) : DEFAULT_DISPLAY[k]);
+    return {
+        showPositions: pick("showPositions"), showStopTakeProfit: pick("showStopTakeProfit"), showPatterns: pick("showPatterns"),
+        showPressure: pick("showPressure"), showMonitoringLines: pick("showMonitoringLines"),
+    };
+}
 export type LivePortfolio = { total_value?: number; unrealized_pnl?: number; try?: number; realized_pnl?: number; auto_paper_positions?: any[] };
 export type PortfolioMetrics = { closed_trades: number; winning_trades: number; net_pnl: number; win_rate: number };
 export type TimeframeTrend = { timeframe: string; alignment: "bullish" | "bearish" | "mixed" | "unknown"; data_ready: boolean };

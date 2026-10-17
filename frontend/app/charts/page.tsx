@@ -30,6 +30,7 @@ import {
     formatPrice, chartPriceFormat, loadPersisted,
     DEFAULT_STYLE, DEFAULT_INSTANCES, DEFAULT_SLING_SHOT, loadIndicators,
     strategyLabelFor, macdHistogramColor,
+    DEFAULT_DISPLAY, DISPLAY_VERSION, resolveDisplay,
     type DisplaySettings, type EditTarget, type LivePortfolio, type PortfolioMetrics, type TimeframeTrend,
 } from "./chartShared";
 import {
@@ -126,10 +127,11 @@ export default function ChartsPage() {
     const [picking, setPicking] = useState(false);
     const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
     const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
-    const [showPositions, setShowPositions] = useState(true);
-    const [showStopTakeProfit, setShowStopTakeProfit] = useState(true);
-    const [showPatterns, setShowPatterns] = useState(false);
-    const [showPressure, setShowPressure] = useState(true);
+    // 2026-10-17: varsayılanlar tek kaynakta (chartShared.DEFAULT_DISPLAY).
+    const [showPositions, setShowPositions] = useState(DEFAULT_DISPLAY.showPositions);
+    const [showStopTakeProfit, setShowStopTakeProfit] = useState(DEFAULT_DISPLAY.showStopTakeProfit);
+    const [showPatterns, setShowPatterns] = useState(DEFAULT_DISPLAY.showPatterns);
+    const [showPressure, setShowPressure] = useState(DEFAULT_DISPLAY.showPressure);
     const [forecast, setForecast] = useState<any>(null);
     const [forecastHistory, setForecastHistory] = useState<any>(null);
     const [forecastLoading, setForecastLoading] = useState(false);
@@ -156,7 +158,7 @@ export default function ChartsPage() {
     // (fiyat/hedef/skor/ufuk + geri sayım) ve grafik çizgisi göstergesi.
     const [monitorNotif, setMonitorNotif] = useState<any | null>(null);
     // (monitorRemainingSec state'i KALDIRILDI — geri sayım izole CountdownSec bileşeninde)
-    const [showMonitoringLines, setShowMonitoringLines] = useState(true);
+    const [showMonitoringLines, setShowMonitoringLines] = useState(DEFAULT_DISPLAY.showMonitoringLines);
     const [monitorDisplayReady, setMonitorDisplayReady] = useState(false); // DB display yüklendi mi (ilk yazımda sıfırları ezmesin)
     const [livePortfolio, setLivePortfolio] = useState<LivePortfolio | null>(null);
     const [portfolioMetrics, setPortfolioMetrics] = useState<PortfolioMetrics | null>(null);
@@ -240,7 +242,7 @@ export default function ChartsPage() {
     useEffect(() => {
         if (!symbol || !monitorDisplayReady) return;
         if (displaySaveTimer.current) clearTimeout(displaySaveTimer.current);
-        const body = JSON.stringify({ display: { showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines } satisfies DisplaySettings });
+        const body = JSON.stringify({ display: { showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines, v: DISPLAY_VERSION } satisfies DisplaySettings });
         displaySaveTimer.current = setTimeout(() => {
             try {
                 void apiRequest(`${API}/${encodeURIComponent(symbol)}/display`, {
@@ -1441,7 +1443,7 @@ export default function ChartsPage() {
             interval,
             indicators: instances,
             paneHeights: paneHeightsRef.current,
-            display: { showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines } satisfies DisplaySettings
+            display: { showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines, v: DISPLAY_VERSION } satisfies DisplaySettings
         };
         try {
             const res = await apiRequest(`${API}/${symbol}`, {
@@ -1461,13 +1463,26 @@ export default function ChartsPage() {
     };
 
     // veritabanından sembol ayarlarını yükle — kaynak DB'dir (localStorage değil)
+    const applyDisplay = (d: Partial<DisplaySettings> | null | undefined) => {
+        const r = resolveDisplay(d);
+        setShowPositions(r.showPositions);
+        setShowStopTakeProfit(r.showStopTakeProfit);
+        setShowPatterns(r.showPatterns);
+        setShowPressure(r.showPressure);
+        setShowMonitoringLines(r.showMonitoringLines);
+    };
+
     const loadFromDb = async (s: string, forcedInterval?: string) => {
+        // 2026-10-17: yeni sembolün ayarı gelene kadar otomatik kayıt durur (önceki sembolün
+        // bayrakları yeni sembole yazılmasın); bekleyen yazım iptal edilir.
+        setMonitorDisplayReady(false);
+        if (displaySaveTimer.current) { clearTimeout(displaySaveTimer.current); displaySaveTimer.current = null; }
         try {
             const res = await apiRequest(`${API}/${s}`);
             const data = await res.json();
             const st = data?.settings;
             // Kayıt yoksa da display yazımına hazırız: ilk toggle DB'ye PATCH ile gider.
-            if (!st) { setMonitorDisplayReady(true); return; }
+            if (!st) { applyDisplay(null); setMonitorDisplayReady(true); return; }
             const resolvedInterval = forcedInterval || st.interval || "5m";
             setTf(resolvedInterval);
             localStorage.setItem(LS_INTERVAL, JSON.stringify(resolvedInterval));
@@ -1485,11 +1500,8 @@ export default function ChartsPage() {
                 paneHeightsRef.current = st.paneHeights;
                 try { localStorage.setItem(LS_PANE_HEIGHTS, JSON.stringify(st.paneHeights)); } catch { }
             }
-            if (typeof st.display?.showPositions === "boolean") setShowPositions(st.display.showPositions);
-            if (typeof st.display?.showStopTakeProfit === "boolean") setShowStopTakeProfit(st.display.showStopTakeProfit);
-            if (typeof st.display?.showPatterns === "boolean") setShowPatterns(st.display.showPatterns);
-            if (typeof st.display?.showPressure === "boolean") setShowPressure(st.display.showPressure);
-            if (typeof st.display?.showMonitoringLines === "boolean") setShowMonitoringLines(st.display.showMonitoringLines);
+            // Sürümsüz (eski otomatik) kayıt → varsayılan; v2 kayıt → kullanıcı seçimi.
+            applyDisplay(st.display);
             // DB display yüklendi: toggle-anlık PATCH artık güvenle yazabilir
             setMonitorDisplayReady(true);
         } catch { /* backend yoksa varsayılanlar kalır */ }
