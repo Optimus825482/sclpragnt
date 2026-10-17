@@ -32,7 +32,7 @@ class FakeDB:
 
 @pytest.fixture
 def fake(monkeypatch):
-    srv = FakeBinanceTR()
+    srv = FakeBinanceTR(api_key=KEY, secret=SECRET)
     base = srv.start()
     monkeypatch.setattr(btp, "REST_BASE", base)
 
@@ -76,6 +76,17 @@ def test_full_flow_buy_detail_oco(fake):
     assert len(ocos) == 1 and ocos[0]["side"] == "1"
     assert float(ocos[0]["quantity"]) == pytest.approx(body["executed_qty"])
     assert float(ocos[0]["price"]) > float(ocos[0]["stopPrice"])          # TP > SL
+    # Belgelenmiş OCO sözleşmesi (apidocs POST /open/v1/orders/oco): tekil `clientId`/`type` yok,
+    # liste kimliği `listClientId`; stopLimitPrice zorunlu; stopLimitTimeInForce belgede yok.
+    assert "clientId" not in ocos[0] and "type" not in ocos[0] and "stopLimitTimeInForce" not in ocos[0]
+    assert ocos[0]["listClientId"].isalnum() and len(ocos[0]["listClientId"]) <= 36
+    assert float(ocos[0]["stopLimitPrice"]) > 0
+    # Belgelenmiş imzalı istek: X-MBX-APIKEY + timestamp + recvWindow<=60000 (imzayı fake doğrular).
+    assert int(ocos[0]["recvWindow"]) <= 60000 and ocos[0]["timestamp"].isdigit()
+    signed_hdrs = [h for (m, path, prm), h in zip(srv.requests, srv.headers) if "signature" in prm]
+    assert signed_hdrs and all(h.get("x-mbx-apikey") == KEY for h in signed_hdrs)
+    # Belgelenmiş ALIŞ: MARKET(type=2) + quoteOrderQty; quantity/price gönderilmez.
+    assert "quantity" not in buys[0] and "price" not in buys[0]
 
 
 def test_duplicate_request_hits_exchange_once(fake):

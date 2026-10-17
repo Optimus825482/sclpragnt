@@ -495,8 +495,62 @@ def test_place_oco_sell_sends_correct_payload():
     assert params["stopPrice"] == "950.00"
     assert params["stopLimitPrice"] == "945.00"
     assert "stopLimitTimeInForce" not in params  # Binance TR OCO'da bu parametre yoktur
+    # Resmi doküman (POST /open/v1/orders/oco): tekil `clientId`/`type` YOK; liste kimliği `listClientId`.
+    assert "clientId" not in params and "type" not in params
+    assert params["listClientId"].isalnum() and len(params["listClientId"]) <= 36
+    assert res["client_order_id"] == params["listClientId"]
     assert res["order_list_id"] == "1001"
     assert len(res["orders"]) == 2
+
+
+def test_place_oco_sell_custom_id_goes_to_list_client_id_and_doc_response_shape():
+    # Doküman OCO cevabı: data.orderId + createTime (orderListId yok) → order_id döner, order_list_id None.
+    with mock.patch.object(btp, "_signed_request", return_value={"orderId": "900", "createTime": 1}) as sr:
+        res = btp.place_oco_sell("k", "s", "AVAX_TRY", 1.0, price=12.0, stop_price=9.0,
+                                 stop_limit_price=8.9, client_order_id="oco-abc_123")
+    params = sr.call_args[0][2]
+    assert params["listClientId"] == "ocoabc123" and "clientId" not in params
+    assert res["order_id"] == "900" and res["order_list_id"] is None
+    assert res["client_order_id"] == "ocoabc123"
+
+
+def test_ambiguous_oco_error_carries_list_client_id():
+    def boom(url, headers=None):
+        raise urllib.error.HTTPError(url, 500, "boom", {}, None)
+
+    with mock.patch.object(btp, "_server_time_offset_ms", return_value=0.0),          mock.patch.object(btp, "_http_post_json", side_effect=boom):
+        with pytest.raises(btp.BinanceTrAmbiguousOrderError) as ei:
+            btp._signed_request("POST", "/open/v1/orders/oco",
+                                {"symbol": "ADA_TRY", "listClientId": "oclist1"},
+                                "k", "s", idempotent=False)
+    assert ei.value.client_order_id == "oclist1" and ei.value.symbol == "ADA_TRY"
+
+
+def test_signed_request_matches_documented_signature_scheme():
+    """Doküman: HMAC SHA256(secret, totalParams=query string); timestamp ms; recvWindow<=60000;
+    X-MBX-APIKEY başlığı; POST parametreleri query string'te, gövde boş."""
+    import hashlib
+    import hmac
+    seen = {}
+
+    def fake_post(url, headers=None):
+        seen["url"], seen["headers"] = url, headers
+        return {"code": 0, "data": {"orderId": "1"}}
+
+    with mock.patch.object(btp, "_server_time_offset_ms", return_value=0.0),          mock.patch.object(btp, "_http_post_json", side_effect=fake_post):
+        btp._signed_request("POST", "/open/v1/orders", {"symbol": "BTC_TRY", "side": 0, "type": 2,
+                                                         "quantity": "1"}, "KEY", "SECRET", idempotent=False)
+    path, query = seen["url"].split("?", 1)
+    assert path.endswith("/open/v1/orders") and seen["headers"] == {"X-MBX-APIKEY": "KEY"}
+    total, sig = query.rsplit("&signature=", 1)
+    assert hmac.new(b"SECRET", total.encode(), hashlib.sha256).hexdigest() == sig
+    qs = dict(p.split("=") for p in total.split("&"))
+    assert 0 < int(qs["recvWindow"]) <= 60000 and len(qs["timestamp"]) == 13
+
+
+def test_documented_order_codes():
+    # apidocs: side 0=BUY 1=SELL; type 1 LIMIT 2 MARKET 4 STOP_LOSS_LIMIT; timeInForce 1 GTC (INT)
+    assert btp._ORDER_TYPE_CODES == {"LIMIT": 1, "MARKET": 2, "STOP_LOSS_LIMIT": 4}
 
 
 def test_place_stop_loss_sell_sends_correct_payload():

@@ -328,6 +328,12 @@ def _server_time_offset_ms() -> float:
         return float(_server_time_cache.get("offset") or 0.0)
 
 
+def _order_client_id(params: dict) -> str:
+    """Emir POST parametrelerinden istemci kimliği: tekil emirde `clientId`,
+    OCO'da (resmi doküman) `listClientId`."""
+    return str(params.get("clientId") or params.get("listClientId") or "")
+
+
 def _signed_request(method: str, path: str, params: dict | None,
                     api_key: str, api_secret: str,
                     idempotent: bool = True,
@@ -378,7 +384,7 @@ def _signed_request(method: str, path: str, params: dict | None,
                         if is_post and path in ("/open/v1/orders", "/open/v1/orders/oco"):
                             raise BinanceTrAmbiguousOrderError(
                                 f"Emir sonucu belirsiz (Binance TR {exc.code}); tekrar gönderilmedi",
-                                client_order_id=str(base_params.get("clientId") or ""),
+                                client_order_id=_order_client_id(base_params),
                                 symbol=str(base_params.get("symbol") or "")) from exc
                         raise exc
                     if attempt == REST_MAX_ATTEMPTS:
@@ -434,7 +440,7 @@ def _signed_request(method: str, path: str, params: dict | None,
                         if is_post and path in ("/open/v1/orders", "/open/v1/orders/oco") and exc.code >= 500:
                             raise BinanceTrAmbiguousOrderError(
                                 f"Emir sonucu belirsiz (HTTP {exc.code}); tekrar gönderilmedi",
-                                client_order_id=str(base_params.get("clientId") or ""),
+                                client_order_id=_order_client_id(base_params),
                                 symbol=str(base_params.get("symbol") or "")) from exc
                         raise binance_err
                     if attempt == REST_MAX_ATTEMPTS:
@@ -460,7 +466,7 @@ def _signed_request(method: str, path: str, params: dict | None,
                     if is_post and path in ("/open/v1/orders", "/open/v1/orders/oco"):
                         raise BinanceTrAmbiguousOrderError(
                             f"Emir sonucu belirsiz; tekrar gönderilmedi: {exc}",
-                            client_order_id=str(base_params.get("clientId") or ""),
+                            client_order_id=_order_client_id(base_params),
                             symbol=str(base_params.get("symbol") or "")) from exc
                     raise RuntimeError(
                         f"Binance TR {method.upper()} {path} cevap vermedi; tekrar gönderilmedi: {exc}"
@@ -1091,8 +1097,10 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
         "price": price_str,              # Take-Profit limit fiyatı
         "stopPrice": stop_price_str,     # SL tetik fiyatı
         "stopLimitPrice": stop_limit_price_str,
-        # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
-        "clientId": sanitize_client_order_id(client_order_id) or new_client_order_id("oc"),
+        # Resmi doküman (POST /open/v1/orders/oco): OCO'da tekil `clientId` YOK;
+        # liste kimliği `listClientId` (bacaklar: limitClientId / stopClientId,
+        # gönderilmezse sunucu üretir). Emir durumu mutabakatında kullanılır.
+        "listClientId": sanitize_client_order_id(client_order_id) or new_client_order_id("oc"),
     }
     data = _signed_request("POST", "/open/v1/orders/oco", params, api_key, api_secret,
                            idempotent=False)
@@ -1110,7 +1118,9 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
         "sl_price": stop_price_str,
         "sl_limit_price": stop_limit_price_str,
         "orders": orders,
-        "client_order_id": params["clientId"],
+        "client_order_id": params["listClientId"],
+        # Doküman OCO cevabı: data.orderId + createTime (orderListId yok).
+        "order_id": str(data.get("orderId")) if isinstance(data, dict) and data.get("orderId") else None,
     }
 
 
