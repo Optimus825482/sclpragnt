@@ -2,8 +2,7 @@
 import Link from "next/link";
 import PctChange from "../PctChange";
 import { formatPrice, toMs } from "../../../lib/format";
-import { baseSymbol, confidenceBadge, modeLabel, notificationStatus } from "../../../lib/userUi";
-import type { WatchItem } from "../../../lib/useWatchPrefs";
+import { baseSymbol, confidenceBadge, isRegimeTitle, modeLabel, notificationStatus, type NotificationStatus } from "../../../lib/userUi";
 
 export type RecentRow = {
   symbol: string;
@@ -62,15 +61,6 @@ function StarButton({ symbol, fav, onClick }: { symbol: string; fav: boolean; on
   );
 }
 
-function PinBadge({ item, live }: { item: WatchItem; live: number | null }) {
-  return (
-    <p className="u-chip u-chip-info whitespace-normal text-xs">
-      <span>👁 İzlemeye alındığında {tl(item.price)} · şimdi</span>
-      <PctChange base={item.price} live={live} />
-    </p>
-  );
-}
-
 function ActionRows({ symbol, price, live, actions }: { symbol: string; price: number | null; live: number | null; actions: CardActions }) {
   const fav = actions.isFavorite(symbol);
   const pin = actions.isPinned(symbol);
@@ -97,20 +87,30 @@ function ActionRows({ symbol, price, live, actions }: { symbol: string; price: n
   );
 }
 
-/** Tam bildirim kartı ("Yükseliş Adayları" tarzı). */
+/** Durum rozeti rengi: hit yeşil, active mavi, weak amber, gone kırmızı, ended gri. */
+const STATUS_CHIP: Record<NotificationStatus["kind"], string> = {
+  hit: "u-chip-good",
+  active: "u-chip-info",
+  weak: "u-chip-warn",
+  gone: "u-chip-bad",
+  ended: "u-chip-wait",
+};
+
+/** Tam bildirim kartı ("Yükseliş Adayları" tarzı). İzlemedeki semboller de burada, küçük "izlemede" işaretiyle listelenir. */
 export default function NotificationCard({
-  row, rank, live, nowSec, actions, pinned,
-}: { row: RecentRow; rank?: number; live: number | null; nowSec: number; actions: CardActions; pinned?: WatchItem }) {
+  row, rank, live, nowSec, actions,
+}: { row: RecentRow; rank?: number; live: number | null; nowSec: number; actions: CardActions }) {
   const status = notificationStatus(row, live, nowSec);
   const badge = confidenceBadge(row.score);
   const tone = badge === "Yüksek" ? "good" : badge === "Orta" ? "warn" : "wait";
   const mode = modeLabel(row.mode);
+  const watching = actions.isPinned(row.symbol);
+  const regime = isRegimeTitle(row.title);
   const conf = row.llm_confidence;
   const hasHorizon = Number(row.horizon_minutes) > 0;
   const hasScore = row.score != null && Number.isFinite(Number(row.score));
-  const statusNum = status.tone === "good" ? "good" : status.tone === "wait" ? "info" : "wait";
   return (
-    <article className={`card p-4 ${status.kind === "ended" ? "opacity-80" : ""}`} aria-label={`${baseSymbol(row.symbol)} bildirimi`}>
+    <article className={`card p-4 ${status.kind === "ended" || status.kind === "gone" ? "opacity-70" : ""}`} aria-label={`${baseSymbol(row.symbol)} bildirimi`}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           {rank != null && <span className="u-chip u-chip-wait" aria-label={`Sıra ${rank}`}>{rank}</span>}
@@ -149,38 +149,21 @@ export default function NotificationCard({
         </div>
       </dl>
 
-      {mode && <p className="mt-2"><span className="u-chip u-chip-info">{mode}</span></p>}
+      <p className="mt-2 flex flex-wrap items-center gap-2">
+        <span className="u-chip u-chip-info" title={mode ? `Mod: ${mode}` : undefined}>Yükseliş adayı</span>
+        {regime && (
+          <span className="u-chip u-chip-warn" title="Bildirim, BTC düşüş rejimindeyken gönderildi">BTC rejim</span>
+        )}
+        {watching && <span className="u-chip u-chip-wait">👁 izlemede</span>}
+      </p>
 
-      <p className={`mt-2 flex items-center gap-2 text-sm font-medium u-num-${statusNum}`}>
-        {status.kind === "active" && <span aria-hidden="true" className="inline-block h-2 w-2 animate-pulse rounded-full bg-current" />}
+      <p className={`u-chip ${STATUS_CHIP[status.kind]} mt-2 w-full justify-start whitespace-normal rounded-lg px-3 py-2 text-sm`}>
+        {status.kind === "active" && <span aria-hidden="true" className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-current" />}
         <span aria-hidden="true">{status.icon}</span>
         <span>{status.label}</span>
       </p>
 
-      {pinned && <div className="mt-2"><PinBadge item={pinned} live={live} /></div>}
-
       <ActionRows symbol={row.symbol} price={row.price} live={live} actions={actions} />
-    </article>
-  );
-}
-
-/** İzlemeye alınmış ama son 10 bildirimde olmayan sembol için kompakt kart. */
-export function PinnedCompactCard({ item, live, actions }: { item: WatchItem; live: number | null; actions: CardActions }) {
-  return (
-    <article className="card p-4" aria-label={`${baseSymbol(item.symbol)} izlemede`}>
-      <div className="flex items-center justify-between gap-2">
-        <p className="truncate font-mono text-lg">
-          <Link href={chartHref(item.symbol)} className="font-bold hover:underline">{baseSymbol(item.symbol)}</Link>
-          <span className="text-bunker-muted"> / TRY</span>
-        </p>
-        <StarButton symbol={item.symbol} fav={actions.isFavorite(item.symbol)} onClick={() => actions.onToggleFavorite(item.symbol, live ?? item.price)} />
-      </div>
-      <dl className="mt-2 grid grid-cols-2 gap-2 text-sm">
-        <div><dt className="text-xs text-bunker-muted">İZLEMEYE ALINDI</dt><dd className="font-semibold">{tl(item.price)}</dd></div>
-        <div><dt className="text-xs text-bunker-muted">CANLI</dt><dd className="font-semibold">{tl(live)}</dd></div>
-      </dl>
-      <div className="mt-2"><PinBadge item={item} live={live} /></div>
-      <ActionRows symbol={item.symbol} price={item.price} live={live} actions={actions} />
     </article>
   );
 }

@@ -4,14 +4,12 @@ import { getJSON } from "../../lib/api";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
 import { useWatchPrices } from "../../lib/useWatchPrices";
 import { useWatchPrefs } from "../../lib/useWatchPrefs";
-import RegimeBanner from "./RegimeBanner";
 import KpiStrip, { type KpiData } from "./KpiStrip";
 import RecentNotifications, { type RecentRow } from "./RecentNotifications";
-import FavoritesStrip from "./home/FavoritesStrip";
+import WatchStrip from "./home/FavoritesStrip";
 
 export default function UserHome() {
   const [kpiToday, setKpiToday] = useState<KpiData>(null);
-  const [kpiAll, setKpiAll] = useState<KpiData>(null);
   const [recent, setRecent] = useState<RecentRow[]>([]);
   const [error, setError] = useState("");
   const [recentFailed, setRecentFailed] = useState(false);
@@ -22,13 +20,12 @@ export default function UserHome() {
   const load = useCallback(async () => {
     const track = <T,>(p: Promise<T>, apply: (v: T) => void): Promise<boolean> =>
       p.then((v) => { apply(v); return false; }, () => true);
-    const [todayFailed, allFailed, histFailed] = await Promise.all([
+    const [todayFailed, histFailed] = await Promise.all([
       track(getJSON<any>("/api/reports/notifications?limit=1000"), (v) => setKpiToday(v?.breakdown ?? null)),
-      track(getJSON<any>("/api/reports/notifications?day=all&limit=1"), (v) => setKpiAll(v?.overall ?? null)),
       track(getJSON<any>("/api/monitoring/notifications"), (v) => { setRecent((v?.history ?? []).slice(0, 10)); setRecentFailed(false); }),
     ]);
     if (histFailed) setRecentFailed(true);
-    const failed = [todayFailed, allFailed, histFailed].filter(Boolean).length;
+    const failed = [todayFailed, histFailed].filter(Boolean).length;
     setError(failed ? "Bazı veriler yüklenemedi, otomatik yeniden denenecek." : "");
   }, []);
   useVisibleInterval(load, 15_000);
@@ -41,13 +38,17 @@ export default function UserHome() {
     ...prefs.pinned.map((p) => p.symbol),
     ...prefs.favorites.map((f) => f.symbol),
   ]);
+  const onRemove = (symbol: string, which: { pinned: boolean; favorite: boolean }) => {
+    const jobs: Promise<void>[] = [];
+    if (which.pinned) jobs.push(prefs.removePin(symbol));
+    if (which.favorite) jobs.push(prefs.removeFavorite(symbol));
+    Promise.all(jobs).catch(() => setError("Değişiklik kaydedilemedi, lütfen tekrar deneyin."));
+  };
   return (
-    <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Ana sayfa</h1>
+    <div className="space-y-5">
+      <WatchStrip pinned={prefs.pinned} favorites={prefs.favorites} prices={prices} onRemove={onRemove} />
       {error && <p role="alert" className="rounded-lg bg-neon-red/10 p-3 text-sm text-neon-red">{error}</p>}
-      <FavoritesStrip items={prefs.favorites} prices={prices} onRemove={(s) => { void prefs.removeFavorite(s).catch(() => setError("Favori kaydedilemedi, lütfen tekrar deneyin.")); }} />
-      <RegimeBanner />
-      <KpiStrip today={kpiToday} all={kpiAll} />
+      <KpiStrip today={kpiToday} />
       <RecentNotifications rows={recent} prices={prices} failed={recentFailed} prefs={prefs} />
     </div>
   );

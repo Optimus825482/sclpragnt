@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MENU_ITEMS, baseSymbol, modeLabel, notificationStatus, SETTINGS_TABS, parseSettingsTab, confidenceBadge, isUserRole, isUserView, pctChange, regimeNotice, statusLabel, visibleMenu, windowEnd } from "./userUi";
+import { MENU_ITEMS, baseSymbol, isRegimeTitle, modeLabel, notificationStatus, SETTINGS_TABS, parseSettingsTab, confidenceBadge, isUserRole, isUserView, pctChange, regimeNotice, statusLabel, visibleMenu, windowEnd } from "./userUi";
 
 describe("pctChange", () => {
   it("hesaplar", () => expect(pctChange(100, 103)).toBeCloseTo(3, 6));
@@ -135,26 +135,60 @@ describe("modeLabel", () => {
 });
 
 describe("notificationStatus", () => {
-  const row = { expected_price: 110, detected_at: 1000, horizon_minutes: 15 };
+  // Bildirim fiyatı 100, hedef 110, pencere 1000..1900 sn.
+  const row = { price: 100, expected_price: 110, detected_at: 1000, horizon_minutes: 15 };
   it("hedefe ulaştı (pencere kapalı olsa da)", () => {
     expect(notificationStatus(row, 110, 1100).kind).toBe("hit");
     expect(notificationStatus(row, 120, 999999)).toMatchObject({ kind: "hit", icon: "✅", label: "Hedefe ulaştı", tone: "good" });
   });
-  it("pencere sürüyor: kalan dakika yukarı yuvarlanır", () => {
+  it("pencere açık, canlı >= bildirim fiyatı: sürüyor, kalan dakika yukarı yuvarlanır", () => {
     const s = notificationStatus(row, 105, 1000 + 60);
-    expect(s).toMatchObject({ kind: "active", icon: "⏳", tone: "wait", remainingMin: 14 });
+    expect(s).toMatchObject({ kind: "active", icon: "⏳", tone: "info", remainingMin: 14 });
     expect(s.label).toBe("Yükseliş ihtimali sürüyor · kalan 14 dk");
-    expect(notificationStatus(row, 105, 1000 + 899)).toMatchObject({ kind: "active", remainingMin: 1 });
+    expect(notificationStatus(row, 100, 1000 + 899)).toMatchObject({ kind: "active", remainingMin: 1 });
   });
-  it("pencere kapandı", () => {
+  it("pencere açık, canlı bildirim fiyatının altında (ama -%1,5 üstünde): zayıfladı", () => {
+    expect(notificationStatus(row, 99.5, 1100)).toMatchObject({
+      kind: "weak", icon: "⚠️", tone: "warn", label: "Yükseliş ihtimali zayıfladı",
+    });
+    expect(notificationStatus(row, 98.6, 1100).kind).toBe("weak");
+  });
+  it("%1,5 veya daha fazla düştü: ortadan kalktı (pencere açık ya da kapalı)", () => {
+    expect(notificationStatus(row, 98.5, 1100)).toMatchObject({
+      kind: "gone", icon: "❌", tone: "bad", label: "Yükseliş ihtimali ortadan kalktı",
+    });
+    expect(notificationStatus(row, 90, 1100).kind).toBe("gone");
+    expect(notificationStatus(row, 90, 999999).kind).toBe("gone");
+  });
+  it("pencere kapandı: ended (hedef yok, düşüş %1,5'ten az)", () => {
     expect(notificationStatus(row, 105, 1900)).toMatchObject({ kind: "ended", icon: "⌛", tone: "mute", label: "Yükseliş penceresi kapandı" });
+    expect(notificationStatus(row, 99, 1900).kind).toBe("ended");
   });
-  it("canlı fiyat yok / hedef yok → hit olmaz", () => {
+  it("canlı fiyat yok / hedef yok → hit/gone/weak olmaz", () => {
     expect(notificationStatus(row, null, 1100).kind).toBe("active");
-    expect(notificationStatus({ ...row, expected_price: 0 }, 5, 99999).kind).toBe("ended");
+    expect(notificationStatus(row, null, 99999).kind).toBe("ended");
+    expect(notificationStatus({ ...row, expected_price: 0 }, 105, 99999).kind).toBe("ended");
+  });
+  it("bildirim fiyatı yoksa gone/weak üretilmez", () => {
+    expect(notificationStatus({ expected_price: 110, detected_at: 1000, horizon_minutes: 15 }, 50, 1100).kind).toBe("active");
+  });
+  it("hedef bildirim fiyatının altındaysa bile hit önceliklidir", () => {
+    expect(notificationStatus({ ...row, expected_price: 95 }, 96, 1100).kind).toBe("hit");
   });
   it("ufuk yoksa 60 dk", () => {
     expect(notificationStatus({ expected_price: 0, detected_at: 0, horizon_minutes: null }, null, 3599).kind).toBe("active");
+  });
+});
+
+describe("isRegimeTitle", () => {
+  it("rozetli başlık", () => {
+    expect(isRegimeTitle("⚠ BTC REJİM · STRAX yükseliş adayı")).toBe(true);
+    expect(isRegimeTitle("  ⚠ BTC REJİM")).toBe(true);
+  });
+  it("normal/boş başlık", () => {
+    expect(isRegimeTitle("STRAX yükseliş adayı")).toBe(false);
+    expect(isRegimeTitle(null)).toBe(false);
+    expect(isRegimeTitle(undefined)).toBe(false);
   });
 });
 

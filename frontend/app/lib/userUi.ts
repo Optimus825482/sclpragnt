@@ -129,32 +129,55 @@ export function modeLabel(mode: string | null | undefined): string {
   return MODE_LABELS[m] ?? m;
 }
 
+/** Bildirim fiyatının bu kadar (%) altına inen canlı fiyat = "yükseliş ihtimali ortadan kalktı". */
+export const GONE_DROP_PCT = 1.5;
+
 export type NotificationStatus =
   | { kind: "hit"; icon: "✅"; label: string; tone: "good" }
-  | { kind: "active"; icon: "⏳"; label: string; tone: "wait"; remainingMin: number }
+  | { kind: "active"; icon: "⏳"; label: string; tone: "info"; remainingMin: number }
+  | { kind: "weak"; icon: "⚠️"; label: string; tone: "warn"; remainingMin: number }
+  | { kind: "gone"; icon: "❌"; label: string; tone: "bad" }
   | { kind: "ended"; icon: "⌛"; label: string; tone: "mute" };
 
 /**
- * Bildirim kartının durum satırı. Öncelik: hedef fiyata ulaşıldıysa "hit" (pencere kapalı olsa da);
- * değilse pencere (detected_at + ufuk) sürüyorsa "active" (kalan dakika yukarı yuvarlanır, en az 1);
- * aksi halde "ended". `live` yoksa/`expected_price` <= 0 ise "hit" üretilmez.
+ * Bildirim kartının durum satırı (yükseliş ihtimali hâlâ geçerli mi?). Öncelik sırası:
+ * 1. "hit": canlı >= beklenen fiyat (pencere kapalı olsa da).
+ * 2. "gone": canlı, bildirim fiyatının %1,5 veya daha fazla altında (pencereden bağımsız).
+ * 3. pencere (detected_at + ufuk) sürüyorsa: canlı < bildirim fiyatı ise "weak" (zayıfladı), değilse "active" (sürüyor).
+ *    Kalan dakika yukarı yuvarlanır, en az 1.
+ * 4. "ended": pencere kapandı, hedef yok, iptal de değil.
+ * `live` yoksa hit/gone/weak üretilmez (pencere sürüyorsa "active"). `expected_price` <= 0 ise "hit" yok.
  */
 export function notificationStatus(
-  row: { expected_price?: number | null; detected_at: number; horizon_minutes?: number | null },
+  row: { expected_price?: number | null; price?: number | null; detected_at: number; horizon_minutes?: number | null },
   live: number | null | undefined,
   nowSec: number,
 ): NotificationStatus {
   const target = Number(row.expected_price);
+  const base = Number(row.price);
   const l = Number(live);
-  if (Number.isFinite(target) && target > 0 && Number.isFinite(l) && l > 0 && l >= target) {
+  const hasLive = Number.isFinite(l) && l > 0;
+  if (Number.isFinite(target) && target > 0 && hasLive && l >= target) {
     return { kind: "hit", icon: "✅", label: "Hedefe ulaştı", tone: "good" };
+  }
+  const hasBase = Number.isFinite(base) && base > 0;
+  if (hasLive && hasBase && ((l - base) / base) * 100 <= -GONE_DROP_PCT + 1e-9) {
+    return { kind: "gone", icon: "❌", label: "Yükseliş ihtimali ortadan kalktı", tone: "bad" };
   }
   const end = windowEnd(row.detected_at, Number(row.horizon_minutes));
   if (nowSec < end) {
     const remainingMin = Math.max(1, Math.ceil((end - nowSec) / 60));
-    return { kind: "active", icon: "⏳", label: `Yükseliş ihtimali sürüyor · kalan ${remainingMin} dk`, tone: "wait", remainingMin };
+    if (hasLive && hasBase && l < base) {
+      return { kind: "weak", icon: "⚠️", label: "Yükseliş ihtimali zayıfladı", tone: "warn", remainingMin };
+    }
+    return { kind: "active", icon: "⏳", label: `Yükseliş ihtimali sürüyor · kalan ${remainingMin} dk`, tone: "info", remainingMin };
   }
   return { kind: "ended", icon: "⌛", label: "Yükseliş penceresi kapandı", tone: "mute" };
+}
+
+/** Başlığı "⚠ BTC REJİM" ile başlayan bildirim, BTC düşüş rejiminde (kalkan rozet modunda) gönderilmiştir. */
+export function isRegimeTitle(title: string | null | undefined): boolean {
+  return String(title ?? "").trimStart().startsWith("⚠ BTC REJİM");
 }
 
 /** "STRAXTRY" -> "STRAX" (TRY soneki atılır; sonek yoksa olduğu gibi). */
