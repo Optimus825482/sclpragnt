@@ -1,7 +1,7 @@
 "use client";
 
 type Props = {
-  /** "Durum belirsiz" ana metni (emir borsaya ulaÅŸtÄ± mÄ± bilinmiyor). */
+  /** "Durum belirsiz" ana metni (emir borsaya ulaştı mı bilinmiyor). */
   text: string;
   /** Son "Durumu sorgula" sonucu. */
   lookup?: string;
@@ -12,8 +12,9 @@ type Props = {
 };
 
 /**
- * 2026-10-16 (basit arayÃ¼z): aÄŸ/zaman aÅŸÄ±mÄ± sonrasÄ± emir durumu BELÄ°RSÄ°Z uyarÄ±sÄ± + "Durumu sorgula".
- * Al ve Sat kartlarÄ± aynÄ± bileÅŸeni kullanÄ±r; onay penceresi aÃ§Ä±k kalÄ±r, aynÄ± emir kimliÄŸi korunur.
+ * 2026-10-16 (basit arayüz): ağ/zaman aşımı sonrası emir durumu BELİRSİZ uyarısı + "Durumu sorgula".
+ * Al ve Sat kartları aynı bileşeni kullanır; onay penceresi açık kalır, aynı emir kimliği korunur.
+ * 2026-10-18 (denetim #4): dosya çift UTF-8 kodlanmıştı ("SorgulanÄ±yor"); yeniden yazıldı.
  */
 export default function UncertainOrderNotice({ text, lookup, lookupBusy, onLookup, onDismiss }: Props) {
   return (
@@ -24,7 +25,7 @@ export default function UncertainOrderNotice({ text, lookup, lookupBusy, onLooku
         type="button" onClick={onLookup} disabled={lookupBusy}
         className="ui-button-secondary mt-2 min-h-[44px] rounded-lg border px-4 text-sm font-semibold disabled:opacity-50"
       >
-        {lookupBusy ? "SorgulanÄ±yorâ€¦" : "Durumu sorgula"}
+        {lookupBusy ? "Sorgulanıyor…" : "Durumu sorgula"}
       </button>
       {onDismiss && (
         <button type="button" onClick={onDismiss} className="ml-2 mt-2 min-h-[44px] rounded-lg px-3 text-sm text-bunker-muted underline">

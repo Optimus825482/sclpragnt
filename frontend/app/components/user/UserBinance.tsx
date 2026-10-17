@@ -30,7 +30,7 @@ function Freshness({ at, onRefresh }: { at: number | null; onRefresh: () => void
   const sec = Math.max(0, Math.round((now - at) / 1000));
   const stale = sec > STALE_AFTER_SEC;
   return (
-    <p role="status" className={`flex flex-wrap items-center gap-2 text-xs ${stale ? "text-yellow-300" : "text-bunker-muted"}`}>
+    <p role={stale ? "status" : undefined} className={`flex flex-wrap items-center gap-2 text-xs ${stale ? "text-yellow-300" : "text-bunker-muted"}`}>
       <span>{stale ? `Veri ${sec} sn önce alındı — yenilenemiyor olabilir, eski değerler gösteriliyor.` : sec < 3 ? "Az önce güncellendi" : `Güncellendi ${sec} sn önce`}</span>
       {stale && (
         <button type="button" onClick={onRefresh} className="ui-button-secondary min-h-[32px] rounded-lg border px-3 text-xs font-medium">
@@ -67,11 +67,16 @@ export default function UserBinance() {
   }, []);
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
+  // 2026-10-18 (denetim #8): ayar isteği hata verirse "anahtar yok" varsayılmaz; önceki ayar korunur,
+  // hiç yoksa hata gösterilip 10 sn'de bir yeniden denenir.
+  const [settingsError, setSettingsError] = useState(false);
   const loadSettings = useCallback(async () => {
     const r = await call<Settings>("GET", "/api/binance/settings");
-    if (r.ok) setSettings(r.body);
-    else setSettings({ configured: false, sell_enabled: false, sell_source: "panel" });
+    if (r.ok) { setSettings(r.body); setSettingsError(false); }
+    else setSettingsError(true);
   }, []);
+  const settingsMissing = settings === null;
+  useVisibleInterval(() => { if (settingsMissing) loadSettings(); }, settingsMissing ? 10000 : null, { runOnVisible: true });
 
   const loadRisk = useCallback(async () => {
     const r = await call<RiskSettings>("GET", "/api/binance/risk");
@@ -251,7 +256,13 @@ export default function UserBinance() {
         </Link>
       </header>
 
-      {settings === null && <p className="text-sm text-bunker-muted" aria-live="polite">Yükleniyor…</p>}
+      {settings === null && !settingsError && <p className="text-sm text-bunker-muted" aria-live="polite">Yükleniyor…</p>}
+      {settings === null && settingsError && (
+        <p role="alert" className="text-sm text-neon-red">
+          Hesap ayarları alınamadı; yeniden deneniyor.{" "}
+          <button type="button" onClick={loadSettings} className="underline">Şimdi dene</button>
+        </p>
+      )}
 
       {settings && configured && (
         <section className="grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label="Hesap özeti">

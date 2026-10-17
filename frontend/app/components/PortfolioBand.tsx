@@ -71,7 +71,7 @@ function BandInner() {
     <div
       className={`portfolio-band${stale ? " is-stale" : ""}`}
       role="status"
-      aria-live="polite"
+      aria-live="off"
       aria-label="Portföy durumu"
       data-source={data?.source ?? "loading"}
       title={stale ? "Son yenileme başarısız oldu; değerler bayat olabilir" : undefined}

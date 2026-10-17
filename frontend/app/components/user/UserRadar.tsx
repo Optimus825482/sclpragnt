@@ -259,7 +259,8 @@ export default function UserRadar() {
         if (!mounted.current) return;
         setHistory(mapHistory(h?.history, Date.now()));
       }
-      setError(!sRes.ok && !hRes.ok);
+      // 2026-10-18 (denetim #9): sekmelerden biri bile alınamadıysa hata; aksi halde boş sekme sonsuz "Yükleniyor…" kalıyordu.
+      setError(!sRes.ok || !hRes.ok);
     } catch {
       if (mounted.current) setError(true);
     }

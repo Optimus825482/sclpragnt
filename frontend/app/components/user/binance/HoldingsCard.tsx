@@ -39,7 +39,8 @@ export default function HoldingsCard({ holdings, loading = false, seeded = false
   // pencere açık kalır ve tekrar gönderimde AYNI kimlik kullanılır (mükerrer satış olmaz).
   const intent = useRef<IntentRef>({ key: "", id: "" });
   const sendLock = useRef(false);
-  const [uncertain, setUncertain] = useState<{ asset: string; cid: string; text: string } | null>(null);
+  // 2026-10-18 (denetim #1): belirsiz emrin ORANI ve MİKTARI da saklanır; pencere yeniden açılınca aynı emir aynı miktarla gider.
+  const [uncertain, setUncertain] = useState<{ asset: string; cid: string; chip: number; qty: number; text: string } | null>(null);
   const [lookup, setLookup] = useState("");
   const [lookupBusy, setLookupBusy] = useState(false);
   // 2026-10-16 (basit arayüz): onay penceresi açılınca ticker yenilenir; yaşı gösterilir (> 15 sn uyarı).
@@ -56,7 +57,10 @@ export default function HoldingsCard({ holdings, loading = false, seeded = false
   const coins = filterSmallBalances(allCoins, hideSmall);
   const hiddenCount = allCoins.length - coins.length;
   // Bakiyeden büyük miktar göndermemek için AŞAĞI keser (toFixed yarıya yuvarlardı).
-  const qty = target ? (chip === 100 ? target.free : floorQty(target.free * (chip / 100), 8)) : 0;
+  const uncertainHere = !!uncertain && !!target && uncertain.asset === target.asset;
+  const qty = target
+    ? (uncertainHere && uncertain ? uncertain.qty : chip === 100 ? target.free : floorQty(target.free * (chip / 100), 8))
+    : 0;
   const targetAsset = target?.asset ?? null;
   // 2026-10-17 (basit arayüz): onay penceresi açıkken liste canlı tick/yoklamayla kayar; yedek fiyat listedeki GÜNCEL satırdan
   // alınır (target açıldığı andaki kopyadır). Miktar (qty) bilerek açılış kopyasından gelir: belirsiz emirde aynı kimlik/aynı miktar.
@@ -66,7 +70,6 @@ export default function HoldingsCard({ holdings, loading = false, seeded = false
   const targetMin = targetAsset && minNotional?.asset === targetAsset ? minNotional.value : null;
   const notionalErr = livePrice ? minNotionalError(qty * livePrice, targetMin) : null;
   const sellNet = target ? holdingNetPnl(target.avg_cost_try, livePrice, qty) : null;
-  const uncertainHere = !!uncertain && !!target && uncertain.asset === target.asset;
 
   // Komisyon oranı tek kaynaktan (/api/config); portföy bandı bu sayfada bağlı olmayabilir.
   useEffect(() => {
@@ -126,7 +129,7 @@ export default function HoldingsCard({ holdings, loading = false, seeded = false
           setError(detail || "Bu emir borsa tarafından reddedilmişti; yeniden deneyebilirsin.");
           setTarget(null);
         } else {
-          setUncertain({ asset, cid, text: detail || "Bu emir daha önce gönderildi ve sonucu henüz belli değil. Tekrar göndermeyin." });
+          setUncertain({ asset, cid, chip, qty, text: detail || "Bu emir daha önce gönderildi ve sonucu henüz belli değil. Tekrar göndermeyin." });
           setLookup("");
           onTraded();
         }
@@ -141,7 +144,7 @@ export default function HoldingsCard({ holdings, loading = false, seeded = false
           setError(text);
           setTarget(null);
         } else {
-          setUncertain({ asset, cid, text });
+          setUncertain({ asset, cid, chip, qty, text });
           setLookup("");
           onTraded();
         }
@@ -161,7 +164,7 @@ export default function HoldingsCard({ holdings, loading = false, seeded = false
       onTraded();
     } catch (e) {
       if (e instanceof UncertainOrderError) {
-        setUncertain({ asset, cid, text: uncertainOrderText("sell", e.timedOut) });
+        setUncertain({ asset, cid, chip, qty, text: uncertainOrderText("sell", e.timedOut) });
         setLookup("");
         onTraded();
       } else {
@@ -247,7 +250,7 @@ export default function HoldingsCard({ holdings, loading = false, seeded = false
             </div>
             <button
               type="button" disabled={!liveEnabled || h.free <= 0}
-              onClick={() => { setTarget(h); setChip(100); setDone(null); setError(""); setLookup(""); }}
+              onClick={() => { setTarget(h); setChip(uncertain && uncertain.asset === h.asset ? uncertain.chip : 100); setDone(null); setError(""); setLookup(""); }}
               className="min-h-[48px] rounded-lg bg-neon-red px-5 text-sm font-bold text-white disabled:opacity-40"
             >
               Sat

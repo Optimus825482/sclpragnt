@@ -36,3 +36,17 @@ describe("add/remove/has", () => {
     expect(removeWatchItem([it1("AAATRY"), it1("BBBTRY")], "aaatry").map((x) => x.symbol)).toEqual(["BBBTRY"]);
   });
 });
+
+// 2026-10-18 (denetim #3): WS kapsamı dışındaki semboller REST ile yoklanır.
+import { symbolsMissingFromWs } from "./useWatchPrices";
+describe("symbolsMissingFromWs", () => {
+  it("son WS yayınında olmayanları döndürür", () => {
+    expect(symbolsMissingFromWs(["AAATRY", "BBBTRY", "CCCTRY"], new Set(["BBBTRY"]))).toEqual(["AAATRY", "CCCTRY"]);
+  });
+  it("WS hepsini kapsıyorsa boş", () => {
+    expect(symbolsMissingFromWs(["AAATRY"], new Set(["AAATRY", "ZZZTRY"]))).toEqual([]);
+  });
+  it("WS hiç yayın yapmadıysa hepsi eksik", () => {
+    expect(symbolsMissingFromWs(["AAATRY", "BBBTRY"], new Set())).toEqual(["AAATRY", "BBBTRY"]);
+  });
+});

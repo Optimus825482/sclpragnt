@@ -18,6 +18,7 @@ export function playRadarAlertSound() {
       [1318.5, now + 0.14, 0.12], // E6
       [1568.0, now + 0.28, 0.22], // G6
     ];
+    const last = notes[notes.length - 1];
     for (const [freq, start, dur] of notes) {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
@@ -30,7 +31,8 @@ export function playRadarAlertSound() {
       gain.connect(context.destination);
       oscillator.start(start);
       oscillator.stop(start + dur + 0.02);
-      oscillator.addEventListener("ended", () => context.close());
+      // 2026-10-18 (denetim #12): bağlam yalnız SON nota bitince kapanır; önceki kapanış 2. ve 3. notayı susturuyordu.
+      if (start === last[1]) oscillator.addEventListener("ended", () => { context.close().catch(() => {}); });
     }
   } catch {
     // Ses engellenmişse (otomatik oynatma politikası) modal yine de görünür.

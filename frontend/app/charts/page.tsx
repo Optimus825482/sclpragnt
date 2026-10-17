@@ -759,6 +759,8 @@ export default function ChartsPage() {
             if (Array.isArray(message.data?.auto_paper_positions)) {
                 const ap = message.data.auto_paper_positions.map((t: any) => ({
                     id: Number(t.auto_paper_id || 0),
+                    // 2026-10-18 (denetim #2): backend WS'te yalnız AÇIK otonom işlemleri yollar; REST ile aynı alan.
+                    status: "open",
                     symbol: t.symbol,
                     side: t.side,
                     entry_price: Number(t.entry || 0),

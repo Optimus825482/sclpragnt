@@ -65,7 +65,8 @@ function rawWantsAnyType(raw: string): boolean {
   return false;
 }
 
-const COMMISSION_RE = /"commission_pct"s*:s*([0-9.eE+-]+)/;
+// 2026-10-18 (denetim #7): `\s` kaçışı eksikti; backend `": "` ayracıyla yayınladığı için hiç eşleşmiyordu.
+const COMMISSION_RE = /"commission_pct"\s*:\s*([0-9.eE+-]+)/;
 
 // H-09: yarım-açık (half-open) WS bağlantısı gözetimi.
 //

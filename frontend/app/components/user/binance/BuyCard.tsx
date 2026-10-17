@@ -37,6 +37,8 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
   // tekrar denemede aynı kimlik kullanılır (mükerrer alım olmaz). Yalnız kesin sonuçta / niyet değişince yenilenir.
   const intent = useRef<IntentRef>({ key: "", id: "" });
   const sendLock = useRef(false);
+  // 2026-10-18 (denetim #6): uçuştaki plan isteği sembol/tutar değişince geçersiz; eski yanıt yeni kutuyu ezmez.
+  const planSeq = useRef(0);
   const [uncertain, setUncertain] = useState<{ cid: string; key: string; symbol: string; text: string } | null>(null);
   const [lookup, setLookup] = useState("");
   const [lookupBusy, setLookupBusy] = useState(false);
@@ -50,6 +52,8 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
   const suggestions = useMemo(() => suggestSymbols(allSymbols, query), [allSymbols, query]);
 
   const invalidate = () => {
+    planSeq.current += 1;
+    setPlanBusy(false);
     setPlan(null);
     setResult(null);
     setError("");
@@ -72,7 +76,9 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
     if (amount.kind === "custom") body.amount_try = customAmount;
     else body.amount_pct = (maxPositionPct * amount.chip) / 100;
     if (manual) Object.assign(body, { rr_mode: "manual", rr: manualRr, sl_pct: manualSl });
+    const seq = ++planSeq.current;
     const r = await call<TradePlanResponse>("POST", "/api/binance/trade-plan", body);
+    if (seq !== planSeq.current) return;
     setPlanBusy(false);
     if (!r.ok) {
       setPlan(null);
@@ -133,6 +139,8 @@ export default function BuyCard({ liveEnabled, configured, maxPositionPct, onTra
       resetIntent(intent.current);
       setUncertain(null);
       setConfirmOpen(false);
+      // 2026-10-18 (denetim #5): gerçekleşen alımdan sonra plan düşer; ikinci alım yeni plan ister.
+      setPlan(null);
       setResult({ ...describeOpenResult(r.status, r.body as never), clientOrderId: cid });
       onTraded();
     } catch (e) {
