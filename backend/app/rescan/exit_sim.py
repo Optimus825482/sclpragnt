@@ -61,9 +61,11 @@ def _arr(x, n: int) -> np.ndarray | None:
 
 def simulate(O: np.ndarray, H: np.ndarray, L: np.ndarray, C: np.ndarray, spec: ExitSpec, *, slip_pct: float,
              fee_leg_pct: float = FEE_LEG_PCT, tp_cand_pct: np.ndarray | None = None,
-             atr_pct: np.ndarray | None = None, time_major: bool = False) -> dict:
+             atr_pct: np.ndarray | None = None, time_major: bool = False, entry_slip_pct: float | None = None) -> dict:
     """Vektörel simülasyon. Dönüş: net (yüzde), exit_px/entry (göreli), reason (kod), hold (dk), mfe, mae (yüzde; giriş fiyatına göre).
-    Girdi (N, W); `time_major=True` ise (W, N) (sütun erişimi bitişik → büyük N'de hızlı)."""
+    Girdi (N, W); `time_major=True` ise (W, N) (sütun erişimi bitişik → büyük N'de hızlı).
+    `entry_slip_pct`: yalnız GİRİŞ kayması (None → `slip_pct`); çıkış kayması hep `slip_pct`. Limit (maker) dolumu için 0 verilir:
+    giriş = O[0] (limit fiyatı), stop/zaman çıkışları yine kaymalı."""
     O = np.asarray(O); H = np.asarray(H); L = np.asarray(L); C = np.asarray(C)
     if not time_major:
         O, H, L, C = O.T, H.T, L.T, C.T
@@ -72,8 +74,9 @@ def simulate(O: np.ndarray, H: np.ndarray, L: np.ndarray, C: np.ndarray, spec: E
     if nb < 1:
         raise ValueError("time_min en az 1 bar olmalı")
     s = slip_pct / 100.0
+    s_in = s if entry_slip_pct is None else float(entry_slip_pct) / 100.0
     f = fee_leg_pct / 100.0
-    entry = O[0].astype(float) * (1.0 + s)
+    entry = O[0].astype(float) * (1.0 + s_in)
 
     tp_pct = None
     if spec.tp_cand:

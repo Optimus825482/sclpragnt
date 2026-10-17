@@ -253,3 +253,23 @@ def test_matches_scalar_reference_on_random_paths_all_cells():
                 ref_net = ((px * (1 - f)) / (entry * (1 + f)) - 1) * 100
                 assert r["net"][k] == pytest.approx(ref_net, abs=1e-9), (spec.name, slip, k)
                 assert r["hold"][k] == hold, (spec.name, slip, k)
+
+
+def test_entry_slip_pct_only_changes_entry_leg():
+    # limit (maker) dolumu: giriş kayması 0 → giriş = O[0]; stop çıkışı yine kaymalı
+    O, H, L, C = _path([(100, 100.2, 98.0, 98.5)])
+    spec = X.ExitSpec("t", "fixed", sl=1.5, time_min=20, tp=None)
+    r0 = X.simulate(O, H, L, C, spec, slip_pct=0.15, entry_slip_pct=0.0)
+    stop = 100 * (1 - 0.015)
+    assert r0["reason"][0] == X.R_SL
+    assert r0["net"][0] == pytest.approx(_net(100.0, stop * (1 - 0.0015)))
+    r1 = X.simulate(O, H, L, C, spec, slip_pct=0.15)                  # varsayılan: giriş de kaymalı
+    assert r1["net"][0] == pytest.approx(_net(100.0 * 1.0015, 100.0 * 1.0015 * (1 - 0.015) * (1 - 0.0015)))
+    # None → eski davranış (geriye uyumlu)
+    r2 = X.simulate(O, H, L, C, spec, slip_pct=0.15, entry_slip_pct=None)
+    assert r2["net"][0] == pytest.approx(r1["net"][0])
+    # hedef/stop seviyeleri dolan girişe göredir: kayma 0 iken TP tam %1,5
+    O2, H2, L2, C2 = _path([(100, 101.6, 100, 101.5)])
+    sp2 = X.ExitSpec("t", "fixed", sl=3.0, time_min=20, tp=1.5)
+    r3 = X.simulate(O2, H2, L2, C2, sp2, slip_pct=0.15, entry_slip_pct=0.0)
+    assert r3["reason"][0] == X.R_TP and r3["net"][0] == pytest.approx(_net(100.0, 101.5))
