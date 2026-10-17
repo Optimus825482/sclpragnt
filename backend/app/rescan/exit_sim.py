@@ -19,7 +19,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-FEE_LEG_PCT = 0.1125
+# 2026-10-17 (kullanıcı hesabı, Binance TR, BNB ile %25 indirim açık): taker %0,1125, maker %0,0675.
+# Piyasa emri (giriş, stop, zaman/izleyen çıkışı) = taker; bekleyen LIMIT kâr al dolumu = maker.
+FEE_TAKER_PCT = 0.1125
+FEE_MAKER_PCT = 0.0675
+FEE_LEG_PCT = FEE_TAKER_PCT
+MAKER_TAKER_RATIO = FEE_MAKER_PCT / FEE_TAKER_PCT   # 0,09/0,15 = 0,6 (BNB indiriminden bağımsız)
 BAR_MS = 60_000
 
 # çıkış nedeni kodları
@@ -60,7 +65,7 @@ def _arr(x, n: int) -> np.ndarray | None:
 
 
 def simulate(O: np.ndarray, H: np.ndarray, L: np.ndarray, C: np.ndarray, spec: ExitSpec, *, slip_pct: float,
-             fee_leg_pct: float = FEE_LEG_PCT, tp_cand_pct: np.ndarray | None = None,
+             fee_leg_pct: float = FEE_LEG_PCT, fee_tp_leg_pct: float | None = None, tp_cand_pct: np.ndarray | None = None,
              atr_pct: np.ndarray | None = None, time_major: bool = False, entry_slip_pct: float | None = None) -> dict:
     """Vektörel simülasyon. Dönüş: net (yüzde), exit_px/entry (göreli), reason (kod), hold (dk), mfe, mae (yüzde; giriş fiyatına göre).
     Girdi (N, W); `time_major=True` ise (W, N) (sütun erişimi bitişik → büyük N'de hızlı).
@@ -76,6 +81,8 @@ def simulate(O: np.ndarray, H: np.ndarray, L: np.ndarray, C: np.ndarray, spec: E
     s = slip_pct / 100.0
     s_in = s if entry_slip_pct is None else float(entry_slip_pct) / 100.0
     f = fee_leg_pct / 100.0
+    # Kâr al çıkışı bekleyen LIMIT emirdir → maker ücreti. None: taker × 0,6 (taker 0 ise 0; BNB'siz 0,15 → 0,09).
+    f_tp = (fee_leg_pct * MAKER_TAKER_RATIO if fee_tp_leg_pct is None else fee_tp_leg_pct) / 100.0
     entry = O[0].astype(float) * (1.0 + s_in)
 
     tp_pct = None
@@ -151,7 +158,8 @@ def simulate(O: np.ndarray, H: np.ndarray, L: np.ndarray, C: np.ndarray, spec: E
         exit_px[alive] = C[nb - 1][alive] * (1.0 - s)
         reason[alive] = R_TIME
         hold[alive] = nb
-    net = (exit_px * (1.0 - f)) / (entry * (1.0 + f)) - 1.0
+    f_exit = np.where(reason == R_TP, f_tp, f)
+    net = (exit_px * (1.0 - f_exit)) / (entry * (1.0 + f)) - 1.0
     return {
         "net": net * 100.0, "exit_rel": exit_px / entry, "reason": reason, "hold": hold,
         "mfe": (mfe_px / entry - 1.0) * 100.0, "mae": (mae_px / entry - 1.0) * 100.0,

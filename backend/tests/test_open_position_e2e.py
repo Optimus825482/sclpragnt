@@ -70,7 +70,8 @@ def test_full_flow_buy_detail_oco(fake):
     assert status == 200 and body["protection"]["status"] == "placed"
     buys = srv.calls("POST", "/open/v1/orders")
     assert len(buys) == 1 and buys[0]["quoteOrderQty"] == "400.00" and buys[0]["side"] == "0" and buys[0]["type"] == "2"
-    assert buys[0]["clientId"] == "e2e-0000001"
+    # 2026-10-17 (3703 Invalid client ID düzeltmesi): borsaya giden clientId yalnız harf+rakam; tire atılır.
+    assert buys[0]["clientId"] == "e2e0000001"
     ocos = srv.calls("POST", "/open/v1/orders/oco")
     assert len(ocos) == 1 and ocos[0]["side"] == "1"
     assert float(ocos[0]["quantity"]) == pytest.approx(body["executed_qty"])

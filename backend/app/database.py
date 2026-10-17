@@ -7782,7 +7782,8 @@ async def close_combined_paper_trade(trade_id: int, exit_price: float, exit_time
         quantity = float(t["quantity"])
         commission_pct = paper_ledger.commission_pct()
         # Satış kayması + iki bacak komisyonu + net PnL: paper_ledger.settle_close (tek kaynak).
-        settled = paper_ledger.settle_close(entry_price, exit_price, quantity, commission=commission_pct)
+        settled = paper_ledger.settle_close(entry_price, exit_price, quantity, commission=commission_pct,
+                                            exit_kind=reason)
         fill_price = settled["fill_price"]
         total_commission = settled["commission"]
         pnl = settled["pnl"]
@@ -7791,7 +7792,7 @@ async def close_combined_paper_trade(trade_id: int, exit_price: float, exit_time
             "UPDATE combined_paper_trades SET status='closed', exit_price=?, exit_time=?,"
             " exit_reason=?, pnl=?, pnl_pct=?, commission=?, updated_at=? WHERE id=?",
             (fill_price, exit_time, reason, pnl, pnl_pct, total_commission, time.time(), trade_id))
-        proceed = fill_price * quantity * (1 - commission_pct)
+        proceed = fill_price * quantity * (1 - settled["exit_commission_pct"])
         cash_row = conn.execute("SELECT amount FROM combined_paper_wallet WHERE asset=? FOR UPDATE",
                                 (config.CASH_ASSET,)).fetchone()
         cash = float(dict(cash_row)["amount"]) if cash_row and dict(cash_row)["amount"] is not None else 0.0

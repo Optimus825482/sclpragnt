@@ -86,7 +86,8 @@ class CommissionPrecedenceTests(_Patched):
     def test_commission_model_dict(self):
         self._enter(_model(bnb=True, discount=25.0))
         m = pl.commission_model()
-        self.assertEqual(set(m), {"base", "bnb_mode", "discount_pct", "override", "effective", "round_trip"})
+        self.assertEqual(set(m), {"base", "bnb_mode", "discount_pct", "override", "effective", "round_trip",
+                                  "maker_effective", "tp_maker_fill", "round_trip_tp"})
         self.assertAlmostEqual(m["base"], BASE, places=12)
         self.assertTrue(m["bnb_mode"])
         self.assertEqual(m["discount_pct"], 25.0)
@@ -235,3 +236,66 @@ class DbSettingsOverrideProfileTests(_Patched):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MakerTakeProfitTests(unittest.TestCase):
+    """2026-10-17: kullanıcı hesabı (Binance TR, BNB açık) maker %0,0675 / taker %0,1125.
+
+    Kâr al = bekleyen LIMIT dolumu → maker ücreti ve satış kayması yok; diğer çıkışlar taker + kayma.
+    """
+
+    def setUp(self):
+        self._p = [
+            patch.object(config, "COMMISSION_PCT", 0.0015),
+            patch.object(config, "COMMISSION_MAKER_PCT", 0.0009),
+            patch.object(config, "COMMISSION_MAKER_PCT_OVERRIDE", None),
+            patch.object(config, "COMMISSION_BNB_MODE", True),
+            patch.object(config, "COMMISSION_BNB_DISCOUNT_PCT", 25.0),
+            patch.object(config, "COMMISSION_PCT_OVERRIDE", None),
+            patch.object(config, "ESTIMATED_SLIPPAGE_PCT", 0.00025),
+            patch.object(config, "PAPER_TP_MAKER_FILL", True),
+        ]
+        for x in self._p:
+            x.start()
+
+    def tearDown(self):
+        for x in reversed(self._p):
+            x.stop()
+
+    def test_effective_rates_match_account_screen(self):
+        self.assertAlmostEqual(pl.commission_pct(), 0.001125, places=12)
+        self.assertAlmostEqual(pl.maker_commission_pct(), 0.000675, places=12)
+        self.assertAlmostEqual(config.round_trip_cost_tp(), 0.001125 + 0.000675 + 0.00025, places=12)
+
+    def test_tp_reasons_are_maker(self):
+        for k in ("take_profit", "llm_take_profit", "lead_lag_take_profit", "chat_plan_take_profit", "paper_limit"):
+            self.assertTrue(pl.is_maker_exit(k), k)
+            self.assertAlmostEqual(pl.exit_commission_pct(k), 0.000675, places=12)
+            self.assertEqual(pl.exit_slippage_pct(k), 0.0)
+        for k in ("stop_loss", "trailing_stop", "time_stop", "max_duration", None):
+            self.assertFalse(pl.is_maker_exit(k), k)
+            self.assertAlmostEqual(pl.exit_commission_pct(k), 0.001125, places=12)
+
+    def test_settle_close_tp_vs_stop(self):
+        tp = pl.settle_close(100.0, 102.0, 1.0, exit_kind="take_profit")
+        self.assertAlmostEqual(tp["fill_price"], 102.0, places=12)               # kaymasız
+        self.assertAlmostEqual(tp["commission"], 100 * 0.001125 + 102 * 0.000675, places=12)
+        self.assertAlmostEqual(tp["exit_commission_pct"], 0.000675, places=12)
+        st = pl.settle_close(100.0, 98.0, 1.0, exit_kind="stop_loss")
+        self.assertAlmostEqual(st["fill_price"], 98.0 * (1 - 0.00025), places=12)
+        self.assertAlmostEqual(st["exit_commission_pct"], 0.001125, places=12)
+        legacy = pl.settle_close(100.0, 102.0, 1.0)                                # neden yok → eski davranış
+        self.assertAlmostEqual(legacy["exit_commission_pct"], 0.001125, places=12)
+
+    def test_markup_and_flag_off(self):
+        self.assertAlmostEqual(pl.round_trip_markup(exit_kind="take_profit"), 0.001125 + 0.000675, places=12)
+        self.assertAlmostEqual(pl.round_trip_markup(), 2 * 0.001125 + 0.00025, places=12)
+        with patch.object(config, "PAPER_TP_MAKER_FILL", False):
+            self.assertFalse(pl.is_maker_exit("take_profit"))
+            self.assertAlmostEqual(config.round_trip_cost_tp(), config.round_trip_cost(), places=12)
+            tp = pl.settle_close(100.0, 102.0, 1.0, exit_kind="take_profit")
+            self.assertAlmostEqual(tp["exit_commission_pct"], 0.001125, places=12)
+
+    def test_maker_override(self):
+        with patch.object(config, "COMMISSION_MAKER_PCT_OVERRIDE", 0.0005):
+            self.assertAlmostEqual(pl.maker_commission_pct(), 0.0005, places=12)

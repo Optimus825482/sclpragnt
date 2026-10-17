@@ -821,10 +821,11 @@ class ScalpAnalyzer:
         # ÜZERİNE uygulanır; iki ayrı kavramdır. Tek kaynak:
         # config.ESTIMATED_SLIPPAGE_PCT (config.min_net_exit_pct da aynı sabiti
         # kullanır); yeni formül uydurulmaz.
-        fill_price = paper_ledger.sell_fill(price)
+        # 2026-10-17: kâr al (bekleyen LIMIT) → kaymasız dolum + maker ücreti; diğer çıkışlar taker.
+        fill_price = paper_ledger.sell_fill(price, paper_ledger.exit_slippage_pct(reason))
         sell_value = pos["quantity"] * fill_price
         # 2026-10-16 (maliyet/çıkış): efektif oran (BNB indirimi/override) — tek kaynak paper_ledger.
-        commission = sell_value * paper_ledger.commission_pct()
+        commission = sell_value * paper_ledger.exit_commission_pct(reason)
         try_balance = await database.get_wallet_balance("TRY")
         trade = await self._record_trade(symbol, pos, fill_price, reason, commission)
         sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": fill_price,

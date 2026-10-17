@@ -7,6 +7,7 @@ import pytest
 from app.rescan import exit_sim as X
 
 FEE = X.FEE_LEG_PCT / 100.0
+FEE_TP = X.FEE_MAKER_PCT / 100.0   # 2026-10-17: kâr al bekleyen LIMIT → maker
 
 
 def _path(bars, w=20):
@@ -19,8 +20,8 @@ def _path(bars, w=20):
     return a[:, :, 0], a[:, :, 1], a[:, :, 2], a[:, :, 3]
 
 
-def _net(entry, exit_px):
-    return ((exit_px * (1 - FEE)) / (entry * (1 + FEE)) - 1) * 100
+def _net(entry, exit_px, tp=False):
+    return ((exit_px * (1 - (FEE_TP if tp else FEE))) / (entry * (1 + FEE)) - 1) * 100
 
 
 def test_fixed_tp_fills_at_tp_price_and_fees():
@@ -28,7 +29,7 @@ def test_fixed_tp_fills_at_tp_price_and_fees():
     spec = X.ExitSpec("t", "fixed", sl=3.0, time_min=20, tp=1.5)
     r = X.simulate(O, H, L, C, spec, slip_pct=0.0)
     assert r["reason"][0] == X.R_TP and r["hold"][0] == 2
-    assert r["net"][0] == pytest.approx(_net(100.0, 101.5))
+    assert r["net"][0] == pytest.approx(_net(100.0, 101.5, tp=True))
     assert r["mfe"][0] == pytest.approx(1.6, abs=1e-9)
 
 
@@ -38,7 +39,7 @@ def test_entry_slippage_shifts_levels_and_net():
     spec = X.ExitSpec("t", "fixed", sl=3.0, time_min=20, tp=1.5)
     r = X.simulate(O, H, L, C, spec, slip_pct=1.0)
     assert r["reason"][0] == X.R_TP
-    assert r["net"][0] == pytest.approx(_net(101.0, 101.0 * 1.015))
+    assert r["net"][0] == pytest.approx(_net(101.0, 101.0 * 1.015, tp=True))
 
 
 def test_stop_beats_tp_in_same_bar():
@@ -250,7 +251,8 @@ def test_matches_scalar_reference_on_random_paths_all_cells():
             r = X.simulate(open_, high, low, close, spec, slip_pct=slip, tp_cand_pct=tp_c, atr_pct=atr)
             for k in range(0, n, 7):
                 px, hold, entry = _ref_one(open_[k], high[k], low[k], close[k], spec, slip, tp_c[k], atr[k])
-                ref_net = ((px * (1 - f)) / (entry * (1 + f)) - 1) * 100
+                fx = X.FEE_MAKER_PCT / 100 if r["reason"][k] == X.R_TP else f
+                ref_net = ((px * (1 - fx)) / (entry * (1 + f)) - 1) * 100
                 assert r["net"][k] == pytest.approx(ref_net, abs=1e-9), (spec.name, slip, k)
                 assert r["hold"][k] == hold, (spec.name, slip, k)
 
@@ -272,4 +274,16 @@ def test_entry_slip_pct_only_changes_entry_leg():
     O2, H2, L2, C2 = _path([(100, 101.6, 100, 101.5)])
     sp2 = X.ExitSpec("t", "fixed", sl=3.0, time_min=20, tp=1.5)
     r3 = X.simulate(O2, H2, L2, C2, sp2, slip_pct=0.15, entry_slip_pct=0.0)
-    assert r3["reason"][0] == X.R_TP and r3["net"][0] == pytest.approx(_net(100.0, 101.5))
+    assert r3["reason"][0] == X.R_TP and r3["net"][0] == pytest.approx(_net(100.0, 101.5, tp=True))
+
+
+def test_tp_exit_uses_maker_fee_and_overrides():
+    """2026-10-17: kâr al çıkışı maker (%0,0675), stop/zaman taker (%0,1125); fee_tp_leg_pct ile ezilir, ücretsiz koşu 0 kalır."""
+    O, H, L, C = _path([(100, 100.2, 99.9, 100.1), (100.1, 101.6, 100.0, 101.5)])
+    spec = X.ExitSpec("t", "fixed", sl=3.0, time_min=20, tp=1.5)
+    maker = X.simulate(O, H, L, C, spec, slip_pct=0.0)["net"][0]
+    taker = X.simulate(O, H, L, C, spec, slip_pct=0.0, fee_tp_leg_pct=X.FEE_TAKER_PCT)["net"][0]
+    gross = X.simulate(O, H, L, C, spec, slip_pct=0.0, fee_leg_pct=0.0)["net"][0]
+    assert maker - taker == pytest.approx(101.5 * (X.FEE_TAKER_PCT - X.FEE_MAKER_PCT) / 100 / (1 + FEE), rel=1e-9)
+    assert gross == pytest.approx(1.5)
+    assert X.MAKER_TAKER_RATIO == pytest.approx(0.6)

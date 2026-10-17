@@ -1653,7 +1653,7 @@ async def velocity_learning_loop():
 
                 if hit_target:
                     exit_pct = target_pct
-                    net_pct = exit_pct - cost_pct
+                    net_pct = exit_pct - round_trip_cost_pct(tp_exit=True)
                     touch_sec = max(0, int((int(touch_bar[0]) + 59_999 - created_ms) / 1000)) if touch_bar else None
                     details = {
                         "window_bars": len(window),
@@ -1891,7 +1891,7 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
 
     if hit_target:
         exit_pct = target_pct
-        net_pct = exit_pct - cost_pct
+        net_pct = exit_pct - round_trip_cost_pct(tp_exit=True)
         reason = "TARGET_HIT"
     elif hit_stop:
         exit_pct = -sl_pct
@@ -2563,12 +2563,16 @@ def _exit_pct_from_window(window, entry: float) -> float | None:
     return (float(window[-1][4]) / float(entry) - 1) * 100
 
 
-def round_trip_cost_pct() -> float:
+def round_trip_cost_pct(tp_exit: bool = False) -> float:
     """Gidiş-dönüş maliyet (iki bacak komisyon + iki bacak slippage), YÜZDE.
 
     Tek kaynak `config.round_trip_cost()` (kesir) -> yüzde.
-    -> (0.0015 + 0.00025) * 2 * 100 = %0.35
+    -> BNB açık: (0.001125 + 0.00025) * 2 * 100 = %0.275
+    2026-10-17: ``tp_exit=True`` → kâr al bekleyen LIMIT (maker, kaymasız):
+    `config.round_trip_cost_tp()` -> %0.205.
     """
+    if tp_exit:
+        return float(config.round_trip_cost_tp()) * 100
     return float(config.round_trip_cost()) * 100
 
 

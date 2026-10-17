@@ -30,9 +30,11 @@ def _series(n5: int = 1000, seed: int = 1, base: float = 100.0, vol: float = 0.2
 
 
 def test_round_trip_cost_and_net_target():
-    assert abs(D.round_trip_cost_pct(0.15, 0.15) - 0.525) < 1e-12
-    assert abs(D.round_trip_cost_pct(0.10, 0.10) - 0.425) < 1e-12
-    assert abs(float(D.net_target_pct(2.5)) - (2.5 - 0.525)) < 1e-12
+    # 2026-10-17: hedefe ulaşan işlem = giriş taker + giriş kayması + çıkış maker (bekleyen LIMIT, kaymasız)
+    assert abs(D.round_trip_cost_pct() - 0.33) < 1e-12
+    assert abs(D.round_trip_cost_pct(0.15, 0.15) - 0.48) < 1e-12
+    assert abs(D.round_trip_cost_pct(0.15, 0.15, fee_exit_leg_pct=D.FEE_LEG_PCT) - 0.525) < 1e-12   # eski iki taker bacak
+    assert abs(float(D.net_target_pct(2.5)) - (2.5 - 0.33)) < 1e-12
     assert np.isnan(D.net_target_pct(np.nan))
     assert abs(float(D.net_target_pct(3.0, 0.3)) - 2.7) < 1e-12
 

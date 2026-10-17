@@ -226,7 +226,8 @@ class AutoPaperOpenPositionTpTests(unittest.IsolatedAsyncioTestCase):
         # Erkan kararı (2026-09-18): TP NET hedeftir — mark-up = gidiş-dönüş
         # komisyon (2×%0.15) + SATIŞ dolma payı (%0.025): %4 hedef → 104.325
         # 2026-10-16 (maliyet/çıkış): komisyon bacağı efektif oran (paper_ledger.commission_pct).
-        expected_tp = 100.0 * (1 + 4.0 / 100 + 2 * paper_ledger.commission_pct() + config.ESTIMATED_SLIPPAGE_PCT)
+        # 2026-10-17: kâr al bekleyen LIMIT → çıkış maker ve kaymasız: giriş taker + çıkış maker.
+        expected_tp = 100.0 * (1 + 4.0 / 100 + paper_ledger.commission_pct() + paper_ledger.maker_commission_pct())
         self.assertAlmostEqual(expected_tp, self.calls[0]["new_tp"], places=6)
 
     async def test_lower_target_does_not_rewrite_tp(self):

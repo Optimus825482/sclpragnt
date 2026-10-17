@@ -953,7 +953,8 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         # TP brüt = 2.0 + 2×0.15 + 0.025 ≈ +2.325%. Kapanış muhasebesi
         # (`_close_trade`) ZATEN komisyon+ kaymayı düşüyor; çapası da
         # mark-up'lı olmalı ki bildirimdeki hedef gerçekten realize edilsin.
-        cost_markup = paper_ledger.round_trip_markup(commission_pct, entry_slip)
+        # 2026-10-17: kâr al bekleyen LIMIT → çıkış maker ve kaymasız (paper_ledger.is_maker_exit).
+        cost_markup = paper_ledger.round_trip_markup(commission_pct, entry_slip, exit_kind="take_profit")
         take_profit_price = fill_entry * (1 + target_pct / 100 + cost_markup)
 
         # Volatiliteye duyarlı Stop Loss (ATR koruması):
@@ -1120,7 +1121,7 @@ async def _update_existing_trade(open_trade: dict, notification: dict, current_p
         # ERKAN İSTEĞİ (2026-09-18): TP-güncelleme de NET hedefe göre — giriş
         # kapasıyla AYNI mark-up (`_open_new_trade` ile tutarlı); aksi halde
         # güncellenen pozisyonun hedefi mark-up'sız kalırdı.
-        cost_markup = paper_ledger.round_trip_markup()
+        cost_markup = paper_ledger.round_trip_markup(exit_kind="take_profit")
         new_tp = entry_price * (1 + target_pct / 100 + cost_markup)
         old_tp = float(open_trade.get("take_profit") or 0)
 
@@ -1587,7 +1588,7 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
         # `exit_price` kayma ÖNCESİ tetik/piyasa fiyatıdır (bkz.
         # paper_ledger.exit_fill); satış kayması + iki bacak komisyonu + net PnL
         # tek kaynak `paper_ledger.settle_close` içinde.
-        settled = paper_ledger.settle_close(entry_price, exit_price, quantity)
+        settled = paper_ledger.settle_close(entry_price, exit_price, quantity, exit_kind=reason)
         fill_price = settled["fill_price"]
         total_commission = settled["commission"]
         pnl = settled["pnl"]

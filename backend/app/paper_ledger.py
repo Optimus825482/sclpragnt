@@ -9,7 +9,8 @@ Sözleşme:
   * Tetik çıkışı  = min(anlık, tetik)  [stop/breakeven/trailing/TP]   -> exit_fill
     Piyasa çıkışı = anlık fiyat        [süre, pasif sembol, zorla]     -> exit_fill
   * Satış dolumu  = çıkış fiyatı × (1 − kayma)  (kapanışta uygulanır)  -> sell_fill
-  * Komisyon      = her bacakta notional × COMMISSION_PCT           -> settle_close
+  * Komisyon      = giriş taker; çıkış taker, kâr al ise maker    -> settle_close
+    (2026-10-17: PAPER_TP_MAKER_FILL açıkken kâr al = bekleyen LIMIT dolumu: maker ücreti, kayma yok)
   * Tazelik       = ticker yaşı ≤ MAX_TICKER_AGE_SEC                  -> is_fresh
 
 `exit_fill` KAYMA ÖNCESİ tetik fiyatı döndürür; satış kaymasını `settle_close`
@@ -57,6 +58,35 @@ def commission_pct() -> float:
     return float(getattr(config, "COMMISSION_PCT", 0.0015))
 
 
+def maker_commission_pct() -> float:
+    """2026-10-17: EFEKTİF maker bacak komisyonu (kesir) — `config.effective_maker_commission_pct()`."""
+    eff = getattr(config, "effective_maker_commission_pct", None)
+    if callable(eff):
+        try:
+            return float(eff())
+        except Exception:  # noqa: BLE001
+            pass
+    return float(getattr(config, "COMMISSION_MAKER_PCT", 0.0009))
+
+
+def is_maker_exit(kind: str | None) -> bool:
+    """Kapanış bekleyen LIMIT kâr al dolumu mu? (take_profit, *_take_profit, paper_limit)."""
+    if not kind or not bool(getattr(config, "PAPER_TP_MAKER_FILL", False)):
+        return False
+    k = str(kind).lower()
+    return k == "take_profit" or k.endswith("_take_profit") or k == "paper_limit"
+
+
+def exit_commission_pct(kind: str | None = None) -> float:
+    """Çıkış bacağı komisyonu: kâr al (LIMIT) → maker, diğerleri → taker."""
+    return maker_commission_pct() if is_maker_exit(kind) else commission_pct()
+
+
+def exit_slippage_pct(kind: str | None = None) -> float:
+    """Çıkış bacağı kayması: bekleyen LIMIT dolumunda 0, piyasa/stop çıkışında tahmini kayma."""
+    return 0.0 if is_maker_exit(kind) else slippage_pct()
+
+
 def commission_model() -> dict:
     """2026-10-16 (maliyet/çıkış): UI/log için komisyon modeli özeti.
 
@@ -76,7 +106,11 @@ def commission_model() -> dict:
         "discount_pct": float(getattr(config, "COMMISSION_BNB_DISCOUNT_PCT", 0.0) or 0.0),
         "override": override,
         "effective": effective,
+        "maker_effective": maker_commission_pct(),
+        "tp_maker_fill": bool(getattr(config, "PAPER_TP_MAKER_FILL", False)),
         "round_trip": 2.0 * effective + 2.0 * slippage_pct(),
+        "round_trip_tp": (effective + exit_commission_pct("take_profit") + slippage_pct()
+                          + exit_slippage_pct("take_profit")),
     }
 
 
@@ -136,19 +170,24 @@ def sell_fill(price: float, slippage: float | None = None) -> float:
     return float(price) * (1.0 - s)
 
 
-def round_trip_markup(commission: float | None = None, slippage: float | None = None) -> float:
-    """Gidiş-dönüş maliyet payı (kesir): 2 × komisyon + kayma.
+def round_trip_markup(commission: float | None = None, slippage: float | None = None,
+                      exit_kind: str | None = None) -> float:
+    """Gidiş-dönüş maliyet payı (kesir): giriş komisyonu + çıkış komisyonu + çıkış kayması.
 
     TP çapasına ve breakeven taban fiyatına eklenir ki bildirimdeki hedef NET
-    gerçekleşsin.
+    gerçekleşsin. 2026-10-17: ``exit_kind="take_profit"`` → çıkış maker ve kaymasız
+    (bekleyen LIMIT); verilmezse eski davranış (2 × komisyon + kayma).
     """
     c = commission_pct() if commission is None else float(commission)
+    if is_maker_exit(exit_kind):
+        return c + exit_commission_pct(exit_kind) + exit_slippage_pct(exit_kind)
     s = slippage_pct() if slippage is None else float(slippage)
     return 2.0 * c + s
 
 
 def settle_close(entry_price: float, exit_price: float, quantity: float,
-                 commission: float | None = None, slippage: float | None = None) -> dict:
+                 commission: float | None = None, slippage: float | None = None,
+                 exit_kind: str | None = None) -> dict:
     """Kapanış muhasebesi: satış dolumu, iki bacak komisyonu, net PnL.
 
     ``exit_price`` kayma ÖNCESİ çıkış fiyatıdır (bkz. `exit_fill`). Dönen
@@ -156,9 +195,15 @@ def settle_close(entry_price: float, exit_price: float, quantity: float,
     türetilir.
     """
     c = commission_pct() if commission is None else float(commission)
-    fill = sell_fill(exit_price, slippage)
+    # 2026-10-17: kâr al (bekleyen LIMIT) → çıkış bacağı maker ve kaymasız.
+    if is_maker_exit(exit_kind):
+        c_exit = exit_commission_pct(exit_kind)
+        fill = sell_fill(exit_price, exit_slippage_pct(exit_kind))
+    else:
+        c_exit = c
+        fill = sell_fill(exit_price, slippage)
     entry_commission = float(entry_price) * float(quantity) * c
-    exit_commission = fill * float(quantity) * c
+    exit_commission = fill * float(quantity) * c_exit
     total_commission = entry_commission + exit_commission
     gross_pnl = (fill - float(entry_price)) * float(quantity)
     pnl = gross_pnl - total_commission
@@ -170,6 +215,7 @@ def settle_close(entry_price: float, exit_price: float, quantity: float,
         "commission": total_commission,
         "pnl": pnl,
         "pnl_pct": pnl_pct,
+        "exit_commission_pct": c_exit,
     }
 
 

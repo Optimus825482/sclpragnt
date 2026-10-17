@@ -1083,6 +1083,18 @@ class Config:
     COMMISSION_PCT_OVERRIDE: float | None = (
         float(_commission_override_raw) if _commission_override_raw.lower() not in ("", "none", "null") else None
     )
+    # 2026-10-17 (kullanıcı hesabı doğrulandı — Binance TR ekranı, BNB açık): maker %0,0675,
+    # taker %0,1125 → BNB indirimi %25 DOĞRU; maker tabanı %0,09. Piyasa emri (giriş, stop,
+    # zaman/izleyen çıkışı) taker; canlıda kâr al bekleyen LIMIT emirdir (binance_tr_private
+    # type=1) → maker. COMMISSION_MAKER_PCT_OVERRIDE boş değilse maker için mutlak kesir.
+    COMMISSION_MAKER_PCT = float(os.getenv("COMMISSION_MAKER_PCT", "0.0009"))
+    _maker_override_raw = os.getenv("COMMISSION_MAKER_PCT_OVERRIDE", "").strip()
+    COMMISSION_MAKER_PCT_OVERRIDE: float | None = (
+        float(_maker_override_raw) if _maker_override_raw.lower() not in ("", "none", "null") else None
+    )
+    # Paper defterlerinde kâr al kapanışı = bekleyen LIMIT dolumu: maker ücreti, satış kayması YOK.
+    # Kapalıyken eski davranış (taker + kayma).
+    PAPER_TP_MAKER_FILL = os.getenv("PAPER_TP_MAKER_FILL", "1").strip().lower() in ("1", "true", "yes", "on")
     ESTIMATED_SLIPPAGE_PCT = 0.00025
     # 2026-10-16 (backtest onarımı): scripts/run_portfolio_backtest.py tam (gidiş-dönüş
     # değil, tek seferlik) spread'i KESİR olarak okur; her dolumda spread/2 uygulanır.
@@ -1380,6 +1392,39 @@ class Config:
             discount = max(0.0, min(100.0, discount))
             return base * (1.0 - discount / 100.0)
         return base
+
+    @classmethod
+    def effective_maker_commission_pct(cls) -> float:
+        """2026-10-17: EFEKTİF maker bacak komisyonu (KESİR).
+
+        Öncelik: COMMISSION_MAKER_PCT_OVERRIDE > BNB modu (COMMISSION_MAKER_PCT × (1 − indirim/100))
+        > COMMISSION_MAKER_PCT. Varsayılanlarla 0.0009 × 0.75 = 0.000675 (%0,0675/bacak).
+        """
+        override = cls._cfg_attr("COMMISSION_MAKER_PCT_OVERRIDE", None)
+        if override is not None:
+            try:
+                return max(0.0, float(override))
+            except (TypeError, ValueError):
+                pass
+        base = float(cls._cfg_attr("COMMISSION_MAKER_PCT", 0.0009))
+        if cls._cfg_attr("COMMISSION_BNB_MODE", False):
+            discount = float(cls._cfg_attr("COMMISSION_BNB_DISCOUNT_PCT", 0.0) or 0.0)
+            discount = max(0.0, min(100.0, discount))
+            return base * (1.0 - discount / 100.0)
+        return base
+
+    @classmethod
+    def round_trip_cost_tp(cls) -> float:
+        """2026-10-17: kâr al ile kapanan işlemin gidiş-dönüş maliyeti (KESİR).
+
+        Giriş taker + giriş kayması; çıkış bekleyen LIMIT (maker, kayma yok).
+        PAPER_TP_MAKER_FILL kapalıysa `round_trip_cost()` ile aynı.
+        -> BNB açık: 0.001125 + 0.000675 + 0.00025 = 0.00205 (%0,205)
+        """
+        if not cls._cfg_attr("PAPER_TP_MAKER_FILL", False):
+            return cls.round_trip_cost()
+        return (cls.effective_commission_pct() + cls.effective_maker_commission_pct()
+                + float(cls._cfg_attr("ESTIMATED_SLIPPAGE_PCT", 0.00025)))
 
     @classmethod
     def _cfg_attr(cls, name: str, default=None):

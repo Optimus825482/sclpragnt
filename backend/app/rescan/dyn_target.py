@@ -23,15 +23,21 @@ from dataclasses import dataclass
 import numpy as np
 
 FEE_LEG_PCT = 0.1125          # BNB taker, bacak başına (%)
+FEE_MAKER_PCT = 0.0675        # 2026-10-17: BNB maker (kâr al bekleyen LIMIT), bacak başına (%)
 BAR1 = 60_000
 BAR5 = 300_000
 DAY_MS = 86_400_000
 
 
 # ------------------------------------------------------------------------------------------------ maliyet / net hedef
-def round_trip_cost_pct(slip_in_pct: float = 0.15, slip_out_pct: float = 0.15, fee_leg_pct: float = FEE_LEG_PCT) -> float:
-    """Gidiş-dönüş toplam maliyet (%): iki ücret bacağı + giriş kayması + çıkış kayması."""
-    return 2.0 * fee_leg_pct + slip_in_pct + slip_out_pct
+def round_trip_cost_pct(slip_in_pct: float = 0.15, slip_out_pct: float = 0.0, fee_leg_pct: float = FEE_LEG_PCT,
+                        fee_exit_leg_pct: float = FEE_MAKER_PCT) -> float:
+    """Hedefe ulaşan işlemin gidiş-dönüş maliyeti (%): giriş ücreti (taker) + giriş kayması + çıkış ücreti + çıkış kayması.
+
+    2026-10-17: kâr al bekleyen LIMIT emirdir → çıkış maker (%0,0675) ve kaymasız. Varsayılan
+    0,1125 + 0,15 + 0,0675 + 0 = %0,33 (eski: iki taker bacak + iki kayma = %0,525).
+    """
+    return fee_leg_pct + slip_in_pct + fee_exit_leg_pct + slip_out_pct
 
 
 def net_target_pct(gross_pct, cost_pct: float | None = None):

@@ -4316,6 +4316,13 @@ async def binance_fee_mode_get(request: Request):
             res["account_vs_paper_diff_pct"] = round((float(taker) - eff) / eff * 100.0, 2)
         else:
             res["account_vs_paper_diff_pct"] = None
+        # 2026-10-17: maker oranı da karşılaştırılır (kâr al bekleyen LIMIT = maker).
+        maker = res.get("maker_commission")
+        meff = float(model.get("maker_effective") or 0.0)
+        if isinstance(maker, (int, float)) and meff > 0:
+            res["account_vs_paper_maker_diff_pct"] = round((float(maker) - meff) / meff * 100.0, 2)
+        else:
+            res["account_vs_paper_maker_diff_pct"] = None
     except Exception:  # noqa: BLE001 — model özeti hesap cevabını düşürmesin
         logger.debug("fee-mode: paper komisyon modeli eklenemedi", exc_info=True)
     return res
