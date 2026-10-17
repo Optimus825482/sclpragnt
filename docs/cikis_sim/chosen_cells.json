@@ -1,0 +1,141 @@
+{
+ "primary": [
+  60,
+  0.15
+ ],
+ "cells": {
+  "HA": [
+   {
+    "idx": 2,
+    "name": "fixed TPcand SL1.5 T120",
+    "why": "B1+B2 en iyi sabit TP/SL (net -0.51)"
+   },
+   {
+    "idx": 31,
+    "name": "trail act0.5 gap0.8 SL3 T30",
+    "why": "B1+B2 en iyi izleyen stop (net -0.51)"
+   },
+   {
+    "idx": 48,
+    "name": "atr k1 act1 SL1.5 T60",
+    "why": "B1+B2 en iyi ATR-izleyen (net -0.56)"
+   },
+   {
+    "idx": 55,
+    "name": "be0.6 TPcand SL3 T60",
+    "why": "B1+B2 en iyi başabaş (net -0.52)"
+   }
+  ],
+  "E": [
+   {
+    "idx": 10,
+    "name": "fixed TP1.5 SL3 T60",
+    "why": "B1+B2 en iyi sabit TP/SL (net -0.45)"
+   },
+   {
+    "idx": 22,
+    "name": "trail act0.5 gap0.8 SL3 T60",
+    "why": "B1+B2 en iyi izleyen stop (net -0.45)"
+   },
+   {
+    "idx": 51,
+    "name": "atr k1 act1 SL3 T60",
+    "why": "B1+B2 en iyi ATR-izleyen (net -0.50)"
+   },
+   {
+    "idx": 57,
+    "name": "be0.6 TP1.5 SL3 T60",
+    "why": "B1+B2 en iyi başabaş (net -0.45)"
+   },
+   {
+    "idx": 21,
+    "name": "trail act0.5 gap0.4 SL3 T60",
+    "why": "B1 en iyi (walk-forward seçimi)"
+   }
+  ],
+  "G": [
+   {
+    "idx": 10,
+    "name": "fixed TP1.5 SL3 T60",
+    "why": "B1+B2 en iyi sabit TP/SL (net -0.37)"
+   },
+   {
+    "idx": 25,
+    "name": "trail act1 gap0.8 SL3 T60",
+    "why": "B1+B2 en iyi izleyen stop (net -0.39)"
+   },
+   {
+    "idx": 51,
+    "name": "atr k1 act1 SL3 T60",
+    "why": "B1+B2 en iyi ATR-izleyen (net -0.45)"
+   },
+   {
+    "idx": 57,
+    "name": "be0.6 TP1.5 SL3 T60",
+    "why": "B1+B2 en iyi başabaş (net -0.38)"
+   }
+  ]
+ },
+ "names": [
+  "fixed TPcand SL1.5 T30",
+  "fixed TPcand SL1.5 T60",
+  "fixed TPcand SL1.5 T120",
+  "fixed TPcand SL3 T30",
+  "fixed TPcand SL3 T60",
+  "fixed TPcand SL3 T120",
+  "fixed TP1.5 SL1.5 T30",
+  "fixed TP1.5 SL1.5 T60",
+  "fixed TP1.5 SL1.5 T120",
+  "fixed TP1.5 SL3 T30",
+  "fixed TP1.5 SL3 T60",
+  "fixed TP1.5 SL3 T120",
+  "trail act0.5 gap0.4 SL1.5 T60",
+  "trail act0.5 gap0.8 SL1.5 T60",
+  "trail act0.5 gap1.2 SL1.5 T60",
+  "trail act1 gap0.4 SL1.5 T60",
+  "trail act1 gap0.8 SL1.5 T60",
+  "trail act1 gap1.2 SL1.5 T60",
+  "trail act1.5 gap0.4 SL1.5 T60",
+  "trail act1.5 gap0.8 SL1.5 T60",
+  "trail act1.5 gap1.2 SL1.5 T60",
+  "trail act0.5 gap0.4 SL3 T60",
+  "trail act0.5 gap0.8 SL3 T60",
+  "trail act0.5 gap1.2 SL3 T60",
+  "trail act1 gap0.4 SL3 T60",
+  "trail act1 gap0.8 SL3 T60",
+  "trail act1 gap1.2 SL3 T60",
+  "trail act1.5 gap0.4 SL3 T60",
+  "trail act1.5 gap0.8 SL3 T60",
+  "trail act1.5 gap1.2 SL3 T60",
+  "trail act0.5 gap0.4 SL3 T30",
+  "trail act0.5 gap0.8 SL3 T30",
+  "trail act0.5 gap1.2 SL3 T30",
+  "trail act1 gap0.4 SL3 T30",
+  "trail act1 gap0.8 SL3 T30",
+  "trail act1 gap1.2 SL3 T30",
+  "trail act1.5 gap0.4 SL3 T30",
+  "trail act1.5 gap0.8 SL3 T30",
+  "trail act1.5 gap1.2 SL3 T30",
+  "trail act0.5 gap0.4 SL3 T120",
+  "trail act0.5 gap0.8 SL3 T120",
+  "trail act0.5 gap1.2 SL3 T120",
+  "trail act1 gap0.4 SL3 T120",
+  "trail act1 gap0.8 SL3 T120",
+  "trail act1 gap1.2 SL3 T120",
+  "trail act1.5 gap0.4 SL3 T120",
+  "trail act1.5 gap0.8 SL3 T120",
+  "trail act1.5 gap1.2 SL3 T120",
+  "atr k1 act1 SL1.5 T60",
+  "atr k1.5 act1 SL1.5 T60",
+  "atr k2 act1 SL1.5 T60",
+  "atr k1 act1 SL3 T60",
+  "atr k1.5 act1 SL3 T60",
+  "atr k2 act1 SL3 T60",
+  "be0.6 TPcand SL1.5 T60",
+  "be0.6 TPcand SL3 T60",
+  "be0.6 TP1.5 SL1.5 T60",
+  "be0.6 TP1.5 SL3 T60",
+  "be0.6+trail act1 gap0.8 SL1.5 T60",
+  "be0.6+trail act1 gap0.8 SL3 T60"
+ ]
+}
