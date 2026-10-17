@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.config import config
 from app import database
 from app import target_calibration  # 2026-10-15 (radar iyileştirme): ölçülmüş MFE hedef kalibrasyonu
+from app import notify_metrics  # 2026-10-18: ölçülmüş hedef + kalibre isabet/başabaş saf fonksiyonları
 from app.state import market, analyzer
 from app.api_common import _start_background, _fresh_public_price, _background_tasks
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, orderbook, ticker_price
@@ -901,7 +902,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 # Kesişim deseni dokunuşu ~2.5× artırıyor (araştırma run 14); skor
                 # çarpanı aday sıralamasında önceliklendirir (O-01 dengelendi).
                 if leading_ok:
-                    _lead_mult = float(getattr(config, "VELOCITY_LEADING_MULTIPLIER", 1.15))
+                    _lead_mult = float(getattr(config, "VELOCITY_LEADING_MULTIPLIER", 1.0))
                     velocity_score = round(velocity_score * _lead_mult, 2)
             except Exception as exc:
                 logger.warning("velocity m1/m3 leading hesabı: %s", exc)
@@ -1126,7 +1127,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # Hedef gercekciligi (VELOCITY_TARGET_REALISM_*): guclu MACD teyidi veya
             # yuksek ML olasiligi yoksa agresif ust-bant (4%) hedefi MAX_PCT'e indir;
             # 5dk+ icinde dokunulmasi nadirdir ve basariyi dusurur.
-            if config.VELOCITY_TARGET_REALISM_ENABLED:
+            # 2026-10-18: ölçülmüş hedef modunda bu tavan UYGULANMAZ (hedef zaten ulaşılabilirlik ölçümüdür).
+            if config.VELOCITY_TARGET_REALISM_ENABLED and not _measured_target_mode():
                 macd_strong = bool(macd_bullish or macd_rising)
                 prob = ml_hit_prob if ml_hit_prob is not None else 0.0
                 if not macd_strong and float(prob) < config.VELOCITY_TARGET_REALISM_MIN_ML_PROB:
@@ -1368,13 +1370,21 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             journal_rows = [{
                 "candidate_id": r["candidate_id"],
                 "created_at": now_ms / 1000, "symbol": r["symbol"], "price": r["price"],
-                "target_pct": r.get("target_pct") or base_target_pct, "atr_pct": r.get("atr_pct") or 0.0, "volume_ratio": 0.0,
+                "target_pct": r.get("target_pct") or base_target_pct, "atr_pct": r.get("atr_pct") or 0.0,
+                # 2026-10-18 (veri kusuru): eskiden sabit 0.0 yazılıyordu → `velocity_candidates.volume_ratio`
+                # tüm satırlarda 0 idi, skorun hacim terimi DB'den ölçülemiyordu. Gerçek hacim oranı yazılır.
+                "volume_ratio": r.get("volume_ratio") or 0.0,
                 "ret3_pct": r.get("ret3_pct") or 0.0, "velocity_score": r.get("velocity_score") or 0.0,
                 "passes": r.get("passes", False), "rank": r.get("rank"),
                 "ml_target_pct": r.get("ml_target_pct"),
                 "ml_hit_probability": r.get("ml_hit_probability"),
                 "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
                 "leading_ok": r.get("leading_ok"),
+                # 2026-10-18: aday anı sinyal bağlamı outcome_details'e (database.save_velocity_candidates)
+                "mode": r.get("mode"), "bb_width_pct": r.get("bb_width_pct"),
+                "taker_buy_ratio": (r.get("radar") or {}).get("taker_buy_ratio") if isinstance(r.get("radar"), dict) else None,
+                "book_imbalance": (r.get("radar") or {}).get("book_imbalance") if isinstance(r.get("radar"), dict) else None,
+                "m1_atr_prev": r.get("m1_atr_prev"), "m3_atr_prev": r.get("m3_atr_prev"),
             } for r in (candidates[:max(limit, 20)] + watchlist[:5])]
             # Mikro yapı (whale dağıtım sinyali, CVD) aday satırından journal'a
             # taşınır; filtreler kapalıyken dahi ileride canlı istatistik üretmek
@@ -1626,6 +1636,7 @@ async def velocity_learning_loop():
                 # gizlemek değil.
                 sl_pct = float(config.AUTO_PAPER_SL_PCT_DEFAULT)
                 cost_pct = round_trip_cost_pct()
+                exit_regime = _exit_regime_stamp(sl_pct)
 
                 # Gerçekçi işlem yaşam döngüsü: Mum bazlı sıralı TP ve SL kontrolü
                 # D-16 (2026-09-26): bar içi sıra bilinmediği için belirsiz
@@ -1662,7 +1673,8 @@ async def velocity_learning_loop():
                         "touch_sec": touch_sec,
                         "touched_at_minute": round((touch_sec or 0) / 60, 1),
                         "status_reason": "TARGET_HIT",
-                        "intrabar_ambiguous": False
+                        "intrabar_ambiguous": False,
+                        **exit_regime
                     }
                 elif hit_stop:
                     exit_pct = -sl_pct
@@ -1675,7 +1687,8 @@ async def velocity_learning_loop():
                         "stop_sec": stop_sec,
                         "stopped_at_minute": round((stop_sec or 0) / 60, 1),
                         "status_reason": "STOPPED_OUT",
-                        "intrabar_ambiguous": ambiguous
+                        "intrabar_ambiguous": ambiguous,
+                        **exit_regime
                     }
                 else:  # expired
                     exit_pct = _exit_pct_from_window(window, entry)
@@ -1684,7 +1697,8 @@ async def velocity_learning_loop():
                         "window_bars": len(window),
                         "entry": entry,
                         "target_pct": target_pct,
-                        "status_reason": "MAX_HORIZON_EXPIRED"
+                        "status_reason": "MAX_HORIZON_EXPIRED",
+                        **exit_regime
                     }
 
                 ok = await database.mark_velocity_candidate_evaluated(
@@ -1915,7 +1929,7 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
                  "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
                  "entry": entry, "target_pct": candidate["target_pct"], "touch_sec": touch_sec,
                  "stop_sec": stop_sec, "status_reason": reason,
-                 "intrabar_ambiguous": ambiguous},
+                 "intrabar_ambiguous": ambiguous, **_exit_regime_stamp(sl_pct)},
         force=True)
     return {"ok": True, "paper_only": True, "mfe_pct": round(mfe_pct, 3),
             "touched_target": hit_target, "window_bars": len(window),
@@ -2576,6 +2590,19 @@ def round_trip_cost_pct(tp_exit: bool = False) -> float:
     return float(config.round_trip_cost()) * 100
 
 
+def _exit_regime_stamp(sl_pct: float) -> dict:
+    """Çıkış rejimi damgası (outcome_details): ölçüm bloklarının birbiriyle karşılaştırılabilmesi için.
+
+    Etiket rejimi geçmişte 3 kez değişti (SL %1,5 → %5; TP maliyeti %0,35 → %0,275 → %0,205). Her ölçüm
+    satırı hangi SL ve hangi maliyetle etiketlendiğini taşır.
+    """
+    return {
+        "sl_pct": float(sl_pct),
+        "cost_tp_pct": round(round_trip_cost_pct(tp_exit=True), 4),
+        "cost_pct": round(round_trip_cost_pct(), 4),
+    }
+
+
 def _first_stop_or_target_bar(window, entry: float, target_pct: float,
                               sl_pct: float) -> tuple[str | None, object | None]:
     """Pencere içinde İLK TP/SL temasını bulur — bar içi sıra BİLİNMEZ.
@@ -2618,6 +2645,11 @@ def _first_stop_or_target_bar(window, entry: float, target_pct: float,
     return None, None
 
 
+def _measured_target_mode() -> bool:
+    """RADAR_TARGET_MODE == "measured" (varsayılan): hedef ölçülmüş ulaşılabilirliktir, zincir bypass edilir."""
+    return str(getattr(config, "RADAR_TARGET_MODE", "measured")).strip().lower() == "measured"
+
+
 def dynamic_target_pct(score: float, base_target_pct: float,
                        learned_pct: float | None = None,
                        learned_count: int = 0,
@@ -2638,6 +2670,16 @@ def dynamic_target_pct(score: float, base_target_pct: float,
     Sembolün ATR oranı yüksekse hedef dinamik olarak yukarı esnetilir;
     düşük volatilitede ise net kâr maliyet tabanında korunur.
     """
+    # 2026-10-18 (RADAR_TARGET_MODE="measured", varsayılan): hedef = ÖLÇÜLMÜŞ ULAŞILABİLİRLİK
+    # (ATR · ufuk · skor; nominal %30 isabet, HEDEF_DENETIMI §6). Skor kademesi, hedef kalibrasyonu, net-kâr
+    # tabanı, öğrenilmiş sembol hedefi, ML karışımı ve zayıf-skor kelepçesi BYPASS edilir: dürüstlük hedefi
+    # şişirerek değil `target_net_pct` alanıyla taşınır. Yalnız PANEL skorlu çağrılarda (radar + füzyon);
+    # `panel_score=False` (yükseliş sinyali: skor panel değil) eski zincirde kalır.
+    if panel_score and _measured_target_mode():
+        return notify_metrics.measured_target_pct(
+            atr_pct, horizon_minutes, score,
+            getattr(config, "RADAR_TARGET_MEASURED_COEFS", None))
+
     target = float(base_target_pct)
 
     # PANEL ölçeği varsayımı 1/2 — bant seçimi.
@@ -2672,7 +2714,11 @@ def dynamic_target_pct(score: float, base_target_pct: float,
         target = target * (1 - weight) + float(learned_pct) * weight
 
     # ML tahmini: güven yeterliyse hedefi ML öngörüsüne çek; yukarı veya aşağı.
-    if ml_pct and float(ml_pct) > 0 and ml_prob is not None and float(ml_prob) >= config.ML_TARGET_MIN_PROB:
+    # 2026-10-18: `RADAR_TARGET_ML_BLEND_ENABLED` (varsayılan KAPALI) — karışım hedefi düşürüp isabeti %12 → %23'e
+    # çıkarıyordu ama net fark ≈0 (HEDEF_DENETIMI); "olasılık hedefi etkilemez" denmesine rağmen etkiliyordu.
+    if (getattr(config, "RADAR_TARGET_ML_BLEND_ENABLED", False)
+            and ml_pct and float(ml_pct) > 0 and ml_prob is not None
+            and float(ml_prob) >= config.ML_TARGET_MIN_PROB):
         ml_weight = 0.5 if float(ml_prob) >= config.ML_TARGET_HIGH_PROB else 0.25
         target = target * (1 - ml_weight) + float(ml_pct) * ml_weight
 

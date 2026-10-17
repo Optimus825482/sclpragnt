@@ -8,7 +8,7 @@ import { useLiveMessages } from "../../lib/liveSocket";
 import { useModalA11y } from "../../lib/useModalA11y";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
 import { useWatchPrices } from "../../lib/useWatchPrices";
-import { confidenceBadge, pctChange } from "../../lib/userUi";
+import { SCORE_LABEL, SCORE_TOOLTIP, confidenceBadge, hitProbLabel, netTargetText, pctChange } from "../../lib/userUi";
 import SymbolLink from "../SymbolLink";
 
 // 2026-10-17 (basit arayüz): "Isınanlar" sekmesi kaldırıldı — kullanıcıyı karıştırıyordu;
@@ -21,6 +21,9 @@ type RadarItem = {
   price: number | null;
   targetPct: number | null;
   score: number | null;
+  hitProb: number | null;
+  breakeven: number | null;
+  netTargetPct: number | null;
   horizonMin: number | null;
   message: string | null;
   detectedAt: number | null;
@@ -87,6 +90,9 @@ function mapItems(raw: unknown, kind: "warm" | "watch"): RadarItem[] {  // "warm
       price: num(v.price),
       targetPct: num(v.target_pct),
       score: toPanelScore(v.panel_score, v.velocity_score),
+      hitProb: num(v.hit_prob_calibrated),
+      breakeven: num(v.breakeven_hit_prob),
+      netTargetPct: num(v.target_net_pct),
       horizonMin: num(v.horizon_minutes),
       message: typeof v.message === "string" ? v.message : null,
       detectedAt: num(v.detected_at),
@@ -109,6 +115,9 @@ function mapHistory(raw: unknown, now: number): RadarItem[] {
       price: num(v.price),
       targetPct: num(v.target_pct),
       score: toPanelScore(null, v.score),
+      hitProb: num(v.hit_prob_calibrated),
+      breakeven: num(v.breakeven_hit_prob),
+      netTargetPct: num(v.target_net_pct),
       horizonMin: num(v.horizon_minutes),
       message: typeof v.message === "string" ? v.message : null,
       detectedAt: num(v.detected_at),
@@ -118,16 +127,18 @@ function mapHistory(raw: unknown, now: number): RadarItem[] {
   return out;
 }
 
+// Skor bir hareket ŞİDDETİdir (iyi/kötü değil) -> yeşil/sarı verilmez.
 const toneClass = (b: string) =>
-  b === "Yüksek"
-    ? "bg-neon-green/10 text-neon-green border-neon-green"
-    : b === "Orta"
-      ? "bg-neon-yellow/10 text-neon-yellow border-neon-yellow"
-      : "bg-bunker-950 text-bunker-muted border-bunker-700";
+  b === "Çok hızlı"
+    ? "bg-sky-400/10 text-sky-500 border-sky-400"
+    : "bg-bunker-950 text-bunker-muted border-bunker-700";
 
 function RadarCard({ item, live, onOpen }: { item: RadarItem; live: number | undefined; onOpen: () => void }) {
   const change = pctChange(item.price, live);
   const badge = confidenceBadge(item.score);
+  const prob = hitProbLabel(item.hitProb, item.breakeven);
+  const probClass = prob.tone === "good" ? "text-neon-green" : prob.tone === "warn" ? "text-neon-yellow" : "text-bunker-muted";
+  const net = netTargetText(item.netTargetPct);
   return (
     <li className="rounded-2xl border border-bunker-800 bg-white shadow-sm">
       <div className="flex min-h-[44px] items-start justify-between gap-3 p-3">
@@ -135,8 +146,8 @@ function RadarCard({ item, live, onOpen }: { item: RadarItem; live: number | und
           <SymbolLink symbol={item.symbol} className="font-bold text-base text-white hover:underline" />
           <p className="mt-0.5 text-sm text-bunker-muted">{item.sentence}</p>
         </div>
-        <span className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold ${toneClass(badge)}`}>
-          Güven: {badge}
+        <span className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold ${toneClass(badge)}`} title={SCORE_TOOLTIP}>
+          Hareket: {badge}
         </span>
       </div>
       <button
@@ -147,7 +158,8 @@ function RadarCard({ item, live, onOpen }: { item: RadarItem; live: number | und
       >
         <span className="flex flex-wrap gap-x-4 gap-y-1">
           <span className="text-bunker-muted">Fiyat <b className="text-white">{item.price != null ? formatPrice(item.price) : "—"}</b></span>
-          <span className="text-bunker-muted">Hedef <b className="text-neon-green">{item.targetPct != null ? `+%${item.targetPct.toFixed(1)}` : "—"}</b></span>
+          <span className="text-bunker-muted">Hedef <b className="text-neon-green">{item.targetPct != null ? `+%${item.targetPct.toFixed(1)}` : "—"}</b>{net && <span className="text-xs"> ({net})</span>}</span>
+          <span className="text-bunker-muted" title={prob.title}>Olasılık <b className={probClass}>{prob.text}</b></span>
           <span className="text-bunker-muted">
             Şu an{" "}
             <b className={change == null ? "text-bunker-muted" : change >= 0 ? "text-neon-green" : "text-neon-red"}>
@@ -164,6 +176,8 @@ function RadarCard({ item, live, onOpen }: { item: RadarItem; live: number | und
 function DetailModal({ item, onClose }: { item: RadarItem; onClose: () => void }) {
   const a11y = useModalA11y(true, onClose, `${item.symbol} detayı`);
   const sym = item.symbol.replace(/_/g, "").toUpperCase();
+  const prob = hitProbLabel(item.hitProb, item.breakeven);
+  const net = netTargetText(item.netTargetPct);
   return (
     <div
       role="dialog"
@@ -186,10 +200,19 @@ function DetailModal({ item, onClose }: { item: RadarItem; onClose: () => void }
           <div className="rounded-xl bg-bunker-950 p-3">
             <dt className="text-bunker-muted">Hedef</dt>
             <dd className="font-bold text-neon-green">{item.targetPct != null ? `+%${item.targetPct.toFixed(1)}` : "—"}</dd>
+            {net && <dd className="text-xs text-bunker-muted">{net}</dd>}
           </div>
           <div className="rounded-xl bg-bunker-950 p-3">
             <dt className="text-bunker-muted">Ufuk</dt>
             <dd className="font-bold">{item.horizonMin != null ? `${Math.round(item.horizonMin)} dk` : "—"}</dd>
+          </div>
+          <div className="rounded-xl bg-bunker-950 p-3" title={SCORE_TOOLTIP}>
+            <dt className="text-bunker-muted">{SCORE_LABEL}</dt>
+            <dd className="font-bold">{item.score != null ? Math.round(item.score) : "—"}</dd>
+          </div>
+          <div className="rounded-xl bg-bunker-950 p-3" title={prob.title}>
+            <dt className="text-bunker-muted">Olasılık</dt>
+            <dd className={`font-bold ${prob.tone === "good" ? "text-neon-green" : prob.tone === "warn" ? "text-neon-yellow" : "text-bunker-muted"}`}>{prob.text}</dd>
           </div>
         </dl>
         <div className="mt-5 flex gap-3">

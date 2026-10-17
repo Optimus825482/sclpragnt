@@ -1963,6 +1963,7 @@ export default function ChartsPage() {
                             >⟳</button>
                         </div>
                     </div>
+                    <p className="mt-1 font-mono text-[10px] text-bunker-muted">Ham model olasılığı; kalibre değil</p>
                     {forecastLoading ? (
                         <p className="mt-2 font-mono text-xs text-neon-green animate-pulse">hedef hesaplanıyor...</p>
                     ) : forecast?.forecasts?.length ? (

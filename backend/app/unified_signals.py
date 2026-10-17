@@ -358,14 +358,10 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
             price_f = float(price) if price is not None else None
         except (TypeError, ValueError):
             price_f = None
-        from app.routers.velocity import dynamic_target_pct
-        target = dynamic_target_pct(
-            score=score,
-            base_target_pct=float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2),
-            panel_score=True,
-        )
+        target, fusion_atr = _fusion_target_pct(sym, score)
         cand_dict = {
             "symbol": sym,
+            "atr_pct": fusion_atr,
             "velocity_score": 0.0,
             "unified_score": score,
             "unified_sources": sources,
@@ -425,6 +421,52 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
     return fusion_only
 
 
+def _fusion_atr_pct(sym: str, velocity_candidate: dict | None = None) -> float | None:
+    """Füzyon adayı için 5 dk ATR14 % (dedektörün kullandığı ATR ile aynı tanım).
+
+    Önce varsa radar adayının kendi `atr_pct`'i, yoksa MACD monitörünün canlı 5m mum önbelleği
+    (kapanmış barlar). Ağ yok; veri yetersizse None (çağıran ölçülmüş hedefin tipik ATR yedeğine düşer).
+    """
+    try:
+        raw = (velocity_candidate or {}).get("atr_pct")
+        if raw is not None and float(raw) > 0:
+            return float(raw)
+    except (TypeError, ValueError):
+        pass
+    try:
+        history = _macd._aligned_ohlc(sym, "5m", 15)
+        if history is None:
+            return None
+        close = float((history.get("closes") or [0])[-1] or 0)
+        atr = _macd._atr_14_closed(sym, "5m")
+        if close > 0 and atr and atr > 0:
+            return float(atr) / close * 100.0
+    except Exception as exc:  # önbellek okuması: tek sembol hedefi düşürmesin
+        logger.debug("fusion atr %s: %s", sym, exc)
+    return None
+
+
+def _fusion_target_pct(sym: str, score: float, velocity_candidate: dict | None = None,
+                       horizon_minutes: int = 5) -> tuple[float, float | None]:
+    """Füzyon adayının hedefi → (hedef %, atr_pct).
+
+    2026-10-18 (`RADAR_FUSION_TARGET_DYNAMIC`, varsayılan açık): eskiden `dynamic_target_pct(score, 2.2)` ATR/ufuk
+    almadan çağrılıyordu → skor ≥ 74 iken HER ZAMAN sabit 4,0 (n=651/1111; gerçekleşen isabet %4,6) ya da 1,5.
+    Artık velocity adaylarıyla AYNI zincir: ATR % + ufuk + panel skoru (RADAR_TARGET_MODE "measured" ise ölçülmüş
+    ulaşılabilirlik formülü). Bayrak kapalıysa eski çağrı aynen sürer. (Öğrenilmiş sembol hedefi senkron yolda
+    DB okuması gerektirdiğinden füzyonda uygulanmaz — ölçüm zaten sembol hedefini tabana yapışık buldu.)
+    """
+    from app.routers.velocity import dynamic_target_pct
+    base = float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2)
+    if not getattr(config, "RADAR_FUSION_TARGET_DYNAMIC", True):
+        return dynamic_target_pct(score=score, base_target_pct=base, panel_score=True), None
+    atr_pct = _fusion_atr_pct(sym, velocity_candidate)
+    target = dynamic_target_pct(
+        score=score, base_target_pct=base, panel_score=True,
+        atr_pct=atr_pct, horizon_minutes=horizon_minutes)
+    return target, atr_pct
+
+
 def build_fusion_candidate(symbol: str, kind: str,
                            velocity_candidate: dict | None = None) -> dict | None:
     """Hızlı yol: tek sembol için birleşik aday üret (MACD tetiklemesiyle).
@@ -460,15 +502,12 @@ def build_fusion_candidate(symbol: str, kind: str,
         price_f = None
     if velocity_candidate and velocity_candidate.get("target_pct"):
         target = float(velocity_candidate.get("target_pct"))
+        _fusion_atr = _fusion_atr_pct(sym, velocity_candidate)
     else:
-        from app.routers.velocity import dynamic_target_pct
-        target = dynamic_target_pct(
-            score=score,
-            base_target_pct=float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2),
-            panel_score=True,
-        )
+        target, _fusion_atr = _fusion_target_pct(sym, score, velocity_candidate)
     cand_dict = {
         "symbol": sym,
+        "atr_pct": _fusion_atr,
         "unified_score": score,
         "unified_sources": sources,
         "unified_pass": True,

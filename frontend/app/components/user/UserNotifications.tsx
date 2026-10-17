@@ -4,7 +4,7 @@ import { getJSON } from "../../lib/api";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
 import SymbolLink from "../SymbolLink";
 import { formatPrice, toMs } from "../../lib/format";
-import { statusLabel, windowEnd, type Tone } from "../../lib/userUi";
+import { hitProbLabel, netTargetText, statusLabel, windowEnd, type Tone } from "../../lib/userUi";
 
 type Row = {
   symbol: string;
@@ -12,6 +12,9 @@ type Row = {
   detected_at: number;
   target_pct?: number | null;
   horizon_minutes?: number | null;
+  hit_prob_calibrated?: number | null;
+  breakeven_hit_prob?: number | null;
+  target_net_pct?: number | null;
   status: string;
 };
 type Filter = "today" | "all" | "hit";
@@ -41,6 +44,18 @@ function windowText(r: Row): string {
     return `kalan ${left} dk`;
   }
   return clock(end);
+}
+
+/** "%62" (ipucu: başabaş) — kalibre isabet; ham ML olasılığı gösterilmez. */
+function ProbText({ r }: { r: Row }) {
+  const p = hitProbLabel(r.hit_prob_calibrated, r.breakeven_hit_prob);
+  const cls = p.tone === "good" ? "text-neon-green" : p.tone === "warn" ? "text-neon-yellow" : "text-bunker-muted";
+  return <span className={cls} title={p.title}>{p.text}</span>;
+}
+
+function NetText({ r }: { r: Row }) {
+  const t = netTargetText(r.target_net_pct);
+  return t ? <span className="ml-1 text-xs text-bunker-muted">({t})</span> : null;
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -107,7 +122,8 @@ export default function UserNotifications() {
                 <p className="text-xs text-bunker-muted">{clock(r.detected_at)}</p>
                 <dl className="mt-1 grid grid-cols-2 gap-2 text-sm">
                   <div><dt className="text-bunker-muted">Bildirim fiyatı</dt><dd>{formatPrice(r.price)}</dd></div>
-                  <div><dt className="text-bunker-muted">Hedef</dt><dd>{r.target_pct != null ? `%${r.target_pct}` : "—"}</dd></div>
+                  <div><dt className="text-bunker-muted">Hedef</dt><dd>{r.target_pct != null ? `%${r.target_pct}` : "—"}<NetText r={r} /></dd></div>
+                  <div><dt className="text-bunker-muted">Olasılık</dt><dd><ProbText r={r} /></dd></div>
                   <div><dt className="text-bunker-muted">Ufuk</dt><dd>{r.horizon_minutes ? `${r.horizon_minutes} dk` : "—"}</dd></div>
                   <div><dt className="text-bunker-muted">Pencere bitişi</dt><dd>{windowText(r)}</dd></div>
                 </dl>
@@ -122,6 +138,7 @@ export default function UserNotifications() {
                   <th className="p-3 font-medium">Sembol</th>
                   <th className="p-3 font-medium">Bildirim fiyatı</th>
                   <th className="p-3 font-medium">Hedef %</th>
+                  <th className="p-3 font-medium">Olasılık</th>
                   <th className="p-3 font-medium">Ufuk</th>
                   <th className="p-3 font-medium">Sonuç</th>
                   <th className="p-3 font-medium">Pencere bitişi</th>
@@ -133,7 +150,8 @@ export default function UserNotifications() {
                     <td className="p-3">{clock(r.detected_at)}</td>
                     <td className="p-3"><SymbolLink symbol={r.symbol} /></td>
                     <td className="p-3">{formatPrice(r.price)}</td>
-                    <td className="p-3">{r.target_pct != null ? `%${r.target_pct}` : "—"}</td>
+                    <td className="p-3">{r.target_pct != null ? `%${r.target_pct}` : "—"}<NetText r={r} /></td>
+                    <td className="p-3"><ProbText r={r} /></td>
                     <td className="p-3">{r.horizon_minutes ? `${r.horizon_minutes} dk` : "—"}</td>
                     <td className="p-3"><StatusBadge status={r.status} /></td>
                     <td className="p-3">{windowText(r)}</td>

@@ -296,7 +296,11 @@ class Config:
     # - Geç faz etiketi: 24s değişim çok yüksekse (parabolik pump) yeni long
     #   sinyali düşürülür (P&D literatürü: geç giren ortalama kaybeder).
     VELOCITY_LATE_PHASE_CHANGE_PCT = float(os.getenv("VELOCITY_LATE_PHASE_CHANGE_PCT", "40.0"))
-    VELOCITY_LATE_PHASE_SCORE_MULT = float(os.getenv("VELOCITY_LATE_PHASE_SCORE_MULT", "0.6"))
+    # 2026-10-18: 0.6 → 1.0 (CEZA KAPALI). Ölçüm (SKOR_DENETIMI §4.1, replay n=972 geç fazlı aday): geç fazda
+    # isabet ATR-strata içinde +15,5±2,1 puan, net +0,03±0,11 → ceza yön olarak YANLIŞ. Eski davranış: 0.6.
+    # NOT: CVD işareti skora EKLENMEDİ (ATR kontrollü +5,8 puan / +0,29 net görünse de `cvd_try` ölçüm penceresi
+    # ile sinyal anı hizası, yani look-ahead, doğrulanmadı); doğrulanınca ayrı bayrakla eklenir.
+    VELOCITY_LATE_PHASE_SCORE_MULT = float(os.getenv("VELOCITY_LATE_PHASE_SCORE_MULT", "1.0"))
     # - Spread fail-closed: spread verisi YOKSA aday kör geçmesin; skor
     #   görünür biçimde kırılır (`spread_unknown` alanıyla raporlanır).
     VELOCITY_SPREAD_FAIL_CLOSED = os.getenv(
@@ -340,7 +344,9 @@ class Config:
     # ankrajlandı (aksi halde kapı ham 200'den ham ~1.8'e düşüp fiilen ölürdü).
     VELOCITY_AUTO_MIN_SCORE = float(os.getenv("VELOCITY_AUTO_MIN_SCORE", "52.4"))
     # Otonom Hız Avcısı M1/M3 öncü ATR çarpanı (1.50 -> 1.15, aşırı manipülasyonu önler)
-    VELOCITY_LEADING_MULTIPLIER = float(os.getenv("VELOCITY_LEADING_MULTIPLIER", "1.15"))
+    # 2026-10-18: 1.15 → 1.0 (BONUS KAPALI). Ölçüm (SKOR_DENETIMI §4.1): öncü ATR bonusu isabeti artırıyor
+    # (+8,4 puan) ama net'i düşürüyor (replay −0,22±0,10, DB −0,12±0,07). Eski davranış: 1.15.
+    VELOCITY_LEADING_MULTIPLIER = float(os.getenv("VELOCITY_LEADING_MULTIPLIER", "1.0"))
     # İntraday aktif ve akışı olan sembolleri dinamik havuza dahil etme
     DYNAMIC_ACTIVE_POOL_ENABLED = os.getenv("DYNAMIC_ACTIVE_POOL_ENABLED", "true").lower() == "true"
     DYNAMIC_ACTIVE_POOL_LIMIT = max(5, min(50, int(os.getenv("DYNAMIC_ACTIVE_POOL_LIMIT", "15"))))
@@ -433,6 +439,35 @@ class Config:
     LEARNED_TARGET_MIN_SAMPLES = max(1, int(os.getenv("LEARNED_TARGET_MIN_SAMPLES", "3")))
     MONITORING_TARGET_PCT_MIN = float(os.getenv("MONITORING_TARGET_PCT_MIN", "1.5"))
     MONITORING_TARGET_PCT_MAX = float(os.getenv("MONITORING_TARGET_PCT_MAX", "6.0"))
+    # ------------------------------------------------------------------
+    # 2026-10-18 BİLDİRİM SAYILARI DÜRÜSTLEŞTİRME (kullanıcı onaylı; kaynak:
+    # docs/HEDEF_SKOR_OLASILIK_OZET_2026-10-18.md + üç denetim raporu). Hiçbiri net kârı pozitife çevirmez;
+    # yalnız gösterilen sayıları (hedef / isabet olasılığı) ölçülmüş gerçeğe yaklaştırır. Kayıt: DENEY_KAYDI.
+    # ÇAĞRI ANINDA okunur (restart gerekmez).
+    # Hedef modu: "measured" = T = clamp(exp(a)·ATR%^b·(ufuk/5)^d·exp(c·(skor−70)/10), 0,5, 6,0) (ölçülmüş
+    # ulaşılabilirlik; nominal %30 isabet, katsayılar HEDEF_DENETIMI §6). Skor kademesi / öğrenilmiş sembol
+    # hedefi / ML karışımı / hedef kalibrasyonu / net-kâr tabanı BU modda devre dışıdır; dürüstlük ayrı
+    # `target_net_pct` alanıyla taşınır. "chain" = eski zincir (ESKİ davranış).
+    RADAR_TARGET_MODE = (os.getenv("RADAR_TARGET_MODE", "measured").strip().lower() or "measured")
+    # a,b,c,d (sırayla: sabit, ATR üssü, skor katsayısı, ufuk üssü); nominal %30 isabet.
+    RADAR_TARGET_MEASURED_COEFS = os.getenv("RADAR_TARGET_MEASURED_COEFS", "0.27,0.71,0.06,0.51").strip()
+    # Ölçülmüş modda hedef tabanı 0,5'e kadar iner; eski `min_target_pct` ayarı ve R/R kapısı (hedef < %0,9)
+    # zincir hedeflerine (≥%1,5) göre kurulmuştu → açıkken ölçülmüş modda bu İKİ kapı uygulanmaz
+    # (aksi halde bildirimlerin yarısı sessizce düşerdi). 0 = kapılar ölçülmüş hedefe de uygulanır.
+    RADAR_TARGET_MEASURED_SKIP_TARGET_GATES = os.getenv(
+        "RADAR_TARGET_MEASURED_SKIP_TARGET_GATES", "1").strip().lower() not in {"0", "false", "no", "off"}
+    # ML hedef karışımı (p ≥ ML_TARGET_MIN_PROB): hedefi düşürüp isabeti %12 → %23'e çıkarıyor ama net fark ≈0;
+    # "olasılık hedefi etkilemez" denmesine rağmen etkiliyordu. 0 = karışım kapalı (yalnız "chain" modunu etkiler).
+    RADAR_TARGET_ML_BLEND_ENABLED = os.getenv("RADAR_TARGET_ML_BLEND_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    # Birleşik (füzyon) yol: sabit 4,0 (ya da 1,5) hedef yerine velocity ile AYNI dinamik zincir (ATR + ufuk + skor).
+    RADAR_FUSION_TARGET_DYNAMIC = os.getenv("RADAR_FUSION_TARGET_DYNAMIC", "1").strip().lower() not in {"0", "false", "no", "off"}
+    # Ham ML % bildirim başlığında/mesajında GÖSTERİLMEZ (ECE 0,22–0,37, kalibre değil); `ml_hit_probability`
+    # DB/payload'da ölçüm için kalır. 1 = eski "| ML %xx" eki.
+    RADAR_NOTIFY_SHOW_ML_PROB = os.getenv("RADAR_NOTIFY_SHOW_ML_PROB", "0").strip().lower() in {"1", "true", "yes", "on"}
+    # Kalibre isabet yüzdesi: σ(b0 + b1·ln ATR% + b2·ln(hedef/ATR) + b3·[ufuk≥15]) (SKOR_DENETIMI §6.1, SL %5 rejimi,
+    # DB R2a+R2b 10-08..10-17; HAFTALIK yeniden uydurulmalı). "off" → alan None.
+    RADAR_HIT_PROB_MODEL = (os.getenv("RADAR_HIT_PROB_MODEL", "logistic").strip().lower() or "logistic")
+    RADAR_HIT_PROB_COEFS = os.getenv("RADAR_HIT_PROB_COEFS", "1.106,-0.675,-1.402,0.059").strip()
     # Mikro-yapı sıralama çarpanları (kapı değil, yalnızca aday sıralaması).
     # 2026-09-05 journal analizi (n≈52k evaluated): whale dağıtım/mixed sinyalli
     # GEÇEN adayların dokunuş oranı (%21.9/%20.7) accumulation'dan (%20.7) düşük

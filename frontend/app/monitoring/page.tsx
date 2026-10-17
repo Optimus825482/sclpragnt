@@ -1392,7 +1392,7 @@ function AdminMonitoringPage() {
                     <div className="flex items-center justify-between lg:justify-end gap-3 sm:gap-6 pt-2 lg:pt-0 border-t lg:border-t-0 border-bunker-800/60 font-mono">
                       {/* Skor */}
                       <div className="hidden lg:block text-right min-w-[50px]">
-                        <p className="text-[10px] text-bunker-muted">SKOR</p>
+                        <p className="text-[10px] text-bunker-muted" title="Hareketin şiddeti (oynaklık); isabet garantisi değildir.">HAREKET</p>
                         <p className={`text-sm font-black ${scoreColor(score)}`}>{scoreText(score)}</p>
                       </div>
 

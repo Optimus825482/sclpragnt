@@ -17,6 +17,7 @@ from app import database
 from app.api_common import (log_user_action, _background_tasks, _start_background, get_task,
                             _alert_system_event)
 from app.state import market, analyzer
+from app import notify_metrics  # 2026-10-18: kalibre isabet / başabaş / net hedef alanları
 from app import unified_signals
 from app import notification_policy as _notification_policy
 from app import llm_second_eye
@@ -247,6 +248,10 @@ async def _persist_runtime_state() -> None:
                 "mode": n.get("mode"), "id": n.get("id"),
                 "ml_hit_probability": n.get("ml_hit_probability"),
                 "ml_target_pct": n.get("ml_target_pct"),
+                "hit_prob_calibrated": n.get("hit_prob_calibrated"),
+                "breakeven_hit_prob": n.get("breakeven_hit_prob"),
+                "target_net_pct": n.get("target_net_pct"),
+                "score_label": n.get("score_label"),
                 # 2026-10-17 (panel bildirimi yok): ertelenen bildirim ARTIK sessiz saatte
                 # kaydedilmez; flush'ta (push denendiğinde) kaydedilebilmesi için kayıt
                 # alanları restart'ta kaybolmasın.
@@ -1398,6 +1403,16 @@ def _master_surge_gate_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _target_gates_skipped() -> bool:
+    """2026-10-18: ölçülmüş hedef modunda `min_target_pct` ayarı ve R/R kapısı uygulanmaz.
+
+    Bu iki kapı zincir hedeflerine (≥%1,5) göre kurulmuştu; ölçülmüş hedef %0,5'e kadar iner ve dürüstlük
+    `target_net_pct` ile taşınır. Kapalı tutmak için `RADAR_TARGET_MEASURED_SKIP_TARGET_GATES=0`.
+    """
+    return (str(getattr(config, "RADAR_TARGET_MODE", "measured")).strip().lower() == "measured"
+            and bool(getattr(config, "RADAR_TARGET_MEASURED_SKIP_TARGET_GATES", True)))
+
+
 def _rr_gate_blocks(price: float, target_pct: float) -> bool:
     """A4: düşük ödül/risk adayını bildirme (True → `_notify` continue eder).
 
@@ -1409,6 +1424,8 @@ def _rr_gate_blocks(price: float, target_pct: float) -> bool:
     tipik %2.0/%3.0 hedefleri geçer. Detay: `config.py` A4 bloğu.
     """
     if not getattr(config, "MONITORING_RR_ENABLED", True):
+        return False
+    if _target_gates_skipped():
         return False
     if not price or price <= 0:
         return False
@@ -1522,7 +1539,10 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     detected_at = time.time()
     horizon = int(c.get("horizon_minutes", 5) or 5)
     ml_prob = c.get("ml_hit_probability")
-    ml_pct_str = f" | ML %{ml_prob * 100:.0f}" if ml_prob is not None else ""
+    # 2026-10-18 (RADAR_NOTIFY_SHOW_ML_PROB, varsayılan KAPALI): ham ML % kalibre değil (ECE 0,22–0,37) → push
+    # başlığına/mesajına EKLENMEZ. `ml_hit_probability` payload/DB'de ölçüm için aynen kalır.
+    ml_pct_str = (f" | ML %{ml_prob * 100:.0f}"
+                  if (ml_prob is not None and getattr(config, "RADAR_NOTIFY_SHOW_ML_PROB", False)) else "")
     is_4way = bool(c.get("confluence_4way") or len(sources) >= 4)
     # MACD MTF konfluans snapshot'ı — senkron önbellek okuması (bloklamaz).
     mtf_compact = macd_mtf.cached_compact(sym)
@@ -1578,6 +1598,10 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         "candidate_id": c.get("candidate_id"),
         "ml_hit_probability": ml_prob,
         "ml_target_pct": c.get("ml_target_pct"),
+        # 2026-10-18: DÜRÜST SAYILAR — kalibre isabet %, başabaş isabet %, net hedef, skor etiketi
+        # (app/notify_metrics.py; UI sözleşmesi: bu dört ad sabit). Skor kalite değil "hareket şiddeti"dir.
+        **notify_metrics.notification_metrics(
+            target, c.get("atr_pct") if c.get("atr_pct") is not None else c.get("atr_pct_15m"), horizon),
         # A4: ödül/risk oranı ve dayanağı backend'den yayınlanır. Frontend
         # kendi SL sabitini varsaymasın (kalibrasyon tek kaynaktan gelsin).
         "rr": round(_rr_ratio(target), 3) if _rr_ratio(target) is not None else None,
@@ -1819,7 +1843,7 @@ async def _notify(candidates_list, settings) -> list:
         score = unified_score if unified_pass else normalize_score(raw)
         target = _num(c.get("target_pct"), 2.0)
         target = 2.0 if target is None else target
-        min_target = _num(settings.get("min_target_pct"), 0.0) or 0.0
+        min_target = 0.0 if _target_gates_skipped() else (_num(settings.get("min_target_pct"), 0.0) or 0.0)
         # EŞİK KONTROLÜ (2026-09-21): Kullanıcının belirlediği panel eşiği (eff_min_score)
         # tüm adaylar için bağlayıcıdır. Skor altındaki hiçbir zayıf fırsat bildirilmez.
         # Normal radar adayları ayrıca ham skor kapısını (min_raw) da geçmelidir.
@@ -1887,6 +1911,10 @@ async def _notify(candidates_list, settings) -> list:
                 ml_target_pct=c.get("ml_target_pct"),
                 ml_hit_probability=c.get("ml_hit_probability"),
                 candidate_id=cand_id_keep,
+                # 2026-10-18: hedef yenilendi → kalibre isabet / başabaş isabet de yeniden hesaplanır
+                metrics=notify_metrics.notification_metrics(
+                    target, c.get("atr_pct") if c.get("atr_pct") is not None else c.get("atr_pct_15m"),
+                    horizon_keep),
             )
             # Eski kayitlar kalir - sinyal tarihcesi icin
             # Bildirim olarak da ekle (push için)
@@ -2564,7 +2592,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     cand_score = float(candidate.get("unified_score") or 0)
     if cand_score < eff_min_score:
         return None
-    min_target = float(settings.get("min_target_pct") or 0)
+    min_target = 0.0 if _target_gates_skipped() else float(settings.get("min_target_pct") or 0)
     if min_target > 0 and float(candidate.get("target_pct") or 0) < min_target:
         return None
     # MASTER SURGE SERT RİSK KAPISI (2026-09-26 denetimi bölüm 2.2 + P0-1):
@@ -6150,6 +6178,11 @@ async def report_notifications(
             "sources": _parse_sources(row.get("sources")),
             "candidate_id": row.get("candidate_id"),
             "ml_hit_probability": row.get("ml_hit_probability"),
+            # 2026-10-18: dürüst sayılar (sözleşme: bu dört ad sabit)
+            "hit_prob_calibrated": row.get("hit_prob_calibrated"),
+            "breakeven_hit_prob": row.get("breakeven_hit_prob"),
+            "target_net_pct": notify_metrics.target_net_pct(target_pct),
+            "score_label": notify_metrics.SCORE_LABEL,
             "raw_score": (float(row["raw_score"]) if row.get("raw_score") is not None else None),
             "saturated": _score_is_saturated(row),
             "trade": trade_info,
@@ -6546,10 +6579,19 @@ async def monitoring_notification_history():
             return
         if s > 100.0:
             row["score"] = _panel_from_raw(s)
+
+    def _add_honest_fields(row: dict) -> None:
+        # 2026-10-18: sabit sözleşme alanları — hit_prob_calibrated / breakeven_hit_prob DB'den (eski satırda None),
+        # target_net_pct ve score_label sunum anında hedeften türetilir.
+        row.setdefault("hit_prob_calibrated", None)
+        row.setdefault("breakeven_hit_prob", None)
+        row["target_net_pct"] = notify_metrics.target_net_pct(row.get("target_pct"))
+        row["score_label"] = notify_metrics.SCORE_LABEL
     try:
         persisted = await database.list_monitoring_notifications(limit=50)
         for row in persisted:
             _norm_row(row)
+            _add_honest_fields(row)
     except Exception as exc:
         logger.warning("monitoring bildirim geçmişi okunamadı: %s", exc)
         persisted = []
@@ -6558,6 +6600,7 @@ async def monitoring_notification_history():
         session = _monitoring_state["history"][:20]
     for row in session:
         _norm_row(row)
+        _add_honest_fields(row)
     return {"paper_only": True, "history": persisted, "session": session}
 
 

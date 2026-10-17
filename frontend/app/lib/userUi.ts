@@ -29,12 +29,51 @@ export function windowEnd(detectedAt: number, horizonMin: number): number {
   return Number(detectedAt) + minutes * 60;
 }
 
-export function confidenceBadge(score: number | null | undefined): "Yüksek" | "Orta" | "Düşük" {
+/** Panel skoru bir HAREKET ŞİDDETİ (oynaklık) göstergesidir; isabet/kalite güvencesi DEĞİLDİR (2026-10-18). */
+export type IntensityBadge = "Çok hızlı" | "Hızlı" | "Ilımlı";
+
+/** Skoru şiddet kelimesine çevirir. Adı geriye uyum için "confidenceBadge" kaldı; "iyi/güçlü sinyal" ANLAMI TAŞIMAZ. */
+export function confidenceBadge(score: number | null | undefined): IntensityBadge {
   const s = Number(score);
-  if (!Number.isFinite(s)) return "Düşük";
-  if (s >= 80) return "Yüksek";
-  if (s >= 60) return "Orta";
-  return "Düşük";
+  if (!Number.isFinite(s)) return "Ilımlı";
+  if (s >= 80) return "Çok hızlı";
+  if (s >= 60) return "Hızlı";
+  return "Ilımlı";
+}
+
+/** Skor etiketinin (HAREKET ŞİDDETİ) ipucu metni. */
+export const SCORE_TOOLTIP = "Hareketin şiddeti (oynaklık); isabet garantisi değildir.";
+/** Sayı kutusunun etiketi. */
+export const SCORE_LABEL = "HAREKET ŞİDDETİ";
+
+const trNum = (v: number, digits: number) => v.toFixed(digits).replace(".", ",");
+
+/**
+ * Kalibre isabet olasılığı etiketi. `p` ve `breakeven` 0-1 aralığındadır.
+ * tone "good" YALNIZ p > başabaş iken; aksi halde "warn". `p` yoksa "—" ve nötr ("mute").
+ * ML ham olasılığı (`ml_hit_probability`) kullanıcı arayüzünde ASLA gösterilmez.
+ */
+export function hitProbLabel(
+  p: number | null | undefined,
+  breakeven: number | null | undefined,
+): { text: string; tone: "good" | "warn" | "mute"; title: string } {
+  const pn = p == null ? NaN : Number(p);
+  if (!Number.isFinite(pn)) return { text: "—", tone: "mute", title: "Ölçülmüş isabet tahmini yok" };
+  const be = breakeven == null ? NaN : Number(breakeven);
+  const hasBe = Number.isFinite(be);
+  return {
+    text: `%${Math.round(pn * 100)}`,
+    tone: hasBe && pn > be ? "good" : "warn",
+    title: hasBe ? `Ölçülmüş isabet tahmini · başabaş %${Math.round(be * 100)}` : "Ölçülmüş isabet tahmini",
+  };
+}
+
+/** Net (maliyet düşülmüş) hedef metni: "net +1,80%"; değer yoksa "" (gösterilmez). */
+export function netTargetText(v: number | null | undefined): string {
+  if (v == null) return "";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+  return `net ${n < 0 ? "-" : "+"}${trNum(Math.abs(n), 2)}%`;
 }
 
 // 2026-10-17 (basit arayüz): `legacy` = menüde GÖSTERİLMEZ ama kimlik backend MENU_IDS'te kalır ve

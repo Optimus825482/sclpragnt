@@ -2,7 +2,7 @@
 import Link from "next/link";
 import PctChange from "../PctChange";
 import { formatPrice, toMs } from "../../../lib/format";
-import { baseSymbol, confidenceBadge, isRegimeTitle, modeLabel, notificationStatus, type NotificationStatus } from "../../../lib/userUi";
+import { SCORE_LABEL, SCORE_TOOLTIP, baseSymbol, confidenceBadge, hitProbLabel, isRegimeTitle, modeLabel, netTargetText, notificationStatus, type NotificationStatus } from "../../../lib/userUi";
 
 export type RecentRow = {
   symbol: string;
@@ -19,6 +19,11 @@ export type RecentRow = {
   sent_via_push?: boolean | number | null;
   llm_verdict?: string | null;
   llm_confidence?: number | null;
+  // 2026-10-18: kalibre isabet + net hedef; eski satırlarda eksik olabilir -> "—".
+  hit_prob_calibrated?: number | null;
+  breakeven_hit_prob?: number | null;
+  target_net_pct?: number | null;
+  score_label?: string | null;
   llm_reasons?: unknown;
 };
 
@@ -103,11 +108,14 @@ export default function NotificationCard({
 }: { row: RecentRow; rank?: number; live: number | null; nowSec: number; actions: CardActions }) {
   const status = notificationStatus(row, live, nowSec);
   const badge = confidenceBadge(row.score);
-  const tone = badge === "Yüksek" ? "good" : badge === "Orta" ? "warn" : "wait";
+  // Skor bir ŞİDDET göstergesidir (kalite değil): yeşil/sarı "iyi-kötü" tonu verilmez.
+  const tone = badge === "Çok hızlı" ? "info" : "wait";
   const mode = modeLabel(row.mode);
   const watching = actions.isPinned(row.symbol);
   const regime = isRegimeTitle(row.title);
-  const conf = row.llm_confidence;
+  const prob = hitProbLabel(row.hit_prob_calibrated, row.breakeven_hit_prob);
+  const probClass = prob.tone === "good" ? "text-neon-green" : prob.tone === "warn" ? "text-neon-yellow" : "text-bunker-muted";
+  const netText = netTargetText(row.target_net_pct);
   const hasHorizon = Number(row.horizon_minutes) > 0;
   const hasScore = row.score != null && Number.isFinite(Number(row.score));
   return (
@@ -133,16 +141,16 @@ export default function NotificationCard({
           <p className="text-xs text-bunker-muted">{when(row.detected_at)}</p>
         </div>
         {hasScore && (
-          <div className={`u-chip u-chip-${tone} shrink-0 flex-col items-center gap-0 rounded-xl px-3 py-1`} title={`Güven: ${badge}`}>
+          <div className={`u-chip u-chip-${tone} shrink-0 flex-col items-center gap-0 rounded-xl px-3 py-1`} title={`${SCORE_TOOLTIP} (${badge})`}>
             <span className="text-xl font-bold leading-none">{Math.round(Number(row.score))}</span>
-            <span className="text-[10px] font-semibold">BİRLEŞİK SKOR</span>
+            <span className="text-[10px] font-semibold">{SCORE_LABEL}</span>
           </div>
         )}
       </div>
 
       <dl className="mt-3 grid grid-cols-3 gap-2 text-sm">
-        <div><dt className="text-xs text-bunker-muted">HEDEF</dt><dd className="font-semibold text-neon-green">{pctText(row.target_pct)}</dd></div>
-        <div><dt className="text-xs text-bunker-muted">OLASILIK</dt><dd className="font-semibold">{conf != null && Number.isFinite(Number(conf)) ? `%${Math.round(Number(conf))}` : "—"}</dd></div>
+        <div><dt className="text-xs text-bunker-muted">HEDEF</dt><dd className="font-semibold text-neon-green">{pctText(row.target_pct)}</dd>{netText && <dd className="text-xs text-bunker-muted" title="Maliyetler (komisyon + kayma) düşüldükten sonra beklenen getiri">{netText}</dd>}</div>
+        <div><dt className="text-xs text-bunker-muted">OLASILIK</dt><dd className={`font-semibold ${probClass}`} title={prob.title}>{prob.text}</dd></div>
         <div>
           <dt className="text-xs text-bunker-muted">CANLI</dt>
           <dd className="font-semibold">{tl(live)}</dd>

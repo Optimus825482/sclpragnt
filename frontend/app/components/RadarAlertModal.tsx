@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useLiveMessages } from "../lib/liveSocket";
 import { fmtDateTime, formatPrice } from "../lib/format";
+import { SCORE_LABEL, SCORE_TOOLTIP, hitProbLabel, netTargetText } from "../lib/userUi";
 import SymbolLink from "./SymbolLink";
 
 /** Kısa, keskin "radar" sesi: iki vuruşlu yüksek ton + düşük vurgu. */
@@ -47,6 +48,10 @@ export type RadarAlertItem = {
   title?: string;
   score?: number;
   target_pct?: number;
+  // 2026-10-18: kalibre isabet + net hedef (eski satırlarda eksik olabilir).
+  hit_prob_calibrated?: number | null;
+  breakeven_hit_prob?: number | null;
+  target_net_pct?: number | null;
   price?: number;
   expected_price?: number;
   mode?: string;
@@ -254,12 +259,19 @@ export default function RadarAlertModal() {
                 <div className="ra-tile ra-tile-good">
                   <p className="ra-tile-label">HEDEF</p>
                   <p className="ra-tile-value">+%{Number(item.target_pct).toFixed(1)}</p>
+                  {netTargetText(item.target_net_pct) && <p className="ra-tile-label">{netTargetText(item.target_net_pct)}</p>}
                 </div>
               )}
               {item.score != null && (
-                <div className="ra-tile ra-tile-warn">
-                  <p className="ra-tile-label">SKOR</p>
+                <div className="ra-tile ra-tile-info" title={SCORE_TOOLTIP}>
+                  <p className="ra-tile-label">{SCORE_LABEL}</p>
                   <p className="ra-tile-value">{Number(item.score).toFixed(1)}</p>
+                </div>
+              )}
+              {item.target_pct != null && (
+                <div className="ra-tile" title={hitProbLabel(item.hit_prob_calibrated, item.breakeven_hit_prob).title}>
+                  <p className="ra-tile-label">OLASILIK</p>
+                  <p className="ra-tile-value">{hitProbLabel(item.hit_prob_calibrated, item.breakeven_hit_prob).text}</p>
                 </div>
               )}
               {proximityPct != null && (

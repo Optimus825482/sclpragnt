@@ -1,5 +1,7 @@
 """Radar skorunu kalibre edilmiş isabet olasılığına (p_hit) çevirir.
 
+NOT (2026-10-18): bu modül CANLIDA BAĞLI DEĞİLDİR; canlı isabet/başabaş/net hedef yolu `app/notify_metrics.py`.
+
 Heuristik `scan_score` tek başına "bu aday ne kadar güvenilir" sorusunu
 yanıtlamaz. Bu modül, geçmiş ölçülmüş adaylarda skor -> gerçek hit oranı
 ilişkisini izotonik regresyonla öğrenir: skor arttıkça olasılık ASLA

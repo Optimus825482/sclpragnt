@@ -20,3 +20,10 @@ def _confirm_rule_off_by_default(request, monkeypatch):
     # 2026-10-18: ikinci kademe ve sessizlik nabzı da mekanik testlerde kapalı (kendi sınıflarında açık).
     monkeypatch.setattr(config, "RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE", 0.0, raising=False)
     monkeypatch.setattr(config, "RADAR_NOTIFY_HEARTBEAT_MINUTES", 0, raising=False)
+    # 2026-10-18: bildirim sayıları dürüstleştirme bayrakları. Eski testler ZİNCİR hedefini (skor kademesi,
+    # net-kâr tabanı, öğrenilmiş hedef, ML karışımı) ve eski kapıları sınar → paket varsayılanı eski davranış;
+    # yeni davranış `test_notify_metrics.py` içinde bayraklar AÇIKÇA kurularak sınanır.
+    monkeypatch.setattr(config, "RADAR_TARGET_MODE", "chain", raising=False)
+    monkeypatch.setattr(config, "RADAR_TARGET_ML_BLEND_ENABLED", True, raising=False)
+    monkeypatch.setattr(config, "RADAR_NOTIFY_SHOW_ML_PROB", True, raising=False)
+    monkeypatch.setattr(config, "RADAR_FUSION_TARGET_DYNAMIC", False, raising=False)

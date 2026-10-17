@@ -242,7 +242,7 @@ def scan_symbol_at_tick(symbol: str, rows1m, rows5m, rows15m, *, horizon_minutes
     leading_ok = bool(m1_atr_prev is not None and m3_atr_prev is not None
                       and m1_atr_prev > 1.0 and m3_atr_prev > 1.0)
     if leading_ok:
-        velocity_score = round(velocity_score * float(getattr(config, "VELOCITY_LEADING_MULTIPLIER", 1.15)), 2)
+        velocity_score = round(velocity_score * float(getattr(config, "VELOCITY_LEADING_MULTIPLIER", 1.0)), 2)
     # ---- Günlük momentum (15m) -- yalnız adx_14 rejim kapısına girer ----
     ret_8h = adx_14 = plus_di_14 = atr_pct_15m = slope_15m = None
     daily_momentum_ok = None
@@ -280,7 +280,7 @@ def scan_symbol_at_tick(symbol: str, rows1m, rows5m, rows15m, *, horizon_minutes
         learned_count=int(learned_count or 0),
         ml_pct=None, ml_prob=None, spread_pct=spread_pct, atr_pct=atr_pct,
         horizon_minutes=horizon_minutes)
-    if config.VELOCITY_TARGET_REALISM_ENABLED:
+    if config.VELOCITY_TARGET_REALISM_ENABLED and not V._measured_target_mode():
         macd_strong = bool(macd_bullish or macd_rising)
         if not macd_strong and 0.0 < config.VELOCITY_TARGET_REALISM_MIN_ML_PROB:
             effective_target = min(effective_target, config.VELOCITY_TARGET_REALISM_MAX_PCT)

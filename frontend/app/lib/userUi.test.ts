@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MENU_ITEMS, baseSymbol, isRegimeTitle, modeLabel, notificationStatus, SETTINGS_TABS, parseSettingsTab, confidenceBadge, isUserRole, isUserView, pctChange, statusLabel, visibleMenu, windowEnd } from "./userUi";
+import { MENU_ITEMS, baseSymbol, isRegimeTitle, modeLabel, notificationStatus, SETTINGS_TABS, parseSettingsTab, confidenceBadge, hitProbLabel, netTargetText, SCORE_LABEL, SCORE_TOOLTIP, isUserRole, isUserView, pctChange, statusLabel, visibleMenu, windowEnd } from "./userUi";
 
 describe("pctChange", () => {
   it("hesaplar", () => expect(pctChange(100, 103)).toBeCloseTo(3, 6));
@@ -32,12 +32,56 @@ describe("windowEnd", () => {
   it("ufuk 0/negatif → 60 dk varsayılan", () => expect(windowEnd(1000, 0)).toBe(1000 + 3600));
 });
 
-describe("confidenceBadge", () => {
+describe("confidenceBadge (şiddet kelimesi)", () => {
   it("eşikler", () => {
-    expect(confidenceBadge(85)).toBe("Yüksek");
-    expect(confidenceBadge(70)).toBe("Orta");
-    expect(confidenceBadge(40)).toBe("Düşük");
-    expect(confidenceBadge(null)).toBe("Düşük");
+    expect(confidenceBadge(85)).toBe("Çok hızlı");
+    expect(confidenceBadge(70)).toBe("Hızlı");
+    expect(confidenceBadge(40)).toBe("Ilımlı");
+    expect(confidenceBadge(null)).toBe("Ilımlı");
+  });
+  it("yüksek skor 'iyi/güçlü/yüksek güven' DEMEZ", () => {
+    for (const s of [95, 70, 10, null]) expect(confidenceBadge(s)).not.toMatch(/yüksek|güçlü|iyi|güven/i);
+  });
+  it("etiket ve ipucu", () => {
+    expect(SCORE_LABEL).toBe("HAREKET ŞİDDETİ");
+    expect(SCORE_TOOLTIP).toContain("isabet garantisi değildir");
+  });
+});
+
+describe("hitProbLabel", () => {
+  it("p > başabaş → good, yuvarlanmış yüzde ve ipucu", () => {
+    const r = hitProbLabel(0.624, 0.55);
+    expect(r.text).toBe("%62");
+    expect(r.tone).toBe("good");
+    expect(r.title).toBe("Ölçülmüş isabet tahmini · başabaş %55");
+  });
+  it("p == başabaş veya altı → warn", () => {
+    expect(hitProbLabel(0.55, 0.55).tone).toBe("warn");
+    expect(hitProbLabel(0.4, 0.55).tone).toBe("warn");
+  });
+  it("başabaş yoksa asla good değil", () => {
+    const r = hitProbLabel(0.9, null);
+    expect(r.tone).toBe("warn");
+    expect(r.text).toBe("%90");
+    expect(r.title).not.toContain("başabaş");
+  });
+  it("p yoksa em dash ve nötr ton", () => {
+    expect(hitProbLabel(null, 0.5)).toMatchObject({ text: "—", tone: "mute" });
+    expect(hitProbLabel(undefined, undefined).text).toBe("—");
+    expect(hitProbLabel(Number.NaN, 0.5).text).toBe("—");
+  });
+  it("p = 0 geçerli bir değerdir", () => expect(hitProbLabel(0, 0.5).text).toBe("%0"));
+});
+
+describe("netTargetText", () => {
+  it("biçim", () => {
+    expect(netTargetText(1.8)).toBe("net +1,80%");
+    expect(netTargetText(-0.1)).toBe("net -0,10%");
+  });
+  it("yok → boş", () => {
+    expect(netTargetText(null)).toBe("");
+    expect(netTargetText(undefined)).toBe("");
+    expect(netTargetText(Number.NaN)).toBe("");
   });
 });
 

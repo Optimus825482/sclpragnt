@@ -4759,6 +4759,11 @@ async def save_velocity_candidates(rows):
                 extra["leading_ok"] = bool(row.get("leading_ok"))
                 extra["m1_atr_prev"] = row.get("m1_atr_prev")
                 extra["m3_atr_prev"] = row.get("m3_atr_prev")
+            # 2026-10-18: aday anı sinyal bağlamı (mod, BB genişliği, taker payı, defter dengesizliği) — yalnız
+            # dolu olanlar yazılır; eski satırlar aynen kalır.
+            for _ctx_key in ("mode", "bb_width_pct", "taker_buy_ratio", "book_imbalance"):
+                if row.get(_ctx_key) is not None:
+                    extra[_ctx_key] = row.get(_ctx_key)
             # Mikro yapı anlık görüntüsü (whale verdict, CVD): kalıcı yazılmıyordu;
             # filtre istatistiklerinin birikmesi için outcome_details'e gömülür.
             if row.get("microstructure"):
@@ -5356,6 +5361,15 @@ async def save_monitoring_notifications(entries):
         except (TypeError, ValueError):
             return None
 
+    def _unit_prob_value(raw):
+        if raw in (None, ""):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if (value == value and 0.0 <= value <= 1.0) else None
+
     def _candidate_id_value(e):
         cid = e.get("candidate_id")
         return str(cid) if cid not in (None, "") else None
@@ -5401,8 +5415,8 @@ async def save_monitoring_notifications(entries):
                 "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at,"
                 "ml_target_pct,ml_hit_probability,candidate_id,norm_cap,norm_version,sources,"
                 "llm_verdict,llm_confidence,llm_reasons,macd_mtf_verdict,macd_mtf_confluence,"
-                "push_attempted)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                "push_attempted,hit_prob_calibrated,breakeven_hit_prob)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
                 (
                     str(e.get("symbol") or "?"),
                     str(e.get("message") or ""),
@@ -5429,6 +5443,9 @@ async def save_monitoring_notifications(entries):
                     # push'tan (`sent_via_push`) türetilir; ikisi de yoksa NULL/False
                     # kalır ve rapor/geçmiş okumaları satırı "panel" sayıp dışlar.
                     bool(e.get("push_attempted") or e.get("sent_via_push")),
+                    # 2026-10-18 (migration 025): kalibre isabet / başabaş isabet (0–1; yoksa NULL).
+                    _unit_prob_value(e.get("hit_prob_calibrated")),
+                    _unit_prob_value(e.get("breakeven_hit_prob")),
                 ),
             ).fetchone()
             if row is not None and e.get("id") is None:
@@ -5498,6 +5515,7 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
         base_sql = (
             "SELECT id, symbol, mode, score, target_pct, price, expected_price,"
             " horizon_minutes, detected_at, sent_via_push, push_attempted,"
+            " hit_prob_calibrated, breakeven_hit_prob,"
             + ("" if slim else " message, title,")
             + " candidate_id, norm_cap, norm_version, sources,"
             " outcome_status, mfe_pct AS own_mfe_pct, mae_pct AS own_mae_pct"
@@ -5762,11 +5780,18 @@ async def update_monitoring_notification(
     expected_price: float, horizon_minutes: int, mode: str | None,
     ml_target_pct: float | None = None, ml_hit_probability: float | None = None,
     candidate_id: str | None = None,
+    metrics: dict | None = None,
 ) -> bool:
     # detected_at bilerek guncellenmez: orijinal tespit ani korunmazsa
     # velocity adayiyla eslesme bozulur ve M1 olcumu yapilamaz.
     # ML alanlari ve candidate_id de guncellenir.
+    # 2026-10-18: `metrics` verilirse (notify_metrics.notification_metrics çıktısı) hedef değiştiği için
+    # kalibre isabet / başabaş isabet kolonları da (None dahil) yeniden yazılır; verilmezse dokunulmaz.
     def op(conn):
+        if metrics is not None:
+            conn.execute(
+                "UPDATE monitoring_notifications SET hit_prob_calibrated=%s, breakeven_hit_prob=%s WHERE id=%s",
+                (metrics.get("hit_prob_calibrated"), metrics.get("breakeven_hit_prob"), notif_id))
         if candidate_id:
             conn.execute(
                 "UPDATE monitoring_notifications SET "
@@ -5883,7 +5908,8 @@ async def list_monitoring_notifications(limit=50, push_only: bool = True):
         rows = conn.execute(
             "SELECT id,symbol,message,title,score,target_pct,price,expected_price,"
             "horizon_minutes,mode,detected_at,sent_via_push,push_attempted,"
-            "llm_verdict,llm_confidence,llm_reasons FROM monitoring_notifications"
+            "llm_verdict,llm_confidence,llm_reasons,"
+            "hit_prob_calibrated,breakeven_hit_prob,ml_hit_probability FROM monitoring_notifications"
             + where +
             " ORDER BY detected_at DESC LIMIT ?", (max(1, min(int(limit), 500)),)
         ).fetchall()
