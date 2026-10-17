@@ -304,3 +304,148 @@ def test_tree_max_fpr_selects_pure_leaf():
     tight = P.fit_pattern_tree(X, y, ["f.a", "f.b"], depth=3, min_leaf_events=5, max_fpr=0.03, min_recall=0.05)
     assert tight is not None and tight.leaf_fpr <= 0.03
     assert loose is None or tight.leaf_fpr <= loose.leaf_fpr
+
+
+# ------------------------------------------------------------------------------------------ taker özellikleri
+def _taker_arr(n=400, seed=5, bar_ms=300_000, buy_share=None):
+    rng = np.random.default_rng(seed)
+    c = 10.0 * np.exp(np.cumsum(rng.normal(0, 0.003, n)))
+    qv = rng.uniform(1e4, 5e4, n)
+    share = rng.uniform(0.3, 0.7, n) if buy_share is None else np.asarray(buy_share, dtype=float)
+    tbq = qv * share
+    o = np.concatenate([[c[0]], c[:-1]])
+    arr = np.zeros((n, 9))
+    arr[:, 0] = T0 + np.arange(n) * bar_ms
+    arr[:, 1], arr[:, 2], arr[:, 3], arr[:, 4] = o, np.maximum(o, c) * 1.001, np.minimum(o, c) * 0.999, c
+    arr[:, 5] = qv / c
+    arr[:, 6] = qv
+    arr[:, 7] = tbq / c
+    arr[:, 8] = tbq
+    return arr, qv, tbq, share
+
+
+def test_taker_share_windows_and_net_flow_values():
+    n = 500
+    arr, qv, tbq, share = _taker_arr(n)
+    f = P.taker_features(tbq, qv, 288)
+    i = 450
+    assert f["tk_share1"][i] == pytest.approx(tbq[i] / qv[i])
+    for k in (3, 6, 12):
+        assert f[f"tk_share{k}"][i] == pytest.approx(tbq[i - k + 1:i + 1].sum() / qv[i - k + 1:i + 1].sum())
+    for k in (6, 12):
+        want = (2 * tbq[i - k + 1:i + 1] - qv[i - k + 1:i + 1]).sum() / qv[i - 287:i + 1].sum() * 100
+        assert f[f"tk_net{k}"][i] == pytest.approx(want)
+    assert f["tk_qratio"][i] == pytest.approx(tbq[i] / tbq[i - 20:i].mean())
+    # z-skoru: son-3 payı, ondan ÖNCEKİ 288 barlık (3 bar boşluklu) son-3 payı dağılımına göre
+    s3 = np.array([tbq[j - 2:j + 1].sum() / qv[j - 2:j + 1].sum() for j in range(2, n)])   # s3[j-2]
+    prev = s3[(i - 3 - 287) - 2:(i - 3) - 2 + 1]
+    assert f["tk_share_z3"][i] == pytest.approx((s3[i - 2] - prev.mean()) / prev.std())
+
+
+def test_taker_slope_balanced_and_directional():
+    share = np.full(60, 0.5)
+    share[-6:] = np.linspace(0.40, 0.60, 6)               # son 6 barda doğrusal artış, adım 0,04
+    arr, qv, tbq, _ = _taker_arr(60, buy_share=share)
+    f = P.taker_features(tbq, qv, 288)
+    assert f["tk_share_slope6"][-1] == pytest.approx(0.04)
+    flat, qv2, tbq2, _ = _taker_arr(400, buy_share=np.full(400, 0.5))
+    g = P.taker_features(tbq2, qv2, 288)
+    assert g["tk_share1"][-1] == pytest.approx(0.5) and g["tk_share12"][-1] == pytest.approx(0.5)
+    assert g["tk_share_slope6"][-1] == pytest.approx(0.0, abs=1e-12) and g["tk_net6"][-1] == pytest.approx(0.0, abs=1e-12)
+    # saf alış → pay 1, net akış = Σqv / q24 · 100
+    buy, qv3, tbq3, _ = _taker_arr(400, buy_share=np.ones(400))
+    h = P.taker_features(tbq3, qv3, 288)
+    assert h["tk_share6"][-1] == pytest.approx(1.0)
+    assert h["tk_net6"][-1] == pytest.approx(qv3[-6:].sum() / qv3[-288:].sum() * 100)
+
+
+def test_taker_nan_zero_volume_and_causality():
+    arr, qv, tbq, _ = _taker_arr(400)
+    tb = tbq.copy(); tb[300] = np.nan
+    f = P.taker_features(tb, qv, 288)
+    assert np.isnan(f["tk_share1"][300]) and np.isnan(f["tk_share3"][302]) and np.isfinite(f["tk_share3"][303])
+    assert np.isnan(f["tk_net6"][305]) and np.isfinite(f["tk_net6"][306])
+    assert np.isfinite(f["tk_share_z3"][350])            # tek NaN 24 sa istatistiğini öldürmez
+    # işlem yok (qv=0, tbq=0) → nötr 0,5 payı
+    q0, t0_ = qv.copy(), tbq.copy()
+    q0[200:206] = 0.0; t0_[200:206] = 0.0
+    g = P.taker_features(t0_, q0, 288)
+    assert g["tk_share1"][203] == pytest.approx(0.5) and g["tk_share6"][205] == pytest.approx(0.5)
+    # nedensellik: i'den sonrasını bozmak i. değeri değiştirmez
+    cut = 350
+    tb2, q2 = tbq.copy(), qv.copy()
+    tb2[cut + 1:] *= 3.0; q2[cut + 1:] *= 2.0
+    a, b = P.taker_features(tbq, qv, 288), P.taker_features(tb2, q2, 288)
+    for k in a:
+        np.testing.assert_allclose(a[k][:cut + 1], b[k][:cut + 1], rtol=1e-9, atol=1e-9, equal_nan=True)
+
+
+def test_features_matrix_adds_taker_only_with_taker_columns():
+    arr, *_ = _taker_arr(400)
+    n9, X9 = P.features_matrix(arr, "5m")
+    n7, X7 = P.features_matrix(arr[:, :7], "5m")
+    assert [x for x in n9 if x.split(".", 1)[1].startswith("tk_")] == [f"5m.{k}" for k in P.TAKER_FEATURES]
+    assert n9[:len(n7)] == n7 and not any(".tk_" in x for x in n7)
+    np.testing.assert_allclose(X9[:, :len(n7)], X7, equal_nan=True)
+    n1, _ = P.features_matrix(arr, "1m")
+    assert "1m.tk_share3" in n1 and "1m.hour" not in n1
+
+
+def test_aggregate_and_fill_gaps_carry_taker_columns():
+    arr, *_ = _taker_arr(12, bar_ms=60_000)
+    out = P.aggregate_bars(arr, 3)
+    assert out.shape == (4, 9)
+    assert out[0, P.COL_TBQ] == pytest.approx(arr[:3, P.COL_TBQ].sum()) and out[1, P.COL_TBB] == pytest.approx(arr[3:6, P.COL_TBB].sum())
+    withnan = arr.copy(); withnan[4, P.COL_TBQ] = np.nan
+    o2 = P.aggregate_bars(withnan, 3)
+    assert np.isnan(o2[1, P.COL_TBQ]) and np.isfinite(o2[0, P.COL_TBQ]) and np.isfinite(o2[2, P.COL_TBQ])
+    gap = np.delete(arr, [5, 6], axis=0)
+    filled = P.fill_gaps(gap, 60_000)
+    assert filled.shape == (12, 9) and filled[5, P.COL_TBQ] == 0.0 and filled[6, P.COL_TBB] == 0.0 and filled[7, P.COL_TBQ] == arr[7, P.COL_TBQ]
+    rm = P.real_mask(gap, 60_000)
+    assert rm.shape == (12,) and list(np.flatnonzero(~rm)) == [5, 6]
+
+
+# ------------------------------------------------------------------------------------------ vektörel ileri sonuçlar
+def test_forward_outcomes_matches_eval_window_and_trail_window():
+    """`forward_outcomes` (vektörel) ≡ `eval_window` + `trail_window` — boşluklu (eksik satırlı) rastgele yürüyüşte."""
+    from scripts.notification_outcomes_report import CandleStore, eval_window
+    from scripts.strategy_rescan import trail_window
+    rng = np.random.default_rng(11)
+    n = 700
+    c = 10.0 * np.exp(np.cumsum(rng.normal(0, 0.006, n)))
+    o = np.concatenate([[c[0]], c[:-1]])
+    h = np.maximum(o, c) * (1 + np.abs(rng.normal(0, 0.003, n)))
+    l = np.minimum(o, c) * (1 - np.abs(rng.normal(0, 0.003, n)))
+    arr = np.column_stack([T0 + np.arange(n) * 300_000, o, h, l, c, np.full(n, 5.0), np.full(n, 50.0)])
+    keep = np.ones(n, dtype=bool)
+    keep[rng.choice(np.arange(20, n - 20), size=40, replace=False)] = False
+    keep[300:306] = False                                   # uzun boşluk
+    raw = arr[keep]
+    filled = P.fill_gaps(raw, 300_000)
+    real = P.real_mask(raw, 300_000)
+    out = P.forward_outcomes(filled[:, P.COL_H], filled[:, P.COL_L], filled[:, P.COL_C], real, tps=(1.5, 2.0, 4.0))
+    store = CandleStore({"X": (raw[:, 0], raw[:, 2], raw[:, 3], raw[:, 4])})
+    ot = filled[:, 0]
+    checked = valid_n = 0
+    for i in range(0, len(filled) - 14, 3):
+        det = (ot[i] + 300_000) / 1000.0
+        entry = float(filled[i, P.COL_C])
+        for tp in (1.5, 2.0, 4.0):
+            ref = eval_window(*store.d["X"], det, entry, tp, 60, 3.0, 0.225)
+            if ref is None:
+                assert out["valid"][i] == 0 or tp != 1.5
+                continue
+            assert out["valid"][i] == 1
+            assert out[f"hit{tp}"][i] == float(ref["hit"]) and out[f"net{tp}"][i] == pytest.approx(ref["net"])
+            if tp == 1.5:
+                assert out["mfe"][i] == pytest.approx(ref["mfe"]) and out["mae"][i] == pytest.approx(ref["mae"])
+                tr = trail_window(store, "X", det, entry, trigger=1.0, gap=0.8, sl=3.0, cost=0.225)
+                assert tr is not None and out["trail_net"][i] == pytest.approx(tr["net"])
+                valid_n += 1
+        checked += 1
+    assert checked > 100 and valid_n > 100
+    # eval_window geçersiz derse vektörel de geçersiz (en az bir boşluklu pencere yakalandı)
+    inval = [i for i in range(0, len(filled) - 14, 3)
+             if eval_window(*store.d["X"], (ot[i] + 300_000) / 1000.0, float(filled[i, P.COL_C]), 1.5, 60, 3.0, 0.225) is None]
+    assert inval and all(out["valid"][i] == 0 for i in inval)

@@ -21,6 +21,9 @@ from scipy.signal import lfilter
 
 # Dizi kolonları (ladder.py / strategies.py ile aynı): open_time(ms), open, high, low, close, volume, quote_volume
 COL_OT, COL_O, COL_H, COL_L, COL_C, COL_V, COL_QV = range(7)
+# İsteğe bağlı taker kolonları (Binance kline alan 9/10): taker alış base hacmi, taker alış quote hacmi.
+# 7 kolonlu diziler (taker yok) eskisi gibi çalışır; 9 kolonlu dizilerde `features_matrix` taker özelliklerini de üretir.
+COL_TBB, COL_TBQ = 7, 8
 BAR_1M_MS = 60_000
 BAR_5M_MS = 300_000
 TF_BAR_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000}
@@ -36,8 +39,9 @@ def aggregate_bars(arr: np.ndarray, factor: int, bar_ms: int = BAR_1M_MS) -> np.
     (factor adet mum, dakika ofsetleri 0..factor-1) üretilir; eksik/kısmi kova (veri başı/sonu ya da boşluk) atılır.
     open = kovanın ilk açılışı, high = max, low = min, close = son kapanış, volume/quote_volume = toplam.
     """
+    ncol = arr.shape[1] if arr.ndim == 2 else 7
     if len(arr) == 0:
-        return np.zeros((0, 7))
+        return np.zeros((0, ncol))
     ot = arr[:, COL_OT].astype(np.int64)
     span = factor * bar_ms
     b = ot // span
@@ -48,9 +52,9 @@ def aggregate_bars(arr: np.ndarray, factor: int, bar_ms: int = BAR_1M_MS) -> np.
     kb = b[starts]
     ok = (cnt == factor) & (ot[starts] == kb * span) & (ot[ends - 1] == kb * span + (factor - 1) * bar_ms)
     if not ok.any():
-        return np.zeros((0, 7))
+        return np.zeros((0, ncol))
     st, en, kb = starts[ok], ends[ok], kb[ok]
-    out = np.empty((len(st), 7))
+    out = np.empty((len(st), ncol))
     out[:, COL_OT] = kb * span
     out[:, COL_O] = arr[st, COL_O]
     out[:, COL_C] = arr[en - 1, COL_C]
@@ -61,6 +65,8 @@ def aggregate_bars(arr: np.ndarray, factor: int, bar_ms: int = BAR_1M_MS) -> np.
     q_all = np.add.reduceat(np.nan_to_num(arr[:, COL_QV], nan=0.0), starts)
     out[:, COL_H], out[:, COL_L] = h_all[ok], l_all[ok]
     out[:, COL_V], out[:, COL_QV] = v_all[ok], q_all[ok]
+    for k in range(7, ncol):   # taker kolonları: NaN YAYILIR (kovadaki tek eksik değer kovayı bilinmez yapar)
+        out[:, k] = np.add.reduceat(arr[:, k], starts)[ok]
     return out
 
 
@@ -72,15 +78,16 @@ def fill_gaps(arr: np.ndarray, bar_ms: int) -> np.ndarray:
     ve 24 sa pencereyi gerçekten 24 saat yapar. Zaman ızgarası ilk–son open_time arası tamdır."""
     if len(arr) < 2:
         return arr.copy()
+    ncol = arr.shape[1]
     ot = arr[:, COL_OT].astype(np.int64)
     n_full = int((ot[-1] - ot[0]) // bar_ms) + 1
     if n_full == len(arr) and np.all(np.diff(ot) == bar_ms):
         return arr.copy()
     pos = ((ot - ot[0]) // bar_ms).astype(np.int64)
-    out = np.zeros((n_full, 7))
+    out = np.zeros((n_full, ncol))
     out[:, COL_OT] = ot[0] + np.arange(n_full, dtype=np.int64) * bar_ms
     have = np.zeros(n_full, dtype=bool); have[pos] = True
-    out[pos] = arr[:, :7]
+    out[pos] = arr
     # önceki gerçek barın kapanışı: have olan son indeksin kapanışı
     last_idx = np.maximum.accumulate(np.where(have, np.arange(n_full), -1))
     fc = out[last_idx, COL_C]
@@ -88,7 +95,20 @@ def fill_gaps(arr: np.ndarray, bar_ms: int) -> np.ndarray:
     for k in (COL_O, COL_H, COL_L, COL_C):
         out[miss, k] = fc[miss]
     out[miss, COL_V] = 0.0; out[miss, COL_QV] = 0.0
+    for k in range(7, ncol):    # işlem yok → taker alışı da 0
+        out[miss, k] = 0.0
     return out
+
+
+def real_mask(arr: np.ndarray, bar_ms: int) -> np.ndarray:
+    """`fill_gaps(arr, bar_ms)` çıktısında hangi satırların GERÇEK (ham) mum olduğu (True) / doldurulduğu (False)."""
+    if len(arr) < 2:
+        return np.ones(len(arr), dtype=bool)
+    ot = arr[:, COL_OT].astype(np.int64)
+    n_full = int((ot[-1] - ot[0]) // bar_ms) + 1
+    have = np.zeros(n_full, dtype=bool)
+    have[((ot - ot[0]) // bar_ms).astype(np.int64)] = True
+    return have
 
 
 # ----------------------------------------------------------------------------------------------- temel yardımcılar
@@ -279,9 +299,95 @@ def _pct(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         return np.where(b > 0, (a / b - 1.0) * 100.0, np.nan)
 
 
+# ----------------------------------------------------------------------------------------------- taker (emir akışı) özellikleri
+TAKER_FEATURES = ("tk_share1", "tk_share3", "tk_share6", "tk_share12", "tk_share_slope6", "tk_share_z3",
+                  "tk_qratio", "tk_net6", "tk_net12")
+
+
+def nan_rolling_sum(x: np.ndarray, n: int) -> np.ndarray:
+    """Pencere toplamı; penceredeki HERHANGİ bir değer NaN ise sonuç NaN (cumsum'ı zehirlemeden)."""
+    x = np.asarray(x, dtype=float)
+    out = np.full(len(x), np.nan)
+    if len(x) < n:
+        return out
+    bad = ~np.isfinite(x)
+    c = np.cumsum(np.insert(np.where(bad, 0.0, x), 0, 0.0))
+    cb = np.cumsum(np.insert(bad.astype(np.int64), 0, 0))
+    s = c[n:] - c[:-n]
+    nb = cb[n:] - cb[:-n]
+    out[n - 1:] = np.where(nb == 0, s, np.nan)
+    return out
+
+
+def _valid_mean_std(x: np.ndarray, w: int, min_frac: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
+    """Son `w` değerin (NaN'ları yok sayarak) ortalaması ve popülasyon std'si; geçerli değer payı < min_frac ise NaN."""
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    mean = np.full(n, np.nan); sd = np.full(n, np.nan)
+    if n < w:
+        return mean, sd
+    ok = np.isfinite(x)
+    xz = np.where(ok, x, 0.0)
+    c1 = np.cumsum(np.insert(xz, 0, 0.0)); c2 = np.cumsum(np.insert(xz * xz, 0, 0.0))
+    cn = np.cumsum(np.insert(ok.astype(np.int64), 0, 0))
+    s1 = c1[w:] - c1[:-w]; s2 = c2[w:] - c2[:-w]; k = (cn[w:] - cn[:-w]).astype(float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        m = np.where(k > 0, s1 / k, np.nan)
+        var = np.where(k > 0, np.maximum(s2 / k - m * m, 0.0), np.nan)
+    good = k >= min_frac * w
+    mean[w - 1:] = np.where(good, m, np.nan)
+    sd[w - 1:] = np.where(good, np.sqrt(var), np.nan)
+    return mean, sd
+
+
+def taker_features(tbq: np.ndarray, qv: np.ndarray, bars_per_day: int) -> dict[str, np.ndarray]:
+    """Taker (agresif alıcı) özellikleri — nedensel, i. değer yalnız ≤ i barlarına bağlı.
+
+    `tbq`: bar başına taker ALIŞ quote hacmi (NaN = veri yok); `qv`: bar başına toplam quote hacmi. Pay = tbq/qv ∈ [0, 1]
+    (0,5 = dengeli). İşlem olmayan pencerede (qv toplamı 0) pay nötr 0,5 alınır; taker verisi NaN ise özellik NaN.
+      tk_share1        son barın taker alış payı
+      tk_share3/6/12   son 3/6/12 barın HACİM-AĞIRLIKLI payı (Σtbq/Σqv)
+      tk_share_slope6  son 6 barın bar-bazlı payına doğrusal regresyon eğimi (pay puanı / bar)
+      tk_share_z3      son-3 payının, ondan önceki 24 saatteki (3 bar boşluklu) son-3 payı dağılımına göre z-skoru (±10'a kırpılır)
+      tk_qratio        son barın taker alış quote hacmi / önceki 20 barın ortalaması
+      tk_net6/12       Σ(2·tbq − qv) (net taker akışı = alış − satış) son 6/12 bar / 24 sa quote hacmi, %
+    """
+    tbq = np.asarray(tbq, dtype=float)
+    qv = np.nan_to_num(np.asarray(qv, dtype=float), nan=0.0)
+    n = len(qv)
+    F: dict[str, np.ndarray] = {}
+
+    def share(k: int) -> np.ndarray:
+        a = nan_rolling_sum(tbq, k)
+        b = rolling_sum(qv, k)
+        return np.where(np.isnan(a), np.nan, np.where(b > 0, a / np.where(b > 0, b, 1.0), 0.5))
+
+    s1, s3, s6, s12 = share(1), share(3), share(6), share(12)
+    F["tk_share1"], F["tk_share3"], F["tk_share6"], F["tk_share12"] = s1, s3, s6, s12
+    slope = np.full(n, np.nan)
+    if n >= 6:
+        xc = np.arange(6, dtype=float) - 2.5
+        slope[5:] = np.lib.stride_tricks.sliding_window_view(s1, 6) @ xc / float((xc ** 2).sum())
+    F["tk_share_slope6"] = slope
+    m24, sd24 = _valid_mean_std(s3, bars_per_day)
+    m24p, sd24p = shift(m24, 3), shift(sd24, 3)     # son 3 barla çakışmayan önceki pencere
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = np.where(sd24p > 1e-6, (s3 - m24p) / sd24p, np.nan)
+    F["tk_share_z3"] = np.clip(z, -10.0, 10.0)
+    prev20 = shift(nan_rolling_sum(tbq, 20), 1) / 20.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        F["tk_qratio"] = np.where(prev20 > 0, tbq / prev20, np.nan)
+    net = 2.0 * tbq - qv
+    q24 = rolling_sum(qv, bars_per_day)
+    for k in (6, 12):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            F[f"tk_net{k}"] = np.where(q24 > 0, nan_rolling_sum(net, k) / q24 * 100.0, np.nan)
+    return F
+
+
 # ----------------------------------------------------------------------------------------------- özellik matrisi
 def features_matrix(arr: np.ndarray, tf: str) -> tuple[list[str], np.ndarray]:
-    """Bir zaman dilimi için özellik matrisi (n × F). Sütun adları `<tf>.<ad>`. i. satır yalnız ≤ i barlarına bağlıdır.
+    """Bir zaman dilimi için özellik matrisi (n × F). 9 kolonlu dizide (taker var) `tk_*` özellikleri de eklenir. Sütun adları `<tf>.<ad>`. i. satır yalnız ≤ i barlarına bağlıdır.
 
     `tf`: "1m" | "3m" | "5m" — yalnız 24 sa pencere uzunluğunu (bar sayısı) belirler.
     """
@@ -348,6 +454,8 @@ def features_matrix(arr: np.ndarray, tf: str) -> tuple[list[str], np.ndarray]:
         F["drawdown12_pct"] = np.full(n, np.nan)
     if tf == "5m":
         F["hour"] = (((arr[:, COL_OT] // 1000 + TZ_OFFSET_H * 3600) // 3600) % 24).astype(float)
+    if arr.shape[1] > COL_TBQ:   # taker kolonları varsa (9 kolon) emir-akışı özellikleri de eklenir
+        F.update(taker_features(arr[:, COL_TBQ], arr[:, COL_QV], bpd))
     names = [f"{tf}.{k}" for k in F]
     X = np.column_stack([F[k] for k in F]) if F else np.zeros((n, 0))
     return names, X
@@ -616,3 +724,75 @@ def fit_pattern_tree(X: np.ndarray, y: np.ndarray, names: list[str], *, depth: i
     path.reverse()
     conds = merge_conditions(path)
     return TreePattern(conds, rec, fpr, depth, sorted({c.feature for c in conds}))
+
+
+# ----------------------------------------------------------------------------------------------- ileri sonuçlar (vektörel)
+def forward_outcomes(h: np.ndarray, l: np.ndarray, c: np.ndarray, real: np.ndarray, *, tps=(1.5, 2.0, 4.0), sl: float = 3.0,
+                     cost: float = 0.225, first: int = 2, last: int = 12, min_bars: int = 9, trigger: float = 1.0,
+                     gap: float = 0.8) -> dict[str, np.ndarray]:
+    """Her karar barı i için (giriş = c[i]) ileri sonuçları TEK seferde hesaplar. `notification_outcomes_report.eval_window` ve
+    `strategy_rescan.trail_window` ile aynı kurallar:
+
+      * pencere = i+first … i+last barları (varsayılan 2…12: karar anı = bar i kapanışı = bar i+1 açılışı olduğundan
+        `eval_window` (open_time > det) bar i+1'i DIŞLAR → sinyal sonuçları 11 bar üzerinden; bu önceki çalışmalarla aynı ölçüdür);
+      * geçerlilik: pencerede ≥ `min_bars` GERÇEK mum, ilk 2 yuvada (first, first+1) ve son 2 yuvada (last-1, last) gerçek mum;
+      * SL/TP aynı barda ise SL önce (kötümser); hit = pencere MFE ≥ tp; net = ret − cost; sonuçsa son kapanış.
+      * trailing: tetik `trigger`% görülene dek SL, sonra zirve×(1−gap%) izleyen stop (zirve önceki barlardan).
+    Dönüş: dict dizileri (n,): valid (0/1), mfe, mae, hit{tp}, net{tp}, trail_net. Geçersiz yerler NaN (valid=0)."""
+    n = len(c)
+    W = last - first + 1
+    res = {"valid": np.zeros(n), "mfe": np.full(n, np.nan), "mae": np.full(n, np.nan), "trail_net": np.full(n, np.nan)}
+    for tp in tps:
+        res[f"hit{tp}"] = np.full(n, np.nan)
+        res[f"net{tp}"] = np.full(n, np.nan)
+    m = n - last
+    if m <= 0:
+        return res
+    sw = np.lib.stride_tricks.sliding_window_view
+    Wr = sw(real[first:], W)[:m]
+    Wh = np.where(Wr, sw(h[first:], W)[:m], -np.inf)      # doldurulmuş (gerçek olmayan) mumlar high/low'a katılmaz
+    Wl = np.where(Wr, sw(l[first:], W)[:m], np.inf)
+    entry = c[:m]
+    last_close = c[last:last + m]
+    ok = (Wr[:, 0] | Wr[:, 1]) & (Wr.sum(axis=1) >= min_bars) & (Wr[:, -1] | Wr[:, -2])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mfe = (Wh.max(axis=1) / entry - 1.0) * 100.0
+        mae = (Wl.min(axis=1) / entry - 1.0) * 100.0
+        slm = Wl <= (entry * (1.0 - sl / 100.0))[:, None]
+        isl = np.where(slm.any(axis=1), slm.argmax(axis=1), 10 ** 9)
+        for tp in tps:
+            tpm = Wh >= (entry * (1.0 + tp / 100.0))[:, None]
+            itp = np.where(tpm.any(axis=1), tpm.argmax(axis=1), 10 ** 9)
+            ret = np.where((isl <= itp) & (isl < 10 ** 9), -sl,
+                           np.where(itp < 10 ** 9, tp, (last_close / entry - 1.0) * 100.0))
+            res[f"hit{tp}"][:m] = np.where(ok, (mfe >= tp).astype(float), np.nan)
+            res[f"net{tp}"][:m] = np.where(ok, ret - cost, np.nan)
+        slp = entry * (1.0 - sl / 100.0)
+        trp = entry * (1.0 + trigger / 100.0)
+        active = np.zeros(m, dtype=bool)
+        done = np.zeros(m, dtype=bool)
+        peak = entry.copy()
+        exit_p = np.full(m, np.nan)
+        for k in range(W):
+            hk, lk = Wh[:, k], Wl[:, k]
+            was_active = active.copy()
+            stop = peak * (1.0 - gap / 100.0)
+            hs = was_active & ~done & (lk <= stop)
+            exit_p[hs] = stop[hs]
+            done |= hs
+            up = was_active & ~done & (hk > peak)
+            peak[up] = hk[up]
+            ina = ~was_active & ~done
+            sh = ina & (lk <= slp)
+            exit_p[sh] = slp[sh]
+            done |= sh
+            tg = ina & ~sh & (hk >= trp)
+            active |= tg
+            peak[tg] = hk[tg]
+        exit_p = np.where(done, exit_p, last_close)
+        trail = (exit_p / entry - 1.0) * 100.0 - cost
+    res["valid"][:m] = ok.astype(float)
+    res["mfe"][:m] = np.where(ok, mfe, np.nan)
+    res["mae"][:m] = np.where(ok, mae, np.nan)
+    res["trail_net"][:m] = np.where(ok, trail, np.nan)
+    return res
