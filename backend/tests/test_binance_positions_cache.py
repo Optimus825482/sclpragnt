@@ -119,3 +119,55 @@ class PositionsCacheTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PositionsStaleWhileRevalidateTests(PositionsCacheTests):
+    """2026-10-18: TTL dolmus ama <= _POSITIONS_STALE_MAX_SEC bayat kayit HEMEN doner; arka planda tazelenir."""
+
+    def setUp(self):
+        super().setUp()
+        # Kilitler onceki testin event loop'una bagli kalmasin (asyncio mixins RuntimeError).
+        main._positions_locks.clear()
+        main._positions_refresh_tasks.clear()
+
+    def tearDown(self):
+        main._positions_locks.clear()
+        main._positions_refresh_tasks.clear()
+        super().tearDown()
+
+    async def test_stale_hit_returns_immediately_then_refreshes_in_background(self):
+        import time as _t
+        req = MagicMock()
+        first = await main.binance_positions(req)
+        key = next(iter(main._positions_cache))
+        expiry, payload, token = main._positions_cache[key]
+        main._positions_cache[key] = (_t.monotonic() - 1.0, payload, token)   # TTL doldu, 1 sn bayat
+        before = (self.balance_calls, self.trade_calls)
+        stale = await main.binance_positions(req)
+        self.assertEqual(stale, first)                       # bayat yanit aninda
+        self.assertEqual((self.balance_calls, self.trade_calls), before)
+        task = main._positions_refresh_tasks.get(7)
+        self.assertIsNotNone(task)
+        await task
+        self.assertEqual(self.balance_calls, before[0] + 1)   # arka planda tazelendi
+        self.assertGreater(main._positions_cache[key][0], _t.monotonic())
+
+    async def test_too_stale_fetches_synchronously(self):
+        import time as _t
+        req = MagicMock()
+        await main.binance_positions(req)
+        key = next(iter(main._positions_cache))
+        expiry, payload, token = main._positions_cache[key]
+        main._positions_cache[key] = (_t.monotonic() - main._POSITIONS_STALE_MAX_SEC - 1.0, payload, token)
+        before = self.balance_calls
+        await main.binance_positions(req)
+        self.assertEqual(self.balance_calls, before + 1)
+
+    async def test_invalidation_after_order_forces_fresh_fetch(self):
+        import time as _t
+        req = MagicMock()
+        await main.binance_positions(req)
+        main._invalidate_positions_cache(7)
+        before = self.balance_calls
+        await main.binance_positions(req)
+        self.assertEqual(self.balance_calls, before + 1)

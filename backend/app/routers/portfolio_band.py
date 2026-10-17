@@ -32,12 +32,16 @@ router = APIRouter()
 
 #: Gerçek Binance özeti için kullanıcı başına önbellek süresi (sn).
 _BINANCE_TTL_SEC = 10.0
+# 2026-10-18: TTL sonrası ≤ bu kadar saniye bayat özet HEMEN döner, arka planda tek-uçuş tazeleme başlar
+# (Binance TR sayfası ve bant aynı yanıtı paylaşır; ilk boyama beklemez).
+_BINANCE_STALE_MAX_SEC = 120.0
 #: Bu TL değerinin altındaki varlıklar (toz) "açık işlem" sayılmaz.
 DUST_TRY = 10.0
 
 _TR_TZ = timezone(timedelta(hours=3))
 _binance_cache: dict[str, tuple[float, dict]] = {}
 _binance_locks: dict[str, asyncio.Lock] = {}
+_binance_refresh_tasks: dict[str, asyncio.Task] = {}
 
 
 def _main():
@@ -289,6 +293,15 @@ async def portfolio_band(request: Request):
     cached = _binance_cache.get(username)
     if cached and cached[0] > time.monotonic():
         return cached[1]
+    # 2026-10-18 stale-while-revalidate (bkz. _BINANCE_STALE_MAX_SEC).
+    if cached and cached[0] + _BINANCE_STALE_MAX_SEC > time.monotonic():
+        _schedule_binance_refresh(request, username)
+        return cached[1]
+    return await _refresh_binance_band(request, username)
+
+
+async def _refresh_binance_band(request: Request, username: str) -> dict:
+    """Tek-uçuş kilit altında taze bant özeti; cache'e yazar."""
     lock = _binance_locks.setdefault(username, asyncio.Lock())
     async with lock:
         cached = _binance_cache.get(username)
@@ -302,3 +315,18 @@ async def portfolio_band(request: Request):
             raise HTTPException(status_code=502, detail=f"Binance TR portföy özeti alınamadı: {type(exc).__name__}")
         _binance_cache[username] = (time.monotonic() + _BINANCE_TTL_SEC, payload)
         return payload
+
+
+def _schedule_binance_refresh(request: Request, username: str) -> None:
+    """Arka planda tek-uçuş tazeleme; hata yalnız loglanır (bayat yanıt zaten verildi)."""
+    task = _binance_refresh_tasks.get(username)
+    if task is not None and not task.done():
+        return
+
+    async def _run():
+        try:
+            await _refresh_binance_band(request, username)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Band arka plan tazeleme (kullanıcı=%s): %s", username, exc)
+
+    _binance_refresh_tasks[username] = asyncio.get_running_loop().create_task(_run())

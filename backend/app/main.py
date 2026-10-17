@@ -3323,9 +3323,15 @@ _POSITIONS_TTL_SEC = 3.0
 # Maliyeti bulunamayan varlık (işlem geçmişi yok / geçici hata) için kısa TTL:
 # 300 sn boyunca "Giriş: —" kalmasın, ama her istekte N+1 de olmasın.
 _COST_NEGATIVE_TTL_SEC = 60.0
+# 2026-10-18 (Binance TR sayfası geç yükleniyor): TTL dolduktan sonra en çok bu kadar saniye "bayat" yanıt
+# HEMEN döner ve arka planda tek-uçuş tazeleme başlar (stale-while-revalidate). Emir/dolum sonrası
+# `_invalidate_positions_cache` kaydı düşürdüğü ve bakiye cache kimliği değiştiği için bayat yanıt
+# yalnız zaman aşımında kullanılır; işlem sonrası her zaman taze çekilir.
+_POSITIONS_STALE_MAX_SEC = 120.0
 _positions_cache: dict[tuple[int, str], tuple[float, dict, object]] = {}
 _positions_locks: dict[int, asyncio.Lock] = {}
 _positions_gen: dict[int, int] = {}
+_positions_refresh_tasks: dict[int, asyncio.Task] = {}
 
 
 def _balance_cache_token(api_key: str):
@@ -3371,23 +3377,51 @@ async def binance_positions(request: Request):
     api_key, api_secret = await _decrypt_binance_creds(request)
     cache_key = (user_id, (api_key or "")[:16])
     cached = _positions_cache.get(cache_key)
-    if cached and cached[0] > time.monotonic() and cached[2] is _balance_cache_token(api_key):
+    token_ok = bool(cached) and cached[2] is _balance_cache_token(api_key)
+    if cached and token_ok and cached[0] > time.monotonic():
         logger.debug("binance_positions cache-hit user=%s %.1f ms", user_id, (time.perf_counter() - t0) * 1000)
         return _copy.deepcopy(cached[1])
+    # 2026-10-18 stale-while-revalidate: zaman aşımı ≤ _POSITIONS_STALE_MAX_SEC ise bayat yanıt hemen döner.
+    if cached and token_ok and cached[0] + _POSITIONS_STALE_MAX_SEC > time.monotonic():
+        _schedule_positions_refresh(principal, user_id, api_key, api_secret, cache_key)
+        logger.debug("binance_positions stale-hit user=%s (%.0f sn bayat) %.1f ms", user_id,
+                     time.monotonic() - cached[0] + _POSITIONS_TTL_SEC, (time.perf_counter() - t0) * 1000)
+        return _copy.deepcopy(cached[1])
+    payload = await _refresh_positions_cache(principal, user_id, api_key, api_secret, cache_key)
+    logger.debug("binance_positions cache-miss user=%s holdings=%d %.1f ms",
+                 user_id, len(payload.get("holdings") or []), (time.perf_counter() - t0) * 1000)
+    return _copy.deepcopy(payload)
+
+
+async def _refresh_positions_cache(principal: dict, user_id: int, api_key: str, api_secret: str,
+                                   cache_key: tuple) -> dict:
+    """Tek-uçuş kilit altında taze pozisyon yanıtı; kuşak değişmediyse cache'e yazar."""
     lock = _positions_locks.setdefault(user_id, asyncio.Lock())
     async with lock:
         cached = _positions_cache.get(cache_key)
         if cached and cached[0] > time.monotonic() and cached[2] is _balance_cache_token(api_key):
-            logger.debug("binance_positions cache-hit(lock) user=%s %.1f ms", user_id, (time.perf_counter() - t0) * 1000)
-            return _copy.deepcopy(cached[1])
+            return cached[1]
         gen = _positions_gen.get(user_id, 0)
         payload = await _binance_positions_uncached(principal, user_id, api_key, api_secret)
-        # Hesaplama sürerken emir/dolum geldiyse (gen değişti) bayat sonucu saklama.
         if _positions_gen.get(user_id, 0) == gen:
             _positions_cache[cache_key] = (time.monotonic() + _POSITIONS_TTL_SEC, payload, _balance_cache_token(api_key))
-    logger.debug("binance_positions cache-miss user=%s holdings=%d %.1f ms",
-                 user_id, len(payload.get("holdings") or []), (time.perf_counter() - t0) * 1000)
-    return _copy.deepcopy(payload)
+        return payload
+
+
+def _schedule_positions_refresh(principal: dict, user_id: int, api_key: str, api_secret: str,
+                                cache_key: tuple) -> None:
+    """Arka planda tek-uçuş tazeleme (bayat yanıt verildikten sonra). Hata yalnız loglanır."""
+    task = _positions_refresh_tasks.get(user_id)
+    if task is not None and not task.done():
+        return
+
+    async def _run():
+        try:
+            await _refresh_positions_cache(principal, user_id, api_key, api_secret, cache_key)
+        except Exception as exc:  # noqa: BLE001 — arka plan tazeleme kullanıcıya hata döndürmez
+            logger.info("binance_positions arka plan tazeleme user=%s: %s", user_id, exc)
+
+    _positions_refresh_tasks[user_id] = asyncio.get_running_loop().create_task(_run())
 
 
 async def _binance_positions_uncached(principal: dict, user_id: int, api_key: str, api_secret: str) -> dict:

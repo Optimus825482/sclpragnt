@@ -22,12 +22,14 @@ type Props = {
   holdings: Holding[];
   /** 2026-10-17 (basit arayüz): ilk pozisyon yanıtı gelene kadar true → "elinde coin yok" yanıltmasın. */
   loading?: boolean;
+  /** 2026-10-18: satırlar üst bandın canlı verisinden tohumlandı; ayrıntı (free/locked, emirler) henüz yok → satış kapalı. */
+  seeded?: boolean;
   liveEnabled: boolean;
   onTraded: () => void;
   showToast: (message: string, type?: "success" | "error" | "info") => void;
 };
 
-export default function HoldingsCard({ holdings, loading = false, liveEnabled, onTraded, showToast }: Props) {
+export default function HoldingsCard({ holdings, loading = false, seeded = false, liveEnabled, onTraded, showToast }: Props) {
   const [target, setTarget] = useState<Holding | null>(null);
   const [chip, setChip] = useState(100);
   const [sending, setSending] = useState(false);
@@ -253,7 +255,8 @@ export default function HoldingsCard({ holdings, loading = false, liveEnabled, o
           </li>
         ))}
       </ul>
-      {!liveEnabled && coins.length > 0 && <p className="text-xs text-bunker-muted">Satmak için canlı işlemi aç.</p>}
+      {seeded && coins.length > 0 && <p className="text-xs text-bunker-muted" aria-live="polite">Bakiye ayrıntıları yükleniyor; satış birazdan açılır.</p>}
+      {!seeded && !liveEnabled && coins.length > 0 && <p className="text-xs text-bunker-muted">Satmak için canlı işlemi aç.</p>}
 
       {chartHolding && (
         <PositionChartModal

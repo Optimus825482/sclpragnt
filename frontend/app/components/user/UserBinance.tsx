@@ -6,6 +6,8 @@ import { grossOpenPnlTry } from "../../lib/pnl";
 import { call, type Holding, type OpenOrder, type RiskSettings } from "../../lib/tradeApi";
 import { fmtSignedTry, fmtTry } from "../../lib/tradeUi";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
+import { usePortfolioSummary } from "../../lib/usePortfolioSummary";
+import { seedHoldingsFromBand } from "../../lib/binanceSeed";
 import BuyCard from "./binance/BuyCard";
 import ConnectionCard from "./binance/ConnectionCard";
 import HistoryCard from "./binance/HistoryCard";
@@ -136,14 +138,23 @@ export default function UserBinance() {
   }, [loadSettings, loadRisk]);
 
   const configured = !!settings?.configured;
+  // 2026-10-18 (Binance TR sayfası geç yükleniyor): üst bant (UserShell) zaten yüklüyse Binance
+  // kaynağını biliyoruz → hesap yoklaması AYARLAR yanıtını beklemeden hemen başlar (bir tur kazanılır).
+  const band = usePortfolioSummary();
+  const bandIsBinance = band.data?.source === "binance";
+  const kicked = useRef(false);
   useEffect(() => {
-    if (!configured) return;
+    if (!(configured || bandIsBinance) || kicked.current) return;
+    kicked.current = true;
     setOrdersLoading(true);
     loadAccount();
     loadToday();
+  }, [configured, bandIsBinance, loadAccount, loadToday]);
+  useEffect(() => {
+    if (!configured) return;
     // Dolum akışı sayfa açılınca başlar (Pozisyonlar sayfasına bağımlı değil).
     call("POST", "/api/binance/user-stream/start");
-  }, [configured, loadAccount, loadToday]);
+  }, [configured]);
 
   // Sekme öne gelince hemen tazele (arka planda beklerken emirler/bakiye eskimiş olabilir).
   // 2026-10-17 (basit arayüz): 20 sn → 10 sn (sunucuda 3 sn yanıt + 300 sn maliyet cache'i var, ek yük yok);
@@ -208,7 +219,16 @@ export default function UserBinance() {
     setRefreshKey((k) => k + 1);
   }, [loadAccount, loadToday]);
 
-  const tryRow = liveHoldings.find((h) => h.asset === "TRY");
+  // 2026-10-18: ilk pozisyon yanıtı gelene kadar bandın (WS ile canlı) varlık listesi gösterilir;
+  // tohum satırlarından satış AÇILMAZ (free/locked ayrımı bilinmez).
+  const seedRows = useMemo(
+    () => (positionsLoading && holdings.length === 0 ? seedHoldingsFromBand(band.data) : null),
+    [positionsLoading, holdings.length, band.data],
+  );
+  const seeded = seedRows != null;
+  const shownHoldings = seeded ? seedRows : liveHoldings;
+  const shownTotal = seeded ? (band.data?.totalTry ?? null) : liveTotal;
+  const tryRow = shownHoldings.find((h) => h.asset === "TRY");
   const freeTry = tryRow ? tryRow.free : null;
 
   return (
@@ -237,7 +257,7 @@ export default function UserBinance() {
         <section className="grid grid-cols-1 gap-3 sm:grid-cols-3" aria-label="Hesap özeti">
           <div className="card p-4">
             <p className="text-sm font-medium text-bunker-muted">Toplam değer</p>
-            <p className="mt-1 text-2xl font-bold text-white">{fmtTry(liveTotal)}</p>
+            <p className="mt-1 text-2xl font-bold text-white">{fmtTry(shownTotal)}</p>
           </div>
           <div className="card p-4">
             <p className="text-sm font-medium text-bunker-muted">Kullanılabilir TL</p>
@@ -263,7 +283,7 @@ export default function UserBinance() {
           />
           {configured && (
             <>
-              <HoldingsCard holdings={liveHoldings} loading={positionsLoading} liveEnabled={settings.sell_enabled} onTraded={afterTrade} showToast={showToast} />
+              <HoldingsCard holdings={shownHoldings} loading={positionsLoading && !seeded} seeded={seeded} liveEnabled={settings.sell_enabled && !seeded} onTraded={afterTrade} showToast={showToast} />
               {ordersError && <p role="status" className="text-sm text-yellow-300">Bekleyen emirler yenilenemedi — liste eski olabilir (koruma emirlerini Binance TR’den doğrula).</p>}
               <OpenOrdersCard orders={orders} loading={ordersLoading} onChanged={loadAccount} />
               <HistoryCard enabled={configured} refreshKey={refreshKey} />
