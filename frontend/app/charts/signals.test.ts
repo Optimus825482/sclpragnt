@@ -19,7 +19,12 @@
 //              diyor. Artık düzeltildi, aşağıdaki testler bunu kilitler.
 
 import { describe, it, expect } from "vitest";
-import { rsi, cmo, crsi, mfiLast, rsiLast, obvLast, type Bar } from "./signals";
+import {
+  rsi, cmo, crsi, mfiLast, rsiLast, obvLast, type Bar,
+  rsiSeries, stochRsi, rqKernelSignals, rqKernelPreSignals, spotExecutionSignals, strategySignalFns, strategyLabels,
+} from "./signals";
+import { rqkSeries, rqkLag2, rqkBullish, rqkColors } from "./rqk";
+import { SLING_SHOT_ENTRY } from "./IndicatorPicker";
 
 // ── Test serileri ───────────────────────────────────────────────────────────
 
@@ -241,5 +246,225 @@ describe("signals — OBV", () => {
   it("yetersiz veride `null` döner", () => {
     expect(obvLast([]).value).toBeNull();
     expect(obvLast([{ time: 1, open: 1, high: 1, low: 1, close: 1, volume: 1 }]).value).toBeNull();
+  });
+});
+
+// ── Rational Quadratic Kernel + StochRSI ön sinyali ─────────────────────────
+
+/** Deterministik sentetik seri: dalga + düşüş eğilimi + sahte gürültü (sinüs katmanları). */
+const synthCloses = (n: number, seed = 1): number[] =>
+  Array.from({ length: n }, (_, i) =>
+    100 + 8 * Math.sin(i / 6 + seed) + 3 * Math.sin(i / 2.3 + seed * 2) - i * 0.05 + 1.5 * Math.cos(i * 1.7 + seed));
+
+const toBars = (closes: number[]): Bar[] =>
+  closes.map((c, i) => ({ time: 1_700_000_000 + i * 60, open: c, high: c + 0.5, low: c - 0.5, close: c, volume: 1000 }));
+
+/** ESKİ (inline) SLING_SHOT_ENTRY.calculate mantığının birebir kopyası — regresyon referansı. */
+const legacyKernel = (closes: number[], h: number, r: number, smoothColors: boolean) => {
+  const calc = (endIdx: number): number | null => {
+    if (endIdx < 1) return null;
+    let cw = 0, tw = 0;
+    const lookback = Math.min(h, endIdx + 1);
+    for (let i = 0; i < lookback; i++) {
+      const price = closes[endIdx - i];
+      if (price == null || !Number.isFinite(price)) continue;
+      const w = Math.pow(1 + (Math.pow(i, 2) / (Math.pow(h, 2) * 2 * r)), -r);
+      cw += price * w; tw += w;
+    }
+    return tw === 0 ? null : cw / tw;
+  };
+  const y1: (number | null)[] = [], y2: (number | null)[] = [];
+  for (let i = 0; i < closes.length; i++) { y1.push(calc(i)); y2.push(calc(Math.max(0, i - 2))); }
+  return closes.map((_, i) => {
+    const v = y1[i];
+    if (v == null || !Number.isFinite(v)) return { v: null, bull: null as boolean | null };
+    const prev1 = i >= 1 ? y1[i - 1] : null, prev2 = i >= 2 ? y1[i - 2] : null, v2 = y2[i];
+    let bull = false;
+    if (smoothColors) bull = v2 != null && v2 > v;
+    else if (prev1 != null && prev2 != null) bull = prev1 < v || (prev2 > prev1 && !(prev1 > v));
+    else if (prev1 != null) bull = prev1 < v;
+    else bull = true;
+    return { v, bull };
+  });
+};
+
+describe("rqkSeries / rqkBullish", () => {
+  it("elle doğrulanmış fixture: h=3, r=2, closes [10,12,11,13]", () => {
+    // w(k) = (1 + k²/36)^-2  →  w0=1, w1=(36/37)²=0.946676, w2=(9/10)²=0.81
+    const y = rqkSeries([10, 12, 11, 13], 3, 2);
+    expect(y[0]).toBeNull();
+    expect(y[1]).toBeCloseTo((12 + 10 * 0.9466764) / (1 + 0.9466764), 5);
+    expect(y[2]).toBeCloseTo((11 + 12 * 0.9466764 + 10 * 0.81) / (1 + 0.9466764 + 0.81), 5);
+    expect(y[3]).toBeCloseTo((13 + 11 * 0.9466764 + 12 * 0.81) / (1 + 0.9466764 + 0.81), 5);
+    expect(y[1]).toBeCloseTo(11.027392, 4);
+    expect(y[2]).toBeCloseTo(11.049579, 4);
+    expect(y[3]).toBeCloseTo(12.019343, 4);
+  });
+
+  it("eski inline implementasyonla birebir aynı (yhat + renk), tüm parametre kombinasyonlarında", () => {
+    for (const seed of [1, 2, 3]) {
+      const closes = synthCloses(120, seed);
+      closes[17] = NaN; // sonlu olmayan kapanış kenar durumu
+      for (const [h, r] of [[3, 0.25], [8, 2], [13, 1.5], [30, 4]] as const) {
+        for (const smooth of [false, true]) {
+          const ref = legacyKernel(closes, h, r, smooth);
+          const y = rqkSeries(closes, h, r);
+          const bull = rqkBullish(y, rqkLag2(y), smooth);
+          y.forEach((v, i) => {
+            expect(v).toBe(ref[i].v);
+            expect(bull[i]).toBe(ref[i].bull);
+          });
+        }
+      }
+    }
+  });
+
+  it("SLING_SHOT_ENTRY.calculate çıktısı rqk ile aynı renk/değerleri üretir", () => {
+    const bars = toBars(synthCloses(80));
+    const out = SLING_SHOT_ENTRY.calculate(bars as any, {}) as any;
+    const { yhat, bullish } = rqkColors(bars.map((b) => b.close), {});
+    out.plots.plot0.forEach((pt: any, i: number) => {
+      expect(pt.value).toBe(yhat[i]);
+      if (bullish[i] == null) expect(pt.color).toBeUndefined();
+      else expect(pt.color).toBe(bullish[i] ? "#3AFF17" : "#FD1707");
+    });
+  });
+});
+
+describe("RQ Kernel B/S okları = renk dönüşleri", () => {
+  const flips = (closes: number[], bars: Bar[], params: Record<string, any>) => {
+    const h = Math.max(3, Number(params.h ?? 8)), r = Math.max(0.25, Number(params.r ?? 2));
+    const y = rqkSeries(closes, h, r);
+    const bull = rqkBullish(y, rqkLag2(y), params.smoothColors ?? false);
+    const out: { time: number; type: "buy" | "sell" }[] = [];
+    for (let i = 1; i < closes.length; i++) {
+      if (bull[i] === true && bull[i - 1] === false) out.push({ time: bars[i].time, type: "buy" });
+      if (bull[i] === false && bull[i - 1] === true) out.push({ time: bars[i].time, type: "sell" });
+    }
+    return out;
+  };
+
+  it("varsayılan ve özel parametrelerde renk dönüşleriyle birebir örtüşür", () => {
+    for (const params of [{}, { h: 8, r: 2, smoothColors: false }, { h: 5, r: 1, smoothColors: true }, { h: 14, r: 3 }]) {
+      const closes = synthCloses(200, 2);
+      const bars = toBars(closes);
+      const sig = rqKernelSignals(bars, params);
+      expect(sig.length).toBeGreaterThan(4);
+      expect(sig).toEqual(flips(closes, bars, params));
+      sig.forEach((s, i) => { if (i > 0) expect(s.type).not.toBe(sig[i - 1].type); });
+    }
+  });
+
+  it("strategySignalFns.sling_shot instance parametrelerini kullanır ve etiket 'RQ Kernel'", () => {
+    const bars = toBars(synthCloses(150, 3));
+    const viaFn = strategySignalFns.sling_shot(bars, { h: 5, r: 1, smoothColors: true, showPreSignals: false });
+    expect(viaFn).toEqual(rqKernelSignals(bars, { h: 5, r: 1, smoothColors: true }));
+    expect(viaFn).not.toEqual(rqKernelSignals(bars, {})); // parametre gerçekten akıyor
+    expect(strategyLabels.sling_shot).toBe("RQ Kernel");
+  });
+
+  it("monoton artan seride dönüş yok (tek yön)", () => {
+    expect(rqKernelSignals(toBars(CLOSES_UP), {})).toEqual([]);
+  });
+});
+
+describe("StochRSI", () => {
+  it("rsiSeries son değeri rsi() ile aynı", () => {
+    for (const c of [CLOSES_MIXED, CLOSES_UP, CLOSES_DOWN, CLOSES_FLAT]) {
+      const s = rsiSeries(c, 14);
+      expect(s[c.length - 1]).toBeCloseTo(rsi(c, 14) as number, 10);
+      expect(s.slice(0, 14).every((v) => v === null)).toBe(true);
+    }
+  });
+
+  it("elle doğrulanmış fixture (rsi=2, stoch=2, K=2, D=2)", () => {
+    // closes [10,11,10,11,12,11]; RSI[2]=50, RSI[3]=75, RSI[4]=87.5, RSI[5]=43.75
+    const r = stochRsi([10, 11, 10, 11, 12, 11], 2, 2, 2, 2);
+    expect(r.rsi[2]).toBeCloseTo(50, 10);
+    expect(r.rsi[3]).toBeCloseTo(75, 10);
+    expect(r.rsi[4]).toBeCloseTo(87.5, 10);
+    expect(r.rsi[5]).toBeCloseTo(43.75, 10);
+    expect(r.stoch.slice(0, 3)).toEqual([null, null, null]);
+    expect(r.stoch[3]).toBeCloseTo(100, 10);
+    expect(r.stoch[4]).toBeCloseTo(100, 10);
+    expect(r.stoch[5]).toBeCloseTo(0, 10);
+    expect(r.k[3]).toBeNull();
+    expect(r.k[4]).toBeCloseTo(100, 10);
+    expect(r.k[5]).toBeCloseTo(50, 10);
+    expect(r.d[4]).toBeNull();
+    expect(r.d[5]).toBeCloseTo(75, 10);
+  });
+
+  it("sabit seri: aralık 0 → stoch 0, NaN yok", () => {
+    const r = stochRsi(Array.from({ length: 60 }, () => 50), 14, 14, 3, 3);
+    const defined = (a: (number | null)[]) => a.filter((v) => v !== null) as number[];
+    expect(defined(r.stoch).length).toBeGreaterThan(0);
+    for (const arr of [r.rsi, r.stoch, r.k, r.d]) for (const v of defined(arr)) expect(Number.isNaN(v)).toBe(false);
+    expect(defined(r.stoch).every((v) => v === 0)).toBe(true);
+    expect(defined(r.k).every((v) => v === 0)).toBe(true);
+    expect(defined(r.d).every((v) => v === 0)).toBe(true);
+  });
+});
+
+describe("Ön sinyal (kernel + StochRSI)", () => {
+  const closes = synthCloses(400, 1);
+  const bars = toBars(closes);
+  const ref = (params: Record<string, any>) => {
+    const level = params.stochLevel ?? 20;
+    const { bullish } = rqkColors(closes, params);
+    const { k, d } = stochRsi(closes, 14, 14, 3, 3);
+    const times: number[] = [];
+    for (let i = 1; i < closes.length; i++) {
+      if (k[i - 1] == null || d[i - 1] == null || k[i] == null || d[i] == null) continue;
+      if (k[i - 1]! <= d[i - 1]! && k[i]! > d[i]! && k[i - 1]! < level && bullish[i] === false) times.push(bars[i].time);
+    }
+    return times;
+  };
+
+  it("yalnız: K D'yi yukarı keserken, K[i-1] < seviye iken ve kernel kırmızıyken tetiklenir", () => {
+    const sig = rqKernelPreSignals(bars, { stochLevel: 30 });
+    expect(sig.length).toBeGreaterThan(0);
+    expect(sig.map((s) => s.time)).toEqual(ref({ stochLevel: 30 }));
+    const idx = new Map(bars.map((b, i) => [b.time, i]));
+    const { bullish } = rqkColors(closes, {});
+    const { k, d } = stochRsi(closes, 14, 14, 3, 3);
+    for (const s of sig) {
+      expect(s.type).toBe("pre");
+      const i = idx.get(s.time)!;
+      expect(bullish[i]).toBe(false);
+      expect(k[i - 1]!).toBeLessThanOrEqual(d[i - 1]!);
+      expect(k[i]!).toBeGreaterThan(d[i]!);
+      expect(k[i - 1]!).toBeLessThan(30);
+    }
+  });
+
+  it("seviye düşünce sinyaller yalnızca azalır (20 alt kümesi 30), seviye 0 → sinyal yok", () => {
+    const s20 = rqKernelPreSignals(bars, { stochLevel: 20 }).map((s) => s.time);
+    const s30 = rqKernelPreSignals(bars, { stochLevel: 30 }).map((s) => s.time);
+    expect(s20).toEqual(ref({ stochLevel: 20 }));
+    s20.forEach((t) => expect(s30).toContain(t));
+    expect(s30.length).toBeGreaterThanOrEqual(s20.length);
+    expect(rqKernelPreSignals(bars, { stochLevel: 0 })).toEqual([]);
+  });
+
+  it("kernel yeşilken veya seri sabitken ön sinyal üretilmez", () => {
+    expect(rqKernelPreSignals(toBars(CLOSES_UP), { stochLevel: 50 })).toEqual([]);
+    expect(rqKernelPreSignals(toBars(CLOSES_FLAT), { stochLevel: 50 })).toEqual([]);
+  });
+
+  it("showPreSignals=false → strateji fonksiyonu ön sinyal döndürmez; açıkken 'pre' içerir", () => {
+    const withPre = strategySignalFns.sling_shot(bars, { stochLevel: 30 });
+    const without = strategySignalFns.sling_shot(bars, { stochLevel: 30, showPreSignals: false });
+    expect(without.some((s) => s.type === "pre")).toBe(false);
+    expect(withPre.filter((s) => s.type === "pre").length).toBe(rqKernelPreSignals(bars, { stochLevel: 30 }).length);
+    expect(withPre.filter((s) => s.type !== "pre")).toEqual(without);
+  });
+
+  it("spotExecutionSignals ön sinyalleri işlem saymaz", () => {
+    const raw = strategySignalFns.sling_shot(bars, { stochLevel: 30 });
+    expect(raw.some((s) => s.type === "pre")).toBe(true);
+    const onlyTrades = raw.filter((s) => s.type !== "pre");
+    expect(spotExecutionSignals(bars, raw)).toEqual(spotExecutionSignals(bars, onlyTrades));
+    expect(spotExecutionSignals(bars, raw.filter((s) => s.type === "pre"))).toEqual([]);
   });
 });

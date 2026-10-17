@@ -2,6 +2,7 @@
 import { useMemo, useState } from "react";
 import { indicatorRegistry } from "lightweight-charts-indicators";
 import type { RegistryEntry } from "./types";
+import { rqkColors } from "./rqk";
 
 type Props = {
     onSelect: (entry: RegistryEntry) => void;
@@ -90,68 +91,28 @@ export const SLING_SHOT_ENTRY: RegistryEntry = {
         { id: "r", type: "number", title: "Relative Weighting", defval: 2, min: 0.25, step: 0.25 },
         { id: "smoothColors", type: "bool", title: "Smooth Colors", defval: false },
         { id: "showSignals", type: "bool", title: "B/S Sinyallerini Göster", defval: true },
+        { id: "showPreSignals", type: "bool", title: "Ön Sinyal (StochRSI) Göster", defval: true },
+        { id: "stochLevel", type: "number", title: "Ön Sinyal Seviyesi (20/30)", defval: 20, min: 5, max: 50, step: 1 },
+        { id: "stochRsiLen", type: "number", title: "StochRSI RSI Periyodu", defval: 14, min: 2, step: 1 },
+        { id: "stochLen", type: "number", title: "StochRSI Stoch Periyodu", defval: 14, min: 2, step: 1 },
+        { id: "stochK", type: "number", title: "StochRSI K Yumuşatma", defval: 3, min: 1, step: 1 },
+        { id: "stochD", type: "number", title: "StochRSI D Yumuşatma", defval: 3, min: 1, step: 1 },
     ],
     calculate: (bars: any[], params: any) => {
-        const h = Math.max(3, Number(params.h ?? 8));
-        const r = Math.max(0.25, Number(params.r ?? 2));
-        const smoothColors = params.smoothColors ?? false;
+        // Kernel matematiği ve renk kuralı rqk.ts'te (B/S okları da aynı kaynaktan üretilir).
         const closes = bars.map((bar: any) => Number(bar.close));
         const t = bars.map((bar: any) => Number(bar.time));
-        // Nadaraya-Watson Rational Quadratic Kernel regresyonu
-        // w(i) = (1 + (i^2 / (h^2 * 2 * r)))^(-r)
-        // yhat = sum(price[i] * w(i)) / sum(w(i))
-        const calculateYhat = (endIdx: number): number | null => {
-            if (endIdx < 1) return null;
-            let currentWeight = 0;
-            let cumulativeWeight = 0;
-            // Son h kadar mum için hesapla (geriye doğru)
-            const lookback = Math.min(h, endIdx + 1);
-            for (let i = 0; i < lookback; i++) {
-                const price = closes[endIdx - i];
-                if (price == null || !Number.isFinite(price)) continue;
-                // Rational Quadratic Kernel ağırlığı
-                const w = Math.pow(1 + (Math.pow(i, 2) / (Math.pow(h, 2) * 2 * r)), -r);
-                currentWeight += price * w;
-                cumulativeWeight += w;
-            }
-            if (cumulativeWeight === 0) return null;
-            return currentWeight / cumulativeWeight;
-        };
-        // Tüm barlar için yhat hesapla
-        const yhat1: (number | null)[] = []; // Mevcut tahmin
-        const yhat2: (number | null)[] = []; // Lag'li tahmin (smooth colors için)
-        for (let i = 0; i < bars.length; i++) {
-            yhat1.push(calculateYhat(i));
-            yhat2.push(calculateYhat(Math.max(0, i - 2))); // 2 bar lag
-        }
-        // Trend yönüne göre renk belirle — TEK SERİ, segment bazlı renk
+        const { yhat, bullish } = rqkColors(closes, params);
+        // TEK SERİ, segment bazlı renk
         const kernelLine: { time: number; value: number | null; color?: string }[] = [];
         for (let i = 0; i < bars.length; i++) {
-            const v = yhat1[i];
-            if (v == null || !Number.isFinite(v)) {
+            const v = yhat[i];
+            const b = bullish[i];
+            if (v == null || !Number.isFinite(v) || b == null) {
                 kernelLine.push({ time: t[i], value: null });
                 continue;
             }
-            // Önceki değerler
-            const prev1 = i >= 1 ? yhat1[i - 1] : null;
-            const prev2 = i >= 2 ? yhat1[i - 2] : null;
-            const v2 = yhat2[i];
-            let isBullish = false;
-            if (smoothColors) {
-                isBullish = v2 != null && v2 > v;
-            } else {
-                if (prev1 != null && prev2 != null) {
-                    const wasBearish = prev2 > prev1;
-                    const isBearishNow = prev1 > v;
-                    const isBullishNow = prev1 < v;
-                    isBullish = isBullishNow || (wasBearish && !isBearishNow);
-                } else if (prev1 != null) {
-                    isBullish = prev1 < v;
-                } else {
-                    isBullish = true;
-                }
-            }
-            kernelLine.push({ time: t[i], value: v, color: isBullish ? "#3AFF17" : "#FD1707" });
+            kernelLine.push({ time: t[i], value: v, color: b ? "#3AFF17" : "#FD1707" });
         }
         return {
             metadata: { overlay: true },

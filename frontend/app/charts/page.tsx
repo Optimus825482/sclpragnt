@@ -1279,7 +1279,7 @@ export default function ChartsPage() {
         utBotMarkersRef.current?.detach();
         utBotMarkersRef.current = null;
 
-        // SlingShot ve diğer strateji indikatörlerini topla
+        // RQ Kernel (sling_shot) ve diğer strateji indikatörlerini topla
         const slingShotInsts = instances.filter((i) => i.registryId === "sling_shot");
         const otherStratInsts = instances.filter((i) => i.registryId in strategySignalFns && i.registryId !== "sling_shot");
         if ((!slingShotInsts.length && !otherStratInsts.length) || bars.length === 0) return;
@@ -1287,10 +1287,10 @@ export default function ChartsPage() {
         try {
             const markers = createSeriesMarkers(series, []);
             utBotMarkersRef.current = markers;
-            const all: { time: UTCTimestamp; position: "belowBar" | "aboveBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string; size: number }[] = [];
+            const all: { time: UTCTimestamp; position: "belowBar" | "aboveBar"; color: string; shape: "arrowUp" | "arrowDown" | "circle"; text: string; size: number }[] = [];
 
             // Sinyal toplama yardımcı fonksiyonu
-            // useShortText=true ise "B"/"S" harfleri kullanılır (TradingView SlingShot stili)
+            // useShortText=true ise "B"/"S" harfleri kullanılır (kernel renk dönüşü okları)
             const collectSignals = (instList: typeof instances, useSpotExec: boolean, useShortText: boolean) => {
                 for (const inst of instList) {
                     const fn = strategySignalFns[inst.registryId];
@@ -1302,6 +1302,18 @@ export default function ChartsPage() {
                     const raw = fn(bars, inst.params);
                     const signals = useSpotExec ? spotExecutionSignals(bars, raw) : raw;
                     for (const s of signals) {
+                        if (s.type === "pre") {
+                            // Ön sinyal (StochRSI K/D yukarı kesişimi, kernel hâlâ kırmızı): küçük amber daire "Ö"
+                            all.push({
+                                time: s.time as UTCTimestamp,
+                                position: "belowBar",
+                                color: "#f59e0b",
+                                shape: "circle",
+                                text: "Ö",
+                                size: 0.7
+                            });
+                            continue;
+                        }
                         all.push({
                             time: s.time as UTCTimestamp,
                             position: s.type === "buy" ? "belowBar" : "aboveBar",
@@ -1316,7 +1328,7 @@ export default function ChartsPage() {
                 }
             };
 
-            // SlingShot için doğrudan sinyal kullan (spot execution değil, kısa B/S metin)
+            // RQ Kernel için doğrudan sinyal kullan (spot execution değil, kısa B/S metin)
             collectSignals(slingShotInsts, false, true);
             // Diğer stratejiler için spot execution modeli
             collectSignals(otherStratInsts, true, false);
@@ -1388,7 +1400,7 @@ export default function ChartsPage() {
     const [clearMsg, setClearMsg] = useState<{ ok: boolean; text: string } | null>(null);
     // Server-side toplu temizlik: TÜM sembollerin eski indikatör yerleşimlerini atar.
     const clearAllIndicators = async () => {
-        if (!confirm("Tüm sembollerin kayıtlı indikatör yerleşimleri temizlensin mi? (varsayılan SlingShot kalır)")) return;
+        if (!confirm("Tüm sembollerin kayıtlı indikatör yerleşimleri temizlensin mi? (varsayılan RQ Kernel kalır)")) return;
         setClearingIndicators(true);
         setClearMsg(null);
         try {

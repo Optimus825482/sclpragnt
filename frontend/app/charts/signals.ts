@@ -2,6 +2,8 @@
 // Bu modül yalnızca saf fonksiyon ve tip dışa aktarır; DOM veya state erişimi yoktur.
 // Not: Mum formasyonları backend ile aynı formül kullanmaz; görsel işaretleyiciler için basitleştirilmiştir.
 
+import { rqkColors } from "./rqk";
+
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 
 export type PatternMarker = { time: number; type: "buy" | "sell"; text: string };
@@ -323,57 +325,121 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
     return signals;
 };
 
-    // SlingShot System: EMA50/EMA11 trend takip sistemi
-    // Alternating signals: B'den sonra S gelmeli, S'den sonra B gelmeli
-    // Aynı sinyal arka arkaya tekrar etmez
-    const slingShotSignals = (bars: Bar[], params: Record<string, any>) => {
-        const slowPeriod = Math.max(5, Math.round(params.slowPeriod ?? 50));
-        const fastPeriod = Math.max(2, Math.round(params.fastPeriod ?? 11));
-        const useConservative = params.conservative ?? true;
-        const signals: { time: number; type: "buy" | "sell" }[] = [];
-        if (bars.length < slowPeriod + 2) return signals;
-        const closes = bars.map((bar) => bar.close);
-        // Son sinyal türünü takip et — alternasyon için
-        let lastSignalType: "buy" | "sell" | null = null;
-        for (let i = slowPeriod; i < bars.length; i++) {
-            const slice = closes.slice(0, i + 1);
-            const prevSlice = closes.slice(0, i);
-            const emaSlow = ema(slice, slowPeriod);
-            const emaFast = ema(slice, fastPeriod);
-            const prevEmaFast = ema(prevSlice, fastPeriod);
-            if (emaSlow == null || emaFast == null || prevEmaFast == null) continue;
-            const close = closes[i];
-            const prevClose = closes[i - 1];
-            let detectedType: "buy" | "sell" | null = null;
-            if (useConservative) {
-                // Conservative: önceki bar EMA11 altı/üstü, şimdi kırılım
-                if (emaFast > emaSlow && prevClose <= prevEmaFast && close > emaFast) {
-                    detectedType = "buy";
-                } else if (emaFast < emaSlow && prevClose >= prevEmaFast && close < emaFast) {
-                    detectedType = "sell";
-                }
-            } else {
-                // Aggressive: trend yönünde EMA11'e pullback
-                if (emaFast > emaSlow && close < emaFast) {
-                    detectedType = "buy";
-                } else if (emaFast < emaSlow && close > emaFast) {
-                    detectedType = "sell";
-                }
-            }
-            // Sadece farklı türde sinyal üret (alternasyon)
-            if (detectedType && detectedType !== lastSignalType) {
-                signals.push({ time: bars[i].time, type: detectedType });
-                lastSignalType = detectedType;
-            }
+    // ── Rational Quadratic Kernel (id: sling_shot) sinyalleri ────────────────────
+    // B/S okları KERNEL RENK DÖNÜŞLERİDİR (rqk.ts tek doğruluk kaynağı):
+    //   buy  = çizgi kırmızıdan (düşüş) yeşile (yükseliş) döndüğü bar
+    //   sell = çizgi yeşilden kırmızıya döndüğü bar
+    // Parametreler indikatör instance'ından gelir (h=8, r=2, smoothColors=false varsayılan);
+    // böylece oklar çizgideki renk değişimleriyle birebir örtüşür.
+    export type SignalType = "buy" | "sell" | "pre";
+    export type StrategySignal = { time: number; type: SignalType };
+
+    export const rqKernelSignals = (bars: Bar[], params: Record<string, any>): { time: number; type: "buy" | "sell" }[] => {
+        const { bullish } = rqkColors(bars.map((b) => Number(b.close)), params);
+        const out: { time: number; type: "buy" | "sell" }[] = [];
+        for (let i = 1; i < bars.length; i++) {
+            const cur = bullish[i], prev = bullish[i - 1];
+            if (cur == null || prev == null || cur === prev) continue;
+            out.push({ time: bars[i].time, type: cur ? "buy" : "sell" });
         }
-        return signals;
+        return out;
     };
 
-    export const strategySignalFns: Record<string, (bars: Bar[], params: Record<string, any>) => { time: number; type: "buy" | "sell" }[]> = {
+    // Wilder RSI SERİSİ (tohum = ilk `period` değişimin basit ortalaması; son değeri `rsi()` ile aynıdır).
+    // İlk `period` bar için null.
+    export const rsiSeries = (values: number[], period: number): (number | null)[] => {
+        const out: (number | null)[] = values.map(() => null);
+        if (values.length < period + 1) return out;
+        let gain = 0, loss = 0;
+        for (let i = 1; i <= period; i++) {
+            const d = values[i] - values[i - 1];
+            if (d > 0) gain += d; else loss -= d;
+        }
+        let avgGain = gain / period, avgLoss = loss / period;
+        const toRsi = () => (avgLoss === 0 ? (avgGain > 0 ? 100 : 50) : 100 - 100 / (1 + avgGain / avgLoss));
+        out[period] = toRsi();
+        for (let i = period + 1; i < values.length; i++) {
+            const d = values[i] - values[i - 1];
+            avgGain = (avgGain * (period - 1) + Math.max(d, 0)) / period;
+            avgLoss = (avgLoss * (period - 1) + Math.max(-d, 0)) / period;
+            out[i] = toRsi();
+        }
+        return out;
+    };
+
+    // Stokastik RSI — standart TradingView tanımı (backend araştırması birebir aynalamalı):
+    //   rsi[i]   = Wilder RSI(close, rsiLen)            (rsiSeries; ilk rsiLen bar tanımsız)
+    //   hi/lo    = rsi'nin son stochLen bardaki (mevcut dahil) en yüksek / en düşük değeri
+    //   stoch[i] = 100 * (rsi[i] - lo) / (hi - lo)       (hi == lo ise 0)
+    //   K[i]     = SMA(stoch, kLen)[i]                   (kLen bar da tanımlı olmalı)
+    //   D[i]     = SMA(K, dLen)[i]
+    // Tanımsız barlar null. Pencerede null varsa sonuç null (NaN üretmez).
+    export const stochRsi = (
+        values: number[], rsiLen = 14, stochLen = 14, kLen = 3, dLen = 3,
+    ): { rsi: (number | null)[]; stoch: (number | null)[]; k: (number | null)[]; d: (number | null)[] } => {
+        const r = rsiSeries(values, rsiLen);
+        const sma = (src: (number | null)[], len: number): (number | null)[] =>
+            src.map((_, i) => {
+                if (i < len - 1) return null;
+                let sum = 0;
+                for (let j = i - len + 1; j <= i; j++) {
+                    const v = src[j];
+                    if (v == null) return null;
+                    sum += v;
+                }
+                return sum / len;
+            });
+        const stoch: (number | null)[] = r.map((cur, i) => {
+            if (cur == null || i < stochLen - 1) return null;
+            let hi = -Infinity, lo = Infinity;
+            for (let j = i - stochLen + 1; j <= i; j++) {
+                const v = r[j];
+                if (v == null) return null;
+                if (v > hi) hi = v;
+                if (v < lo) lo = v;
+            }
+            return hi === lo ? 0 : (100 * (cur - lo)) / (hi - lo);
+        });
+        const k = sma(stoch, kLen);
+        const d = sma(k, dLen);
+        return { rsi: r, stoch, k, d };
+    };
+
+    // Ön sinyal ("Ö"): kernel HÂLÂ KIRMIZIYKEN (olası yaklaşan dönüş) StochRSI K, D'yi aşağıdan keser
+    // ve kesişimden bir önceki K değeri seviyenin (varsayılan 20, seçilebilir 30) altındadır:
+    //   K[i-1] <= D[i-1] && K[i] > D[i] && K[i-1] < level && kernel bearish (bullish[i] === false)
+    export const rqKernelPreSignals = (bars: Bar[], params: Record<string, any>): { time: number; type: "pre" }[] => {
+        const p = params ?? {};
+        const level = Number(p.stochLevel ?? 20);
+        const rsiLen = Math.max(2, Math.round(Number(p.stochRsiLen ?? 14)));
+        const stochLen = Math.max(2, Math.round(Number(p.stochLen ?? 14)));
+        const kLen = Math.max(1, Math.round(Number(p.stochK ?? 3)));
+        const dLen = Math.max(1, Math.round(Number(p.stochD ?? 3)));
+        const closes = bars.map((b) => Number(b.close));
+        const { bullish } = rqkColors(closes, p);
+        const { k, d } = stochRsi(closes, rsiLen, stochLen, kLen, dLen);
+        const out: { time: number; type: "pre" }[] = [];
+        for (let i = 1; i < bars.length; i++) {
+            const k0 = k[i - 1], d0 = d[i - 1], k1 = k[i], d1 = d[i];
+            if (k0 == null || d0 == null || k1 == null || d1 == null) continue;
+            if (bullish[i] !== false) continue;
+            if (k0 <= d0 && k1 > d1 && k0 < level) out.push({ time: bars[i].time, type: "pre" });
+        }
+        return out;
+    };
+
+    // Strateji fonksiyonu: kernel B/S okları + (showPreSignals !== false ise) ön sinyaller.
+    const rqKernelAllSignals = (bars: Bar[], params: Record<string, any>): StrategySignal[] => {
+        const base: StrategySignal[] = rqKernelSignals(bars, params);
+        if (params?.showPreSignals === false) return base;
+        return base.concat(rqKernelPreSignals(bars, params));
+    };
+
+    export const strategySignalFns: Record<string, (bars: Bar[], params: Record<string, any>) => StrategySignal[]> = {
         ema_pullback: emaPullbackSignals,
         vwap_macd: vwapMacdSignals,
         cmo_crsi: cmoCrsiSignals,
-        sling_shot: slingShotSignals,
+        sling_shot: rqKernelAllSignals,
     };
     export const strategyColors: Record<string, { buy: string; sell: string }> = {
         ema_pullback: { buy: "#38bdf8", sell: "#ef4444" }, vwap_macd: { buy: "#c084fc", sell: "#ef4444" }, cmo_crsi: { buy: "#eab308", sell: "#ef4444" },
@@ -381,13 +447,15 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
     };
     export const strategyLabels: Record<string, string> = {
         ema_pullback: "EMA PB", vwap_macd: "VWAP MACD", cmo_crsi: "CMO CRSI",
-        sling_shot: "SlingShot",
+        sling_shot: "RQ Kernel",
     };
 
     // Grafik sinyallerini spot yürütme modeline dönüştür:
     // alıştan sonra hedef satış veya stop çıkışı üretir; karşıt sinyal çıkış değildir.
     // Bu basitleştirilmiş bir simülasyondur; gerçek backend yürütmesiyle birebir aynı değildir.
-    export const spotExecutionSignals = (bars: Bar[], raw: { time: number; type: "buy" | "sell" }[]) => {
+    export const spotExecutionSignals = (bars: Bar[], rawAll: StrategySignal[]) => {
+        // Ön sinyaller ("pre") işlem değildir; yürütme simülasyonuna girmez.
+        const raw = rawAll.filter((s): s is { time: number; type: "buy" | "sell" } => s.type !== "pre");
         const byTime = new Map(bars.map((bar) => [bar.time, bar]));
         let entry: number | null = null;
         const executed: { time: number; type: "buy" | "sell"; reason?: "target" | "stop" }[] = [];
