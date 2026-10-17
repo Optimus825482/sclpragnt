@@ -74,15 +74,16 @@ function ActionRows({ symbol, price, live, actions }: { symbol: string; price: n
       >
         ⚡ Alım yap
       </button>
+      {/* 2026-10-18 (kullanıcı isteği): Grafik ile Favorilere ekle yer değiştirdi. */}
       <div className="grid grid-cols-2 gap-2">
-        <Link href={chartHref(symbol)} className={BTN}>📈 Grafik</Link>
+        <button type="button" aria-pressed={fav} onClick={() => actions.onToggleFavorite(symbol, px)} className={BTN}>
+          {fav ? "★ Favoride" : "☆ Favorilere ekle"}
+        </button>
         <button type="button" aria-pressed={pin} onClick={() => actions.onTogglePin(symbol, px)} className={BTN}>
           {pin ? "İzlemeden çıkar" : "👁 İzlemeye al"}
         </button>
       </div>
-      <button type="button" aria-pressed={fav} onClick={() => actions.onToggleFavorite(symbol, px)} className={`${BTN} w-full`}>
-        {fav ? "★ Favoride" : "☆ Favorilere ekle"}
-      </button>
+      <Link href={chartHref(symbol)} className={`${BTN} w-full`}>📈 Grafik</Link>
     </div>
   );
 }

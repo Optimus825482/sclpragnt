@@ -28,6 +28,8 @@ router = APIRouter(prefix="/api/chart")
 
 # Aynı 5dklik pencere -> paylaşılan/cache'li tahmin (plan: within_sec).
 CACHE_WINDOW_SEC = 300
+# 2026-10-18: güncel tahmin üretilemezse en çok bu kadar eski kayıt "bayat" etiketiyle döner.
+STALE_FALLBACK_SEC = 6 * 3600
 HORIZONS = (5, 15)
 EVAL_INTERVAL_SEC = int(getattr(config, "CHART_FORECAST_EVAL_INTERVAL_SEC", 15))
 # Ufuk kapanışı sonrası hedef dokunuşu için ek gözlem penceresi (dk).
@@ -106,27 +108,45 @@ async def create_chart_forecast(symbol: str, payload: dict | None = None):
                     "generated_at": cached["created_at"], "forecasts": [row], "cache": cache}
 
     features = await collect_forecast_features(sym)
+    stale_reason: str | None = None
     if not features:
-        raise HTTPException(status_code=503, detail="sembol için güncel veri yok (tahmin yapılamadı)")
+        # 2026-10-18: dağıtım sonrası ısınma/429 döneminde public kline alınamıyor → eskiden 503.
+        # Bir kez kısa gecikmeyle yeniden dene; yine yoksa son kayıtlı tahmini "bayat" etiketiyle döndür.
+        await asyncio.sleep(1.5)
+        features = await collect_forecast_features(sym)
+    if not features:
+        stale_reason = "sembol için güncel mum alınamadı (veri ısınıyor / borsa yanıt vermedi)"
+    else:
+        entry_price = float(features["price"])
+        for horizon in HORIZONS:
+            ml = _run_predict(sym, features, horizon)
+            if not ml:
+                continue
+            target_pct = float(ml["target_pct"])
+            target_price = round(entry_price * (1 + target_pct / 100), 8)
+            saved = await database.save_chart_forecast(
+                sym, timeframe, horizon, entry_price, target_pct, target_price,
+                hit_probability=ml.get("hit_probability"), model=ml.get("trained_at"))
+            if saved:
+                forecast_rows.append({
+                    "horizon_minutes": horizon, "target_pct": target_pct,
+                    "target_price": target_price, "hit_probability": ml.get("hit_probability"),
+                })
+        if not forecast_rows:
+            stale_reason = ("model tahmini üretemedi (eğitimli model yok ya da sembol modelde yok; "
+                            "başlangıç eğitimi açılıştan ~5 dk sonra çalışır)")
 
-    entry_price = float(features["price"])
-    for horizon in HORIZONS:
-        ml = _run_predict(sym, features, horizon)
-        if not ml:
-            continue
-        target_pct = float(ml["target_pct"])
-        target_price = round(entry_price * (1 + target_pct / 100), 8)
-        saved = await database.save_chart_forecast(
-            sym, timeframe, horizon, entry_price, target_pct, target_price,
-            hit_probability=ml.get("hit_probability"), model=ml.get("trained_at"))
-        if saved:
-            forecast_rows.append({
-                "horizon_minutes": horizon, "target_pct": target_pct,
-                "target_price": target_price, "hit_probability": ml.get("hit_probability"),
-            })
-
-    if not forecast_rows:
-        raise HTTPException(status_code=503, detail="model tahmini üretemedi (eğitimli model yok?)")
+    if stale_reason:
+        cached = await database.get_recent_chart_forecast(sym, timeframe, within_sec=STALE_FALLBACK_SEC)
+        if cached:
+            age_sec = int(time.time() - float(cached["created_at"]))
+            row = {"horizon_minutes": cached["horizon_minutes"], "target_pct": cached["target_pct"],
+                   "target_price": cached["target_price"], "hit_probability": cached["hit_probability"]}
+            logger.info("chart_forecast %s: bayat tahmin döndü (%d sn) — %s", sym, age_sec, stale_reason)
+            return {"symbol": sym, "timeframe": timeframe, "generated_at": cached["created_at"],
+                    "forecasts": [row],
+                    "cache": {"hit": True, "age_sec": age_sec, "stale": True, "stale_reason": stale_reason}}
+        raise HTTPException(status_code=503, detail=stale_reason)
 
     return {"symbol": sym, "timeframe": timeframe,
             "generated_at": time.time(), "forecasts": forecast_rows, "cache": cache}

@@ -358,6 +358,22 @@ export default function ChartsPage() {
             handleScroll: { vertTouchDrag: false, horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true }
         });
         chart.priceScale("right").applyOptions({ scaleMargins: { top: 0.08, bottom: 0.08 } });
+        // 2026-10-18: kullanıcı kabuğu (UserShell) `data-theme=light`i ÜST bileşen etkisinde atar; çocuk etkisi
+        // (bu grafik) ondan ÖNCE koşar → tam sayfa yüklemede (bildirim kartı / yeni sekme) grafik siyah açılıyordu.
+        // Tema niteliği değişince zemin/ızgara yeniden uygulanır.
+        const applyChartTheme = () => {
+            const light = document.documentElement.dataset.theme === "light";
+            chart.applyOptions({
+                layout: { background: { color: light ? "#ffffff" : "#000000" }, textColor: light ? "#5b6478" : "#6b7280" },
+                grid: {
+                    vertLines: { color: light ? "rgba(15, 23, 42, 0.08)" : "rgba(55, 65, 81, 0.2)" },
+                    horzLines: { color: light ? "rgba(15, 23, 42, 0.08)" : "rgba(55, 65, 81, 0.2)" },
+                },
+            });
+        };
+        const themeObserver = new MutationObserver(applyChartTheme);
+        themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+        applyChartTheme();
         const series = chart.addSeries(CandlestickSeries, {
             upColor: "#10b981", downColor: "#ef4444", borderVisible: false,
             wickUpColor: "#10b981", wickDownColor: "#ef4444"
@@ -392,6 +408,7 @@ export default function ChartsPage() {
 
         return () => {
             ro.disconnect();
+            themeObserver.disconnect();
             chart.remove();
             chartRef.current = null;
             candleRef.current = null;
@@ -495,7 +512,11 @@ export default function ChartsPage() {
             });
             const data = await res.json();
             if (res.ok) { setForecast(data); setForecastError(null); }
-            else setForecastError(`Üst tahmin alınamadı (HTTP ${res.status}) — panel bayat olabilir.`);
+            else {
+                // 2026-10-18: sunucunun nedenini göster (ısınma / model yok), yalnız HTTP kodu değil.
+                const detail = typeof data?.detail === "string" ? data.detail : "";
+                setForecastError(`Üst tahmin alınamadı (HTTP ${res.status})${detail ? ` — ${detail}` : " — panel bayat olabilir."}`);
+            }
         } catch {
             setForecast(null);
             setForecastError("Üst tahmin alınamadı (bağlantı hatası) — panel bayat olabilir.");
@@ -1927,7 +1948,11 @@ export default function ChartsPage() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="eyebrow">ML TAHMİN · {symbol}</p>
                         <div className="flex items-center gap-2">
-                            {forecast?.cache?.hit && forecast.cache.age_sec != null && (
+                            {forecast?.cache?.stale ? (
+                                <span className="font-mono text-[10px] text-yellow-300" title={forecast.cache.stale_reason ?? ""}>
+                                    bayat · {forecast.cache.age_sec != null ? `${Math.round(forecast.cache.age_sec / 60)} dk önce` : "eski tahmin"}
+                                </span>
+                            ) : forecast?.cache?.hit && forecast.cache.age_sec != null && (
                                 <span className="font-mono text-[10px] text-bunker-muted">cache {forecast.cache.age_sec}s</span>
                             )}
                             <button
