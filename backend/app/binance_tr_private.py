@@ -488,6 +488,38 @@ def new_client_order_id(prefix: str = "sc") -> str:
     return f"{prefix}{uuid.uuid4().hex}"[:36]
 
 
+
+# 2026-10-18: Binance TR "3703 Invalid client ID" — kural dokümanda yok (bkz. docs/BINANCE_TR_DOKUMAN_DENETIMI_2026-10-18.md).
+# Yalnız harf/rakam + ≤36 temizliğine rağmen canlıda satış emri yine 3703 aldı. 3703 emir YERLEŞTİRİLMEDEN verilen
+# kesin bir doğrulama reddidir (tekrar riski yok) → istemci kimliği reddedilirse AYNI emir, sunucunun bilinen-iyi
+# biçimindeki (`sa…`/`bu…` + 32 hex) yeni kimlikle BİR kez daha gönderilir; reddedilen kimlik WARNING ile loglanır
+# ki canlı kural sonradan çıkarılabilsin. Sonuçtaki `client_order_id` her zaman borsaya giden kimliktir.
+_CLIENT_ID_REJECT_CODES = frozenset({"3703", "-3703"})
+
+
+def _is_client_id_reject(exc: BaseException) -> bool:
+    return isinstance(exc, BinanceTrApiError) and str(exc.code or "").strip() in _CLIENT_ID_REJECT_CODES
+
+
+def _post_order(path: str, params: dict, api_key: str, api_secret: str, *,
+                id_key: str = "clientId", fallback_prefix: str = "sc") -> tuple[dict | list, dict]:
+    """Emir POST'u; istemci kimliği 3703 ile reddedilirse sunucu kimliğiyle bir kez yeniden dener.
+
+    Dönüş: (cevap, gönderilen params) — çağıran `params[id_key]`i gönderilen kimlik olarak kullanmalıdır.
+    """
+    try:
+        return _signed_request("POST", path, params, api_key, api_secret, idempotent=False), params
+    except BinanceTrApiError as exc:
+        if not _is_client_id_reject(exc) or not params.get(id_key):
+            raise
+        rejected = params.get(id_key)
+        retry = dict(params)
+        retry[id_key] = new_client_order_id(fallback_prefix)
+        logger.warning("Binance TR %s reddetti (%s): %r → sunucu kimliği %s ile bir kez yeniden deneniyor (%s %s)",
+                       id_key, exc.code, rejected, retry[id_key], path, params.get("symbol"))
+        return _signed_request("POST", path, retry, api_key, api_secret, idempotent=False), retry
+
+
 def sanitize_client_order_id(value) -> str | None:
     """İstemciden gelen clientId'yi Binance TR alan kurallarına indirger.
 
@@ -851,8 +883,7 @@ def place_spot_order(api_key: str, api_secret: str, symbol: str, side: str, orde
         raise ValueError(f"Emir tutarı minimum tutarın altında (min {min_notional})")
 
     try:
-        data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
-                               idempotent=False)
+        data, params = _post_order("/open/v1/orders", params, api_key, api_secret, fallback_prefix="ui")
     except BinanceTrAmbiguousOrderError:
         raise
     except RuntimeError as exc:
@@ -943,8 +974,7 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
                 f"Satış tutarı minimum emrin altında "
                 f"(min {min_notional}, tahmini {float(params['quantity']) * float(last_price):.2f})"
             )
-    data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
-                           idempotent=False)
+    data, params = _post_order("/open/v1/orders", params, api_key, api_secret, fallback_prefix="sa")
     order_id = data.get("orderId") if isinstance(data, dict) else None
     requested = float(params["quantity"])
     executed_qty, remaining_qty, avg_price, quote_qty = _order_fill(data, requested)
@@ -1004,8 +1034,7 @@ def place_market_buy(api_key: str, api_secret: str, symbol_underscore: str, quot
         # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
         "clientId": sanitize_client_order_id(client_order_id) or new_client_order_id("bu"),
     }
-    data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
-                           idempotent=False)
+    data, params = _post_order("/open/v1/orders", params, api_key, api_secret, fallback_prefix="bu")
     order_id = data.get("orderId") if isinstance(data, dict) else None
     logger.info("Binance TR MARKET BUY gönderildi: %s quote=%s orderId=%s clientId=%s",
                 symbol_underscore, params["quoteOrderQty"], order_id, params["clientId"])
@@ -1102,8 +1131,7 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
         # gönderilmezse sunucu üretir). Emir durumu mutabakatında kullanılır.
         "listClientId": sanitize_client_order_id(client_order_id) or new_client_order_id("oc"),
     }
-    data = _signed_request("POST", "/open/v1/orders/oco", params, api_key, api_secret,
-                           idempotent=False)
+    data, params = _post_order("/open/v1/orders/oco", params, api_key, api_secret, id_key="listClientId", fallback_prefix="oc")
     order_list_id = data.get("orderListId") if isinstance(data, dict) else None
     orders = data.get("orders") if isinstance(data, dict) else []
     logger.info("Binance TR OCO SELL gönderildi: %s qty=%s tp=%s sl=%s orderListId=%s",
@@ -1156,8 +1184,7 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
         # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
         "clientId": sanitize_client_order_id(client_order_id) or new_client_order_id("sl"),
     }
-    data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
-                           idempotent=False)
+    data, params = _post_order("/open/v1/orders", params, api_key, api_secret, fallback_prefix="sl")
     order_id = data.get("orderId") if isinstance(data, dict) else None
     logger.info("Binance TR STOP_LOSS_LIMIT SELL gönderildi: %s qty=%s sl=%s orderId=%s",
                 symbol_underscore, qty_str, stop_price_str, order_id)
@@ -1199,8 +1226,7 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
         # Emir durumu mutabakatında kullanılır; dedupe anahtarı değildir.
         "clientId": sanitize_client_order_id(client_order_id) or new_client_order_id("tp"),
     }
-    data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret,
-                           idempotent=False)
+    data, params = _post_order("/open/v1/orders", params, api_key, api_secret, fallback_prefix="tp")
     order_id = data.get("orderId") if isinstance(data, dict) else None
     logger.info("Binance TR LIMIT SELL gönderildi: %s qty=%s price=%s orderId=%s",
                 symbol_underscore, qty_str, price_str, order_id)

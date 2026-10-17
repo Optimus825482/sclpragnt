@@ -55,6 +55,8 @@ class FakeBinanceTR:
         self.fill_fraction = 1.0
         self.oco_error = None         # {"code": 3210, "msg": "..."} döndürür
         self.buy_error = None
+        # 2026-10-18: bu öneklerle başlayan clientId/listClientId 3703 "Invalid client ID" ile reddedilir (kural belgesiz).
+        self.reject_client_id_prefixes = ()
         self._srv = None
 
     def start(self) -> str:
@@ -131,6 +133,8 @@ class FakeBinanceTR:
             bad = self._validate_order(params)
             if bad:
                 return bad
+            if str(params.get("clientId") or "").startswith(tuple(self.reject_client_id_prefixes) or ("\x00",)):
+                return _err(3703, "Invalid client ID")
             return _ok({"orderId": "555", "createTime": int(time.time() * 1000)})   # belge: orderId + createTime
         if method == "GET" and path == "/open/v1/orders/detail":
             extra = set(params) - DETAIL_PARAMS
