@@ -8,9 +8,15 @@ push dürüstlüğü gibi mekanikleri sınar → test paketinde kural varsayıla
 import pytest
 
 
+_RULE_TEST_CLASSES = {"ConfirmRuleTests", "SingleSourceTierTests", "HeartbeatTests"}
+
+
 @pytest.fixture(autouse=True)
 def _confirm_rule_off_by_default(request, monkeypatch):
-    if request.node.cls is not None and request.node.cls.__name__ == "ConfirmRuleTests":
+    if request.node.cls is not None and request.node.cls.__name__ in _RULE_TEST_CLASSES:
         return
     from app.config import config
     monkeypatch.setattr(config, "RADAR_NOTIFY_CONFIRM_RULE_ENABLED", False, raising=False)
+    # 2026-10-18: ikinci kademe ve sessizlik nabzı da mekanik testlerde kapalı (kendi sınıflarında açık).
+    monkeypatch.setattr(config, "RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE", 0.0, raising=False)
+    monkeypatch.setattr(config, "RADAR_NOTIFY_HEARTBEAT_MINUTES", 0, raising=False)

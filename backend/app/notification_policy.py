@@ -108,6 +108,84 @@ def confirm_rule_reason(entry: dict) -> str | None:
     return None
 
 
+TIER_SINGLE = "tek_kaynak"
+TIER_HEARTBEAT = "teyitsiz"
+TIER_PREFIX = {TIER_SINGLE: "TEK KAYNAK · ", TIER_HEARTBEAT: "TEYİTSİZ · "}
+
+
+def _single_source_min_score() -> float:
+    try:
+        return max(0.0, float(_cfg("RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _score_of(entry: dict) -> float | None:
+    try:
+        s = float(entry.get("score"))
+    except (TypeError, ValueError):
+        return None
+    return s if s == s else None
+
+
+def single_source_tier_ok(entry: dict) -> bool:
+    """2026-10-18 İKİNCİ KADEME: YALNIZ gerekli kaynak (Hız) ∧ panel skoru ≥ taban ∧ mod hariç değil.
+
+    Yalnız "teyit yetersiz" nedeniyle takılan adaylar içindir; kapalı mod / unified tabanı /
+    `velocity yok` nedenlerini aşmaz. Taban 0 → kademe kapalı.
+    """
+    floor = _single_source_min_score()
+    if floor <= 0 or not isinstance(entry, dict):
+        return False
+    required = str(_cfg("RADAR_NOTIFY_REQUIRED_SOURCE", "velocity") or "").strip().lower()
+    if not required or sources_of(entry) != {required}:
+        return False
+    score = _score_of(entry)
+    if score is None or score > _PANEL_MAX or score < floor:
+        return False
+    mode = str(entry.get("mode") or "").strip().lower()
+    if mode and (mode in _disabled_modes() or mode in _csv_set("RADAR_NOTIFY_CONFIRM_EXCLUDED_MODES", "unified")):
+        return False
+    return True
+
+
+def mark_tier(entry: dict, tier: str) -> None:
+    """Kademeyi bildirime işler ve başlığa öneki (tek sefer) ekler — kayıt ve push aynı başlığı taşır."""
+    entry["notify_tier"] = tier
+    prefix = TIER_PREFIX.get(tier, "")
+    title = str(entry.get("title") or "")
+    if prefix and not title.startswith(prefix):
+        entry["title"] = prefix + title
+
+
+def heartbeat_pick(blocked_entries, now: float, last_push_ts: float | None) -> dict | None:
+    """2026-10-18 SESSİZLİK NABZI: nabız süresi dolduysa, yalnız TEYİT nedeniyle takılan en yüksek skorlu aday.
+
+    Saf: hiçbir şeyi değiştirmez. `last_push_ts` None → nabız sayacı başlamamış (boot) → None.
+    Kapalı mod, unified taban ve "mod unified hariç" nedenleri aday olmaz (ölçümde isabet %3).
+    """
+    try:
+        minutes = int(_cfg("RADAR_NOTIFY_HEARTBEAT_MINUTES", 0) or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    if minutes <= 0 or last_push_ts is None or (now - float(last_push_ts)) < minutes * 60:
+        return None
+    best = None
+    best_score = -1.0
+    for e in blocked_entries or []:
+        if not isinstance(e, dict):
+            continue
+        reason = str(e.get("policy_blocked") or "")
+        if not (reason.startswith("teyit yetersiz") or reason.startswith("teyit kuralı: ") and "kaynağı yok" in reason):
+            continue
+        score = _score_of(e)
+        if score is None:
+            continue
+        if score > best_score:
+            best, best_score = e, score
+    return best
+
+
 def shadow_match(entry: dict) -> str | None:
     """GÖLGE kural (yalnız kayıt): ≥2 kaynak ∧ mod = trend_devam → kural adı, aksi halde None."""
     if not isinstance(entry, dict) or not _flag("RADAR_NOTIFY_SHADOW_RULE_ENABLED", True):
@@ -121,6 +199,9 @@ def evaluate(entry: dict) -> str | None:
     """Bloklanacaksa Türkçe neden, aksi halde None."""
     if not _enabled() or not isinstance(entry, dict):
         return None
+    # 2026-10-18: nabız seçimi (monitoring tarafından işaretlenir) lavaboda yeniden bloklanmaz.
+    if entry.get("notify_tier") == TIER_HEARTBEAT:
+        return None
     mode = str(entry.get("mode") or "").strip().lower()
     if mode and mode in _disabled_modes():
         return f"mod devre dışı: {mode}"
@@ -133,7 +214,12 @@ def evaluate(entry: dict) -> str | None:
                 score = None  # skor yok → ölçek bilinmiyor, skora göre bloklama
             if score is not None and score == score and score <= _PANEL_MAX and score < floor:
                 return f"unified skor tabanı altı ({score:.1f} < {floor:g})"
-    return confirm_rule_reason(entry)
+    reason = confirm_rule_reason(entry)
+    # 2026-10-18 İKİNCİ KADEME: yalnız "teyit yetersiz" takılması, tek kaynaklı yüksek skorlu Hız'da aşılır.
+    if reason and reason.startswith("teyit yetersiz") and single_source_tier_ok(entry):
+        mark_tier(entry, TIER_SINGLE)
+        return None
+    return reason
 
 
 def shadow_rows(entries) -> list[dict]:

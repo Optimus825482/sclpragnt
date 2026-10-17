@@ -207,3 +207,107 @@ class ConfirmRuleTests(unittest.TestCase):
         self.assertEqual({r["shadow_rule"] for r in rows}, {"ge2_trend_devam"})
         with mock.patch.object(config, "RADAR_NOTIFY_SHADOW_RULE_ENABLED", False):
             self.assertEqual(np_.shadow_rows([live_ok]), [])
+
+
+class SingleSourceTierTests(unittest.TestCase):
+    """2026-10-18 İKİNCİ KADEME: tek kaynaklı Hız, skor ≥ RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE → push, başlık öneki."""
+
+    def setUp(self):
+        self._p = [
+            mock.patch.object(config, "RADAR_NOTIFY_CONFIRM_RULE_ENABLED", True),
+            mock.patch.object(config, "RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE", 85.0),
+        ]
+        for x in self._p:
+            x.start()
+
+    def tearDown(self):
+        for x in reversed(self._p):
+            x.stop()
+
+    def test_default_floor(self):
+        self.assertEqual(config.RADAR_NOTIFY_HEARTBEAT_MINUTES, 30)
+
+    def test_velocity_only_high_score_passes_with_prefix(self):
+        e = {"mode": "trend_devam", "score": 91.0, "sources": ["velocity"], "title": "ABCTRY +%2 potansiyel"}
+        self.assertIsNone(np_.evaluate(e))
+        self.assertEqual(e["notify_tier"], np_.TIER_SINGLE)
+        self.assertEqual(e["title"], "TEK KAYNAK · ABCTRY +%2 potansiyel")
+        np_.evaluate(e)  # tekrar değerlendirme öneki ikilemez
+        self.assertEqual(e["title"], "TEK KAYNAK · ABCTRY +%2 potansiyel")
+
+    def test_boundary_and_low_score_blocked(self):
+        ok = {"mode": "trend_devam", "score": 85.0, "sources": ["velocity"], "title": "t"}
+        self.assertIsNone(np_.evaluate(ok))
+        low = {"mode": "trend_devam", "score": 84.9, "sources": ["velocity"], "title": "t"}
+        self.assertEqual(np_.evaluate(low), "teyit yetersiz (1 < 2 kaynak)")
+        self.assertNotIn("notify_tier", low)
+        self.assertEqual(low["title"], "t")
+
+    def test_other_single_sources_and_modes_still_blocked(self):
+        self.assertIsNotNone(np_.evaluate({"mode": "trend_devam", "score": 95, "sources": ["rising"], "title": "t"}))
+        self.assertIsNotNone(np_.evaluate({"mode": "trend_devam", "score": 95, "sources": ["jump"], "title": "t"}))
+        self.assertEqual(np_.evaluate({"mode": "notr", "score": 95, "sources": ["velocity"], "title": "t"}),
+                         "mod devre dışı: notr")
+        self.assertIsNotNone(np_.evaluate({"mode": "unified", "score": 99, "sources": ["velocity"], "title": "t"}))
+        # iki kaynak ama velocity yok → kademe aşmaz
+        self.assertEqual(np_.evaluate({"mode": "trend_devam", "score": 99, "sources": ["jump", "early"], "title": "t"}),
+                         "teyit kuralı: velocity kaynağı yok")
+
+    def test_floor_zero_disables_tier(self):
+        with mock.patch.object(config, "RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE", 0.0):
+            self.assertEqual(np_.evaluate({"mode": "trend_devam", "score": 99, "sources": ["velocity"], "title": "t"}),
+                             "teyit yetersiz (1 < 2 kaynak)")
+
+    def test_raw_scale_score_not_tiered(self):
+        # panel ölçeği üstü (ham skor) bilinmeyen ölçek → kademe uygulanmaz
+        self.assertIsNotNone(np_.evaluate({"mode": "trend_devam", "score": 1500, "sources": ["velocity"], "title": "t"}))
+
+
+class HeartbeatTests(unittest.TestCase):
+    """2026-10-18 SESSİZLİK NABZI: süre dolduysa yalnız teyit nedeniyle takılan en yüksek skorlu aday."""
+
+    def setUp(self):
+        self._p = [
+            mock.patch.object(config, "RADAR_NOTIFY_CONFIRM_RULE_ENABLED", True),
+            mock.patch.object(config, "RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE", 0.0),
+            mock.patch.object(config, "RADAR_NOTIFY_HEARTBEAT_MINUTES", 30),
+        ]
+        for x in self._p:
+            x.start()
+
+    def tearDown(self):
+        for x in reversed(self._p):
+            x.stop()
+
+    def _blocked(self):
+        es = [
+            {"symbol": "A", "mode": "trend_devam", "score": 80, "sources": ["velocity"], "title": "a"},
+            {"symbol": "B", "mode": "trend_devam", "score": 92, "sources": ["jump", "early"], "title": "b"},
+            {"symbol": "C", "mode": "unified", "score": 99, "sources": ["velocity", "jump"], "title": "c"},
+            {"symbol": "D", "mode": "notr", "score": 99, "sources": ["velocity"], "title": "d"},
+        ]
+        np_.precheck(es)
+        self.assertTrue(all(e.get("policy_blocked") for e in es))
+        return es
+
+    def test_picks_highest_score_among_confirm_blocked_only(self):
+        es = self._blocked()
+        pick = np_.heartbeat_pick(es, now=10_000.0, last_push_ts=10_000.0 - 31 * 60)
+        self.assertEqual(pick["symbol"], "B")   # C (unified hariç) ve D (kapalı mod) aday değil
+
+    def test_not_due_or_no_counter(self):
+        es = self._blocked()
+        self.assertIsNone(np_.heartbeat_pick(es, now=10_000.0, last_push_ts=10_000.0 - 29 * 60))
+        self.assertIsNone(np_.heartbeat_pick(es, now=10_000.0, last_push_ts=None))
+        with mock.patch.object(config, "RADAR_NOTIFY_HEARTBEAT_MINUTES", 0):
+            self.assertIsNone(np_.heartbeat_pick(es, now=10_000.0, last_push_ts=0.0))
+
+    def test_marked_pick_passes_sink_with_prefix(self):
+        es = self._blocked()
+        pick = np_.heartbeat_pick(es, now=10_000.0, last_push_ts=0.0)
+        np_.mark_tier(pick, np_.TIER_HEARTBEAT)
+        self.assertEqual(pick["title"], "TEYİTSİZ · b")
+        self.assertIsNone(np_.evaluate(pick))          # lavabo yeniden bloklamaz
+        kept, blocked = np_.apply([pick] + [e for e in es if e is not pick])
+        self.assertEqual([k["symbol"] for k in kept], ["B"])
+        self.assertEqual(len(blocked), 3)

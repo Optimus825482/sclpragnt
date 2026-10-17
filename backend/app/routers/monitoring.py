@@ -917,6 +917,9 @@ async def _send_push(notif: dict) -> bool:
         if not ok:
             reason = result.get("reason", result.get("error", "unknown"))
             logger.warning("Monitoring push failed for %s: %s", notif["symbol"], reason)
+        else:
+            # 2026-10-18 sessizlik nabzı: son başarılı push zamanı (tüm yollar buradan geçer).
+            _monitoring_state["_last_push_ts"] = time.time()
         return ok
     except Exception as exc:
         logger.warning("Monitoring push exception for %s: %s", notif["symbol"], exc)
@@ -2086,9 +2089,9 @@ async def _register_push_notifications(entries: list) -> list:
         await _record_history(fresh)
         for n in fresh:
             _link_pending_notification(n)
-    kept = [n for n in entries if not n.get("policy_blocked")]
+    kept = [n for n in entries if not n.get("policy_blocked") or n.get("notify_tier") == _notification_policy.TIER_HEARTBEAT]
     for n in entries:
-        if n.get("policy_blocked"):
+        if n.get("policy_blocked") and n.get("notify_tier") != _notification_policy.TIER_HEARTBEAT:
             logger.info("bildirim politikası: %s (mod=%s) kayıttan düşürüldü — %s",
                         n.get("symbol"), n.get("mode"), n.get("policy_blocked"))
     if kept:
@@ -2144,6 +2147,24 @@ async def _deliver_scan_notifications(notified: list) -> None:
 
     quiet = bool(notified[0].get("quiet_hours"))
     vapid_configured = _vapid_configured()
+    # 2026-10-18 SESSİZLİK NABZI: bu turda politikadan geçen yeni bildirim yoksa ve
+    # RADAR_NOTIFY_HEARTBEAT_MINUTES boyunca hiç push gitmediyse, yalnız teyit nedeniyle takılan en
+    # yüksek skorlu aday "TEYİTSİZ · " başlığıyla push edilir. Sayaç boot'ta başlar (ilk nabız en erken
+    # boot + süre); sessiz saatte ve VAPID yokken çalışmaz. Otonom paper / ölçüm yolları değişmez.
+    if new_notifs and not quiet and vapid_configured and not in_boot_grace:
+        _passing = [n for n in new_notifs if not n.get("policy_blocked")]
+        if not _passing:
+            _last = _monitoring_state.get("_last_push_ts")
+            if _last is None:
+                _monitoring_state["_last_push_ts"] = boot_time
+                _last = boot_time
+            _pick = _notification_policy.heartbeat_pick(
+                [n for n in new_notifs if n.get("policy_blocked")], time.time(), _last)
+            if _pick is not None:
+                _notification_policy.mark_tier(_pick, _notification_policy.TIER_HEARTBEAT)
+                logger.info("sessizlik nabzı: %.0f dk push yok → %s (skor %s, %s) teyitsiz push",
+                            (time.time() - float(_last)) / 60, _pick.get("symbol"), _pick.get("score"),
+                            _pick.get("policy_blocked"))
     # BİRLEŞİK RADAR (Aşama 2): tek tip bildirim. Radar push'u `radar-{sym}` tag'i
     # ile gider ve bu turda push edilen semboller kaydedilir — yükseliş teslimatı
     # aynı sembol için İKİNCİ push atmaz.

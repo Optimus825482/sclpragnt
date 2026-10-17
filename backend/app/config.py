@@ -589,6 +589,15 @@ class Config:
     # n=50; önceki haftalar −0,41…−0,55. Uyan her aday `notification_shadow` tablosuna canlı kararla
     # birlikte yazılır; 2–3 hafta sonra `scripts/confirm_elems_study.py` ile ölçülür. 0 = kayıt yok.
     RADAR_NOTIFY_SHADOW_RULE_ENABLED = os.getenv("RADAR_NOTIFY_SHADOW_RULE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    # 2026-10-18 İKİNCİ KADEME (kullanıcı kararı): teyit kuralına takılan TEK kaynaklı Hız (velocity)
+    # bildirimi, skoru bu tabanın üstündeyse yine push edilir; başlık "TEK KAYNAK · " ile başlar.
+    # 30 günlük yerel ölçüm: yalnız-velocity trend_devam skor ≥ 90 → hedef %28,9 / stop %26,7 (n=135),
+    # ≥2 kaynaklı geçen sınıf %29,0 / %37,7; skor 80–90 → hedef %16,7 (n=78). 0 = kapalı.
+    RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE = max(0.0, float(os.getenv("RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE", "").strip() or "85"))
+    # 2026-10-18 SESSİZLİK NABZI (kullanıcı kararı): bu kadar dakika hiç push gitmediyse, son taramanın
+    # politikaya (yalnız teyit nedeniyle) takılan en yüksek skorlu adayı "TEYİTSİZ · " başlığıyla push
+    # edilir. Sessiz saatte ve boot grace'te çalışmaz; unified / kapalı modlar aday olmaz. 0 = kapalı.
+    RADAR_NOTIFY_HEARTBEAT_MINUTES = max(0, int(os.getenv("RADAR_NOTIFY_HEARTBEAT_MINUTES", "").strip() or "30"))
     # ------------------------------------------------------------------
     # KOMBİNE PAPER PORTFÖY (2026-10-11 kullanıcı kararı) — WhatsApp'a gönderilen
     # kombine liste adayları AYRI bir 5.000 TL sanal portföyde OTONOM paper
