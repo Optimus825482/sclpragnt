@@ -4,29 +4,27 @@ import { getJSON } from "../../lib/api";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
 import { useWatchPrices } from "../../lib/useWatchPrices";
 import { useWatchPrefs } from "../../lib/useWatchPrefs";
-import KpiStrip, { type KpiData } from "./KpiStrip";
 import RecentNotifications, { type RecentRow } from "./RecentNotifications";
 import WatchStrip from "./home/FavoritesStrip";
 
+// 2026-10-17 (basit arayüz): "Bugünkü başarı" kartı ana sayfadan kaldırıldı — ayrıntılı başarı
+// Raporlar sayfasında. KpiStrip bileşeni duruyor (başka yerde kullanılabilir).
 export default function UserHome() {
-  const [kpiToday, setKpiToday] = useState<KpiData>(null);
   const [recent, setRecent] = useState<RecentRow[]>([]);
   const [error, setError] = useState("");
   const [recentFailed, setRecentFailed] = useState(false);
 
-  // Her bölüm KENDİ verisi gelir gelmez dolar; en yavaş isteği BEKLEMEZ. (Promise.all/allSettled en
-  // yavaşı bekler: canlı kopyada /api/daily-rising/live 13-20 sn sürünce "Son bildirimler" de boş
-  // görünüyordu.) Başarısız istekte önceki veri korunur; hata ayrı gösterilir.
   const load = useCallback(async () => {
-    const track = <T,>(p: Promise<T>, apply: (v: T) => void): Promise<boolean> =>
-      p.then((v) => { apply(v); return false; }, () => true);
-    const [todayFailed, histFailed] = await Promise.all([
-      track(getJSON<any>("/api/reports/notifications?limit=1000"), (v) => setKpiToday(v?.breakdown ?? null)),
-      track(getJSON<any>("/api/monitoring/notifications"), (v) => { setRecent((v?.history ?? []).slice(0, 10)); setRecentFailed(false); }),
-    ]);
-    if (histFailed) setRecentFailed(true);
-    const failed = [todayFailed, histFailed].filter(Boolean).length;
-    setError(failed ? "Bazı veriler yüklenemedi, otomatik yeniden denenecek." : "");
+    try {
+      const v = await getJSON<any>("/api/monitoring/notifications");
+      setRecent((v?.history ?? []).slice(0, 10));
+      setRecentFailed(false);
+      setError("");
+    } catch {
+      // Başarısız istekte önceki liste korunur; hata ayrı gösterilir.
+      setRecentFailed(true);
+      setError("Bildirimler yüklenemedi, otomatik yeniden denenecek.");
+    }
   }, []);
   useVisibleInterval(load, 15_000);
   // useVisibleInterval ilk yükü yapmaz.
@@ -48,7 +46,6 @@ export default function UserHome() {
     <div className="space-y-5">
       <WatchStrip pinned={prefs.pinned} favorites={prefs.favorites} prices={prices} onRemove={onRemove} />
       {error && <p role="alert" className="rounded-lg bg-neon-red/10 p-3 text-sm text-neon-red">{error}</p>}
-      <KpiStrip today={kpiToday} />
       <RecentNotifications rows={recent} prices={prices} failed={recentFailed} prefs={prefs} />
     </div>
   );
