@@ -38,7 +38,7 @@ skor, kapı, hedef, ATR/RSI/MFI/BB, desen, öncü ATR, radar bayrakları alan al
 | Canlı girdi | Rescan işlemi | Etki |
 |---|---|---|
 | **Spread** (`market.orderflow[sym].spread_pct`, WS) | `--spread-mode known` (varsayılan): ceza yok, spread kapısı yok, hedefte `DEFAULT_ESTIMATED_SPREAD_PCT`. Ölçüm: 62 canlı adayda rescan/canlı skor oranı medyanı **tam 0.85** → canlıda anlık görüntü var, ceza uygulanmıyor. `unknown` → ×0.85 | `asiri_spread` elemesi yeniden üretilemez (rescan biraz FAZLA aday verir) |
-| **Taker alış oranı** (kline 10. sütun) | `historical_candles`'ta sütun yok → canlının 9-sütun yolu gibi teyit atlanır (`radar.taker_unavailable`) | canlıda ±%5 çarpan; rescan'de yok |
+| **Taker alış oranı** (kline 10. sütun) | 2026-10-17'den itibaren `historical_candles.taker_buy_base_volume` (migration 020; `scripts/fast_backfill_klines.py` / `backfill_historical_candles.py --refill-taker` ile 90 gün dolduruldu) yükleyici 10. kolon olarak okur → canlıyla AYNI teyit ve ±%5 çarpan. Kolonu boş satırlarda (NaN) teyit atlanır (`radar.taker_unavailable`) | doldurulmuş pencerede sapma yok |
 | **Emir defteri dengesizliği** (bid/ask qty) | yazılmaz (0/yok) | yalnız birleşik tarama tie-break'i |
 | **Mikro-yapı çarpanı** (`microflow` whale/CVD) | 1.0 | sıralama (rank) değişebilir |
 | **ML tahmini** (`ml_forecast.predict_target`) | yok (`ml_pct=None`) — model bugünkü veriyle eğitildi, geçmişe sızardı | `target_pct` ML harmanı yok; `ml_dusuk_olasilik` kapısı zaten 0 eşikli |

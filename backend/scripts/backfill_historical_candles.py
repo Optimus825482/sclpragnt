@@ -109,21 +109,27 @@ def kline_to_row(symbol: str, tf: str, k, source: str, fetched_at: float, now_ms
         close_ms = int(k[6])
         if close_ms >= now_ms:
             return None
+        # 2026-10-17: [9]/[10] taker alış hacmi (baz / TL); 9 kolonlu eski yanıtta None.
+        tb_base = float(k[9]) if len(k) > 10 else None
+        tb_quote = float(k[10]) if len(k) > 10 else None
         return (symbol, tf, open_ms, close_ms, float(k[1]), float(k[2]), float(k[3]),
-                float(k[4]), float(k[5]), float(k[7]), int(k[8]), source, fetched_at)
+                float(k[4]), float(k[5]), float(k[7]), int(k[8]), source, fetched_at, tb_base, tb_quote)
     except (TypeError, ValueError, IndexError):
         return None
 
 
+# 2026-10-17: çakışmada YALNIZ eksik taker alanları doldurulur (canlı toplayıcının OHLCV'si ezilmez).
 _INSERT_SQL = (
     "INSERT INTO historical_candles (symbol,timeframe,open_time,close_time,open,high,low,"
-    "close,volume,quote_volume,trade_count,source,fetched_at) "
-    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-    "ON CONFLICT (symbol,timeframe,open_time) DO NOTHING")
+    "close,volume,quote_volume,trade_count,source,fetched_at,taker_buy_base_volume,taker_buy_quote_volume) "
+    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+    "ON CONFLICT (symbol,timeframe,open_time) DO UPDATE SET "
+    "taker_buy_base_volume=EXCLUDED.taker_buy_base_volume, taker_buy_quote_volume=EXCLUDED.taker_buy_quote_volume "
+    "WHERE historical_candles.taker_buy_quote_volume IS NULL AND EXCLUDED.taker_buy_quote_volume IS NOT NULL")
 
 
 def insert_rows(db_url: str, rows: list[tuple]) -> int:
-    """Gerçekten eklenen satır sayısı (çakışanlar DO NOTHING ile sayılmaz)."""
+    """Eklenen + taker'ı doldurulan satır sayısı (zaten dolu çakışmalar sayılmaz)."""
     if not rows:
         return 0
     import psycopg
@@ -192,17 +198,24 @@ async def run(args) -> int:
     with psycopg.connect(db_url, connect_timeout=10) as conn:
         if args.symbols:
             universe = sorted({s.strip().upper() for s in args.symbols.split(",") if s.strip()})
+        elif args.universe_from_candles:
+            universe = [r[0] for r in conn.execute(
+                "SELECT DISTINCT symbol FROM historical_candles WHERE timeframe='5m' ORDER BY 1").fetchall()]
         else:
             universe = load_universe(conn, start_ms / 1000.0)
         print(f"Evren: {len(universe)} sembol", flush=True)
         plans: dict[str, list[tuple[int, int]]] = {}
         for sym in universe:
+            if args.refill_taker:
+                # 2026-10-17: taker kolonlarını mevcut satırlar için de doldurmak üzere TÜM pencere çekilir.
+                plans[sym] = [(start_ms, last_bar_ms)]
+                continue
             times = existing_open_times(conn, sym, tf, start_ms)
             plans[sym] = missing_ranges(times, start_ms, last_bar_ms, bar_ms, args.min_gap_bars)
 
     ckpt_path = args.checkpoint
     ckpt = {} if args.fresh else _load_ckpt(ckpt_path)
-    key = f"{tf}:{start_ms}"
+    key = f"{tf}:{start_ms}" + (":taker" if args.refill_taker else "")
     done = set(ckpt.get(key, {}).get("done", []))
     failed: dict[str, str] = dict(ckpt.get(key, {}).get("failed", {}))
     invalid: dict[str, str] = dict(ckpt.get(key, {}).get("invalid", {}))
@@ -223,7 +236,7 @@ async def run(args) -> int:
         print("DRY-RUN: veritabanına yazılmadı, REST çağrısı yapılmadı.")
         return 0
 
-    sem = asyncio.Semaphore(max(1, min(3, args.concurrency)))
+    sem = asyncio.Semaphore(max(1, min(8, args.concurrency)))
     stats = {"inserted": 0, "fetched": 0, "n": 0}
     t0 = time.time()
     lock = asyncio.Lock()
@@ -323,8 +336,12 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--timeframe", default="5m", choices=sorted(TF_MS))
     ap.add_argument("--symbols", default="", help="virgülle ayrık; boşsa evren DB'den")
+    ap.add_argument("--universe-from-candles", action="store_true",
+                    help="evren: historical_candles 5m'de bulunan tüm semboller (90+ günlük çekim için)")
     ap.add_argument("--source", default="backfill")
-    ap.add_argument("--concurrency", type=int, default=2, help="eşzamanlı sembol (<=3)")
+    ap.add_argument("--concurrency", type=int, default=2, help="eşzamanlı sembol (<=8; ağırlık/soğuma modülde)")
+    ap.add_argument("--refill-taker", action="store_true",
+                    help="tüm pencereyi yeniden çek; mevcut satırların boş taker kolonlarını doldur (migration 020)")
     ap.add_argument("--min-gap-bars", type=int, default=24,
                     help="bu kadar ardışık eksik barlık iç boşluk yeniden çekilir (varsayılan 24 = 2 saat)")
     ap.add_argument("--checkpoint", default=_DEFAULT_CKPT)

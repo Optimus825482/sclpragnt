@@ -294,7 +294,8 @@ def scan_symbol_at_tick(symbol: str, rows1m, rows5m, rows15m, *, horizon_minutes
     if config.VELOCITY_TAKER_CONFIRM_ENABLED and len(rows) >= 10:
         _win = rows[-10:]
         _vol_sum = sum(float(r[5]) for r in _win)
-        if _vol_sum > 0 and all(len(r) > 9 and r[9] is not None for r in _win):
+        # 2026-10-17: historical_candles taker kolonu (migration 020) → kanonik kline [9]; boş satır NaN gelir.
+        if _vol_sum > 0 and all(len(r) > 9 and r[9] is not None and math.isfinite(float(r[9])) for r in _win):
             _taker_ratio = sum(float(r[9]) for r in _win) / _vol_sum
             _radar["taker_buy_ratio"] = round(_taker_ratio, 3)
             if _taker_ratio >= config.VELOCITY_TAKER_STRONG_RATIO:

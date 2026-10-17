@@ -73,6 +73,9 @@ def _candidate_row(row: dict) -> dict | None:
         "blocked_by": str(row.get("blocked_by") or "")[:80],
         # 2026-10-17: kalkan rozeti (RADAR_SHIELD_MODE=badge) — geçti ama BTC < EMA200 idi.
         "regime_badge": (str(row.get("regime_badge") or "")[:40] or None),
+        # 2026-10-17: aday anı özellikleri JSON metin (migration 021); yoksa None.
+        "features": (json.dumps(row["features"], ensure_ascii=False, default=str)
+                     if isinstance(row.get("features"), dict) and row.get("features") else None),
     }
 
 

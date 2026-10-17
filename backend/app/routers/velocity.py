@@ -1382,6 +1382,13 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 src = next((r for r in candidates + watchlist if r["symbol"] == row["symbol"]), None)
                 if src and src.get("microstructure"):
                     row["microstructure"] = src["microstructure"]
+                # 2026-10-17: aday anı özellikleri (taker/defter/mod/RSI/MFI/gerçek hacim oranı) —
+                # mumda olmayan veriler sonradan ölçülebilsin (app/candidate_features.py).
+                if src:
+                    from app.candidate_features import candidate_features
+                    feats = candidate_features(src)
+                    if feats:
+                        row["features"] = feats
             await database.save_velocity_candidates(journal_rows)
         except Exception as exc:
             logger.warning("velocity journal hatası: %s", exc)

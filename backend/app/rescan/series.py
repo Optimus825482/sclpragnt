@@ -18,6 +18,7 @@ from app.routers import velocity as V
 TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
 # Sütun indeksleri (historical_candles -> kline satırı)
 COL_OPEN_TIME, COL_OPEN, COL_HIGH, COL_LOW, COL_CLOSE, COL_VOL, COL_CLOSE_TIME, COL_QVOL, COL_TRADES = range(9)
+COL_TAKER_BASE = 9  # 2026-10-17: taker alış baz hacmi (NULL → NaN; eski yükleyicilerde yok)
 _TOL = 1e-9
 
 

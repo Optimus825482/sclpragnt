@@ -18,6 +18,7 @@ from app import master_surge
 from app import snapback_service
 from app import unified_signals
 from app.state import analyzer
+from app.candidate_features import candidate_features as _candidate_features
 
 logger = logging.getLogger(__name__)
 
@@ -557,6 +558,8 @@ async def combined_scan_rows() -> list[dict]:
             "blocked_by": blocked_by,
             # 2026-10-17: kalkan rozeti (badge modu) — journal'da ayrı ölçülür, bildirim başlığına rozet.
             "regime_badge": (c.get("master_surge") or {}).get("regime_badge") if isinstance(c.get("master_surge"), dict) else None,
+            # 2026-10-17: journal özellikleri (taker/defter/mikro yapı/mod) — app/candidate_features.py
+            "features": _candidate_features(c),
             "_hit": hit,
         }
         out.append(row)

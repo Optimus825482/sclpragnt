@@ -4626,6 +4626,9 @@ async def save_velocity_candidates(rows):
             # filtre istatistiklerinin birikmesi için outcome_details'e gömülür.
             if row.get("microstructure"):
                 extra["microstructure"] = row["microstructure"]
+            # 2026-10-17: aday anı özellikleri (app/candidate_features.py)
+            if row.get("features"):
+                extra["features"] = row["features"]
             # outcome_details NOT NULL: extrasız satır '{}' alır; tek boş satır
             # tüm journal batch'ini düşürmesin.
             vals.append(_json_safe_dumps(extra) if extra else "{}")
@@ -5759,14 +5762,18 @@ async def upsert_market_candles(rows):
     """Persist normalized public 5m candles; duplicate timestamps are idempotent."""
     if not rows: return 0
     def op(conn):
+        # 2026-10-17: taker alış hacmi (migration 020); yoksa mevcut değer korunur (COALESCE).
         sql = """INSERT INTO historical_candles
-            (symbol,timeframe,open_time,close_time,open,high,low,close,volume,quote_volume,trade_count,source,fetched_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            (symbol,timeframe,open_time,close_time,open,high,low,close,volume,quote_volume,trade_count,source,fetched_at,
+             taker_buy_base_volume,taker_buy_quote_volume)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(symbol,timeframe,open_time) DO UPDATE SET
             close_time=excluded.close_time,open=excluded.open,high=excluded.high,low=excluded.low,
             close=excluded.close,volume=excluded.volume,quote_volume=excluded.quote_volume,
-            trade_count=excluded.trade_count,source=excluded.source,fetched_at=excluded.fetched_at"""
-        conn.executemany(sql, [tuple(r.get(k) for k in ("symbol","timeframe","open_time","close_time","open","high","low","close","volume","quote_volume","trade_count","source","fetched_at")) for r in rows])
+            trade_count=excluded.trade_count,source=excluded.source,fetched_at=excluded.fetched_at,
+            taker_buy_base_volume=COALESCE(excluded.taker_buy_base_volume, historical_candles.taker_buy_base_volume),
+            taker_buy_quote_volume=COALESCE(excluded.taker_buy_quote_volume, historical_candles.taker_buy_quote_volume)"""
+        conn.executemany(sql, [tuple(r.get(k) for k in ("symbol","timeframe","open_time","close_time","open","high","low","close","volume","quote_volume","trade_count","source","fetched_at","taker_buy_base_volume","taker_buy_quote_volume")) for r in rows])
         conn.commit(); return len(rows)
     return await _run_db(op)
 
@@ -8011,8 +8018,8 @@ async def save_unified_candidates(rows: list[dict]) -> int:
             cur = conn.execute(
                 """INSERT INTO unified_candidate_outcomes
                     (symbol, horizon_minutes, sources, scan_score, entry_price,
-                     ceiling_pct, target_pct, detected_at, blocked_by, regime_badge)
-                SELECT ?,?,?,?,?,?,?,?,?,?
+                     ceiling_pct, target_pct, detected_at, blocked_by, regime_badge, features)
+                SELECT ?,?,?,?,?,?,?,?,?,?,?
                 WHERE NOT EXISTS (
                     SELECT 1 FROM unified_candidate_outcomes
                     WHERE symbol=? AND horizon_minutes=?
@@ -8025,6 +8032,7 @@ async def save_unified_candidates(rows: list[dict]) -> int:
                  detected,
                  str(row.get("blocked_by") or "")[:80],
                  (str(row.get("regime_badge") or "")[:40] or None),
+                 (row.get("features") or None),
                  symbol, horizon, bucket_start, bucket_end))
             inserted += int(cur.rowcount or 0)
         conn.commit()

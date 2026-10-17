@@ -132,7 +132,7 @@ async def backfill_symbol_history(symbol: str, days: int = 7):
                 continue
             rows.append({"symbol": symbol, "timeframe": "5m", "open_time": int(item[0]), "close_time": int(item[6]) if len(item) > 6 else int(item[0]),
                          "open": float(item[1]), "high": float(item[2]), "low": float(item[3]), "close": float(item[4]), "volume": float(item[5]),
-                         "quote_volume": float(item[7]) if len(item) > 7 else None, "trade_count": int(item[8]) if len(item) > 8 else None,
+                         "quote_volume": float(item[7]) if len(item) > 7 else None, "taker_buy_base_volume": float(item[9]) if len(item) > 10 else None, "taker_buy_quote_volume": float(item[10]) if len(item) > 10 else None, "trade_count": int(item[8]) if len(item) > 8 else None,
                          "source": "binance_tr_public_background", "fetched_at": now_ms})
         count = await database.upsert_market_candles(rows)
         print(f"[History] arka plan backfill tamamlandı | symbol={symbol} timeframe=5m rows={count}", flush=True)
@@ -204,7 +204,7 @@ async def history_candle_loop(interval_minutes: int = 5):
                         rows.append({"symbol": symbol, "timeframe": "5m", "open_time": open_time,
                                      "close_time": close_time, "open": float(item[1]), "high": float(item[2]),
                                      "low": float(item[3]), "close": float(item[4]), "volume": float(item[5]),
-                                     "quote_volume": float(item[7]) if len(item) > 7 else None,
+                                     "quote_volume": float(item[7]) if len(item) > 7 else None, "taker_buy_base_volume": float(item[9]) if len(item) > 10 else None, "taker_buy_quote_volume": float(item[10]) if len(item) > 10 else None,
                                      "trade_count": int(item[8]) if len(item) > 8 else None,
                                      "source": "binance_tr_public_live", "fetched_at": now_ms})
                     return await database.upsert_market_candles(rows)

@@ -89,7 +89,7 @@ def load_symbols_with_tf(conn, tf: str, start_ms: int, end_ms: int) -> dict[str,
 def load_series(conn, symbol: str, tf: str, start_ms: int, end_ms: int) -> SE.SymbolSeries | None:
     rows = conn.execute(
         "SELECT open_time, open, high, low, close, volume, close_time, "
-        "COALESCE(quote_volume, 0), COALESCE(trade_count, 0) FROM historical_candles "
+        "COALESCE(quote_volume, 0), COALESCE(trade_count, 0), taker_buy_base_volume FROM historical_candles "
         "WHERE symbol=%s AND timeframe=%s AND open_time >= %s AND open_time < %s ORDER BY open_time",
         (symbol, tf, start_ms, end_ms)).fetchall()
     if not rows:
