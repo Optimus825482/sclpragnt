@@ -9,6 +9,7 @@ import tempfile
 import re
 import uuid
 from datetime import datetime, timezone, timedelta
+from typing import NamedTuple
 
 from app import paper_ledger, sql_guard
 from app.config import config
@@ -473,6 +474,16 @@ async def init_db():
         # yollari) TP'yi GERI DIRILTMESINI engeller — 2026-09-18 basarisizliginin
         # kok nedeni buydu. Bkz. auto_paper._manage_single_trade.
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS tp_cancelled BOOLEAN DEFAULT FALSE")
+        # 2026-10-17 (cüzdan komisyonu = PnL komisyonu): cüzdan bacağının FİİLEN
+        # uyguladığı oran satıra yazılır. NULL = bu değişiklikten önceki bacak →
+        # ham `config.COMMISSION_PCT` ile düşülmüştü (`_legacy_wallet_commission_pct`).
+        # Mutabakat her bacağı kendi oranıyla yeniden kurar; eski satırlar yanlış
+        # "onarılmaz" (bkz. `_portfolio_reconcile_figures`).
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS entry_commission_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS exit_commission_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_commission_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_commission_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_commission_pct DOUBLE PRECISION")
         # D-06 (2026-09-14): MFE ulasilamaz bir TEPE. `exit_pct` ufuk sonundaki
         # kapanis (gerceklestirilebilir), `net_pct` gidis/donus maliyeti dusulmus hali.
         conn.execute("ALTER TABLE velocity_candidates ADD COLUMN IF NOT EXISTS exit_pct DOUBLE PRECISION")
@@ -517,25 +528,15 @@ async def init_db():
         # ile aynı formül) — aksi halde açık auto-paper pozisyonu kadar FAZLA yazar.
         # Nakit satırı `config.CASH_ASSET` (TR→TRY); 'TRY' literal'i kaldırıldı,
         # aksi hâlde farklı quote'lu bir örnek mutabakatı yanlış satırda yapardı.
+        # 2026-10-17: formül artık `reconcile_portfolio` ile AYNI yardımcıdan gelir
+        # (`_portfolio_reconcile_figures`): her bacak satırda saklı kendi komisyon
+        # oranıyla, oranı saklanmamış eski bacak ham COMMISSION_PCT ile. Yalnız nakit
+        # satırı VAR ama NULL/≤0 iken yazılır (eski SQL'in WHERE koşuluyla aynı).
         _cash = config.CASH_ASSET
-        conn.execute("""UPDATE virtual_wallet SET amount=
-            (SELECT COALESCE(
-                (SELECT amount FROM virtual_wallet WHERE asset=%s AND amount IS NOT NULL AND amount > 0),
-                %s
-                + COALESCE((SELECT SUM(pnl) FROM trades WHERE (%s = 0) OR (exit_time > %s)), 0)
-                + COALESCE((SELECT SUM(pnl) FROM auto_paper_trades WHERE status='closed' AND ((%s = 0) OR (exit_time > %s))), 0)
-                - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
-                - COALESCE((SELECT SUM(order_value_try) FROM auto_paper_trades WHERE status='open'), 0)
-                - (COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
-                   + COALESCE((SELECT SUM(order_value_try) FROM auto_paper_trades WHERE status='open'), 0)) * %s
-            ) AS reconciled)
-        WHERE asset=%s AND NOT EXISTS (SELECT 1 FROM virtual_wallet WHERE asset=%s AND amount IS NOT NULL AND amount > 0)""",
-            (_cash,
-             config.INITIAL_BALANCE_TRY,
-             _get_reset_cutoff_sync(conn), _get_reset_cutoff_sync(conn),
-             _get_reset_cutoff_sync(conn), _get_reset_cutoff_sync(conn),
-             config.COMMISSION_PCT,
-             _cash, _cash))
+        _cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", (_cash,)).fetchone()
+        if _cash_row is not None and (_cash_row[0] is None or float(_cash_row[0]) <= 0):
+            _figures = _portfolio_reconcile_figures(conn, _get_reset_cutoff_sync(conn))
+            conn.execute("UPDATE virtual_wallet SET amount=? WHERE asset=?", (_figures.cash(), _cash))
         conn.conn.commit()
     await _run_db(pg_op)
     # Legacy pozisyonların eksik trade_id'leri açılışta BİR KEZ doldurulur;
@@ -782,6 +783,34 @@ async def get_wallet_balance(asset=None):
 # yazılır; `get_wallet_balance` yalnız okur.
 
 
+def _legacy_wallet_commission_pct() -> float:
+    """2026-10-17: `*_commission_pct` kolonu NULL olan bacağın cüzdanda gördüğü oran.
+
+    Bu tarihe kadar HER cüzdan debit/credit'i ham `config.COMMISSION_PCT` ile
+    yazıldı (PnL ise 2026-10-16'dan beri efektif oranla). Oranı saklanmamış bir
+    bacak bu oranla yeniden kurulur; böylece mutabakat eski satırları sanki yeni
+    oranla düşülmüş gibi yanlış "onarmaz".
+    """
+    return float(getattr(config, "COMMISSION_PCT", 0.0015))
+
+
+def _row_leg_pct(row, idx: int) -> float:
+    """Satırda saklı bacak oranı; kolon yok/NULL/bozuk → eski (ham) oran."""
+    try:
+        value = row[idx] if len(row) > idx else None
+        return float(value) if value is not None else _legacy_wallet_commission_pct()
+    except (TypeError, ValueError, KeyError, IndexError):
+        return _legacy_wallet_commission_pct()
+
+
+def _scalar_or_none(conn, sql, params=()):
+    """Tek değerli toplam sorgusu; satır/değer yoksa None (çağıran yedeğe düşer)."""
+    row = conn.execute(sql, params).fetchone()
+    if not row or row[0] is None:
+        return None
+    return float(row[0])
+
+
 def _chronological_overallocation_candidates(conn):
     """Return only positions whose opening event made the ledger insolvent.
 
@@ -790,20 +819,24 @@ def _chronological_overallocation_candidates(conn):
     `virtual_wallet` row). Credit events use the actual wallet credit
     (exit_notional * (1 - commission)), not `cost + pnl`, so the buy-side
     commission is not subtracted twice (K3).
+
+    2026-10-17: her bacak satırda saklı kendi oranıyla oynatılır
+    (`entry_commission_pct` / `exit_commission_pct`); saklı oran yoksa ham
+    `COMMISSION_PCT` — cüzdanın o bacakta fiilen düştüğü oran.
     """
-    c = config.COMMISSION_PCT
     cash = float(config.INITIAL_BALANCE_TRY)
     events = []
     cutoff = _get_reset_cutoff_sync(conn)
     trades = conn.execute(
-        "SELECT entry_time,exit_time,entry_price,quantity,pnl,exit_price FROM trades"
+        "SELECT entry_time,exit_time,entry_price,quantity,pnl,exit_price,"
+        "entry_commission_pct,exit_commission_pct FROM trades"
         + (" WHERE exit_time>?" if cutoff else ""),
         (cutoff,) if cutoff else ()).fetchall()
     for row in trades:
         cost = float(row[2] or 0) * float(row[3] or 0)
         exit_notional = (float(row[5] or 0) * float(row[3] or 0)) if row[5] is not None else 0.0
-        events.append((float(row[0] or 0), 0, "debit", None, cost * (1 + c)))
-        events.append((float(row[1] or 0), 1, "credit", None, exit_notional * (1 - c)))
+        events.append((float(row[0] or 0), 0, "debit", None, cost * (1 + _row_leg_pct(row, 6))))
+        events.append((float(row[1] or 0), 1, "credit", None, exit_notional * (1 - _row_leg_pct(row, 7))))
     # auto_paper_trades share the same TRY wallet.
     # V-10: açık (`status='open'`) satırların `exit_time` değeri NULL'dur, bu
     # yüzden `exit_time > cutoff` filtresi onları ELİYORDU. Reset sonrası açık
@@ -811,22 +844,25 @@ def _chronological_overallocation_candidates(conn):
     # gerçekte olandan yüksek gösteriyordu — oysa `reconcile_portfolio` aynı
     # maliyeti `open_cost`'a katıyor (çelişkili çıktı).
     ap_trades = conn.execute(
-        "SELECT entry_time,exit_time,order_value_try,quantity,status,exit_price FROM auto_paper_trades"
+        "SELECT entry_time,exit_time,order_value_try,quantity,status,exit_price,"
+        "entry_commission_pct,exit_commission_pct FROM auto_paper_trades"
         + (" WHERE status='open' OR exit_time>?" if cutoff else ""),
         (cutoff,) if cutoff else ()).fetchall()
     for row in ap_trades:
         order_value = float(row[2] or 0)
         qty = float(row[3] or 0)
+        debit = order_value * (1 + _row_leg_pct(row, 6))
         if row[4] == "open":
-            events.append((float(row[0] or 0), 0, "open", None, order_value * (1 + c)))
+            events.append((float(row[0] or 0), 0, "open", None, debit))
         else:
-            events.append((float(row[0] or 0), 0, "debit", None, order_value * (1 + c)))
+            events.append((float(row[0] or 0), 0, "debit", None, debit))
             exit_notional = (float(row[5] or 0) * qty) if row[5] is not None else 0.0
-            events.append((float(row[1] or 0), 1, "credit", None, exit_notional * (1 - c)))
-    positions = conn.execute("SELECT symbol,entry_time,entry_price,quantity FROM positions").fetchall()
+            events.append((float(row[1] or 0), 1, "credit", None, exit_notional * (1 - _row_leg_pct(row, 7))))
+    positions = conn.execute(
+        "SELECT symbol,entry_time,entry_price,quantity,entry_commission_pct FROM positions").fetchall()
     for row in positions:
         cost = float(row[2] or 0) * float(row[3] or 0)
-        events.append((float(row[1] or 0), 0, "open", row, cost * (1 + c)))
+        events.append((float(row[1] or 0), 0, "open", row, cost * (1 + _row_leg_pct(row, 4))))
     candidates = []
     for _, _, kind, row, amount in sorted(events, key=lambda item: (item[0], item[1])):
         if kind == "credit":
@@ -834,10 +870,11 @@ def _chronological_overallocation_candidates(conn):
         else:
             cash -= amount
             if kind == "open" and cash < -0.01 and row is not None:
-                candidates.append({"symbol": row[0], "entry_time": row[1], "entry_price": row[2], "quantity": row[3], "cost": float(row[2] or 0) * float(row[3] or 0), "reason": "entry_cash_was_insufficient"})
+                candidates.append({"symbol": row[0], "entry_time": row[1], "entry_price": row[2], "quantity": row[3], "cost": float(row[2] or 0) * float(row[3] or 0), "entry_commission_pct": _row_leg_pct(row, 4), "reason": "entry_cash_was_insufficient"})
     return candidates
 
-def _overallocation_removal_justified(realized: float, open_cost: float) -> bool:
+def _overallocation_removal_justified(realized: float, open_cost: float,
+                                      open_commission: float | None = None) -> bool:
     """Denetim P2-5 (2026-10-07) DEĞİŞMEZİ — aşırı-tahsis aşırı-iddiası.
 
     `reconcile_portfolio` bir pozisyonu yalnızca `_chronological_overallocation_candidates`
@@ -852,13 +889,55 @@ def _overallocation_removal_justified(realized: float, open_cost: float) -> bool
     (INITIAL + realize) açık yükümlülüğünü (giriş komisyonu dahil)
     karşılamıyorsa silme gerekçelidir. Teminatlı bir defterde model varsayımı
     tek başına pozisyon silemez.
+
+    2026-10-17: `open_commission` = açık bacakların satırda saklı oranla giriş
+    komisyonu (`_ReconcileFigures.open_commission`); verilmezse ham oran.
     """
     genuine_cash = float(config.INITIAL_BALANCE_TRY) + float(realized)
-    open_obligation = float(open_cost) * (1.0 + config.COMMISSION_PCT)
+    if open_commission is None:
+        open_commission = float(open_cost) * _legacy_wallet_commission_pct()
+    open_obligation = float(open_cost) + float(open_commission)
     return genuine_cash < open_obligation - 1e-9
 
 
-def _portfolio_reconcile_figures(conn, cutoff: float):
+class _ReconcileFigures(NamedTuple):
+    """`_portfolio_reconcile_figures` çıktısı (hepsi TRY).
+
+    * ``realized``       — SUM(pnl): raporlanan realize PnL (değişmedi).
+    * ``wallet_adjustment`` — eski (oranı saklanmamış) kapanmış bacaklarda
+      PnL'in düştüğü komisyon ile cüzdanın FİİLEN düştüğü ham-oranlı komisyon
+      farkı. Yeni satırlarda (iki oran da saklı) 0'dır: cüzdan bacakları PnL
+      bacaklarıyla aynı oranı kullanır.
+    * ``*_open_commission`` — açık bacakların giriş komisyonu, satırda saklı
+      oranla (NULL → ham oran: o açılış ham oranla debit edilmişti).
+    """
+    realized: float
+    main_open_cost: float
+    auto_open_cost: float
+    main_open_commission: float
+    auto_open_commission: float
+    wallet_adjustment: float
+
+    @property
+    def open_cost(self) -> float:
+        return self.main_open_cost + self.auto_open_cost
+
+    @property
+    def open_commission(self) -> float:
+        return self.main_open_commission + self.auto_open_commission
+
+    @property
+    def wallet_realized(self) -> float:
+        """Kapanmış işlemlerin cüzdana NET etkisi (realize PnL + eski bacak farkı)."""
+        return self.realized + self.wallet_adjustment
+
+    def cash(self) -> float:
+        """Mutabakat sonrası nakit: INITIAL + cüzdan realize − açık maliyet − açık giriş komisyonu."""
+        return (float(config.INITIAL_BALANCE_TRY) + self.wallet_realized
+                - self.open_cost - self.open_commission)
+
+
+def _portfolio_reconcile_figures(conn, cutoff: float) -> _ReconcileFigures:
     """Mutabakat rakamlarının TEK kaynağı (V-01/V-13).
 
     `virtual_wallet` TRY satırı İKİ defter tarafından paylaşılır:
@@ -867,8 +946,13 @@ def _portfolio_reconcile_figures(conn, cutoff: float):
     Preview ve apply AYNI SQL'i kullanmak zorundadır; aksi halde iki adımlı onay
     akışında operatör yanlış bakiyeyi onaylar (V-01).
 
-    Döner: (realized_pnl, main_open_cost, auto_open_cost) — hepsi TRY.
+    2026-10-17 (cüzdan komisyonu = PnL komisyonu): her bacak satırda saklı kendi
+    oranıyla (`entry_commission_pct`/`exit_commission_pct`) kurulur; NULL → ham
+    `COMMISSION_PCT` (o bacak ham oranla yazılmıştı). Eski ve yeni satırların
+    karışık olduğu bir defterde mutabakat no-op'tur — bkz.
+    tests/test_wallet_commission_parity.py.
     """
+    legacy = _legacy_wallet_commission_pct()
     realized = float(conn.execute(
         "SELECT COALESCE(SUM(pnl),0) FROM trades WHERE (?=0 OR exit_time>?)",
         (cutoff, cutoff)).fetchone()[0] or 0)
@@ -879,7 +963,44 @@ def _portfolio_reconcile_figures(conn, cutoff: float):
         "SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
     auto_open_cost = float(conn.execute(
         "SELECT COALESCE(SUM(order_value_try),0) FROM auto_paper_trades WHERE status='open'").fetchone()[0] or 0)
-    return realized, main_open_cost, auto_open_cost
+    main_open_commission = _scalar_or_none(
+        conn,
+        "SELECT COALESCE(SUM(entry_price*quantity*COALESCE(entry_commission_pct,?)),0) FROM positions",
+        (legacy,))
+    auto_open_commission = _scalar_or_none(
+        conn,
+        "SELECT COALESCE(SUM(order_value_try*COALESCE(entry_commission_pct,?)),0) "
+        "FROM auto_paper_trades WHERE status='open'",
+        (legacy,))
+    # Eski kapanmış bacak farkı: `commission` = PnL'in düştüğü komisyon tutarı;
+    # cüzdan ise oranı saklı değilse ham oranla düşmüştü. İki oran da saklıysa
+    # (yeni satır) fark tanım gereği 0 → PnL olduğu gibi kullanılır.
+    main_adjustment = _scalar_or_none(
+        conn,
+        "SELECT COALESCE(SUM(CASE WHEN commission IS NULL OR exit_price IS NULL"
+        " OR (entry_commission_pct IS NOT NULL AND exit_commission_pct IS NOT NULL) THEN 0"
+        " ELSE commission - entry_price*quantity*COALESCE(entry_commission_pct,?)"
+        " - exit_price*quantity*COALESCE(exit_commission_pct,?) END),0)"
+        " FROM trades WHERE (?=0 OR exit_time>?)",
+        (legacy, legacy, cutoff, cutoff))
+    auto_adjustment = _scalar_or_none(
+        conn,
+        "SELECT COALESCE(SUM(CASE WHEN commission IS NULL OR exit_price IS NULL"
+        " OR (entry_commission_pct IS NOT NULL AND exit_commission_pct IS NOT NULL) THEN 0"
+        " ELSE commission - order_value_try*COALESCE(entry_commission_pct,?)"
+        " - exit_price*quantity*COALESCE(exit_commission_pct,?) END),0)"
+        " FROM auto_paper_trades WHERE status='closed' AND (?=0 OR exit_time>?)",
+        (legacy, legacy, cutoff, cutoff))
+    return _ReconcileFigures(
+        realized=realized,
+        main_open_cost=main_open_cost,
+        auto_open_cost=auto_open_cost,
+        main_open_commission=(main_open_cost * legacy if main_open_commission is None
+                              else main_open_commission),
+        auto_open_commission=(auto_open_cost * legacy if auto_open_commission is None
+                              else auto_open_commission),
+        wallet_adjustment=float(main_adjustment or 0.0) + float(auto_adjustment or 0.0),
+    )
 
 
 async def reconcile_portfolio():
@@ -902,17 +1023,16 @@ async def reconcile_portfolio():
         # Reset cutoff'u uygula: reset öncesi kapanmış işlemler cüzdana
         # geri yüklenemez (reset_trading_data belgelendiği gibi).
         cutoff = _get_reset_cutoff_sync(conn)
-        realized, main_open_cost, auto_open_cost = _portfolio_reconcile_figures(conn, cutoff)
-        open_cost = main_open_cost + auto_open_cost
-        entry_commission = open_cost * config.COMMISSION_PCT
-        after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
+        figures = _portfolio_reconcile_figures(conn, cutoff)
+        after = figures.cash()
         removed = []
         candidates = _chronological_overallocation_candidates(conn)
         # Denetim P2-5 (2026-10-07): aday taraması bir MODEL varsayımıdır
         # (bakiye INITIAL_BALANCE_TRY'den oynatılır). Silme yalnız gerçek
         # rakamlarla gerekçelenebilirse yapılır — teminatlı bir defterde model
         # varsayımı GEÇERLİ bir pozisyonu düşüremez.
-        if candidates and _overallocation_removal_justified(realized, open_cost):
+        if candidates and _overallocation_removal_justified(
+                figures.wallet_realized, figures.open_cost, figures.open_commission):
             for candidate in candidates:
                 symbol, entry_time, entry_price, quantity = candidate["symbol"], candidate["entry_time"], candidate["entry_price"], candidate["quantity"]
                 position_cost = float(entry_price or 0) * float(quantity or 0)
@@ -926,24 +1046,21 @@ async def reconcile_portfolio():
                     conn.execute("DELETE FROM signals WHERE symbol=? AND action='BUY_SIGNAL' AND ABS(timestamp-?) <= 10", (symbol, entry_time))
                 conn.execute("DELETE FROM decision_logs WHERE symbol=? AND decision='BUY_SIGNAL' AND ABS(timestamp-?) <= 10", (symbol, entry_time))
                 removed.append({"symbol": symbol, "entry_time": entry_time, "cost": position_cost})
-                main_open_cost -= position_cost
-                open_cost = main_open_cost + auto_open_cost
-                entry_commission = open_cost * config.COMMISSION_PCT
-                after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
             # A valid partial position opened from remaining cash must never be
             # removed merely because later mark-to-market PnL changed.
+            # Silinenlerden sonra rakamlar AYNI kaynaktan yeniden okunur (satır
+            # başına saklı giriş oranı dahil).
             if removed:
-                main_open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
-                open_cost = main_open_cost + auto_open_cost
-                entry_commission = open_cost * config.COMMISSION_PCT
-                after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
+                figures = _portfolio_reconcile_figures(conn, cutoff)
+                after = figures.cash()
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (config.CASH_ASSET, after))
         conn.commit()
         trade_count = int(conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0])
         position_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0])
         auto_count = int(conn.execute("SELECT COUNT(*) FROM auto_paper_trades WHERE status='open'").fetchone()[0])
-        return {"before_try": before, "after_try": after, "realized_pnl": realized,
-                "open_entry_cost": open_cost, "open_entry_commission": entry_commission,
+        return {"before_try": before, "after_try": after, "realized_pnl": figures.realized,
+                "wallet_commission_adjustment": figures.wallet_adjustment,
+                "open_entry_cost": figures.open_cost, "open_entry_commission": figures.open_commission,
                 "trade_count": trade_count, "open_position_count": position_count,
                 "auto_paper_open": auto_count,
                 "difference": after - before, "removed_overallocated_positions": removed}
@@ -960,17 +1077,24 @@ async def preview_portfolio_reconcile():
     """
     def op(conn):
         cutoff = _get_reset_cutoff_sync(conn)
-        realized, main_open_cost, auto_open_cost = _portfolio_reconcile_figures(conn, cutoff)
-        open_cost = main_open_cost + auto_open_cost
+        figures = _portfolio_reconcile_figures(conn, cutoff)
         candidates = _chronological_overallocation_candidates(conn)
         # Denetim P2-5: preview ve apply AYNI gerçek-rakam kapısını kullanmalı;
         # aksi halde preview "silinecek" derken apply pozisyonu korur (parite
         # kırılır). Gerekçelenmeyen adaylar preview'da da silinecek sayılmaz.
-        if candidates and not _overallocation_removal_justified(realized, open_cost):
+        if candidates and not _overallocation_removal_justified(
+                figures.wallet_realized, figures.open_cost, figures.open_commission):
             candidates = []
-        projected_open_cost = open_cost - sum(float(item["cost"] or 0) for item in candidates)
-        projected_try = config.INITIAL_BALANCE_TRY + realized - projected_open_cost - projected_open_cost * config.COMMISSION_PCT
-        return {"would_remove": candidates, "projected_try": projected_try, "realized_pnl": realized,
+        removed_cost = sum(float(item["cost"] or 0) for item in candidates)
+        # Silinecek adayların giriş komisyonu, adayın saklı oranıyla (yoksa ham).
+        removed_commission = sum(float(item["cost"] or 0) * float(item.get("entry_commission_pct")
+                                                                  or _legacy_wallet_commission_pct())
+                                 for item in candidates)
+        projected_open_cost = figures.open_cost - removed_cost
+        projected_try = (float(config.INITIAL_BALANCE_TRY) + figures.wallet_realized
+                         - projected_open_cost - (figures.open_commission - removed_commission))
+        return {"would_remove": candidates, "projected_try": projected_try, "realized_pnl": figures.realized,
+                "wallet_commission_adjustment": figures.wallet_adjustment,
                 "open_entry_cost": projected_open_cost,
                 "requires_confirmation": bool(candidates)}
     return await _run_db(op)
@@ -2321,7 +2445,7 @@ async def evaluate_daily_rising_report(candidates: list[dict], since_ts: float,
                     cancel_tp_on_trail=bool(getattr(config, "COMBINED_PAPER_TP_CANCEL_ON_TRAIL", True)),
                     no_profit_min=float(getattr(config, "COMBINED_PAPER_NO_PROFIT_MIN", 30.0)),
                     max_hold_min=_max_hold_min,
-                    commission_pct=float(getattr(config, "COMMISSION_PCT", 0.0015)),
+                    commission_pct=paper_ledger.commission_pct(),  # 2026-10-17: efektif (PnL ile aynı)
                     slippage_pct=float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0),
                 )
                 sim_pct, sim_reason = sim.get("sim_pct"), sim.get("reason")
@@ -4029,14 +4153,17 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
             raise RuntimeError("max_open_positions_reached")
         cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + " FOR UPDATE", (config.CASH_ASSET,)).fetchone()
         current_cash = float(cash_row[0] if cash_row else config.INITIAL_BALANCE_TRY)
-        debit = float(asset_amount or 0) * float(sig.get("price") or pos.get("entry_price") or 0) * (1 + config.COMMISSION_PCT)
+        # 2026-10-17: giriş bacağı PnL ile aynı efektif taker oranı (`analyzer._record_trade`
+        # giriş komisyonunu `paper_ledger.commission_pct()` ile düşer); oran pozisyona yazılır.
+        entry_commission_pct = paper_ledger.commission_pct()
+        debit = float(asset_amount or 0) * float(sig.get("price") or pos.get("entry_price") or 0) * (1 + entry_commission_pct)
         if debit <= 0 or current_cash + 1e-9 < debit:
             raise RuntimeError("insufficient_paper_balance")
         next_cash = current_cash - debit
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (config.CASH_ASSET, next_cash))
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=virtual_wallet.amount+excluded.amount", (asset, asset_amount))
-        conn.execute("INSERT OR REPLACE INTO positions (symbol,side,entry_price,stop_price,take_profit,peak_price,breakeven_hit,quantity,entry_time,strategy,entry_context,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), _json_safe_dumps(_position_entry_context(pos)), pos.get("trade_id")))
+        conn.execute("INSERT OR REPLACE INTO positions (symbol,side,entry_price,stop_price,take_profit,peak_price,breakeven_hit,quantity,entry_time,strategy,entry_context,trade_id,entry_commission_pct) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), _json_safe_dumps(_position_entry_context(pos)), pos.get("trade_id"), entry_commission_pct))
         persisted = conn.execute("SELECT quantity,entry_time FROM positions WHERE symbol=?", (symbol,)).fetchone()
         if not persisted or float(persisted[0] or 0) != float(pos.get("quantity") or 0) or float(persisted[1] or 0) != float(pos.get("entry_time") or 0):
             raise RuntimeError("Açılan pozisyon kaydı doğrulanamadı; transaction geri alınacak")
@@ -4067,19 +4194,24 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     """Atomically persist close proceeds, trade, position deletion and signal."""
     def op(conn):
         conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
-        position_row = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + " FOR UPDATE", (symbol,)).fetchone()
+        position_row = conn.execute("SELECT quantity,entry_commission_pct FROM positions WHERE symbol=?" + " FOR UPDATE", (symbol,)).fetchone()
         if not position_row:
             raise RuntimeError("paper_position_not_found")
         cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + " FOR UPDATE", (config.CASH_ASSET,)).fetchone()
         current_cash = float(cash_row[0] if cash_row else 0.0)
         exit_notional = float(trade.get("exit_price") or 0) * float(trade.get("quantity") or 0)
-        next_cash = current_cash + exit_notional * (1 - config.COMMISSION_PCT)
+        # 2026-10-17: çıkış bacağı PnL ile aynı oran — `analyzer._close_position_unlocked`
+        # satış komisyonunu `paper_ledger.exit_commission_pct(reason)` ile düşer (kâr al → maker).
+        exit_commission_pct = paper_ledger.exit_commission_pct(trade.get("reason"))
+        next_cash = current_cash + exit_notional * (1 - exit_commission_pct)
+        # Giriş bacağının oranı pozisyondan işlem satırına taşınır (NULL = eski, ham oranlı debit).
+        entry_commission_pct = position_row[1] if len(position_row) > 1 else None
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (config.CASH_ASSET, next_cash))
         position_qty = float(position_row[0] or 0)
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,0.0) ON CONFLICT(asset) DO NOTHING", (asset,))
         conn.execute("UPDATE virtual_wallet SET amount=amount-? WHERE asset=?", (position_qty, asset))
-        conn.execute("INSERT INTO trades (symbol,strategy,side,entry_price,exit_price,quantity,pnl,pnl_pct,entry_time,exit_time,commission,reason,entry_context,max_favorable_pct,max_adverse_pct,hold_seconds,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                     (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), _json_safe_dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"), trade.get("trade_id")))
+        conn.execute("INSERT INTO trades (symbol,strategy,side,entry_price,exit_price,quantity,pnl,pnl_pct,entry_time,exit_time,commission,reason,entry_context,max_favorable_pct,max_adverse_pct,hold_seconds,trade_id,entry_commission_pct,exit_commission_pct) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), _json_safe_dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"), trade.get("trade_id"), entry_commission_pct, exit_commission_pct))
         # V-06: `trade_id` NULL iken `WHERE trade_id=NULL` SQL'de hiçbir satır
         # döndürmez → eski guard her zaman başarısız oluyor ve pozisyon
         # KAPATILAMIYORDU (sermaye kilitleniyordu). NULL'da (sembol, giriş, çıkış)
@@ -6901,18 +7033,21 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
                 return (None, "already_traded")
         # Bakiye kontrolü + düşüm
         # Komisyon sözleşmesi (denetim 2.5, 2026-09-26) — tam tur TAM OLARAK 2 bacak:
-        #   debit   = order_value_try * (1 + COMMISSION_PCT)   → giriş (AL) bacağı
-        #   proceed = exit_notional    * (1 - COMMISSION_PCT)   → çıkış (SAT) bacağı
-        # Düz fiyat (kâr yok) bir tam turda cüzdan net değişimi -2*notional*COMMISSION_PCT
+        #   debit   = order_value_try * (1 + giriş oranı)   → giriş (AL) bacağı
+        #   proceed = exit_notional    * (1 - çıkış oranı)   → çıkış (SAT) bacağı
+        # Düz fiyat (kâr yok) bir tam turda cüzdan net değişimi −(giriş + çıkış komisyonu)
         # olur; `auto_paper._close_trade` PnL'i de aynı iki bacağı düştüğü için
         # cüzdan ile raporlanan PnL ayrışmaz (parity bkz: test_w7_reconcile_parity).
+        # 2026-10-17: giriş oranı = PnL'in giriş bacağı (`paper_ledger.commission_pct()`,
+        # efektif taker); ham COMMISSION_PCT cüzdanı PnL'in altına kaydırıyordu. Oran
+        # satıra yazılır (`entry_commission_pct`) ki mutabakat bacağı aynı oranla kursun.
         # `order_value_try` = `auto_paper.py`nin `max_cost = order_value/(1+commission)`
         # değeridir; yani risk bütçesinin KENDİSİ (notional + giriş komisyonu)
         # cüzdandan düşülür — burada ek bir çarpan uygulanmamalıdır.
         cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", (config.CASH_ASSET,)).fetchone()
         current_cash = float(cash_row[0] if cash_row else 0.0)
         order_value = float(trade.get("order_value_try") or 0)
-        commission_pct = config.COMMISSION_PCT
+        commission_pct = paper_ledger.commission_pct()
         debit = order_value * (1 + commission_pct)
         if order_value <= 0 or current_cash + 1e-9 < debit:
             return (None, "insufficient_balance")
@@ -6926,14 +7061,15 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
                (symbol, side, status, notification_id, notification_key, entry_price, quantity, order_value_try,
                 stop_loss, take_profit, peak_price, entry_time,
                 notification_score, notification_target_pct, notification_expected_price,
-                created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+                created_at, updated_at, entry_commission_pct)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
             (symbol, trade.get("side", "LONG"), "open",
              notification_id, notification_key, trade["entry_price"], trade["quantity"], order_value,
              trade.get("stop_loss"), trade.get("take_profit"),
              trade.get("peak_price", trade["entry_price"]), trade["entry_time"],
              trade.get("notification_score"), trade.get("notification_target_pct"),
-             trade.get("notification_expected_price"), trade["created_at"], trade["updated_at"])
+             trade.get("notification_expected_price"), trade["created_at"], trade["updated_at"],
+             commission_pct)
         ).fetchone()
         if signal:
             trade_id_val = row["id"] if row else None
@@ -7382,12 +7518,17 @@ async def update_auto_paper_trailing(trade_id: int, activated: bool, trailing_st
 
 
 async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: float,
-                                 pnl: float, pnl_pct: float, commission: float, reason: str) -> bool:
+                                 pnl: float, pnl_pct: float, commission: float, reason: str,
+                                 exit_commission_pct: float | None = None) -> bool:
     """Auto paper pozisyonunu kapat VE wallet'a iade et (atomik).
 
     Tek transaction içinde pozisyon 'closed' yapılır, çıkış notional'ı
     (exit*(1-commission)) wallet'a eklenir ve CLOSE sinyali yazılır.
     Arada hata olursa her şey geri alınır — para iadesiz 'closed' kayıt kalmaz.
+
+    2026-10-17: ``exit_commission_pct`` = PnL'in çıkış bacağının oranı
+    (`paper_ledger.settle_close(...)["exit_commission_pct"]`); verilmezse
+    `paper_ledger.exit_commission_pct(reason)` (kâr al → maker, diğerleri taker).
     """
     def op(conn):
         # Denetim P0-5 (2026-10-07): portföy anahtarı transaction'ın İLK
@@ -7406,19 +7547,22 @@ async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: fl
         trade = dict(row)
         symbol = str(trade["symbol"]).upper()
         quantity = float(trade["quantity"])
-        commission_pct = config.COMMISSION_PCT
+        commission_pct = (paper_ledger.exit_commission_pct(reason) if exit_commission_pct is None
+                          else float(exit_commission_pct))
         conn.execute(
             """UPDATE auto_paper_trades SET status='closed', exit_price=?, exit_time=?,
-               pnl=?, pnl_pct=?, commission=?, exit_reason=?, updated_at=?
+               pnl=?, pnl_pct=?, commission=?, exit_reason=?, updated_at=?, exit_commission_pct=?
                WHERE id=? AND status='open'""",
-            (exit_price, exit_time, pnl, pnl_pct, commission, reason, time.time(), trade_id)
+            (exit_price, exit_time, pnl, pnl_pct, commission, reason, time.time(), commission_pct, trade_id)
         )
         # Wallet'a iade: pozisyon değeri + kar/zarar (çıkış komisyonu düşülür).
         # Denetim 2.5 (2026-09-26): giriş bacağı `open_auto_paper_trade`de
-        # `debit = order_value_try * (1 + COMMISSION_PCT)` ile alınmıştı; buradaki
-        # `proceed = exit_notional * (1 - COMMISSION_PCT)` ikinci bacaktır. Tam turda
-        # cüzdan net değişimi tam olarak 2*COMMISSION_PCT olur (giriş komisyonu ikinci
-        # kez sayılmaz) → `auto_paper._close_trade` PnL'i ile cüzdan ayrışmaz.
+        # `debit = order_value_try * (1 + giriş oranı)` ile alınmıştı; buradaki
+        # `proceed = exit_notional * (1 - çıkış oranı)` ikinci bacaktır. Tam turda
+        # cüzdan net değişimi tam olarak giriş + çıkış komisyonu olur (giriş komisyonu
+        # ikinci kez sayılmaz) → `auto_paper._close_trade` PnL'i ile cüzdan ayrışmaz.
+        # 2026-10-17: çıkış oranı PnL'in çıkış bacağıyla aynı (kâr al → maker) ve
+        # satıra yazılır (`exit_commission_pct`); ham COMMISSION_PCT artık yok.
         exit_notional = exit_price * quantity
         proceed = exit_notional * (1 - commission_pct)
         cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", (config.CASH_ASSET,)).fetchone()
@@ -7734,7 +7878,9 @@ async def open_combined_paper_trade(trade: dict) -> tuple[dict | None, str]:
                                 (config.CASH_ASSET,)).fetchone()
         cash = float(dict(cash_row)["amount"]) if cash_row and dict(cash_row).get("amount") is not None else 0.0
         order_value = float(trade.get("order_value_try") or 0.0)
-        commission_pct = float(getattr(config, "COMMISSION_PCT", 0.0015))
+        # 2026-10-17: giriş bacağı kapanıştaki `settle_close` ile aynı efektif taker oranı
+        # (ham COMMISSION_PCT cüzdanı PnL'in altına kaydırıyordu).
+        commission_pct = paper_ledger.commission_pct()
         debit = order_value * (1 + commission_pct)
         if order_value <= 0 or debit > cash + 1e-9:
             return (None, "insufficient_balance")

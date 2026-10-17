@@ -102,22 +102,22 @@ class ReconcileFigureTests(unittest.TestCase):
     def test_sums_both_ledgers(self):
         conn = _ReconcileConn(main_realized=50.0, auto_realized=30.0,
                               main_open=2000.0, auto_open=1000.0)
-        realized, main_open, auto_open = database._portfolio_reconcile_figures(conn, 0.0)
-        self.assertEqual(80.0, realized, "realize PnL iki defterin toplamı olmalı")
-        self.assertEqual(2000.0, main_open)
-        self.assertEqual(1000.0, auto_open)
+        figures = database._portfolio_reconcile_figures(conn, 0.0)
+        self.assertEqual(80.0, figures.realized, "realize PnL iki defterin toplamı olmalı")
+        self.assertEqual(2000.0, figures.main_open_cost)
+        self.assertEqual(1000.0, figures.auto_open_cost)
 
     def test_auto_paper_realized_is_included_when_main_is_empty(self):
         """V-01 regresyonu: yalnız otonom kapanış varsa preview 0 DEMEMELİ."""
         conn = _ReconcileConn(main_realized=0.0, auto_realized=30.0)
-        realized, _main, _auto = database._portfolio_reconcile_figures(conn, 0.0)
-        self.assertEqual(30.0, realized)
+        figures = database._portfolio_reconcile_figures(conn, 0.0)
+        self.assertEqual(30.0, figures.realized)
 
     def test_auto_paper_open_cost_is_included(self):
         conn = _ReconcileConn(main_open=0.0, auto_open=2000.0)
-        _realized, main_open, auto_open = database._portfolio_reconcile_figures(conn, 0.0)
-        self.assertEqual(0.0, main_open)
-        self.assertEqual(2000.0, auto_open, "açık auto-paper maliyeti atlanmamalı")
+        figures = database._portfolio_reconcile_figures(conn, 0.0)
+        self.assertEqual(0.0, figures.main_open_cost)
+        self.assertEqual(2000.0, figures.auto_open_cost, "açık auto-paper maliyeti atlanmamalı")
 
 
 class PreviewParityTests(unittest.IsolatedAsyncioTestCase):
@@ -180,32 +180,24 @@ class SingleSourceGuardTests(unittest.TestCase):
 
 
 class InitDbReconcileTests(unittest.TestCase):
-    """V-13: açılış mutabakatı da otonom bacağı katmalı."""
+    """V-13: açılış mutabakatı da otonom bacağı katmalı.
 
-    def test_init_db_reconciles_both_ledgers(self):
+    2026-10-17: açılış mutabakatının kendi inline SQL'i kaldırıldı; artık
+    `reconcile_portfolio` ile aynı `_portfolio_reconcile_figures` yardımcısını
+    kullanır (iki defter + satır başı komisyon oranı tek kaynakta).
+    """
+
+    def test_init_db_uses_the_shared_helper(self):
         src = inspect.getsource(database.init_db)
-        self.assertIn("FROM auto_paper_trades WHERE status='closed'", src,
-                      "açılış mutabakatı otonom realize PnL'i katmalı")
-        self.assertIn("SUM(order_value_try) FROM auto_paper_trades WHERE status='open'", src,
-                      "açılış mutabakatı açık otonom maliyeti katmalı")
+        self.assertIn("_portfolio_reconcile_figures", src,
+                      "açılış mutabakatı ortak yardımcıyı kullanmalı")
+        self.assertNotIn("SUM(order_value_try) FROM auto_paper_trades WHERE status='open'", src,
+                         "açılış mutabakatı kendi ayrı SQL'ini kurmamalı (V-01 dersi)")
 
-    def test_init_db_placeholder_count_matches_params(self):
-        """`%s` sayısı params demetiyle uyuşmalı — uyuşmazsa psycopg çalışma
-        anında patlar.
-
-        9 = 1×CASH_ASSET (okuma) + INITIAL + 2×cutoff(trades) + 2×cutoff(auto)
-        + COMMISSION_PCT + 2×CASH_ASSET (UPDATE ... WHERE + NOT EXISTS).
-        2026-09-29: mutabakat satırı `asset='TRY'` literal'i yerine
-        `config.CASH_ASSET` alıp parametreleştirildi (global'den port);
-        bu 3 yeni placeholder ile 6 → 9 oldu.
-        """
-        src = inspect.getsource(database.init_db)
-        marker = "UPDATE virtual_wallet SET amount="
-        start = src.index(marker)
-        end = src.index('"""', start)
-        sql = src[start:end]
-        self.assertEqual(9, sql.count("%s"),
-                         f"placeholder sayısı 9 olmalı, bulunan: {sql.count('%s')}")
+    def test_helper_covers_both_ledgers(self):
+        helper = inspect.getsource(database._portfolio_reconcile_figures)
+        self.assertIn("FROM auto_paper_trades WHERE status='closed'", helper)
+        self.assertIn("SUM(order_value_try),0) FROM auto_paper_trades WHERE status='open'", helper)
 
 
 if __name__ == "__main__":

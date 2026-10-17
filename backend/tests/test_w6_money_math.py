@@ -284,5 +284,23 @@ class CommissionCrossLayerTests(unittest.TestCase):
         self.assertIn("applyCommissionPct", src)
 
 
+class WalletLegCommissionSourceTests(unittest.TestCase):
+    """2026-10-17: paper cüzdan bacakları PnL bacaklarıyla AYNI efektif oranı kullanır.
+
+    Ham `config.COMMISSION_PCT` database.py'de yalnız eski (oranı saklanmamış)
+    bacakları yeniden kurmak için `_legacy_wallet_commission_pct` içinde okunur;
+    herhangi bir debit/credit yolunda doğrudan okunursa cüzdan PnL'den sapar.
+    Davranış testi: tests/test_wallet_commission_parity.py.
+    """
+
+    def test_database_reads_raw_rate_only_in_legacy_helper(self):
+        src = (_BACKEND / "app" / "database.py").read_text(encoding="utf-8")
+        code_lines = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
+        offenders = [ln.strip() for ln in code_lines
+                     if ("config.COMMISSION_PCT" in ln or '"COMMISSION_PCT"' in ln)
+                     and "`" not in ln]
+        self.assertEqual(['return float(getattr(config, "COMMISSION_PCT", 0.0015))'], offenders)
+
+
 if __name__ == "__main__":
     unittest.main()

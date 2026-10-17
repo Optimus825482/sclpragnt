@@ -1596,8 +1596,10 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
         hold_seconds = now - float(trade["entry_time"])
 
         # DB güncelle + wallet iadesi + sinyal tek transaction'da
+        # 2026-10-17: cüzdan iadesi PnL'in çıkış bacağıyla AYNI oranı kullanır.
         closed = await database.close_auto_paper_trade(
-            trade_id, fill_price, now, pnl, pnl_pct, total_commission, reason)
+            trade_id, fill_price, now, pnl, pnl_pct, total_commission, reason,
+            exit_commission_pct=settled["exit_commission_pct"])
         if not closed:
             logger.warning("auto_paper %s: kapanış başarısız (zaten kapalı?)", symbol)
             return

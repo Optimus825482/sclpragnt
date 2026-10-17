@@ -486,7 +486,8 @@ class AutoPaperSlippageTests(unittest.IsolatedAsyncioTestCase):
         trade = {"id": 1, "symbol": "APTEST", "status": "open", "entry_price": 100.0,
                  "quantity": 1.0, "entry_time": time.time() - 60}
 
-        async def fake_close(trade_id, exit_price, exit_time, pnl, pnl_pct, commission, reason):
+        async def fake_close(trade_id, exit_price, exit_time, pnl, pnl_pct, commission, reason,
+                             exit_commission_pct=None):
             captured["exit_price"] = exit_price
             return True
 
