@@ -73,11 +73,15 @@ export type RadarAlertItem = {
 // görünür (kullanıcı direktifi: arayüzde Global'e dair hiçbir şey olmayacak).
 type AlertKind = "radar" | "alarm" | "rising";
 
-const KIND_META: Record<AlertKind, { eyebrow: string; icon: string; accent: string }> = {
-  radar: { eyebrow: "RADAR BİLDİRİMİ", icon: "🚨", accent: "border-neon-green/40 bg-neon-green/5" },
-  alarm: { eyebrow: "ALARM BİLDİRİMİ", icon: "🔔", accent: "border-amber-300/40 bg-amber-300/5" },
-  rising: { eyebrow: "YÜKSELİŞ EĞİLİMİ BİLDİRİMİ", icon: "📈", accent: "border-sky-400/40 bg-sky-400/5" },
+// 2026-10-17: renkler artık `globals.css` içindeki `.ra-*` sınıflarından (opak, tema-bağımsız) gelir;
+// burada yalnız metin/ikon tutulur. `data-kind` üst çizgi/vurgu rengini seçer.
+const KIND_META: Record<AlertKind, { eyebrow: string; icon: string }> = {
+  radar: { eyebrow: "RADAR BİLDİRİMİ", icon: "🚨" },
+  alarm: { eyebrow: "ALARM BİLDİRİMİ", icon: "🔔" },
+  rising: { eyebrow: "YÜKSELİŞ EĞİLİMİ BİLDİRİMİ", icon: "📈" },
 };
+
+const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 // H-16: biçim TEK kaynaktan (`lib/format`); buradaki 5. hassasiyet kopyası
 // (binlik ayraçsız `toFixed`) kaldırıldı. Sembol argümanı geriye dönük uyum
@@ -92,6 +96,7 @@ export default function RadarAlertModal() {
   const [queue, setQueue] = useState<RadarAlertItem[]>([]);
   const [kind, setKind] = useState<AlertKind>("radar");
   const busyRef = useRef(false);
+  const dialogRef = useRef<HTMLElement | null>(null);
 
   const showNext = useCallback((next: RadarAlertItem | null, nextKind: AlertKind = "radar") => {
     if (next) {
@@ -157,7 +162,46 @@ export default function RadarAlertModal() {
 
   useLiveMessages(onLiveMessage, ["monitoring_alert", "alert", "rising_alert"]);
 
-  const close = () => showNext(null);
+  const close = useCallback(() => showNext(null), [showNext]);
+
+  // Erişilebilirlik: açılınca odak pencereye (ANLAŞILDI düğmesine) taşınır, Escape kapatır,
+  // Tab pencere içinde döner, kapanınca odak önceki öğeye geri verilir.
+  const open = item !== null;
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    const primary = dialog?.querySelector<HTMLElement>("[data-ra-primary]");
+    (primary ?? dialog)?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        close();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const items = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE));
+      if (items.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || active === dialogRef.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      try { previous?.focus?.(); } catch { /* odak geri verilemezse sessiz geç */ }
+    };
+  }, [open, close]);
 
   if (!item) return null;
   const meta = KIND_META[kind];
@@ -165,78 +209,84 @@ export default function RadarAlertModal() {
   const proximityPct = typeof item.proximity === "number" ? Math.round(item.proximity * 100) : null;
 
   return (
-    <div className="fixed inset-0 z-[120] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={close} role="alertdialog" aria-modal="true" aria-labelledby="radar-alert-title">
-      <section className={`w-full max-w-md max-h-[90vh] flex flex-col overflow-y-auto rounded-xl border ${meta.accent} bg-bunker-950 shadow-2xl`} onClick={(e) => e.stopPropagation()}>
-          <div className={`flex items-center justify-between border-b border-bunker-800 px-5 py-4 ${meta.accent}`}>
-            <div className="flex items-center gap-2">
-              <span className="text-xl">{meta.icon}</span>
-              <div>
-                <p className="eyebrow text-neon-green/80">{meta.eyebrow}</p>
-                <h2 id="radar-alert-title" className="font-mono text-lg font-bold text-white">
-                  {item.symbol ? <SymbolLink symbol={item.symbol} className="text-neon-green hover:text-white" /> : "YENİ ALARM"}
-                </h2>
-              </div>
-            </div>
-            <button type="button" onClick={close} aria-label="Bildirimi kapat" className="text-bunker-muted hover:text-white">✕</button>
-          </div>
-          <div className="space-y-3 p-5">
-            {risingKind && (
-              <span className={`inline-block rounded border px-2 py-0.5 font-mono text-[10px] font-bold ${risingKind === "erken" ? "border-sky-400/40 bg-sky-400/10 text-sky-300" : "border-neon-green/40 bg-neon-green/10 text-neon-green"}`}>
-                {risingKind === "erken" ? "🌱 ERKEN SİNYAL — YAKLAŞIYOR" : "📈 YÜKSELİŞ EĞİLİMİ"}
-              </span>
-            )}
-            <p className="text-sm leading-relaxed text-white">{item.message}</p>
-            {(item.target_pct != null || item.score != null || item.price != null || proximityPct != null) && (
-              <div className="grid grid-cols-3 gap-2">
-                {item.price != null && (
-                  <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">
-                    <p className="eyebrow">ANLIK</p>
-                    <p className="mt-1 font-mono text-sm font-bold text-white">{fmtPrice(item.price, item.symbol)}</p>
-                  </div>
-                )}
-                {item.target_pct != null && (
-                  <div className="rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 text-center">
-                    <p className="eyebrow">HEDEF</p>
-                    <p className="mt-1 font-mono text-sm font-bold text-neon-green">+%{Number(item.target_pct).toFixed(1)}</p>
-                  </div>
-                )}
-                {item.score != null && (
-                  <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">
-                    <p className="eyebrow">SKOR</p>
-                    <p className="mt-1 font-mono text-sm font-bold text-amber-300">{Number(item.score).toFixed(1)}</p>
-                  </div>
-                )}
-                {proximityPct != null && (
-                  <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 px-3 py-2 text-center">
-                    <p className="eyebrow">ZİRVEYE YAKINLIK</p>
-                    <p className="mt-1 font-mono text-sm font-bold text-sky-300">%{proximityPct}</p>
-                  </div>
-                )}
-              </div>
-            )}
-            {item.auto_paper_trade && item.auto_paper_trade.status === "ok" && (
-              <p className="rounded-lg border border-neon-green/30 bg-neon-green/10 px-3 py-2 text-sm text-neon-green">
-                🤖 Otomatik paper işlem denemesi başlatıldı.
-              </p>
-            )}
-            {item.auto_paper_trade && item.auto_paper_trade.status && item.auto_paper_trade.status !== "ok" && (
-              <p className="rounded-lg border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-sm text-amber-300">
-                Otomatik paper işlem: {item.auto_paper_trade.error || item.auto_paper_trade.status}
-              </p>
-            )}
-            <div className="flex items-center justify-between pt-1">
-              <p className="font-mono text-[10px] text-bunker-muted">
-                {item.triggered_at ? fmtDateTime(item.triggered_at) : ""}
-              </p>
-              <div className="flex gap-2">
-                {item.symbol && (
-                  <Link href={`/charts?symbol=${item.symbol}`} onClick={close} className="ui-button ui-button-secondary touch-target flex items-center justify-center">GRAFİĞE GİT</Link>
-                )}
-                <button type="button" onClick={close} className="ui-button ui-button-primary touch-target">ANLAŞILDI</button>
-              </div>
+    <div className="ra-overlay" onClick={close}>
+      <section
+        ref={dialogRef}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="radar-alert-title"
+        aria-describedby="radar-alert-message"
+        tabIndex={-1}
+        data-kind={kind}
+        className="ra-card"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="ra-head">
+          <div className="ra-head-main">
+            <span className="ra-icon" aria-hidden="true">{meta.icon}</span>
+            <div>
+              <p className="ra-eyebrow">{meta.eyebrow}</p>
+              <h2 id="radar-alert-title" className="ra-title">
+                {item.symbol ? <SymbolLink symbol={item.symbol} className="ra-symbol" /> : "YENİ ALARM"}
+              </h2>
             </div>
           </div>
-        </section>
+          <button type="button" onClick={close} aria-label="Bildirimi kapat" className="ra-close">✕</button>
+        </div>
+        <div className="ra-body">
+          {risingKind && (
+            <span className={`ra-chip ${risingKind === "erken" ? "ra-chip-info" : ""}`}>
+              {risingKind === "erken" ? "🌱 ERKEN SİNYAL — YAKLAŞIYOR" : "📈 YÜKSELİŞ EĞİLİMİ"}
+            </span>
+          )}
+          <p id="radar-alert-message" className="ra-msg">{item.message}</p>
+          {(item.target_pct != null || item.score != null || item.price != null || proximityPct != null) && (
+            <div className="ra-tiles">
+              {item.price != null && (
+                <div className="ra-tile">
+                  <p className="ra-tile-label">ANLIK</p>
+                  <p className="ra-tile-value">{fmtPrice(item.price, item.symbol)}</p>
+                </div>
+              )}
+              {item.target_pct != null && (
+                <div className="ra-tile ra-tile-good">
+                  <p className="ra-tile-label">HEDEF</p>
+                  <p className="ra-tile-value">+%{Number(item.target_pct).toFixed(1)}</p>
+                </div>
+              )}
+              {item.score != null && (
+                <div className="ra-tile ra-tile-warn">
+                  <p className="ra-tile-label">SKOR</p>
+                  <p className="ra-tile-value">{Number(item.score).toFixed(1)}</p>
+                </div>
+              )}
+              {proximityPct != null && (
+                <div className="ra-tile ra-tile-info">
+                  <p className="ra-tile-label">ZİRVEYE YAKINLIK</p>
+                  <p className="ra-tile-value">%{proximityPct}</p>
+                </div>
+              )}
+            </div>
+          )}
+          {item.auto_paper_trade && item.auto_paper_trade.status === "ok" && (
+            <p className="ra-note">🤖 Otomatik paper işlem denemesi başlatıldı.</p>
+          )}
+          {item.auto_paper_trade && item.auto_paper_trade.status && item.auto_paper_trade.status !== "ok" && (
+            <p className="ra-note ra-note-warn">
+              Otomatik paper işlem: {item.auto_paper_trade.error || item.auto_paper_trade.status}
+            </p>
+          )}
+          <div className="ra-foot">
+            <p className="ra-time">{item.triggered_at ? fmtDateTime(item.triggered_at) : ""}</p>
+            <div className="ra-actions">
+              {item.symbol && (
+                <Link href={`/charts?symbol=${item.symbol}`} onClick={close} className="ui-button ui-button-secondary touch-target flex items-center justify-center">GRAFİĞE GİT</Link>
+              )}
+              <button type="button" onClick={close} data-ra-primary className="ui-button ui-button-primary touch-target">ANLAŞILDI</button>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

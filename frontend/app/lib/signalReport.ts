@@ -5,7 +5,8 @@ export type ReportRow = {
   id: number;
   symbol: string;
   status: string;
-  sent_via_push: boolean;
+  /** Geriye dönük alan: rapor artık yalnız push bildirimlerini döndürür (panel bildirimi yok). */
+  sent_via_push?: boolean;
   mfe_pct: number | null;
   detected_at?: number;
   target_pct?: number;
@@ -15,7 +16,6 @@ export type ReportRow = {
   price?: number;
 };
 
-export type ChannelFilter = "all" | "push" | "panel";
 export type ResultFilter = "all" | "hit" | "partial" | "miss" | "open";
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -45,13 +45,8 @@ export function resultGroup(status: string): Exclude<ResultFilter, "all"> {
   }
 }
 
-export function filterRows(rows: ReportRow[], result: ResultFilter, channel: ChannelFilter): ReportRow[] {
-  return rows.filter((r) => {
-    if (result !== "all" && resultGroup(r.status) !== result) return false;
-    if (channel === "push" && !r.sent_via_push) return false;
-    if (channel === "panel" && r.sent_via_push) return false;
-    return true;
-  });
+export function filterRows(rows: ReportRow[], result: ResultFilter): ReportRow[] {
+  return rows.filter((r) => result === "all" || resultGroup(r.status) === result);
 }
 
 export type RateRow = { key: string; label: string; count: number; evaluated: number; success: number; rate: number | null };

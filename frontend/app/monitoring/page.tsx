@@ -1772,8 +1772,9 @@ function AdminMonitoringPage() {
                     </div>
 
                     <div className="flex items-center justify-between sm:justify-end gap-3 text-bunker-muted">
-                      <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${isPush ? "bg-neon-green/15 text-neon-green border border-neon-green/40" : "bg-bunker-800 text-bunker-muted"}`}>
-                        {isPush ? "PUSH İLETİLDİ" : "PANEL UYARISI"}
+                      <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${isPush ? "bg-neon-green/15 text-neon-green border border-neon-green/40" : "bg-amber-400/10 text-amber-300 border border-amber-400/30"}`}
+                        title={isPush ? "Push bildirimi cihaza iletildi" : "Push gönderildi ama cihaza ulaştığı doğrulanamadı"}>
+                        {isPush ? "PUSH İLETİLDİ" : "PUSH İLETİLEMEDİ"}
                       </span>
                       <span className="text-xs">
                         <RelativeTime ts={row.detected_at} />

@@ -18,6 +18,7 @@ from app.api_common import (log_user_action, _background_tasks, _start_backgroun
                             _alert_system_event)
 from app.state import market, analyzer
 from app import unified_signals
+from app import notification_policy as _notification_policy
 from app import llm_second_eye
 from app import macd_mtf
 from app import master_surge
@@ -246,6 +247,17 @@ async def _persist_runtime_state() -> None:
                 "mode": n.get("mode"), "id": n.get("id"),
                 "ml_hit_probability": n.get("ml_hit_probability"),
                 "ml_target_pct": n.get("ml_target_pct"),
+                # 2026-10-17 (panel bildirimi yok): ertelenen bildirim ARTIK sessiz saatte
+                # kaydedilmez; flush'ta (push denendiğinde) kaydedilebilmesi için kayıt
+                # alanları restart'ta kaybolmasın.
+                "candidate_id": n.get("candidate_id"), "sources": n.get("sources"),
+                "norm_cap": n.get("norm_cap"), "norm_version": n.get("norm_version"),
+                "macd_mtf_verdict": n.get("macd_mtf_verdict"),
+                "macd_mtf_confluence": n.get("macd_mtf_confluence"),
+                "alert_id": n.get("alert_id"), "source": n.get("source"),
+                "unified": n.get("unified"), "kind": n.get("kind"),
+                "deferred_alert": n.get("deferred_alert"),
+                "push_attempted": n.get("push_attempted"),
             })
         payload = {
             "pending_targets": _monitoring_state["pending_targets"],
@@ -974,6 +986,13 @@ async def _flush_deferred_push():
         TTL dolunca atılır (eskiden `break` ile sonsuza dek yeniden kuyruğa
         ekleniyordu — kalıcı latch).
       * `break` yok: tüm kuyruk her turda işlenir.
+
+    PANEL BİLDİRİMİ YOK (2026-10-17): ertelenen radar bildirimi sessiz saatte
+    `monitoring_notifications`'a YAZILMAZ ve yayınlanmaz; kayıt + WS yayını push
+    GERÇEKTEN DENENDİĞİNDE (burada, ilk denemede) yapılır. Deneme başarısız olsa bile
+    bildirim kaydedilir (`push_attempted`) ve TTL'e kadar yeniden denenir; yeniden
+    denemede yalnız etiket (`sent_via_push`) düzeltilir (çift kayıt/yayın yok). VAPID
+    yoksa deneme yapılmadığı için kayıt da yoktur.
     """
     if not _deferred_push:
         return
@@ -987,7 +1006,7 @@ async def _flush_deferred_push():
         _deferred_push.clear()
         logger.info("Monitoring: bildirimler kapalı — %d ertelenen push düşürüldü", n)
         return
-    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    vapid_configured = _vapid_configured()
     if not vapid_configured:
         logger.warning("Monitoring: VAPID yapılandırılmamış — ertelenen push'lar teslim "
                        "edilemez; TTL dolunca düşürülecek (%d kuyrukta)", len(_deferred_push))
@@ -1008,19 +1027,48 @@ async def _flush_deferred_push():
         if not vapid_configured:
             # Gönderilemez ama TTL dolmadan atmayız; sonraki turda yeniden denenir
             # ve TTL dolunca yukarıdaki dalda düşürülür (kalıcı latch YOK).
+            # Push denenmediği için kayıt/yayın da YOK.
             survivors.append(notif)
             continue
+        is_alarm = bool(notif.get("deferred_alert"))
+        # Radar bildirimi (kaydı `monitoring_notifications`'ta tutulan) mi? Alarm zarfı
+        # ve yükseliş (kanıt tablosu `rising_alerts`) bildirimi o tabloya yazılmaz.
+        recordable = (not is_alarm) and str(notif.get("source") or "") != "rising"
+        first_attempt = not notif.get("push_attempted")
+        if first_attempt and not is_alarm:
+            # Sink politikası (kayıt yazılmadan önce push'u da keser).
+            _reason = _notification_policy.evaluate(notif)
+            if _reason:
+                logger.info("ertelenen bildirim politikayla düşürüldü %s: %s",
+                            notif.get("symbol"), _reason)
+                dropped += 1
+                continue
         ok = await _send_push(notif)
+        notif["push_success"] = ok
+        notif["push_attempted"] = True
+        if ok:
+            notif["sent_via_push"] = True
+        if recordable and not notif.get("id"):
+            # İLK deneme: bildirim şimdi (push denendiği için) kaydedilir; etiket gerçek sonuçtur.
+            notif["sent_via_push"] = bool(ok)
+            await _record_history([notif])
+            if not notif.get("policy_blocked"):
+                _link_pending_notification(notif)
+                _monitoring_state["history"] = ([notif] + _monitoring_state["history"])[:HISTORY_LIMIT]
+        elif ok and notif.get("id"):
+            # Ertelenen push gerçekten gönderildi → DB etiketini düzelt
+            try:
+                await database.mark_monitoring_push_sent(notif.get("id"))
+            except Exception as exc:
+                logger.warning("push etiketi güncellenemedi %s: %s", notif.get("id"), exc)
+        if first_attempt and not is_alarm and not notif.get("policy_blocked"):
+            # Uygulamaya yayın: push denendiği anda (panel bildirimi yok).
+            try:
+                await ws_manager.broadcast({"type": _ws_alert_type(notif), "data": [notif]})
+            except Exception as exc:
+                logger.debug("ertelenen bildirim WS yayını %s: %s", notif.get("symbol"), exc)
         if ok:
             sent += 1
-            notif["sent_via_push"] = True
-            # Ertelenen push gerçekten gönderildi → DB etiketini düzelt
-            nid = notif.get("id")
-            if nid:
-                try:
-                    await database.mark_monitoring_push_sent(nid)
-                except Exception as exc:
-                    logger.warning("push etiketi güncellenemedi %s: %s", nid, exc)
             # R3: yükseliş bildiriminin kanıt satırı ayrı tabloda (`rising_alerts`);
             # `id` yerine `alert_id` taşır → dürüstlük kuralı orada da uygulanır.
             alert_id = notif.get("alert_id")
@@ -1957,29 +2005,19 @@ async def _notify(candidates_list, settings) -> list:
         if len(_monitoring_state["notified_prices"]) > 500:
             for k in list(_monitoring_state["notified_prices"])[:-250]:
                 _monitoring_state["notified_prices"].pop(k, None)
-    # Yeni bildirimleri DB'ye kaydet — M1/P1 (R2-06/R2-19): `sent_via_push` artık
-    # GERÇEK teslimi yansıtır. Varsayılan False (henüz push denenmedi/teslim
-    # edilmedi); yalnızca push gerçekten ulaşırsa mark_monitoring_push_sent ile
-    # True'ya çevrilir. "sessiz saat değil" artık "gönderildi" DEMEK DEĞİL.
+    # 2026-10-17 (PANEL BİLDİRİMİ KALDIRILDI): bildirim satırı artık BURADA yazılmaz.
+    # Bir radar bildirimi `monitoring_notifications`'a / WS'e / oturum geçmişine YALNIZ
+    # web push gerçekten DENENECEKSE girer (`_deliver_scan_notifications` push'tan hemen
+    # önce yazar; sessiz saatte ertelenenler `_flush_deferred_push` içinde, push
+    # denendiğinde yazılır). Push denenmeyecek adaylar (VAPID yok, boot grace, bildirimler
+    # kapalı...) kayıt/yayın üretmez; ÖLÇÜM kaydı (velocity_candidates /
+    # unified_candidate_outcomes / blok nedenleri) tarama aşamasında zaten yazılmıştır.
+    # Sink politikası (`notification_policy`) kararı burada KAYIT YAZMADAN işlenir ki
+    # bloklanan aday push/WS/otonom paper yollarına girmesin (eski davranış aynen).
     if new_entries:
         for n in new_entries:
             n["sent_via_push"] = False
-        _s_t0 = time.time()
-        # M1/P2 (R2-15): ölü `_record_history` artık burada KULLANILIYOR (tek yol).
-        await _record_history(new_entries)
-        # MACD MTF ölçüm kablosu: DB satır id'sini pending hedefe bağla →
-        # `_check_pending_targets` sonucu (dokunma/MFE/MAE) o satıra yazılır.
-        for n in new_entries:
-            _nid = n.get("id")
-            if _nid is None:
-                continue
-            _pt = _monitoring_state["pending_targets"].get(str(n.get("symbol") or ""))
-            if _pt is not None and _pt.get("notification_id") is None:
-                _pt["notification_id"] = _nid
-        _s_t1 = time.time()
-        _db_lat = (_s_t1 - _s_t0) * 1000
-        _monitoring_state.setdefault("_db_latencies", []).append(_db_lat)
-        _monitoring_state["_db_latencies"] = _monitoring_state["_db_latencies"][-20:]
+        _notification_policy.precheck(new_entries)
     # 2026-10-16 (sinyal politikası): lavaboda (save_monitoring_notifications) bloklanan
     # bildirimler `policy_blocked` taşır; push / WhatsApp / otonom paper / WS / LLM ikinci
     # göz yollarına GİRMEZ. Politika bildirim politikasıdır; otonom giriş kuralları
@@ -1990,20 +2028,77 @@ async def _notify(candidates_list, settings) -> list:
             logger.info("bildirim politikası: %s (mod=%s) teslimden düşürüldü — %s",
                         n.get("symbol"), n.get("mode"), n.get("policy_blocked"))
         notified = [n for n in notified if not n.get("policy_blocked")]
-        new_notifs = [n for n in new_notifs if not n.get("policy_blocked")]
         if not notified:
             return []
-    # Sessiz saat bilgisi bildirim nesnesine işaretlenir (UI geçmişte görür).
+    # Sessiz saat bilgisi bildirim nesnesine işaretlenir (teslim aşaması okur).
     for n in notified:
         n["quiet_hours"] = bool(quiet)
-    # B3: oturum geçmişi TÜM bildirimleri içersin (önceden yalnız yeniler
-    # alınıyordu; "güncellendi" bildirimleri geçmişte görünmüyordu).
-    if notified:
-        _monitoring_state["history"] = (notified + _monitoring_state["history"])[:HISTORY_LIMIT]
+    # NOT: oturum geçmişi (`_monitoring_state["history"]`) artık burada DOLDURULMAZ;
+    # yalnız push denenen (kaydedilen) bildirimler `_register_push_notifications`
+    # içinde geçmişe girer (panel bildirimi yok).
     # B5: Push gönderimi, WS yayını ve otonom paper denemeleri STATE KİLİDİ
     # DIŞINA taşındı (`_deliver_scan_notifications`) — ağırlıklı ağ I/O'su kilit
     # altında GET /state ve GET /scan isteklerini saniyelerce blokluyordu.
     return notified
+
+
+def _vapid_configured() -> bool:
+    """Web push gönderilebilir mi? (VAPID private key tanımlı mı)
+
+    "Push denenebilir" ölçütü budur: anahtar yoksa hiçbir push denenemez → bildirim
+    KAYDEDİLMEZ/YAYINLANMAZ (panel bildirimi kavramı kaldırıldı, 2026-10-17).
+    """
+    return bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+
+
+def _link_pending_notification(notif: dict) -> None:
+    """Kaydedilen bildirimin DB id'sini `pending_targets` ölçüm kaydına bağla.
+
+    `_check_pending_targets` sonucu (dokunma/MFE/MAE) bu bağ sayesinde bildirim satırına
+    yazılır. Bildirim satırı artık push denendiğinde (teslim aşamasında) yazıldığı için
+    bağ da burada kurulur.
+    """
+    nid = notif.get("id")
+    if nid is None:
+        return
+    pt = _monitoring_state["pending_targets"].get(str(notif.get("symbol") or ""))
+    if pt is not None and pt.get("notification_id") is None:
+        pt["notification_id"] = nid
+
+
+async def _register_push_notifications(entries: list) -> list:
+    """Push'u DENENECEK bildirimleri kalıcı kaydet + oturum geçmişine ekle.
+
+    PANEL BİLDİRİMİ YOK (2026-10-17): bu fonksiyon yalnız push denenecek bildirimler
+    için, push çağrısından HEMEN ÖNCE çalışır. `sent_via_push` burada False yazılır ve
+    push gerçekten ulaşırsa `mark_monitoring_push_sent` ile True'ya çevrilir
+    (`push_attempted=True` her halükârda yazılır: teslimi başarısız push da bir push
+    bildirimidir). Sink politikası bloklayan girdiler listeden çıkarılır.
+    Dönüş: kaydı/yayını sürdürülecek girdiler.
+    """
+    fresh = [n for n in entries if not n.get("id")]
+    for n in fresh:
+        n["sent_via_push"] = False
+        n["push_attempted"] = True
+    if fresh:
+        await _record_history(fresh)
+        for n in fresh:
+            _link_pending_notification(n)
+    kept = [n for n in entries if not n.get("policy_blocked")]
+    for n in entries:
+        if n.get("policy_blocked"):
+            logger.info("bildirim politikası: %s (mod=%s) kayıttan düşürüldü — %s",
+                        n.get("symbol"), n.get("mode"), n.get("policy_blocked"))
+    if kept:
+        _monitoring_state["history"] = (kept + _monitoring_state["history"])[:HISTORY_LIMIT]
+    return kept
+
+
+def _ws_alert_type(notif: dict) -> str:
+    """Yükseliş bildirimi birleşik modda `monitoring_alert`, eski modda `rising_alert` taşır."""
+    if str(notif.get("source") or "") == "rising" and not notif.get("unified"):
+        return "rising_alert"
+    return "monitoring_alert"
 
 
 async def _deliver_scan_notifications(notified: list) -> None:
@@ -2013,8 +2108,17 @@ async def _deliver_scan_notifications(notified: list) -> None:
     auto_paper DB/plan işlemleri state kilidini uzun süre tutmamalıdır.
 
     Push yalnızca YENI bildirimlere gönderilir (güncellemeler her turda
-    tetiklenmesin diye spam koruması); WS yayını ise B3 ile TÜM bildirimleri
-    (yeni + güncelleme) kapsar.
+    tetiklenmesin diye spam koruması).
+
+    PANEL BİLDİRİMİ YOK (2026-10-17): bir bildirim ancak push DENENİRSE kaydedilir
+    (`monitoring_notifications`), WS ile yayınlanır, oturum geçmişine ve LLM ikinci göze
+    girer. Push denenmeyen yeni adaylar (VAPID yok, boot grace) hiçbirini üretmez;
+    sessiz saatte ertelenenler kayıt/yayın olmadan kuyruğa girer ve push gerçekten
+    denendiğinde (`_flush_deferred_push`) kaydedilip yayınlanır. OTONOM PAPER bundan
+    ETKİLENMEZ: `try_open_from_notification` eskisi gibi tüm (politikayla engellenmemiş)
+    adaylara uygulanır; kaydedilmeyen adaylarda `notification_id` yoktur.
+    GÜNCELLEMELER (`updated=True`) zaten var olan bir bildirim satırının tazelenmesidir ve
+    eskisi gibi yayınlanır.
     """
     if not notified:
         return
@@ -2029,13 +2133,15 @@ async def _deliver_scan_notifications(notified: list) -> None:
     in_boot_grace = (time.time() - boot_time) < boot_suppress and not bool(os.getenv("PYTEST_CURRENT_TEST"))
 
     if in_boot_grace and new_notifs:
-        logger.info("Monitoring boot grace period aktif (kalan: %.0f sn) — %d adet push bildirimi bastırıldı (WS/DB hazır).",
+        logger.info("Monitoring boot grace period aktif (kalan: %.0f sn) — %d adet push bildirimi bastırıldı "
+                    "(push denenmediği için kayıt/yayın da yok).",
                     max(0.0, boot_suppress - (time.time() - boot_time)), len(new_notifs))
-        # WS yayını devam eder, yalnız harici push fırtınası bastırılır
+        # Harici push fırtınası bastırılır; push denenmediği için bildirim de üretilmez
+        # (otonom paper aşağıda eskisi gibi sürer).
         new_notifs = []
 
     quiet = bool(notified[0].get("quiet_hours"))
-    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    vapid_configured = _vapid_configured()
     # BİRLEŞİK RADAR (Aşama 2): tek tip bildirim. Radar push'u `radar-{sym}` tag'i
     # ile gider ve bu turda push edilen semboller kaydedilir — yükseliş teslimatı
     # aynı sembol için İKİNCİ push atmaz.
@@ -2064,7 +2170,12 @@ async def _deliver_scan_notifications(notified: list) -> None:
                 # skor haritası boş kalır ve cooldown'daki HER sinyal "terfi"
                 # sanılıp bastırma hiçe iner.
                 unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
+    # Push DENENEN yeni bildirimler (kaydedilecek + yayınlanacak olanlar).
+    attempted: list = []
     if new_notifs and not quiet and vapid_configured:
+        # Önce kalıcı kayıt (sent_via_push=False, push_attempted=True), sonra push; gerçek
+        # teslim sonucu etikete yansır. Politika bloklayanlar düşer.
+        new_notifs = await _register_push_notifications(new_notifs)
         for notif in new_notifs:
 
             ok = await _send_push(notif)
@@ -2080,13 +2191,16 @@ async def _deliver_scan_notifications(notified: list) -> None:
                         logger.warning("push etiketi güncellenemedi %s: %s", nid, exc)
             else:
                 logger.warning("Monitoring push gönderilemedi: %s", notif.get("symbol"))
+        attempted = list(new_notifs)
     elif new_notifs and not quiet:
-        # VAPID yok: push atlanır, bildirim kaydına işlenir
-        logger.info("Monitoring push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d bildirim)", len(new_notifs))
+        # VAPID yok: push DENENEMEZ → bildirim kaydedilmez/yayınlanmaz (panel bildirimi yok).
+        logger.info("Monitoring push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d aday; "
+                    "bildirim kaydı/yayını yok)", len(new_notifs))
         for notif in new_notifs:
             notif["push_success"] = False
     elif new_notifs and quiet:
         # Sessiz saat: push'u ertele — saat bitince _flush_deferred_push gönderir.
+        # Kayıt/yayın da push denendiğinde (flush) yapılır; şimdi hiçbiri yok.
         logger.info("Monitoring: sessiz saatlerde %d bildirim push kuyruğuna alındı", len(new_notifs))
         for notif in new_notifs:
             _deferred_push.append(notif)
@@ -2094,22 +2208,27 @@ async def _deliver_scan_notifications(notified: list) -> None:
     # numarasına) bu bildirim mesaj olarak gönderilir. Push tesliminden BAĞIMSIZ:
     # kullanıcı push aboneliği olmasa da WhatsApp isteyebilir. Sessiz saatte
     # gönderilmez (kullanıcı tercihine saygı). Hata bildirim akışını bozmaz.
+    # (WhatsApp ayrı bir DIŞ kanaldır; panel bildirimi değildir ve bu değişiklikten etkilenmez.)
     if new_notifs and not quiet:
         try:
             for notif in new_notifs:
                 await _broadcast_user_whatsapp(notif)
         except Exception as exc:
             logger.debug("kullanıcı WhatsApp yayını atlandı: %s", exc)
-    # Otonom Paper Trade: Panel uyarısı veya Push ile gelen her geçerli fırsatta pozisyon aç!
-    # (2026-09-22 Erkan Kararı: Panel uyarısında da açık işlem yoksa açılır; sent_via_push zorunluluğu yok).
+    # Otonom Paper Trade: push denenmiş olsun olmasın her geçerli fırsatta açık işlem yoksa
+    # pozisyon aç (2026-09-22 Erkan Kararı). Panel bildirimi kaldırıldı (2026-10-17) ama
+    # bu yol KORUNUR: aday doğrudan buradan (kayıt/yayın gerektirmeden) işlenir.
     try:
         from app.routers.auto_paper import try_open_from_notification
+        _attempted_ids = {id(n) for n in attempted}
         for notif in notified:
             # P1-3 (2026-10-07): LLM kararı bu noktada HENÜZ yok (fire-and-forget
             # `_maybe_llm_second_eye` aşağıda başlar). Karara bağlı giriş için
             # otonom girişi `_llm_second_eye_task` ERLER; sağlayıcı yoksa görev
             # fail-open ile girişi yine yapar (mevcut davranış korunur).
-            if _defer_open_for_llm_second_eye(notif):
+            # 2026-10-17: erteleme yalnız LLM görevi GERÇEKTEN başlayacak (push denenen)
+            # bildirimlerde; aksi halde giriş hiç denenmezdi.
+            if id(notif) in _attempted_ids and _defer_open_for_llm_second_eye(notif):
                 notif["_llm_entry_deferred"] = True
                 continue
             try:
@@ -2120,13 +2239,18 @@ async def _deliver_scan_notifications(notified: list) -> None:
         pass
     except Exception as exc:
         logger.warning("auto_paper toplu deneme hatası: %s", exc)
-    try:
-        await ws_manager.broadcast({"type": "monitoring_alert", "data": notified})
-    except Exception as exc:
-        logger.warning("Monitoring WS broadcast hatasi: %s", exc)
-    # LLM İKİNCİ GÖZ (2026-09-26): teslim edilen yeni bildirimler şemalı LLM
+    # WS yayını: push DENENEN yeni bildirimler + var olan bildirim satırlarının güncellemeleri.
+    # Push denenmeyen adaylar uygulamaya bildirim olarak GİTMEZ.
+    updates = [n for n in notified if n.get("updated") and not n.get("policy_blocked")]
+    to_broadcast = attempted + updates
+    if to_broadcast:
+        try:
+            await ws_manager.broadcast({"type": "monitoring_alert", "data": to_broadcast})
+        except Exception as exc:
+            logger.warning("Monitoring WS broadcast hatasi: %s", exc)
+    # LLM İKİNCİ GÖZ (2026-09-26): push denenen yeni bildirimler şemalı LLM
     # onayına gönderilir; karar ayrı bir bildirim olarak ekrana düşer.
-    _maybe_llm_second_eye(new_notifs)
+    _maybe_llm_second_eye(attempted)
 
 
 async def _llm_second_eye_task(notif: dict) -> None:
@@ -2170,14 +2294,18 @@ async def _llm_second_eye_task(notif: dict) -> None:
     if _policy_reason:
         envelope["policy_blocked"] = _policy_reason
         logger.info("LLM ikinci göz zarfı politikayla düşürüldü %s: %s", sym, _policy_reason)
-    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip()) and not _policy_reason
-    if vapid_configured:
+    # PANEL BİLDİRİMİ YOK (2026-10-17): karar zarfı da bir bildirimdir; push DENENMEDİYSE
+    # (VAPID yok / politika engeli) `monitoring_notifications`'a yazılmaz ve WS'e yayınlanmaz.
+    # Karar yine orijinal bildirim satırına (`llm_verdict`) ve otonom girişe uygulanır.
+    push_attempted = _vapid_configured() and not _policy_reason
+    if push_attempted:
         ok = await _send_push(envelope)
         envelope["push_success"] = ok
         envelope["sent_via_push"] = ok
+        envelope["push_attempted"] = True
         if not ok:
             logger.warning("LLM ikinci göz push'u gönderilemedi: %s", sym)
-    await _record_history([envelope])
+        await _record_history([envelope])
     # KARARI ASIL BİLDİRİM SATIRINA BAĞLA (2026-10-07): değerlendirme bildirim
     # kaydedildikten SONRA çalıştığı için karar yalnız INSERT anında
     # yazılabiliyordu → kolon canlıda %98 NULL kalıyordu ve `auto_paper`'ın LLM
@@ -2203,10 +2331,13 @@ async def _llm_second_eye_task(notif: dict) -> None:
         _dnotif["llm_reasons"] = reasons
         await _post_llm_second_eye_entry(_dnotif, envelope)
     try:
-        if not envelope.get("policy_blocked"):  # 2026-10-16 (sinyal politikası)
+        if push_attempted and not envelope.get("policy_blocked"):  # 2026-10-16/17: yalnız push denendiyse
             await ws_manager.broadcast({"type": "monitoring_alert", "data": [envelope]})
-        logger.info("LLM ikinci göz kararı yayınlandı: %s → %s",
-                    sym, str(envelope.get("llm_verdict")))
+            logger.info("LLM ikinci göz kararı yayınlandı: %s → %s",
+                        sym, str(envelope.get("llm_verdict")))
+        else:
+            logger.info("LLM ikinci göz kararı (push denenmedi, bildirim üretilmedi): %s → %s",
+                        sym, str(envelope.get("llm_verdict")))
     except Exception as exc:
         logger.debug("LLM ikinci göz WS yayını %s: %s", sym, exc)
 
@@ -2461,8 +2592,11 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
             "notification_id": _existing_pending.get("notification_id"),
         }
     unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
-    # Kalıcı kayıt (rapor/günlük takip sayfası buradan okur).
-    await _record_history([notif])
+    # 2026-10-17 (PANEL BİLDİRİMİ KALDIRILDI): sink politikası kararı KAYIT YAZMADAN
+    # alınır; bildirim satırı (rapor/günlük takip sayfası) + oturum geçmişi + WS yayını
+    # yalnız push DENENECEKSE (VAPID tanımlıysa) yazılır. Aksi halde aday yalnız ölçüm
+    # kaydı (velocity_candidates) ve otonom paper için işlenir.
+    _notification_policy.precheck([notif])
     # BİRLEŞİK SİNYAL: Bu bildirimin gerçek MFE ve hedefe dokunuşunu ölçebilmek için
     # velocity_candidates tablosuna da kaydet (aksi halde rapor ÖLÇÜLEMEDİ kalır).
     try:
@@ -2482,15 +2616,21 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     if notif.get("policy_blocked"):
         logger.info("hızlı yol bildirimi politikayla düşürüldü %s: %s", sym, notif.get("policy_blocked"))
         return notif
-    _monitoring_state["history"] = ([notif] + _monitoring_state["history"])[:HISTORY_LIMIT]
+    push_attempted = _vapid_configured()
+    if push_attempted:
+        # Kalıcı kayıt (rapor/günlük takip sayfası buradan okur) — push'tan hemen ÖNCE;
+        # `sent_via_push` gerçek teslim sonucuyla güncellenir.
+        notif["sent_via_push"] = False
+        notif["push_attempted"] = True
+        await _record_history([notif])
+        _monitoring_state["history"] = ([notif] + _monitoring_state["history"])[:HISTORY_LIMIT]
     # Tek tip teslim: tag radar-{sym} + push + WS + otonom paper.
     notif["tag"] = f"radar-{sym}"
     notif["sources"] = list(notif.get("sources") or [])
     if kind not in notif["sources"]:
         notif["sources"].append(kind)
-    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
     sources = notif.get("sources")
-    if vapid_configured:
+    if push_attempted:
         ok = await _send_push(notif)
         notif["push_success"] = ok
         if ok:
@@ -2502,20 +2642,23 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
                 except Exception as exc:
                     logger.debug("fast push etiketi %s: %s", nid, exc)
     else:
+        # VAPID yok: push DENENEMEZ → bildirim kaydı/WS yayını yok (panel bildirimi yok).
         notif["push_success"] = False
     try:
         from app.routers.auto_paper import try_open_from_notification
         await try_open_from_notification(notif)
     except Exception as exc:
         logger.debug("fast auto_paper %s: %s", sym, exc)
-    try:
-        await ws_manager.broadcast({"type": "monitoring_alert", "data": [notif]})
-    except Exception as exc:
-        logger.debug("fast WS broadcast: %s", exc)
+    if push_attempted:
+        try:
+            await ws_manager.broadcast({"type": "monitoring_alert", "data": [notif]})
+        except Exception as exc:
+            logger.debug("fast WS broadcast: %s", exc)
     logger.info("BİRLEŞİK SİNYAL: %s tetik=%s füzyon=%.1f kaynak=%s",
                 sym, kind, float(candidate.get("unified_score") or 0),
                 "+".join(notif.get("sources") or []))
-    _maybe_llm_second_eye([notif])
+    if push_attempted:
+        _maybe_llm_second_eye([notif])
     return notif
 
 
@@ -2670,12 +2813,18 @@ async def _rising_deliver(notified: list) -> None:
     """Yükseliş teslimi: push + WS `rising_alert` + otonom paper.
 
     MUTLAKA state kilidi DIŞINDA çağrılır (push ağ I/O'su + auto_paper DB işi).
+
+    PANEL BİLDİRİMİ YOK (2026-10-17): WS yayını ve LLM ikinci göz YALNIZ push DENENEN
+    (`attempted`) yükseliş bildirimlerine uygulanır. Sessiz saatte ertelenenler push
+    denendiğinde (`_flush_deferred_push`) yayınlanır; VAPID yoksa / bastırılmışsa hiç
+    yayınlanmaz. Kanıt tablosu (`rising_alerts`) ve otonom paper etkilenmez.
     """
     if not notified:
         return
     quiet = bool((notified[0] or {}).get("quiet_hours"))
-    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    vapid_configured = _vapid_configured()
     unified = await _radar_unified_enabled()
+    attempted: list = []
 
     if unified:
         # TEK TİP BİLDİRİM: radar bu turda aynı sembolü ZATEN push ettiyse ikinci
@@ -2710,9 +2859,11 @@ async def _rising_deliver(notified: list) -> None:
                     notif["title"] = f"⚡ SİNYAL GÜÇLENDİ · {sym}"
                 primary.append(notif)
         if vapid_configured and not quiet:
+            attempted = list(primary)
             for notif in primary:
                 ok = await _send_push(notif)
                 notif["push_success"] = ok
+                notif["push_attempted"] = True
                 if ok:
                     notif["sent_via_push"] = True
                 # #71 (2026-09-26): `note_notified` push BAŞARISIZ OLSA BİLE
@@ -2744,9 +2895,11 @@ async def _rising_deliver(notified: list) -> None:
     else:
         # ESKİ DAVRANIŞ (bayrak kapalı): ayrı push + ayrı `rising_alert` WS tipi.
         if vapid_configured and not quiet:
+            attempted = list(notified)
             for notif in notified:
                 ok = await _send_push(notif)
                 notif["push_success"] = ok
+                notif["push_attempted"] = True
                 if ok:
                     notif["sent_via_push"] = True
                 alert_id = notif.get("alert_id")
@@ -2796,18 +2949,19 @@ async def _rising_deliver(notified: list) -> None:
         # Tek tip: yalnızca birincil yükseliş bildirimleri `monitoring_alert`
         # kanalından gider (radar modalı zaten bunu dinler). Bastırılanlar radar'ın
         # kendi `monitoring_alert` yayınında mevcut → ayrı `rising_alert` YOK.
-        if primary:
+        if attempted:
             try:
-                await ws_manager.broadcast({"type": "monitoring_alert", "data": primary})
+                await ws_manager.broadcast({"type": "monitoring_alert", "data": attempted})
             except Exception as exc:
                 logger.warning("Yükseliş birleşik WS broadcast hatası: %s", exc)
     else:
-        try:
-            await ws_manager.broadcast({"type": "rising_alert", "data": notified})
-        except Exception as exc:
-            logger.warning("Yükseliş WS broadcast hatası: %s", exc)
-    # LLM İKİNCİ GÖZ: birincil (bastırılmamış) yükseliş bildirimleri değerlendirmeye girer.
-    _maybe_llm_second_eye(primary if unified else notified)
+        if attempted:
+            try:
+                await ws_manager.broadcast({"type": "rising_alert", "data": attempted})
+            except Exception as exc:
+                logger.warning("Yükseliş WS broadcast hatası: %s", exc)
+    # LLM İKİNCİ GÖZ: push DENENEN yükseliş bildirimleri değerlendirmeye girer.
+    _maybe_llm_second_eye(attempted)
 
 
 async def _run_rising_scan() -> dict:
@@ -5769,6 +5923,16 @@ async def monitoring_active_notification(symbol: str):
     }
 
 
+def _is_push_notification_row(row: dict) -> bool:
+    """Satır bir PUSH bildirimi mi? (panel bildirimi kavramı kaldırıldı — 2026-10-17)
+
+    Push bildirimi = teslim edilmiş (`sent_via_push`) VEYA push'u DENENMİŞ
+    (`push_attempted`, teslimi başarısız olsa bile) kayıt. İkisi de yoksa satır eski
+    "yalnız panel" kaydıdır ve raporlardan dışlanır.
+    """
+    return bool(row.get("sent_via_push") or row.get("push_attempted"))
+
+
 @router.get("/api/reports/notifications")
 async def report_notifications(
     limit: int = 200,
@@ -5785,7 +5949,10 @@ async def report_notifications(
     day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
     min_score: Skor eşiği filtresi (opsiyonel; belirtilmezse admin min_score kullanılır).
     confluence_min / master_surge_only: Çoklu teyit filtresi.
-    channel: 'all', 'push' (sent_via_push=True), 'panel' (sent_via_push=False).
+    channel: GERİYE DÖNÜK UYUM için kabul edilir, ETKİSİZDİR. Panel bildirimi kavramı
+    kaldırıldı (2026-10-17): rapor HER ZAMAN yalnız push bildirimlerini (teslim edilmiş
+    `sent_via_push` VEYA push'u denenmiş `push_attempted`) listeler; eski "yalnız panel"
+    satırları dışarıda kalır. 'panel' değeri yok sayılır.
     source: 'all', 'velocity', 'jump', 'early', 'rising'.
     include_archived: True ise RAPOR BAŞLANGICI öncesi bildirimler de listelenir
     ("arşivi göster"). Varsayılan False → yalnız deploy sonrası sinyaller.
@@ -5834,12 +6001,9 @@ async def report_notifications(
     if req_conf > 1:
         rows = [r for r in rows if len(_parse_sources(r.get("sources"))) >= req_conf]
 
-    # Kanal filtresi (Push vs Panel)
-    channel_clean = (channel or "all").lower().strip()
-    if channel_clean == "push":
-        rows = [r for r in rows if r.get("sent_via_push")]
-    elif channel_clean == "panel":
-        rows = [r for r in rows if not r.get("sent_via_push")]
+    # Panel bildirimi YOK (2026-10-17): yalnız push bildirimleri. `channel` parametresi
+    # (all/push/panel) geriye dönük uyum için kabul edilir ama yok sayılır.
+    rows = [r for r in rows if _is_push_notification_row(r)]
 
     # Kaynak filtresi (velocity, jump, early, rising)
     source_clean = (source or "all").lower().strip()
@@ -5963,7 +6127,7 @@ async def report_notifications(
     tp1_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) >= 1.2)
     tp2_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) >= 3.0)
 
-    # 1. PUSH vs PANEL KANAL İSTATİSTİKLERİ
+    # 1. İSTATİSTİK YARDIMCISI (kanal ayrımı kaldırıldı; push/panel kartı yok)
     def _compute_channel_stats(items: list[dict]) -> dict:
         total_cnt = len(items)
         ev_items = [i for i in items if i.get("status") in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ")]
@@ -5989,8 +6153,8 @@ async def report_notifications(
             "trade_pnl": round(trade_pnl, 2),
         }
 
-    push_stats = _compute_channel_stats([i for i in result if i.get("sent_via_push")])
-    panel_stats = _compute_channel_stats([i for i in result if not i.get("sent_via_push")])
+    # `push_stats` geriye dönük uyum için kalır (artık tüm liste push'tur); `panel_stats` KALDIRILDI.
+    push_stats = _compute_channel_stats(list(result))
 
     # 2. TEYİT SAYISI (CONFLUENCE) İSTATİSTİKLERİ
     confluence_stats = {}
@@ -6023,7 +6187,6 @@ async def report_notifications(
         "dominant_symbol_ratio": dominant_ratio,
         "dominant_symbol_warning": dominant_warning,
         "push_stats": push_stats,
-        "panel_stats": panel_stats,
         "confluence_stats": confluence_stats,
         "source_stats": source_stats,
     }
@@ -6063,10 +6226,7 @@ async def report_notifications(
     all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
     if req_conf > 1:
         all_rows = [r for r in all_rows if len(_parse_sources(r.get("sources"))) >= req_conf]
-    if channel_clean == "push":
-        all_rows = [r for r in all_rows if r.get("sent_via_push")]
-    elif channel_clean == "panel":
-        all_rows = [r for r in all_rows if not r.get("sent_via_push")]
+    all_rows = [r for r in all_rows if _is_push_notification_row(r)]
     if source_clean != "all":
         all_rows = [r for r in all_rows if source_clean in _parse_sources(r.get("sources"))]
 

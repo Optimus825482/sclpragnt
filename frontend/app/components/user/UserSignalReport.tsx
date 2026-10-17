@@ -6,7 +6,7 @@ import { getJSON } from "../../lib/api";
 import { fmtDateTime, formatPrice } from "../../lib/format";
 import {
   confluenceLabel, filterRows, istanbulToday, meanMfe, sourceLabel, statusLabel, toRateRows,
-  type ChannelFilter, type RateRow, type ReportRow, type ResultFilter,
+  type RateRow, type ReportRow, type ResultFilter,
 } from "../../lib/signalReport";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
 
@@ -15,7 +15,7 @@ type Stats = Record<string, { count?: number; evaluated?: number; success_count?
 type Payload = {
   notifications?: ReportRow[];
   breakdown?: { counts?: Record<string, number>; evaluated?: number; success_count?: number; success_rate?: number | null;
-    push_stats?: Stats[string]; panel_stats?: Stats[string]; confluence_stats?: Stats; source_stats?: Stats };
+    confluence_stats?: Stats; source_stats?: Stats };
 };
 
 const PAGE = 25;
@@ -66,7 +66,6 @@ function RateBars({ title, hint, rows }: { title: string; hint: string; rows: Ra
 export default function UserSignalReport() {
   const [period, setPeriod] = useState<Period>("since");
   const [result, setResult] = useState<ResultFilter>("all");
-  const [channel, setChannel] = useState<ChannelFilter>("all");
   const [data, setData] = useState<Payload | null>(null);
   const [failed, setFailed] = useState(false);
   const [cut, setCut] = useState<string | null>(null);
@@ -98,12 +97,8 @@ export default function UserSignalReport() {
   const evaluated = Number(b?.evaluated ?? 0);
   const rate = evaluated > 0 && b?.success_rate != null ? Number(b.success_rate) : null;
   const avg = useMemo(() => meanMfe(rows), [rows]);
-  const filtered = useMemo(() => filterRows(rows, result, channel), [rows, result, channel]);
+  const filtered = useMemo(() => filterRows(rows, result), [rows, result]);
 
-  const channelRows: RateRow[] = [
-    ...toRateRows(b?.push_stats ? { push: b.push_stats } : undefined, () => "Anlık bildirim (Push)"),
-    ...toRateRows(b?.panel_stats ? { panel: b.panel_stats } : undefined, () => "Yalnız panel"),
-  ];
   const confluenceRows = toRateRows(b?.confluence_stats, confluenceLabel, ["1", "2", "3", "4"]);
   const sourceRows = toRateRows(b?.source_stats, sourceLabel, ["velocity", "jump", "early", "rising", "global"]);
 
@@ -151,8 +146,7 @@ export default function UserSignalReport() {
         <span className="u-chip u-chip-good">Ort. en yüksek getiri: {avg == null ? "—" : `%${avg.toFixed(2).replace(".", ",")}`}</span>
       </p>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <RateBars title="Kanala göre" hint="Bildirimin nasıl ulaştığına göre başarı" rows={channelRows} />
+      <div className="grid gap-4 lg:grid-cols-2">
         <RateBars title="Teyit sayısına göre" hint="Aynı anda kaç kaynak aynı coini işaret etti" rows={confluenceRows} />
         <RateBars title="Kaynağa göre" hint="Sinyali üreten tarama türü" rows={sourceRows} />
       </div>
@@ -162,12 +156,6 @@ export default function UserSignalReport() {
         <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Sonuç süzgeci">
           {resultBtn("all", "Tümü")}{resultBtn("hit", "Hedefe ulaştı")}{resultBtn("partial", "Kısmen")}
           {resultBtn("miss", "Ulaşmadı")}{resultBtn("open", "Bekleyen")}
-          <label className="ml-auto flex items-center gap-2 text-sm text-bunker-muted">Kanal
-            <select value={channel} onChange={(e) => { setChannel(e.target.value as ChannelFilter); setShown(PAGE); }}
-              className="input min-h-[44px] px-2">
-              <option value="all">Tümü</option><option value="push">Push</option><option value="panel">Yalnız panel</option>
-            </select>
-          </label>
         </div>
 
         {filtered.length === 0 ? (
@@ -183,7 +171,7 @@ export default function UserSignalReport() {
                       <SymbolLink symbol={r.symbol} className="font-mono text-base font-bold text-white" />
                       <span className={`u-chip u-chip-${toneClass(st.tone)}`}>{st.label}</span>
                     </div>
-                    <p className="text-xs text-bunker-muted">{fmtDateTime(r.detected_at)} · {r.sent_via_push ? "Push" : "Panel"}</p>
+                    <p className="text-xs text-bunker-muted">{fmtDateTime(r.detected_at)}</p>
                     <dl className="mt-2 grid grid-cols-3 gap-2 text-sm">
                       <div><dt className="text-xs text-bunker-muted">Hedef</dt><dd className="font-semibold">%{r.target_pct ?? "—"}</dd></div>
                       <div><dt className="text-xs text-bunker-muted">Ufuk</dt><dd className="font-semibold">{r.horizon_minutes ?? "—"} dk</dd></div>
@@ -197,7 +185,7 @@ export default function UserSignalReport() {
             </div>
             <div className="card hidden overflow-x-auto md:block">
               <table className="data-table w-full text-sm">
-                <thead><tr><th>Zaman</th><th>Sembol</th><th>Kanal</th><th>Kaynak</th><th>Bildirim fiyatı</th><th>Hedef</th><th>Ufuk</th><th>En yüksek getiri</th><th>Sonuç</th></tr></thead>
+                <thead><tr><th>Zaman</th><th>Sembol</th><th>Kaynak</th><th>Bildirim fiyatı</th><th>Hedef</th><th>Ufuk</th><th>En yüksek getiri</th><th>Sonuç</th></tr></thead>
                 <tbody>
                   {filtered.slice(0, shown).map((r) => {
                     const st = statusLabel(r.status);
@@ -205,7 +193,6 @@ export default function UserSignalReport() {
                       <tr key={r.id}>
                         <td>{fmtDateTime(r.detected_at)}</td>
                         <td><SymbolLink symbol={r.symbol} className="font-mono font-bold text-white" /></td>
-                        <td><span className={`u-chip ${r.sent_via_push ? "u-chip-brand" : "u-chip-wait"}`}>{r.sent_via_push ? "Push" : "Panel"}</span></td>
                         <td>{r.sources?.map((s) => sourceLabel(s)).join(", ") || "—"}</td>
                         <td>{formatPrice(r.price)}</td>
                         <td>%{r.target_pct ?? "—"}</td>

@@ -88,8 +88,8 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, [])
         push.assert_not_called()
 
-    async def test_notify_quiet_hours_defers_push_but_records(self):
-        """Sessiz saatlerde push gönderilmez; aday DB'ye kaydedilir (kalıcılık)."""
+    async def test_notify_quiet_hours_defers_push_without_recording(self):
+        """Sessiz saatlerde push ertelenir; bildirim push DENENENE kadar KAYDEDİLMEZ (panel yok)."""
         from app.routers import monitoring
 
         self._reset_state()
@@ -114,7 +114,7 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result), 1)
         self.assertTrue(result[0].get("quiet_hours"))
         push.assert_not_called()
-        save_mock.assert_called_once()  # sessiz saatte DB kaydı (push değil) yapılır
+        save_mock.assert_not_called()  # push denenmedi → bildirim satırı YOK (panel bildirimi kaldırıldı)
         self.assertEqual(len(monitoring._deferred_push), 1,
                          "sessiz saatte push ertelenen kuyruğa düşmeli (B5)")
 
@@ -894,7 +894,7 @@ class LlmVerdictWriteBackTests(unittest.IsolatedAsyncioTestCase):
         "llm_reasons": '{"reasons": ["cvd_pozitif"]}',
     }
 
-    async def _run(self, notif, update_mock, broadcast=None):
+    async def _run(self, notif, update_mock, broadcast=None, vapid=""):
         """Görevi yamalar AKTİFKEN bekler.
 
         DİKKAT: `with` bloğu coroutine'i DÖNDÜREREK terk edilirse yamalar
@@ -913,7 +913,8 @@ class LlmVerdictWriteBackTests(unittest.IsolatedAsyncioTestCase):
              patch.object(monitoring.database,
                           "update_monitoring_notification_llm_verdict",
                           update_mock), \
-             patch.dict(os.environ, {"VAPID_PRIVATE_KEY": ""}):
+             patch.object(monitoring, "_send_push", AsyncMock(return_value=True)), \
+             patch.dict(os.environ, {"VAPID_PRIVATE_KEY": vapid}):
             await monitoring._llm_second_eye_task(notif)
 
     async def test_verdict_written_back_to_notification_row(self):
@@ -944,10 +945,32 @@ class LlmVerdictWriteBackTests(unittest.IsolatedAsyncioTestCase):
         # 2026-10-16 (sinyal politikası): `llm_ikinci_goz` modu varsayılan olarak
         # bildirimden çıkarıldı; bu test WS yayın yolunu ölçtüğü için politikayı açar.
         from app.config import config as _cfg
+        # 2026-10-17 (panel bildirimi yok): karar zarfı yalnız push DENENİRSE yayınlanır → VAPID açık.
         with patch.object(_cfg, "RADAR_NOTIFY_DISABLED_MODES", ""):
             await self._run({"symbol": "HEMITRY", "price": 1.23, "id": 7,
-                             "score": 72.0}, update, broadcast=broadcast)
+                             "score": 72.0}, update, broadcast=broadcast, vapid="test-key")
         broadcast.assert_awaited_once()
+
+    async def test_envelope_not_recorded_or_broadcast_without_push_attempt(self):
+        """Panel bildirimi yok: VAPID yoksa karar zarfı kaydedilmez / yayınlanmaz; karar satıra yazılır."""
+        update = AsyncMock(return_value=True)
+        broadcast = AsyncMock(return_value=None)
+        from app.config import config as _cfg
+        from app.routers import monitoring
+        record = AsyncMock(return_value=None)
+        with patch.object(_cfg, "RADAR_NOTIFY_DISABLED_MODES", ""), \
+             patch.object(monitoring.llm_second_eye, "evaluate",
+                          AsyncMock(return_value=dict(self.ENVELOPE))), \
+             patch.object(monitoring, "quiet_hours_active", AsyncMock(return_value=False)), \
+             patch.object(monitoring, "_record_history", record), \
+             patch.object(monitoring.ws_manager, "broadcast", broadcast), \
+             patch.object(monitoring.database, "update_monitoring_notification_llm_verdict", update), \
+             patch.dict(os.environ, {"VAPID_PRIVATE_KEY": ""}):
+            await monitoring._llm_second_eye_task({"symbol": "HEMITRY", "price": 1.23, "id": 7,
+                                                   "score": 72.0})
+        record.assert_not_awaited()
+        broadcast.assert_not_awaited()
+        update.assert_awaited_once()  # karar yine orijinal satıra yazılır (ölçüm bozulmaz)
 
 
 class MacdRefireGateSettingsTests(unittest.IsolatedAsyncioTestCase):

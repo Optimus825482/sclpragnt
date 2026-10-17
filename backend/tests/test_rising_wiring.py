@@ -632,8 +632,8 @@ class RisingDeliveryTests(unittest.IsolatedAsyncioTestCase):
         broadcast.assert_awaited()
         self.assertEqual("rising_alert", broadcast.await_args.args[0]["type"])
 
-    async def test_quiet_hours_defers_push_not_dialog(self):
-        """Sessiz saatte push ERTELENİR ama WS dialog yine yayınlanır."""
+    async def test_quiet_hours_defers_push_and_dialog(self):
+        """Sessiz saatte push ERTELENİR ve WS dialog da (panel bildirimi yok) push denenene kadar yayınlanmaz."""
         broadcast = AsyncMock(return_value=None)
         push = AsyncMock(return_value=True)
         with patch.object(monitoring, "_send_push", push), \
@@ -642,7 +642,22 @@ class RisingDeliveryTests(unittest.IsolatedAsyncioTestCase):
             await monitoring._rising_deliver([self._notif(quiet=True)])
         push.assert_not_awaited()
         self.assertEqual(1, len(monitoring._deferred_push))
-        broadcast.assert_awaited()
+        broadcast.assert_not_awaited()
+
+    async def test_no_vapid_means_no_dialog(self):
+        """VAPID yok → push denenemez → WS dialog / LLM ikinci göz yok (panel bildirimi yok)."""
+        broadcast = AsyncMock(return_value=None)
+        push = AsyncMock(return_value=True)
+        llm = MagicMock()
+        with patch.dict("os.environ", {"VAPID_PRIVATE_KEY": ""}), \
+             patch.object(monitoring, "_send_push", push), \
+             patch.object(monitoring, "_maybe_llm_second_eye", llm), \
+             patch.object(monitoring, "ws_manager", MagicMock(broadcast=broadcast)), \
+             patch.object(config, "RISING_AUTONOMOUS_ENABLED", False):
+            await monitoring._rising_deliver([self._notif()])
+        push.assert_not_awaited()
+        broadcast.assert_not_awaited()
+        llm.assert_called_once_with([])
 
     async def test_autonomous_entry_uses_existing_open_path(self):
         opened = AsyncMock(return_value={"status": "opened", "trade_id": 42, "symbol": "RISETRY"})

@@ -104,6 +104,37 @@ def apply(entries) -> tuple[list, list]:
     return kept, blocked
 
 
+def precheck(entries) -> list:
+    """Kalıcı yazım OLMADAN politika ön kontrolü (2026-10-17, panel bildirimi kaldırıldı).
+
+    Bildirim satırı artık YALNIZ push denendiğinde yazılır (`database.save_monitoring_notifications`
+    push'tan hemen önce çağrılır). Ama otonom paper / teslim yolları politika kararını daha
+    erken bilmek zorunda: bloklananlara `policy_blocked` nedeni işlenir (`apply` ile AYNI
+    `evaluate`). `kept` sayacı ARTMAZ (satır henüz yazılmadı; yazıldığında `apply` sayar);
+    `blocked` sayacı artar — bloklanan satır hiçbir zaman `save`'e ulaşmayacağı için çift
+    sayım olmaz. Dönüş: [(entry, neden), ...] (bloklananlar).
+    """
+    blocked: list = []
+    for e in entries or []:
+        reason = evaluate(e)
+        if reason is not None:
+            e["policy_blocked"] = reason
+            blocked.append((e, reason))
+    if blocked:
+        with _lock:
+            _stats["blocked"] += len(blocked)
+            for e, reason in blocked:
+                key = reason.split(" (")[0]
+                if key.startswith("mod devre dışı"):
+                    key = reason
+                _stats["by_reason"][key] = _stats["by_reason"].get(key, 0) + 1
+                _stats["recent"].append({
+                    "symbol": e.get("symbol"), "mode": e.get("mode"),
+                    "score": e.get("score"), "reason": reason,
+                })
+    return blocked
+
+
 def get_stats() -> dict:
     with _lock:
         return {

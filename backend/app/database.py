@@ -454,6 +454,11 @@ async def init_db():
         conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS mfe_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS mae_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS outcome_at DOUBLE PRECISION")
+        # 2026-10-17 (panel bildirimi kaldırıldı): bildirim YALNIZCA web push gerçekten
+        # DENENDİĞİNDE kaydedilir. `push_attempted` = push denendi (teslim başarısız olsa
+        # bile TRUE). Eski satırlarda NULL: `sent_via_push=FALSE` ve `push_attempted` NULL
+        # = geçmiş "yalnız panel" kaydı; raporlar/geçmiş listesi bunları dışarıda bırakır.
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS push_attempted BOOLEAN")
         # M4 (R3-09): koruma kapanışı sonrası aynı bildirimin yeniden açılışı için
         # kalıcı "reopen" anahtarı. `notification_id` (bigint) string id taşıyamaz;
         # bu TEXT kolon reopen churn korumasını taşır.
@@ -5231,8 +5236,9 @@ async def save_monitoring_notifications(entries):
                 "INSERT INTO monitoring_notifications"
                 "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at,"
                 "ml_target_pct,ml_hit_probability,candidate_id,norm_cap,norm_version,sources,"
-                "llm_verdict,llm_confidence,llm_reasons,macd_mtf_verdict,macd_mtf_confluence)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                "llm_verdict,llm_confidence,llm_reasons,macd_mtf_verdict,macd_mtf_confluence,"
+                "push_attempted)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
                 (
                     str(e.get("symbol") or "?"),
                     str(e.get("message") or ""),
@@ -5254,6 +5260,11 @@ async def save_monitoring_notifications(entries):
                     # MACD MTF konfluans snapshot'ı (bildirim anı; opsiyonel).
                     e.get("macd_mtf_verdict") or None,
                     e.get("macd_mtf_confluence"),
+                    # Panel bildirimi YOK: kayıt yalnız push denendiğinde yazılır.
+                    # Çağıran işaretlemediyse (`push_attempted` yok) teslim edilmiş
+                    # push'tan (`sent_via_push`) türetilir; ikisi de yoksa NULL/False
+                    # kalır ve rapor/geçmiş okumaları satırı "panel" sayıp dışlar.
+                    bool(e.get("push_attempted") or e.get("sent_via_push")),
                 ),
             ).fetchone()
             if row is not None and e.get("id") is None:
@@ -5274,7 +5285,7 @@ async def mark_monitoring_push_sent(notification_id):
     """
     def op(conn):
         conn.execute(
-            "UPDATE monitoring_notifications SET sent_via_push=TRUE WHERE id=?",
+            "UPDATE monitoring_notifications SET sent_via_push=TRUE, push_attempted=TRUE WHERE id=?",
             (notification_id,)
         )
         conn.commit()
@@ -5322,7 +5333,7 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
     def op(conn):
         base_sql = (
             "SELECT id, symbol, mode, score, target_pct, price, expected_price,"
-            " horizon_minutes, detected_at, sent_via_push,"
+            " horizon_minutes, detected_at, sent_via_push, push_attempted,"
             + ("" if slim else " message, title,")
             + " candidate_id, norm_cap, norm_version, sources,"
             " outcome_status, mfe_pct AS own_mfe_pct, mae_pct AS own_mae_pct"
@@ -5696,13 +5707,20 @@ async def list_macd_mtf_report(days: int = 14, limit: int = 1000,
     return await _run_db(op)
 
 
-async def list_monitoring_notifications(limit=50):
-    """En son monitoring bildirimlerini döndür (yeni -> eski)."""
+async def list_monitoring_notifications(limit=50, push_only: bool = True):
+    """En son monitoring bildirimlerini döndür (yeni -> eski).
+
+    `push_only=True` (varsayılan): "yalnız panel" kayıtları (push hiç denenmemiş eski
+    satırlar) listelenmez — panel bildirimi kavramı kaldırıldı (2026-10-17). Teslimi
+    başarısız ama DENENMİŞ push'lar (`push_attempted`) listede kalır.
+    """
+    where = " WHERE (sent_via_push OR push_attempted)" if push_only else ""
     def op(conn):
         rows = conn.execute(
             "SELECT id,symbol,message,title,score,target_pct,price,expected_price,"
-            "horizon_minutes,mode,detected_at,sent_via_push,"
+            "horizon_minutes,mode,detected_at,sent_via_push,push_attempted,"
             "llm_verdict,llm_confidence,llm_reasons FROM monitoring_notifications"
+            + where +
             " ORDER BY detected_at DESC LIMIT ?", (max(1, min(int(limit), 500)),)
         ).fetchall()
         result = []

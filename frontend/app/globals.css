@@ -635,3 +635,64 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 
 /* 2026-10-17 (basit arayüz): tüm uygulama gövdesi IBM Plex Sans; sayısal alanlar kendi ui-monospace tanımlarını korur. */
 body { font-family: var(--font-plex), ui-sans-serif, system-ui, sans-serif; }
+
+/* 2026-10-17: Radar bildirim penceresi (RadarAlertModal) — TEMA-BAĞIMSIZ, OPAK renkler.
+   Eskiden pencere `bg-neon-green/5` gibi yarı saydam sınıflarla boyanıyordu; açık (kullanıcı) temada bu sınıflar
+   çok koyu bir ton + `text-white` (açık temada koyu mürekkebe eşlenir) birleşince başlık/mesaj/HEDEF görünmez oluyordu.
+   Şimdi tüm renkler --ra-* değişkenlerinden gelir: varsayılan = koyu (admin) tema, `[data-theme="light"]` = --u-* kart/mürekkep
+   belirteçleri. Tailwind renk sınıfı KULLANILMAZ (tema eşlemesinden etkilenmesin). Kontrast: tüm metin/zemin çiftleri ≥ 4.5:1. */
+.ra-overlay { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 1rem; overflow-y: auto; background: rgb(2 6 23 / .78); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.ra-card {
+  --ra-card: #1a1d4e; --ra-head: #0f1131; --ra-line: #444875; --ra-ink: #ffffff; --ra-muted: #c3c7dc;
+  --ra-accent: #0fff4f; --ra-symbol: #4bff69;
+  --ra-neutral-bg: #0f1131; --ra-neutral-line: #444875; --ra-neutral-fg: #ffffff;
+  --ra-good-bg: #063b1c; --ra-good-line: #15803d; --ra-good-fg: #5dff86;
+  --ra-warn-bg: #3d2a05; --ra-warn-line: #b45309; --ra-warn-fg: #fcd34d;
+  --ra-info-bg: #072c42; --ra-info-line: #0369a1; --ra-info-fg: #7dd3fc;
+  width: 100%; max-width: 28rem; max-height: 90vh; display: flex; flex-direction: column; overflow-y: auto;
+  border: 1px solid var(--ra-line); border-top: 4px solid var(--ra-accent); border-radius: .9rem;
+  background: var(--ra-card); color: var(--ra-ink);
+  box-shadow: 0 24px 60px rgb(0 0 0 / .55), 0 2px 6px rgb(0 0 0 / .35);
+}
+.ra-card:focus { outline: none; }
+.ra-card[data-kind="alarm"] { --ra-accent: #fcd34d; --ra-symbol: #fcd34d; }
+.ra-card[data-kind="rising"] { --ra-accent: #7dd3fc; --ra-symbol: #7dd3fc; }
+[data-theme="light"] .ra-card {
+  --ra-card: var(--u-card); --ra-head: var(--u-page); --ra-line: var(--u-line); --ra-ink: var(--u-ink); --ra-muted: var(--u-muted);
+  --ra-accent: var(--u-good); --ra-symbol: var(--u-good);
+  --ra-neutral-bg: var(--u-page); --ra-neutral-line: var(--u-line); --ra-neutral-fg: var(--u-ink);
+  --ra-good-bg: var(--u-good-bg); --ra-good-line: #6ee7b7; --ra-good-fg: var(--u-good-fg);
+  --ra-warn-bg: var(--u-warn-bg); --ra-warn-line: #fcd34d; --ra-warn-fg: var(--u-warn-fg);
+  --ra-info-bg: var(--u-info-bg); --ra-info-line: #93c5fd; --ra-info-fg: var(--u-info-fg);
+  box-shadow: 0 24px 60px rgb(15 23 42 / .35), 0 2px 6px rgb(15 23 42 / .15);
+}
+[data-theme="light"] .ra-card[data-kind="alarm"] { --ra-accent: var(--u-warn); --ra-symbol: var(--u-warn); }
+[data-theme="light"] .ra-card[data-kind="rising"] { --ra-accent: var(--u-info); --ra-symbol: var(--u-info); }
+.ra-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: 1rem 1.25rem; background: var(--ra-head); border-bottom: 1px solid var(--ra-line); }
+.ra-head-main { display: flex; align-items: center; gap: .6rem; min-width: 0; }
+.ra-icon { font-size: 1.4rem; line-height: 1; }
+.ra-eyebrow { margin: 0; font-size: .7rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--ra-accent); }
+.ra-title { margin: .1rem 0 0; font: 700 1.2rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ra-ink); overflow-wrap: anywhere; }
+.ra-symbol { color: var(--ra-symbol); text-decoration: none; }
+.ra-symbol:hover { text-decoration: underline; }
+.ra-close { flex: 0 0 auto; min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: .6rem; background: transparent; color: var(--ra-muted); font-size: 1.1rem; cursor: pointer; }
+.ra-close:hover { color: var(--ra-ink); background: var(--ra-neutral-bg); }
+.ra-close:focus-visible, .ra-card :is(a, button):focus-visible { outline: 2px solid var(--ra-accent); outline-offset: 2px; }
+.ra-body { display: flex; flex-direction: column; gap: .8rem; padding: 1.25rem; }
+.ra-msg { margin: 0; font-size: .95rem; line-height: 1.55; color: var(--ra-ink); overflow-wrap: anywhere; }
+.ra-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; }
+.ra-tile { padding: .55rem .5rem; text-align: center; border: 1px solid var(--ra-neutral-line); border-radius: .6rem; background: var(--ra-neutral-bg); color: var(--ra-neutral-fg); }
+.ra-tile-label { margin: 0; font-size: .65rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--ra-muted); }
+.ra-tile-value { margin: .25rem 0 0; font: 700 .9rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; color: inherit; overflow-wrap: anywhere; }
+.ra-tile-good { background: var(--ra-good-bg); border-color: var(--ra-good-line); color: var(--ra-good-fg); }
+.ra-tile-warn { background: var(--ra-warn-bg); border-color: var(--ra-warn-line); color: var(--ra-warn-fg); }
+.ra-tile-info { background: var(--ra-info-bg); border-color: var(--ra-info-line); color: var(--ra-info-fg); }
+.ra-tile-good .ra-tile-label, .ra-tile-warn .ra-tile-label, .ra-tile-info .ra-tile-label { color: inherit; opacity: .85; }
+.ra-chip { align-self: flex-start; padding: .2rem .55rem; border: 1px solid var(--ra-good-line); border-radius: .4rem; background: var(--ra-good-bg); color: var(--ra-good-fg); font: 700 .68rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ra-chip-info { border-color: var(--ra-info-line); background: var(--ra-info-bg); color: var(--ra-info-fg); }
+.ra-note { margin: 0; padding: .55rem .75rem; border: 1px solid var(--ra-good-line); border-radius: .6rem; background: var(--ra-good-bg); color: var(--ra-good-fg); font-size: .85rem; }
+.ra-note-warn { border-color: var(--ra-warn-line); background: var(--ra-warn-bg); color: var(--ra-warn-fg); }
+.ra-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem; padding-top: .25rem; }
+.ra-time { margin: 0; font: 500 .72rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ra-muted); }
+.ra-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+@media (max-width: 380px) { .ra-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

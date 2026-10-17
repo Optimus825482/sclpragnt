@@ -4,7 +4,7 @@ import {
 } from "./signalReport";
 
 const row = (o: Partial<ReportRow>): ReportRow => ({
-  id: 1, symbol: "BTCTRY", status: "BEKLİYOR", sent_via_push: true, mfe_pct: null, ...o,
+  id: 1, symbol: "BTCTRY", status: "BEKLİYOR", mfe_pct: null, ...o,
 });
 
 describe("etiketler", () => {
@@ -34,16 +34,17 @@ describe("resultGroup", () => {
 });
 
 describe("filterRows", () => {
+  // Panel bildirimi kavramı kaldırıldı: yalnız sonuç süzgeci vardır, kanal süzgeci yoktur.
   const rows = [
-    row({ id: 1, status: "TAMAMEN BAŞARILI", sent_via_push: true }),
-    row({ id: 2, status: "KISMİ", sent_via_push: false }),
-    row({ id: 3, status: "BAŞARISIZ", sent_via_push: true }),
-    row({ id: 4, status: "BEKLİYOR", sent_via_push: false }),
+    row({ id: 1, status: "TAMAMEN BAŞARILI" }),
+    row({ id: 2, status: "KISMİ" }),
+    row({ id: 3, status: "BAŞARISIZ" }),
+    row({ id: 4, status: "BEKLİYOR" }),
   ];
-  it("tümü", () => expect(filterRows(rows, "all", "all")).toHaveLength(4));
-  it("sonuç süzgeci", () => expect(filterRows(rows, "hit", "all").map((r) => r.id)).toEqual([1]));
-  it("kanal süzgeci", () => expect(filterRows(rows, "all", "push").map((r) => r.id)).toEqual([1, 3]));
-  it("ikisi birlikte", () => expect(filterRows(rows, "miss", "panel")).toHaveLength(0));
+  it("tümü", () => expect(filterRows(rows, "all")).toHaveLength(4));
+  it("sonuç süzgeci", () => expect(filterRows(rows, "hit").map((r) => r.id)).toEqual([1]));
+  it("bekleyen grubu", () => expect(filterRows(rows, "open").map((r) => r.id)).toEqual([4]));
+  it("kanal alanı olmayan satırlar elenmez", () => expect(filterRows(rows, "partial").map((r) => r.id)).toEqual([2]));
 });
 
 describe("toRateRows", () => {

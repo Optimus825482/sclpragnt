@@ -91,23 +91,6 @@ const SOURCE_BADGE_COMPACT: Record<string, string> = {
   rising: "YÜKS.",
 };
 
-function ChannelBadge({ sentViaPush }: { sentViaPush?: boolean | null }) {
-  // UX (2026-09-27): kanal rozeti dili Monitoring ile BİRLEŞTİ — PUSH yeşil
-  // (iletildi), PANEL gri (panelde). Eskiden burada mavi/amber'di.
-  if (sentViaPush) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded border border-neon-green/40 bg-neon-green/10 px-2 py-0.5 font-mono text-[10px] font-bold text-neon-green" title="Kullanıcı cihazına Push bildirimi olarak iletildi">
-        🔔 PUSH
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 rounded border border-bunker-700 bg-bunker-800 px-2 py-0.5 font-mono text-[10px] font-bold text-bunker-muted" title="Monitoring web paneline radar uyarısı olarak düştü">
-      🖥️ PANEL
-    </span>
-  );
-}
-
 function SourceBadges({ sources, compact = false }: { sources?: string[] | null; compact?: boolean }) {
   const list = (sources || []).filter((s) => typeof s === "string" && s);
   if (list.length >= 4) {
@@ -219,7 +202,7 @@ function OverviewTab({ day, includeArchived = false }: { day?: string; includeAr
           <span className="text-base animate-pulse">📡</span>
           <div>
             <strong className="text-white">MONITORING &amp; RADAR BAŞARI TAKİP SİSTEMİ</strong>
-            <span className="text-bunker-muted ml-1.5 hidden md:inline">Hız Avcısı, Sıçrama, Erken MACD ve Yükseliş Eğilimi. Push bildirimleri ve Panel uyarıları gerçek MFE ile ölçülür.</span>
+            <span className="text-bunker-muted ml-1.5 hidden md:inline">Hız Avcısı, Sıçrama, Erken MACD ve Yükseliş Eğilimi. Push bildirimleri gerçek MFE ile ölçülür.</span>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -229,7 +212,7 @@ function OverviewTab({ day, includeArchived = false }: { day?: string; includeAr
             </span>
           )}
           <span className="text-[11px] px-2 py-0.5 rounded bg-bunker-900/80 border border-sky-400/30 text-sky-300 font-bold">
-            🔔 Push + 🖥️ Panel
+            🔔 Push
           </span>
           <span className="text-[11px] px-2 py-0.5 rounded bg-bunker-900/80 border border-neon-green/30 text-neon-green font-bold">
             🤖 Otonom İşlem Aktif
@@ -259,7 +242,7 @@ function OverviewTab({ day, includeArchived = false }: { day?: string; includeAr
                 <span>📡</span> MONITORING RADAR SİNYAL BAŞARISI ({breakdown.evaluated ?? 0} Ölçülen)
               </h2>
               <p className="mt-0.5 text-xs text-bunker-muted">
-                Monitoring motorundan çıkan tüm sinyallerin (Push &amp; Panel) gerçek mumlardaki tepe noktası (MFE) ve kâr hedefine ulaşma performansı.
+                Monitoring motorundan çıkan tüm push bildirimlerinin gerçek mumlardaki tepe noktası (MFE) ve kâr hedefine ulaşma performansı.
               </p>
             </div>
             {overall?.success_rate != null && (
@@ -277,77 +260,6 @@ function OverviewTab({ day, includeArchived = false }: { day?: string; includeAr
             <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.["BAŞARISIZ"] || 0)} tone="text-neon-red" icon="✗" />
             <StatCard label="ÖLÇÜLEN BAŞARI" value={overall?.success_rate != null ? `%${overall.success_rate.toFixed(1)}` : "—"} tone="text-sky-300" sub={`${overall?.success_count ?? 0}/${overall?.evaluated ?? 0} Ölçülen`} />
           </div>
-
-          {/* İletim Kanalları Karşılaştırması: Push vs Panel */}
-          {(breakdown.push_stats || breakdown.panel_stats) && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-              {/* Push Kartı */}
-              <div className="rounded-xl border border-sky-400/30 bg-sky-400/5 p-4 space-y-3">
-                <div className="flex items-center justify-between border-b border-sky-400/20 pb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg">🔔</span>
-                    <div>
-                      <h3 className="font-mono text-sm font-black text-sky-300">PUSH BİLDİRİMLERİ</h3>
-                      <p className="text-[11px] text-bunker-muted font-mono">Telefona &amp; Web Push ile anlık iletilen sinyaller</p>
-                    </div>
-                  </div>
-                  <span className="rounded bg-sky-400/20 px-2 py-0.5 text-xs font-mono font-bold text-sky-200">
-                    {breakdown.push_stats?.count ?? 0} Sinyal
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-2 text-center font-mono">
-                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
-                    <p className="text-[10px] text-bunker-muted">HEDEF BAŞARISI</p>
-                    <p className="text-base font-black text-neon-green">{pct(breakdown.push_stats?.success_rate ? breakdown.push_stats.success_rate / 100 : null)}</p>
-                    <p className="text-[9px] text-bunker-muted">{breakdown.push_stats?.success_count ?? 0}/{breakdown.push_stats?.evaluated ?? 0} Ölçülen</p>
-                  </div>
-                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
-                    <p className="text-[10px] text-bunker-muted">TP1 (≥%1.2)</p>
-                    <p className="text-base font-black text-neon-green">{pct(breakdown.push_stats?.tp1_rate ? breakdown.push_stats.tp1_rate / 100 : null)}</p>
-                    <p className="text-[9px] text-bunker-muted">{breakdown.push_stats?.tp1_count ?? 0} Adet</p>
-                  </div>
-                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
-                    <p className="text-[10px] text-bunker-muted">AÇILAN İŞLEM</p>
-                    <p className="text-base font-black text-white">{breakdown.push_stats?.trades_opened ?? 0}</p>
-                    <p className={`text-[9px] font-bold ${pnlTone(breakdown.push_stats?.trade_pnl)}`}>{money(breakdown.push_stats?.trade_pnl)}</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Panel Uyarısı Kartı */}
-              <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 p-4 space-y-3">
-                <div className="flex items-center justify-between border-b border-amber-400/20 pb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg">🖥️</span>
-                    <div>
-                      <h3 className="font-mono text-sm font-black text-amber-300">PANEL UYARILARI</h3>
-                      <p className="text-[11px] text-bunker-muted font-mono">Radar ekranına düşen erken/yükselen fırsatlar</p>
-                    </div>
-                  </div>
-                  <span className="rounded bg-amber-400/20 px-2 py-0.5 text-xs font-mono font-bold text-amber-200">
-                    {breakdown.panel_stats?.count ?? 0} Sinyal
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-2 text-center font-mono">
-                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
-                    <p className="text-[10px] text-bunker-muted">HEDEF BAŞARISI</p>
-                    <p className="text-base font-black text-neon-green">{pct(breakdown.panel_stats?.success_rate ? breakdown.panel_stats.success_rate / 100 : null)}</p>
-                    <p className="text-[9px] text-bunker-muted">{breakdown.panel_stats?.success_count ?? 0}/{breakdown.panel_stats?.evaluated ?? 0} Ölçülen</p>
-                  </div>
-                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
-                    <p className="text-[10px] text-bunker-muted">TP1 (≥%1.2)</p>
-                    <p className="text-base font-black text-neon-green">{pct(breakdown.panel_stats?.tp1_rate ? breakdown.panel_stats.tp1_rate / 100 : null)}</p>
-                    <p className="text-[9px] text-bunker-muted">{breakdown.panel_stats?.tp1_count ?? 0} Adet</p>
-                  </div>
-                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
-                    <p className="text-[10px] text-bunker-muted">AÇILAN İŞLEM</p>
-                    <p className="text-base font-black text-white">{breakdown.panel_stats?.trades_opened ?? 0}</p>
-                    <p className={`text-[9px] font-bold ${pnlTone(breakdown.panel_stats?.trade_pnl)}`}>{money(breakdown.panel_stats?.trade_pnl)}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Teyit Katmanları Başarısı */}
           {breakdown.confluence_stats && (
@@ -569,7 +481,6 @@ function OverviewTab({ day, includeArchived = false }: { day?: string; includeAr
                   <tr>
                     <th>Zaman</th>
                     <th>Sembol</th>
-                    <th>Kanal</th>
                     <th>Teyit</th>
                     <th>Hedef</th>
                     <th>MFE</th>
@@ -582,7 +493,6 @@ function OverviewTab({ day, includeArchived = false }: { day?: string; includeAr
                     <tr key={`${n.id}-${n.symbol}-${n.detected_at}`}>
                       <td className="font-mono text-xs text-bunker-muted whitespace-nowrap">{fmtDt(n.detected_at)}</td>
                       <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
-                      <td><ChannelBadge sentViaPush={n.sent_via_push} /></td>
                       <td><SourceBadges sources={n.sources} compact /></td>
                       <td className={`font-mono text-xs ${n.target_pct ? "text-neon-green font-bold" : "text-bunker-muted"}`}>{n.target_pct ? `+${Number(n.target_pct).toFixed(1)}%` : "—"}</td>
                       <td className="font-mono text-xs text-white font-bold">{n.mfe_pct != null ? `+${Number(n.mfe_pct).toFixed(2)}%` : "—"}</td>
@@ -663,8 +573,6 @@ interface RadarBreakdown {
   dominant_symbol_warning?: boolean;
   by_source?: Record<string, number>;
   multi_source?: { evaluated: number; success_count: number; success_rate?: number | null };
-  push_stats?: ChannelStats;
-  panel_stats?: ChannelStats;
   confluence_stats?: Record<string, ChannelStats>;
   source_stats?: Record<string, ChannelStats>;
 }
@@ -691,7 +599,6 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
   const setDay = setControlledDay || setInternalDay;
   const [search, setSearch] = useState("");
   const [minScore, setMinScore] = useState<number | null>(null);
-  const [channelFilter, setChannelFilter] = useState<"all" | "push" | "panel">("all");
   const [confluenceFilter, setConfluenceFilter] = useState<"all" | "surge" | "multi" | "single">("all");
   const [sourceFilter, setSourceFilter] = useState<"all" | "velocity" | "jump" | "early" | "rising">("all");
   const [scoreFilter, setScoreFilter] = useState<"system" | "high" | "all">("system");
@@ -709,7 +616,6 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
       params.set("limit", "1000");
       if (day) params.set("day", day);
       if (includeArchived) params.set("include_archived", "true");
-      if (channelFilter !== "all") params.set("channel", channelFilter);
       if (sourceFilter !== "all") params.set("source", sourceFilter);
       if (confluenceFilter === "surge") {
         params.set("confluence_min", "4");
@@ -741,7 +647,7 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
     } finally {
       setLoading(false);
     }
-  }, [day, channelFilter, sourceFilter, confluenceFilter, scoreFilter]);
+  }, [day, sourceFilter, confluenceFilter, scoreFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -764,11 +670,6 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
   const filtered = useMemo(() => {
     const q = search.trim().toUpperCase();
     let rows = notifications;
-    if (channelFilter === "push") {
-      rows = rows.filter((n: any) => n.sent_via_push === true);
-    } else if (channelFilter === "panel") {
-      rows = rows.filter((n: any) => !n.sent_via_push);
-    }
     if (confluenceFilter === "single") {
       rows = rows.filter((n: any) => (n.sources || []).length <= 1);
     } else if (confluenceFilter === "multi") {
@@ -811,7 +712,7 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
       return String(av).localeCompare(String(bv), "tr-TR") * dir;
     });
     return sorted;
-  }, [notifications, search, channelFilter, confluenceFilter, sourceFilter, statusFilter, sortKey, sortDir]);
+  }, [notifications, search, confluenceFilter, sourceFilter, statusFilter, sortKey, sortDir]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -825,11 +726,10 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
       }
       return v;
     };
-    const headers = ["Zaman", "Sembol", "Kanal", "Teyit", "Giriş Fiyatı", "Skor", "Hedef (TP %)", "Maksimum (MFE %)", "Otonom İşlem PnL", "Otonom İşlem PnL %", "Sonuç"];
+    const headers = ["Zaman", "Sembol", "Teyit", "Giriş Fiyatı", "Skor", "Hedef (TP %)", "Maksimum (MFE %)", "Otonom İşlem PnL", "Otonom İşlem PnL %", "Sonuç"];
     const rows = filtered.map((n: any) => {
       const dt = new Date(toMs(n.detected_at));
       const timeStr = dt.toLocaleString("tr-TR", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-      const channel = n.sent_via_push ? "PUSH" : "PANEL";
       const sources = (n.sources || []).join("+") || "velocity";
       const price = n.price != null ? String(n.price) : "";
       const score = n.score != null ? Number(n.score).toFixed(1) : "";
@@ -864,7 +764,7 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
       } else {
         sonuc = "BAŞA BAŞ (−/+0,05%)";
       }
-      return [timeStr, n.symbol || "", channel, sources, price, score, target, mfe, tradePnl, tradePnlPct, sonuc].map(csvEscape).join(",");
+      return [timeStr, n.symbol || "", sources, price, score, target, mfe, tradePnl, tradePnlPct, sonuc].map(csvEscape).join(",");
     });
     const bom = "\uFEFF";
     const csv = bom + headers.map(csvEscape).join(",") + "\n" + rows.join("\n");
@@ -964,7 +864,7 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
                 <span>🎯</span> MONITORING RADAR SİNYAL LİSTESİ ({filtered.length})
               </h2>
               <p className="text-xs text-bunker-muted font-mono mt-0.5">
-                Monitoring motorunun yakaladığı Push ve Panel fırsatları, anlık hedefe dokunma ölçümü ve otonom paper işlem sonuçları.
+                Monitoring motorunun yakaladığı ve push ile gönderilen fırsatlar, anlık hedefe dokunma ölçümü ve otonom paper işlem sonuçları.
               </p>
             </div>
 
@@ -983,33 +883,7 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
 
           {/* Hızlı Filtre Çubukları */}
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            {/* 1. Kanal Filtresi */}
-            <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
-              <span className="text-bunker-muted px-1.5 text-[11px]">Kanal:</span>
-              <button
-                type="button"
-                onClick={() => { setChannelFilter("all"); setPage(0); }}
-                className={`rounded-lg px-2 py-0.5 transition-all ${channelFilter === "all" ? "bg-bunker-700 text-white font-bold" : "text-bunker-muted hover:text-white"}`}
-              >
-                Tümü
-              </button>
-              <button
-                type="button"
-                onClick={() => { setChannelFilter("push"); setPage(0); }}
-                className={`rounded-lg px-2 py-0.5 transition-all ${channelFilter === "push" ? "bg-sky-400/20 text-sky-300 font-bold border border-sky-400/40" : "text-bunker-muted hover:text-white"}`}
-              >
-                🔔 Push
-              </button>
-              <button
-                type="button"
-                onClick={() => { setChannelFilter("panel"); setPage(0); }}
-                className={`rounded-lg px-2 py-0.5 transition-all ${channelFilter === "panel" ? "bg-amber-400/20 text-amber-300 font-bold border border-amber-400/40" : "text-bunker-muted hover:text-white"}`}
-              >
-                🖥️ Panel
-              </button>
-            </div>
-
-            {/* 2. Teyit Filtresi */}
+            {/* Teyit Filtresi */}
             <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
               <span className="text-bunker-muted px-1.5 text-[11px]">Teyit:</span>
               <button
@@ -1142,7 +1016,6 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
                   <tr>
                     <SortHeader label="Zaman" field="time" />
                     <SortHeader label="Sembol" field="symbol" />
-                    <th>Kanal</th>
                     <th>Teyit</th>
                     <SortHeader label="Giriş Fiyatı" field="price" />
                     <SortHeader label="Skor" field="score" />
@@ -1166,9 +1039,6 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
                         </td>
                         <td>
                           <SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" />
-                        </td>
-                        <td>
-                          <ChannelBadge sentViaPush={n.sent_via_push} />
                         </td>
                         <td>
                           <SourceBadges sources={n.sources} compact />

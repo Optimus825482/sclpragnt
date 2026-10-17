@@ -83,6 +83,28 @@ class SaveNotificationContractTests(unittest.TestCase):
         assert "sent_via_push" in cols
         assert params[cols.index("sent_via_push")] is False
 
+    def test_push_attempted_defaults_to_false_and_follows_delivery(self):
+        """Panel bildirimi yok (2026-10-17): `push_attempted` açıkça veya teslimden türetilir."""
+        for entry, expected in (({}, False),
+                                ({"push_attempted": True}, True),
+                                ({"sent_via_push": True}, True)):
+            conn = _RoutedConn()
+            with mock.patch.object(database, "_run_db", _patched_run_db(conn)):
+                asyncio.run(database.save_monitoring_notifications([_notif_row(**entry)]))
+            sql, params = conn.calls[0]
+            cols = self._insert_columns(sql)
+            assert "push_attempted" in cols
+            assert params[cols.index("push_attempted")] is expected
+            assert len(params) == len(cols)
+
+    def test_list_monitoring_notifications_push_only_filter(self):
+        conn = _RoutedConn()
+        with mock.patch.object(database, "_run_db", _patched_run_db(conn)):
+            asyncio.run(database.list_monitoring_notifications(limit=5))
+            asyncio.run(database.list_monitoring_notifications(limit=5, push_only=False))
+        assert "sent_via_push OR push_attempted" in conn.calls[0][0]
+        assert "sent_via_push OR push_attempted" not in conn.calls[1][0]
+
     def test_norm_cap_and_candidate_id_are_stored(self):
         conn = _RoutedConn()
         with mock.patch.object(database, "_run_db", _patched_run_db(conn)):

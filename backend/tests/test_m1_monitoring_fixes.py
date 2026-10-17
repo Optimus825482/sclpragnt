@@ -177,7 +177,7 @@ class ReportSuccessDefinitionTests(unittest.IsolatedAsyncioTestCase):
         def row(**kw):
             d = {"id": 1, "symbol": "X", "message": "m", "title": "t", "score": 80.0,
                  "target_pct": 2.0, "price": 100.0, "expected_price": 102.0,
-                 "detected_at": since + 100, "horizon_minutes": 5, "sent_via_push": False,
+                 "detected_at": since + 100, "horizon_minutes": 5, "sent_via_push": True,
                  "candidate_id": "c", "mode": None, "ml_hit_probability": None,
                  "candidate_status": "evaluated", "mfe_pct": 3.0, "touched_target": True}
             d.update(kw)
@@ -609,11 +609,19 @@ class RobustnessTests(unittest.IsolatedAsyncioTestCase):
                 {"quiet_hours_start": None, "quiet_hours_end": None})
         self.assertFalse(inactive)
 
-    def test_record_history_wired_into_notify(self):
+    def test_record_history_wired_into_delivery_not_notify(self):
+        """Panel bildirimi YOK (2026-10-17): kayıt `_notify`'da DEĞİL, push denenirken yazılır.
+
+        `_record_history` (R2-15) artık teslim aşamasında (`_register_push_notifications`)
+        çağrılır; `_notify` kayıt yazmaz (yalnız politika ön kontrolü).
+        """
+        import inspect
         from app.routers import monitoring
-        src = __import__("inspect").getsource(monitoring._notify)
-        self.assertIn("await _record_history(new_entries)", src,
-                      "ölü _record_history bağlanmalı (R2-15)")
+        notify_src = inspect.getsource(monitoring._notify)
+        self.assertNotIn("await _record_history(", notify_src,
+                         "_notify bildirim satırı YAZMAMALI (panel bildirimi kaldırıldı)")
+        reg_src = inspect.getsource(monitoring._register_push_notifications)
+        self.assertIn("await _record_history(fresh)", reg_src)
 
 
 # ---------------------------------------------------------------------------

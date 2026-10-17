@@ -26,6 +26,7 @@ KULLANICI DİREKTİFİ (bağlayıcı):
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Callable
 
@@ -192,10 +193,11 @@ async def handle_global_detection(detection: dict[str, Any]) -> dict[str, Any]:
         "url": f"/charts?symbol={tr_symbol}",
         "tag": f"monitoring-{tr_symbol}",
     }
-    try:
-        await database.save_monitoring_notifications([notif_entry])
-    except Exception as exc:
-        logger.error("global_lead_lag: bildirim kaydı başarısız (%s): %s", tr_symbol, exc)
+    # 2026-10-17 (PANEL BİLDİRİMİ KALDIRILDI): bildirim satırı + WS yayını yalnız web push
+    # DENENECEKSE (VAPID tanımlıysa) yazılır. Sink politikası kararı kayıt yazmadan alınır
+    # (`precheck`); push denenemiyorsa bildirim üretilmez, otonom paper (adım 7) sürer.
+    from app import notification_policy
+    notification_policy.precheck([notif_entry])
 
     # 2026-10-16 (sinyal politikası): lavabo blokladıysa (policy_blocked) yayın ve push
     # yapılmaz; otonom paper girişi bildirim politikasından bağımsızdır ve sürer.
@@ -206,6 +208,22 @@ async def handle_global_detection(detection: dict[str, Any]) -> dict[str, Any]:
             analyzer, tr_symbol, tr_price, target_pct, horizon_minutes, detection, score)
         return {"status": "policy_blocked", "reason": notif_entry.get("policy_blocked"),
                 "tr_symbol": tr_symbol, "global_symbol": global_symbol, "trade": trade_outcome}
+
+    push_possible = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    if not push_possible:
+        logger.info("global_lead_lag: VAPID yok, push denenemez → bildirim kaydı/yayını yok "
+                    "(%s); otonom işlem denenir", tr_symbol)
+        trade_outcome = await _open_tr_paper_trade(
+            analyzer, tr_symbol, tr_price, target_pct, horizon_minutes, detection, score)
+        return {"status": "no_push_channel", "tr_symbol": tr_symbol,
+                "global_symbol": global_symbol, "trade": trade_outcome}
+
+    # Push denenecek: önce kalıcı kayıt (gerçek teslim sonucu `mark_...` ile yazılır).
+    notif_entry["push_attempted"] = True
+    try:
+        await database.save_monitoring_notifications([notif_entry])
+    except Exception as exc:
+        logger.error("global_lead_lag: bildirim kaydı başarısız (%s): %s", tr_symbol, exc)
 
     # 5) Arayüze yayın — TR bildirimi zarfı, Global alanı YOK.
     try:
