@@ -55,14 +55,74 @@ def _unified_min_score() -> float:
         return 95.0
 
 
+def _flag(name: str, default: bool) -> bool:
+    raw = _cfg(name, default)
+    if isinstance(raw, str):
+        return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+    return bool(raw)
+
+
+def _csv_set(name: str, default: str) -> set[str]:
+    raw = _cfg(name, default)
+    items = raw if isinstance(raw, (list, tuple, set, frozenset)) else str(raw or "").split(",")
+    return {str(m).strip().lower() for m in items if str(m).strip()}
+
+
+def sources_of(entry: dict) -> set[str]:
+    """Bildirimin FARKLI teyit kaynakları (küçük harf). Liste, JSON metni ya da virgüllü metin kabul edilir."""
+    raw = entry.get("sources") if isinstance(entry, dict) else None
+    if raw is None or raw == "":
+        return set()
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("["):
+            try:
+                import json
+                raw = json.loads(text)
+            except (TypeError, ValueError):
+                raw = text.strip("[]").replace('"', "").split(",")
+        else:
+            raw = text.split(",")
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        return set()
+    return {str(s).strip().lower() for s in raw if str(s).strip()}
+
+
+def confirm_rule_reason(entry: dict) -> str | None:
+    """2026-10-17 TEYİT KURALI (config RADAR_NOTIFY_CONFIRM_*): ihlal varsa neden, yoksa None."""
+    if not _flag("RADAR_NOTIFY_CONFIRM_RULE_ENABLED", True):
+        return None
+    srcs = sources_of(entry)
+    try:
+        min_n = max(1, int(_cfg("RADAR_NOTIFY_MIN_SOURCES", 2)))
+    except (TypeError, ValueError):
+        min_n = 2
+    if len(srcs) < min_n:
+        return f"teyit yetersiz ({len(srcs)} < {min_n} kaynak)"
+    required = str(_cfg("RADAR_NOTIFY_REQUIRED_SOURCE", "velocity") or "").strip().lower()
+    if required and required not in srcs:
+        return f"teyit kuralı: {required} kaynağı yok"
+    mode = str(entry.get("mode") or "").strip().lower()
+    if mode and mode in _csv_set("RADAR_NOTIFY_CONFIRM_EXCLUDED_MODES", "unified"):
+        return f"teyit kuralı: mod {mode} hariç"
+    return None
+
+
+def shadow_match(entry: dict) -> str | None:
+    """GÖLGE kural (yalnız kayıt): ≥2 kaynak ∧ mod = trend_devam → kural adı, aksi halde None."""
+    if not isinstance(entry, dict) or not _flag("RADAR_NOTIFY_SHADOW_RULE_ENABLED", True):
+        return None
+    if len(sources_of(entry)) >= 2 and str(entry.get("mode") or "").strip().lower() == "trend_devam":
+        return "ge2_trend_devam"
+    return None
+
+
 def evaluate(entry: dict) -> str | None:
     """Bloklanacaksa Türkçe neden, aksi halde None."""
     if not _enabled() or not isinstance(entry, dict):
         return None
     mode = str(entry.get("mode") or "").strip().lower()
-    if not mode:
-        return None
-    if mode in _disabled_modes():
+    if mode and mode in _disabled_modes():
         return f"mod devre dışı: {mode}"
     if mode == "unified":
         floor = _unified_min_score()
@@ -70,12 +130,31 @@ def evaluate(entry: dict) -> str | None:
             try:
                 score = float(entry.get("score"))
             except (TypeError, ValueError):
-                return None  # skor yok → ölçek bilinmiyor, bloklama
-            if score != score or score > _PANEL_MAX:
-                return None  # NaN / eski ham ölçek → skora göre bloklama
-            if score < floor:
+                score = None  # skor yok → ölçek bilinmiyor, skora göre bloklama
+            if score is not None and score == score and score <= _PANEL_MAX and score < floor:
                 return f"unified skor tabanı altı ({score:.1f} < {floor:g})"
-    return None
+    return confirm_rule_reason(entry)
+
+
+def shadow_rows(entries) -> list[dict]:
+    """Gölge kurala uyan bildirimler için kayıt satırları (canlı karar dahil). Saf; DB yazmaz."""
+    import time as _time
+    rows: list[dict] = []
+    for e in entries or []:
+        rule = shadow_match(e)
+        if not rule:
+            continue
+        rows.append({
+            "detected_at": float(e.get("detected_at") or _time.time()),
+            "symbol": str(e.get("symbol") or "").upper(),
+            "price": e.get("price"), "target_pct": e.get("target_pct"),
+            "expected_price": e.get("expected_price"),
+            "horizon_minutes": e.get("horizon_minutes"), "mode": e.get("mode"),
+            "sources": ",".join(sorted(sources_of(e))), "score": e.get("score"),
+            "live_blocked_reason": e.get("policy_blocked") or evaluate(e) or "",
+            "shadow_rule": rule,
+        })
+    return rows
 
 
 def apply(entries) -> tuple[list, list]:

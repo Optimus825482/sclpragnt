@@ -2018,6 +2018,8 @@ async def _notify(candidates_list, settings) -> list:
         for n in new_entries:
             n["sent_via_push"] = False
         _notification_policy.precheck(new_entries)
+        # 2026-10-17: gölge kural kaydı (≥2 kaynak ∧ trend_devam) — canlı karardan bağımsız.
+        await _record_notification_shadow(new_entries)
     # 2026-10-16 (sinyal politikası): lavaboda (save_monitoring_notifications) bloklanan
     # bildirimler `policy_blocked` taşır; push / WhatsApp / otonom paper / WS / LLM ikinci
     # göz yollarına GİRMEZ. Politika bildirim politikasıdır; otonom giriş kuralları
@@ -2461,6 +2463,17 @@ def _unified_fast_prune(ttl_sec: float | None = None) -> None:
             _unified_fast_last.pop(sym, None)
 
 
+async def _record_notification_shadow(entries) -> None:
+    """2026-10-17: gölge kurala uyan bildirim adaylarını (canlı kararla) `notification_shadow`a yazar.
+    Yalnız kayıt; hiçbir bildirim/push kararını değiştirmez. Hata akışı bozmaz."""
+    try:
+        rows = _notification_policy.shadow_rows(entries)
+        if rows:
+            await database.save_notification_shadow(rows)
+    except Exception as exc:  # noqa: BLE001 — ölçüm kaydı bildirim akışını bozmamalı
+        logger.debug("gölge bildirim kaydı atlandı: %s", exc)
+
+
 async def unified_fast_notify(symbol: str, kind: str, score: float) -> dict | None:
     """MACD tetiklemesinden birleşik TEK bildirim üret (veya sessizce atla).
 
@@ -2597,6 +2610,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     # yalnız push DENENECEKSE (VAPID tanımlıysa) yazılır. Aksi halde aday yalnız ölçüm
     # kaydı (velocity_candidates) ve otonom paper için işlenir.
     _notification_policy.precheck([notif])
+    await _record_notification_shadow([notif])
     # BİRLEŞİK SİNYAL: Bu bildirimin gerçek MFE ve hedefe dokunuşunu ölçebilmek için
     # velocity_candidates tablosuna da kaydet (aksi halde rapor ÖLÇÜLEMEDİ kalır).
     try:
@@ -2849,9 +2863,15 @@ async def _rising_deliver(notified: list) -> None:
             _in_cooldown = unified_signals.recently_notified(sym)
             _upgrade = (not _same_tur_pushed and _in_cooldown and
                         unified_signals.should_upgrade_signal(sym, float(notif.get("score") or 0)))
-            if (_same_tur_pushed or _in_cooldown) and not _upgrade:
+            # 2026-10-17 TEYİT KURALI: yükseliş zarfı tek kaynaklıdır (["rising"]); bildirim
+            # politikası (≥2 kaynak ∧ velocity ∧ mod ≠ unified) push'u keser. Ölçüm kaydı
+            # (rising_alerts) ve otonom paper yolu DEĞİŞMEZ (otonom kurallar ayrıdır).
+            _policy_reason = _notification_policy.evaluate(notif)
+            if _policy_reason:
+                notif["policy_blocked"] = _policy_reason
+            if _policy_reason or ((_same_tur_pushed or _in_cooldown) and not _upgrade):
                 notif["push_success"] = False
-                notif["suppressed_by_unified"] = True
+                notif["suppressed_by_unified"] = not _policy_reason
                 suppressed.append(notif)
             else:
                 if _upgrade:
@@ -2894,9 +2914,18 @@ async def _rising_deliver(notified: list) -> None:
                     logger.debug("rising bastırma etiketi %s: %s", alert_id, exc)
     else:
         # ESKİ DAVRANIŞ (bayrak kapalı): ayrı push + ayrı `rising_alert` WS tipi.
+        # 2026-10-17 TEYİT KURALI burada da push'u keser (ölçüm + otonom paper aynen).
+        _pushable = []
+        for notif in notified:
+            _policy_reason = _notification_policy.evaluate(notif)
+            if _policy_reason:
+                notif["policy_blocked"] = _policy_reason
+                notif["push_success"] = False
+            else:
+                _pushable.append(notif)
         if vapid_configured and not quiet:
-            attempted = list(notified)
-            for notif in notified:
+            attempted = list(_pushable)
+            for notif in _pushable:
                 ok = await _send_push(notif)
                 notif["push_success"] = ok
                 notif["push_attempted"] = True
@@ -2909,7 +2938,7 @@ async def _rising_deliver(notified: list) -> None:
                     except Exception as exc:
                         logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
         elif quiet:
-            for notif in notified:
+            for notif in _pushable:
                 _deferred_push.append(notif)
         else:
             logger.info("Yükseliş push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d sinyal)", len(notified))

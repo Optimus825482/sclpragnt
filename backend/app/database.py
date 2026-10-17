@@ -5159,6 +5159,38 @@ async def remove_push_subscriptions(endpoints: list[str]):
     return await _run_db(op)
 
 
+async def save_notification_shadow(rows) -> int:
+    """2026-10-17: gölge kural kaydı (migration 022). Tekrar (aynı sembol+zaman+kural) yazılmaz.
+
+    rows: `notification_policy.shadow_rows` çıktısı. Hata bildirim akışını bozmaz (çağıran yutar)."""
+    rows = [r for r in (rows or []) if isinstance(r, dict) and r.get("symbol") and r.get("shadow_rule")]
+    if not rows:
+        return 0
+
+    def _f(v):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return None
+        return x if x == x else None
+
+    def op(conn):
+        now = time.time()
+        cur = conn.executemany(
+            "INSERT INTO notification_shadow (detected_at, symbol, price, target_pct, expected_price, "
+            "horizon_minutes, mode, sources, score, live_blocked_reason, shadow_rule, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (symbol, detected_at, shadow_rule) DO NOTHING",
+            [(float(r["detected_at"]), str(r["symbol"]).upper(), _f(r.get("price")), _f(r.get("target_pct")),
+              _f(r.get("expected_price")),
+              int(r["horizon_minutes"]) if _f(r.get("horizon_minutes")) is not None else None,
+              str(r.get("mode") or "")[:40], str(r.get("sources") or "")[:200], _f(r.get("score")),
+              str(r.get("live_blocked_reason") or "")[:120], str(r["shadow_rule"])[:40], now)
+             for r in rows])
+        conn.commit()
+        return int(cur.rowcount or 0)
+    return await _run_db(op)
+
+
 async def save_monitoring_notifications(entries):
     """Monitoring bildirim geçmişini kalıcı kaydet (server-side scan loop'tan).
 

@@ -15,6 +15,10 @@ from tests.test_m4_database_fixes import _RoutedConn, _patched_run_db  # noqa: E
 class EvaluateTests(unittest.TestCase):
     def setUp(self):
         np_.reset_stats()
+        # 2026-10-17: bu sınıf mod/skor katmanlarını sınar; teyit kuralı ayrı sınıfta.
+        _p = mock.patch.object(config, "RADAR_NOTIFY_CONFIRM_RULE_ENABLED", False)
+        _p.start()
+        self.addCleanup(_p.stop)
 
     def test_defaults_exist(self):
         self.assertTrue(config.RADAR_NOTIFY_POLICY_ENABLED)
@@ -89,6 +93,9 @@ class EvaluateTests(unittest.TestCase):
 
 class SinkTests(unittest.TestCase):
     def setUp(self):
+        _p = mock.patch.object(config, "RADAR_NOTIFY_CONFIRM_RULE_ENABLED", False)
+        _p.start()
+        self.addCleanup(_p.stop)
         np_.reset_stats()
 
     @staticmethod
@@ -137,3 +144,66 @@ class SinkTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfirmRuleTests(unittest.TestCase):
+    """2026-10-17: TEYİT KURALI (≥2 kaynak ∧ velocity ∧ mod ≠ unified) ve gölge kayıt."""
+
+    def test_defaults(self):
+        self.assertTrue(config.RADAR_NOTIFY_CONFIRM_RULE_ENABLED)
+        self.assertEqual(config.RADAR_NOTIFY_MIN_SOURCES, 2)
+        self.assertEqual(config.RADAR_NOTIFY_REQUIRED_SOURCE, "velocity")
+        self.assertEqual(config.RADAR_NOTIFY_CONFIRM_EXCLUDED_MODES, "unified")
+        self.assertTrue(config.RADAR_NOTIFY_SHADOW_RULE_ENABLED)
+
+    def test_passes_with_velocity_and_second_source(self):
+        e = {"mode": "trend_devam", "score": 90, "sources": ["velocity", "jump"]}
+        self.assertIsNone(np_.evaluate(e))
+        self.assertIsNone(np_.evaluate({**e, "sources": '["early","jump","velocity"]'}))
+        self.assertIsNone(np_.evaluate({**e, "sources": "velocity,rising"}))
+
+    def test_single_source_blocked(self):
+        self.assertEqual(np_.evaluate({"mode": "trend_devam", "sources": ["velocity"]}),
+                         "teyit yetersiz (1 < 2 kaynak)")
+        self.assertEqual(np_.evaluate({"mode": "yukselis", "sources": ["rising"]}),
+                         "teyit yetersiz (1 < 2 kaynak)")
+        self.assertEqual(np_.evaluate({"mode": "trend_devam"}), "teyit yetersiz (0 < 2 kaynak)")
+        # aynı kaynağın tekrarı tek sayılır
+        self.assertIn("teyit yetersiz", np_.evaluate({"mode": "trend_devam", "sources": ["velocity", "VELOCITY"]}))
+
+    def test_without_velocity_blocked(self):
+        self.assertEqual(np_.evaluate({"mode": "trend_devam", "sources": ["jump", "early", "rising"]}),
+                         "teyit kuralı: velocity kaynağı yok")
+
+    def test_unified_mode_excluded(self):
+        e = {"mode": "unified", "score": 99, "sources": ["velocity", "jump", "early"]}
+        self.assertEqual(np_.evaluate(e), "teyit kuralı: mod unified hariç")
+
+    def test_rule_flags(self):
+        e = {"mode": "trend_devam", "sources": ["velocity"]}
+        with mock.patch.object(config, "RADAR_NOTIFY_CONFIRM_RULE_ENABLED", False):
+            self.assertIsNone(np_.evaluate(e))
+        with mock.patch.object(config, "RADAR_NOTIFY_MIN_SOURCES", 1):
+            self.assertIsNone(np_.evaluate(e))
+        with mock.patch.object(config, "RADAR_NOTIFY_REQUIRED_SOURCE", ""):
+            self.assertIsNone(np_.evaluate({"mode": "trend_devam", "sources": ["jump", "rising"]}))
+        with mock.patch.object(config, "RADAR_NOTIFY_POLICY_ENABLED", False):
+            self.assertIsNone(np_.evaluate(e))
+
+    def test_disabled_mode_reason_takes_precedence(self):
+        self.assertEqual(np_.evaluate({"mode": "notr", "sources": ["velocity", "jump"]}), "mod devre dışı: notr")
+
+    def test_shadow_rows_record_live_decision(self):
+        live_ok = {"symbol": "eratry", "mode": "trend_devam", "sources": ["velocity", "jump"], "price": 3.4,
+                   "target_pct": 2.5, "horizon_minutes": 15, "score": 90, "detected_at": 100.0}
+        live_blocked = {"symbol": "ATRY", "mode": "trend_devam", "sources": ["jump", "early"], "detected_at": 101.0}
+        not_shadow = {"symbol": "XTRY", "mode": "unified", "sources": ["velocity", "jump"], "detected_at": 102.0}
+        single = {"symbol": "YTRY", "mode": "trend_devam", "sources": ["velocity"], "detected_at": 103.0}
+        rows = np_.shadow_rows([live_ok, live_blocked, not_shadow, single])
+        self.assertEqual([r["symbol"] for r in rows], ["ERATRY", "ATRY"])
+        self.assertEqual(rows[0]["live_blocked_reason"], "")
+        self.assertEqual(rows[1]["live_blocked_reason"], "teyit kuralı: velocity kaynağı yok")
+        self.assertEqual(rows[0]["sources"], "jump,velocity")
+        self.assertEqual({r["shadow_rule"] for r in rows}, {"ge2_trend_devam"})
+        with mock.patch.object(config, "RADAR_NOTIFY_SHADOW_RULE_ENABLED", False):
+            self.assertEqual(np_.shadow_rows([live_ok]), [])

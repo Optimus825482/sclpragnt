@@ -575,6 +575,20 @@ class Config:
     # unified yalnız panel skoru (<=100) bu tabanın üstündeyse; 0 = taban kapalı.
     RADAR_NOTIFY_UNIFIED_MIN_SCORE = max(0.0, float(
         os.getenv("RADAR_NOTIFY_UNIFIED_MIN_SCORE", "").strip() or "95.0"))
+    # 2026-10-17 (docs/TEYIT_UNSURLARI_ANALIZI_2026-10-17.md, kullanıcı kararı): TEYİT KURALI —
+    # push yalnız en az `RADAR_NOTIFY_MIN_SOURCES` FARKLI kaynak teyidi varsa, kaynaklardan biri
+    # `RADAR_NOTIFY_REQUIRED_SOURCE` ise (Hız = velocity) ve mod `RADAR_NOTIFY_CONFIRM_EXCLUDED_MODES`
+    # içinde değilse gider. 17.09–09.10'da seçildi, 10.10–17.10'da dokunulmadan: isabet %33,3 (≥2 kaynak
+    # %17,9; tümü %13,6), günde ~10 bildirim (tümü ~64). Maliyet sonrası net hâlâ negatif (−0,40):
+    # bu bir YANLIŞ ALARM azaltmasıdır, kâr sinyali değil. 0 = kapalı.
+    RADAR_NOTIFY_CONFIRM_RULE_ENABLED = os.getenv("RADAR_NOTIFY_CONFIRM_RULE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    RADAR_NOTIFY_MIN_SOURCES = max(1, int(os.getenv("RADAR_NOTIFY_MIN_SOURCES", "2") or 2))
+    RADAR_NOTIFY_REQUIRED_SOURCE = os.getenv("RADAR_NOTIFY_REQUIRED_SOURCE", "velocity").strip().lower()
+    RADAR_NOTIFY_CONFIRM_EXCLUDED_MODES = os.getenv("RADAR_NOTIFY_CONFIRM_EXCLUDED_MODES", "unified").strip()
+    # GÖLGE KURAL (kayıt, karar DEĞİL): "≥2 kaynak ∧ mod = trend_devam" — 7 günde net −0,02 ama tek hafta,
+    # n=50; önceki haftalar −0,41…−0,55. Uyan her aday `notification_shadow` tablosuna canlı kararla
+    # birlikte yazılır; 2–3 hafta sonra `scripts/confirm_elems_study.py` ile ölçülür. 0 = kayıt yok.
+    RADAR_NOTIFY_SHADOW_RULE_ENABLED = os.getenv("RADAR_NOTIFY_SHADOW_RULE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
     # ------------------------------------------------------------------
     # KOMBİNE PAPER PORTFÖY (2026-10-11 kullanıcı kararı) — WhatsApp'a gönderilen
     # kombine liste adayları AYRI bir 5.000 TL sanal portföyde OTONOM paper
