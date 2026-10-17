@@ -7,7 +7,6 @@ import { formatPrice, toMs } from "../../lib/format";
 import { useLiveMessages } from "../../lib/liveSocket";
 import { useModalA11y } from "../../lib/useModalA11y";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
-import RegimeBanner from "./RegimeBanner";
 import { useWatchPrices } from "../../lib/useWatchPrices";
 import { confidenceBadge, pctChange } from "../../lib/userUi";
 import SymbolLink from "../SymbolLink";
@@ -299,7 +298,8 @@ export default function UserRadar() {
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-4">
       <h1 className="text-xl font-bold text-white">Radar</h1>
-      <RegimeBanner />
+      {/* 2026-10-18: rejim bandı kaldırıldı — kalkan rozet modunda (RADAR_SHIELD_MODE=badge) bildirimler durmaz;
+          durum bildirim kartındaki "BTC rejim" rozetiyle gösterilir. */}
       <div role="tablist" aria-label="Radar bölümleri" className="mt-3 flex gap-2 overflow-x-auto pb-1">
         {TABS.map((t) => (
           <button

@@ -85,33 +85,7 @@ export function isUserView(role: string | null, adminView: AdminView): boolean {
   return role === "admin" && adminView === "simple";
 }
 
-export type MacroRegime = {
-  shield_enabled?: boolean;
-  regime_shield_active?: boolean;
-  btc_price?: number | null;
-  btc_1h_ema200?: number | null;
-};
-
-export type RegimeNotice = { active: boolean; gapPct: number | null; title: string; detail: string };
-
-/**
- * BTC rejim kalkanı açıkken (BTC 1 saatlik EMA200'ün altında) sistem yeni bildirim göndermez.
- * Kullanıcı "sistem bozuk" sanmasın diye nedenini açıkça gösteririz. Veri yoksa uyarı VERMEYİZ.
- */
-export function regimeNotice(r: MacroRegime | null | undefined): RegimeNotice {
-  const none: RegimeNotice = { active: false, gapPct: null, title: "", detail: "" };
-  if (!r || r.shield_enabled === false || r.regime_shield_active !== true) return none;
-  const price = Number(r.btc_price);
-  const ema = Number(r.btc_1h_ema200);
-  const gapPct = Number.isFinite(price) && price > 0 && Number.isFinite(ema) && ema > 0 ? ((price - ema) / ema) * 100 : null;
-  const gapText = gapPct != null ? ` BTC, 1 saatlik ortalamanın (EMA200) %${Math.abs(gapPct).toFixed(2).replace(".", ",")} altında.` : "";
-  return {
-    active: true,
-    gapPct,
-    title: "Piyasa düşüş rejiminde: yeni bildirimler durduruldu",
-    detail: `Risk koruması açık.${gapText} BTC ortalamanın üstüne çıkınca bildirimler kendiliğinden yeniden başlar.`,
-  };
-}
+// 2026-10-18: `regimeNotice` / rejim bandı kaldırıldı — kalkan rozet modunda bildirimler durmaz; bkz. `isRegimeTitle`.
 
 // 2026-10-17 (basit arayüz): ana sayfa bildirim kartları için saf yardımcılar.
 
