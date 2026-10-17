@@ -122,6 +122,48 @@ def load_btc_1h(path: str) -> list:
     return data
 
 
+def merge_klines(*lists: list) -> list:
+    """Kline listelerini open_time'a göre tekilleştirir (sonraki liste kazanır) ve sıralar."""
+    by_t: dict[int, list] = {}
+    for lst in lists:
+        for k in lst or []:
+            by_t[int(k[0])] = k
+    return [by_t[t] for t in sorted(by_t)]
+
+
+def fetch_btc_1h_range(start_ms: int, end_ms: int, path: str = "", *, symbol: str = "BTCTRY",
+                       base_url: str = "https://api.binance.me/api/v3/klines", pause: float = 0.3) -> list:
+    """Binance TR public REST'ten 1h klines'ı start_ms..end_ms için sayfalayarak çeker (limit 1000).
+    `path` doluysa ve dosya varsa önce okunur, eksik aralık çekilip birleştirilir ve dosyaya yazılır."""
+    import urllib.request
+    have: list = []
+    if path and os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            have = json.load(f)
+    cur = start_ms
+    new: list = []
+    while cur <= end_ms:
+        url = f"{base_url}?symbol={symbol}&interval=1h&limit=1000&startTime={cur}&endTime={end_ms}"
+        with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 — public, sabit URL
+            page = json.loads(resp.read().decode("utf-8"))
+        if not page:
+            break
+        new.extend(page)
+        nxt = int(page[-1][0]) + 3_600_000
+        if nxt <= cur:
+            break
+        cur = nxt
+        if len(page) < 2:
+            break
+        time.sleep(pause)
+    out = merge_klines(have, new)
+    if path:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(out, f)
+    return out
+
+
 def load_btc_5m(conn) -> tuple[np.ndarray, np.ndarray]:
     rows = conn.execute("SELECT open_time, close::float8 FROM historical_candles "
                         "WHERE symbol='BTCTRY' AND timeframe='5m' ORDER BY open_time").fetchall()
@@ -367,7 +409,7 @@ def build_report(rows: list[dict], regime: dict[int, dict], *, args, store: Cand
          ("kalkan kapalı · aşırı alım", sel(rows_all, shield=False, ob=True)), ("kalkan açık · aşırı alım", sel(rows_all, shield=True, ob=True))], "all_rows")
 
     md.append("\n## Sınırlar")
-    md.append("- Pencere 21 gün (historical_candles 5m 2026-09-26'dan başlıyor); tek rejim dönemi, kalkanın açık olduğu günler kümelenmiş olabilir.")
+    md.append("- Pencere kısa/tek dönem olabilir; kalkanın açık olduğu günler kümelenmiş (rejim-dönem karışıklığı olası). Çoklu dönem için scripts/validation90_report.py.")
     md.append("- Rescan sapmaları (spread, taker oranı, ML hedef, kadans) docs/RESCAN_HARNESS.md'de; canlı adayların ~%90'ı yeniden üretiliyor.")
     md.append("- Giriş = aday fiyatı (bildirim anı); gecikmeli dolum yok. Hedef = adayın kendi target_pct'si; SL sabit.")
     md.append("- Şans tabanı yalnız örneklemde; 'şansa göre' sütunu hit60 − null3(hit). Çoklu karşılaştırma: tek t > 2 yeterli sayılmaz.")

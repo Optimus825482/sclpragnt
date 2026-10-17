@@ -64,6 +64,7 @@ def exhaustion_decision(exhausted: str | None, mode: str | None, shield_active: 
                         exhaustion_mode: str | None = None) -> tuple[str | None, bool]:
     """Aşırı alım/satım bayrağı → (eleme nedeni | None, skor cezası uygulansın mı).
 
+    Varsayılan `block` (90 günlük doğrulamada ceza modu kötü çıktı: docs/DOGRULAMA_90G_2026-10-17.md).
     2026-10-17 (docs/REJIM_KALKANI_ANALIZI_2026-10-17.md): `VELOCITY_EXHAUSTION_MODE=penalty`
     iken trend_devam modundaki `mfi/rsi_asiri_alim` ELEME DEĞİL skor cezasıdır — yalnız BTC
     rejim kalkanı KAPALIYKEN (kalkan açık + aşırı alım kesişimi ölçümde zayıf). Aşırı satım
@@ -72,7 +73,7 @@ def exhaustion_decision(exhausted: str | None, mode: str | None, shield_active: 
     """
     if not exhausted:
         return None, False
-    em = str(exhaustion_mode if exhaustion_mode is not None else getattr(config, "VELOCITY_EXHAUSTION_MODE", "penalty")).lower()
+    em = str(exhaustion_mode if exhaustion_mode is not None else getattr(config, "VELOCITY_EXHAUSTION_MODE", "block")).lower()
     if (em == "penalty" and mode == "trend_devam" and not shield_active
             and str(exhausted).startswith(_EXHAUSTION_PENALTY_PREFIXES)):
         return None, True

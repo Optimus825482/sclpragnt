@@ -112,3 +112,5 @@ iyimser; şans tabanı örneklemde. Canlı kod değiştirilmedi; `--no-exhaustio
   ve rescan çekirdeği `velocity.exhaustion_decision` ile aynı kararı verir; `radar.exhaustion_penalty` bayrağı.
 - Ölçüm: `scripts/radar_shield_analysis.py` artık `shield_badge` (rozetle giden) grubunu ayrı raporlar; 14 gün sonra
   `passed` ile kıyaslanmalı. Merdiven dedektörü canlıya alınmadı.
+
+> **Güncelleme (aynı gün):** 90 günlük doğrulama (docs/DOGRULAMA_90G_2026-10-17.md) kalkan bulgusunu teyit etti (FAZLA_SIKI, rozet korundu) ama aşırı alım bulgusunu ÇÜRÜTTÜ: kalkan kapalıyken elenenler 90 günde belirgin kötü (−8,0 pp). `VELOCITY_EXHAUSTION_MODE` varsayılanı `block`'a geri alındı. Bu rapordaki §3 sonucu yalnız son ~3 haftaya özgüdür.

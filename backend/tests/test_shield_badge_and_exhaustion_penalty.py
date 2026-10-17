@@ -74,3 +74,11 @@ def test_rising_shield_btc_itself_exempt_in_both_modes():
              mock.patch.object(config, "RADAR_SHIELD_MODE", mode):
             reason, evidence = M._rising_risk_block_reason("BTCTRY")
         assert reason is None and "regime_badge" not in evidence
+
+
+def test_default_exhaustion_mode_is_block_after_90d_validation():
+    # 2026-10-17: 90 günlük doğrulama ceza modunu çürüttü → varsayılan eleme (docs/DOGRULAMA_90G_2026-10-17.md).
+    import importlib, os
+    from app import config as cfg_mod
+    if os.getenv("VELOCITY_EXHAUSTION_MODE") is None:
+        assert str(cfg_mod.config.VELOCITY_EXHAUSTION_MODE) == "block"

@@ -863,7 +863,11 @@ class Config:
     # adayları geçenlerle aynı isabette (hit60 %19,0 vs %19,8, MAE daha küçük) → "penalty": eleme
     # yerine skor çarpanı (ceza) — yalnız trend_devam ve rejim kalkanı KAPALIYKEN; kalkan açıkken
     # kesişim hücresi zayıf (%16,6) olduğundan eleme kalır. "block": eski davranış.
-    VELOCITY_EXHAUSTION_MODE = os.getenv("VELOCITY_EXHAUSTION_MODE", "penalty").strip().lower()
+    # 2026-10-17 (AYNI GÜN GERİ ALINDI → "block"): 90 günlük doğrulama (docs/DOGRULAMA_90G_2026-10-17.md)
+    # 21 günlük sonucu TUTMADI: kalkan kapalıyken elenenler hit60 %15,3 vs geçen %23,3 (−8,0 pp, gün-küme
+    # GA95 [−9,6; −6,5]), şansa göre +2,1 vs +5,2 pp; ×0,85 ceza adayların %99,7'sini top-10'da bıraktığı için
+    # pratikte kapıyı kaldırıyordu. Fark son 14 günde eridi (−1,4 pp) → 14 gün sonra yeniden ölçülecek.
+    VELOCITY_EXHAUSTION_MODE = os.getenv("VELOCITY_EXHAUSTION_MODE", "block").strip().lower()
     VELOCITY_EXHAUSTION_PENALTY_MULT = float(os.getenv("VELOCITY_EXHAUSTION_PENALTY_MULT", "0.85"))
     MASTER_SURGE_MIN_SCORE = float(os.getenv("MASTER_SURGE_MIN_SCORE", "70.0"))
     # 2026-10-07: true → false. KANIT (DENETIM_RAPORU_2026-10-07 §P0-1, çalıştırarak
