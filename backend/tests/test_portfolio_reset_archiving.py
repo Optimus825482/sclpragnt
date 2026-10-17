@@ -320,11 +320,11 @@ class _ReconcileRoutedConn:
             return _Cursor([(self.main_open,)])
         if "SELECT amount FROM virtual_wallet" in s:
             return _Cursor([(5000.0,)])
-        if "SELECT entry_time,exit_time,entry_price,quantity,pnl,exit_price FROM trades" in s:
+        if "SELECT entry_time,exit_time,entry_price,quantity,pnl,exit_price," in s and "FROM trades" in s:
             return _Cursor(self._trade_rows)
         if "SELECT entry_time,exit_time,order_value_try" in s:
             return _Cursor([])
-        if "SELECT symbol,entry_time,entry_price,quantity FROM positions" in s:
+        if "SELECT symbol,entry_time,entry_price,quantity," in s and "FROM positions" in s:
             return _Cursor(self.positions_rows)
         if "SELECT trade_id FROM positions WHERE symbol=?" in s:
             return _Cursor([("legacy-t1",)])

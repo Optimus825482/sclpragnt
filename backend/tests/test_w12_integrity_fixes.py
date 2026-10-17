@@ -202,7 +202,7 @@ class ClosePositionNullTradeIdTests(unittest.TestCase):
 
     def test_null_trade_id_uses_symbol_identity(self):
         conn = _RoutedConn(routes=[
-            ("SELECT quantity FROM positions", [[1.0]]),
+            ("SELECT quantity,entry_commission_pct FROM positions", [[1.0, None]]),
             ("SELECT amount FROM virtual_wallet", [[1000.0]]),
             ("SELECT COUNT(*) FROM trades WHERE trade_id=?", [[0]]),
             ("SELECT COUNT(*) FROM trades WHERE symbol=", [[1]]),
