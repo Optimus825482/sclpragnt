@@ -44,7 +44,7 @@ ruff format --check app tests scripts
 cd D:\scalperagent_v4\frontend
 npm test            # eşdeğeri: npx vitest run
 
-# Frontend lint (her iki uygulama: frontend, scalperintelligent; CI job: frontend-lint)
+# Frontend lint (frontend; CI job: frontend-lint)
 npm run lint
 ```
 

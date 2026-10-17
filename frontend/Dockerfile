@@ -1,5 +1,5 @@
 # 2026-10-15 (denetim düzeltmesi, §5 P2): node:20 → node:22-alpine. Node 20
-# Nisan 2026'da EOL; üç Node imajı (frontend, scalperintelligent,
+# Nisan 2026'da EOL; iki Node imajı (frontend,
 # whatsapp-bridge) artık aynı tabanda. sha256 digest sabitlemesi ağ erişimi
 # olmadan yapılamadı — tag sabitleme ile yetinildi.
 FROM node:22-alpine AS deps

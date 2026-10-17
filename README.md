@@ -124,8 +124,7 @@ Varsayılan çalışma modunda sistem yalnızca paper trading yapar; sanal cüzd
 | `postgres` | PostgreSQL 17 + pgvector; tüm kalıcı veri (`scalper_postgres_data`) | `pg_isready` healthcheck |
 | `backend` | FastAPI + tarayıcı/strateji döngüleri (port 8004, yalnız iç ağ) | `/health` döngü kaydına bakar, kritik döngü ölü/bayat ise **503** (`SCALPER_HEALTH_STALE_SEC`, varsayılan 120); `autoheal=true` etiketi |
 | `frontend` | Eski Next.js arayüzü (3004) | |
-| `scalperintelligent` | Yeni Next.js arayüzü, `/yeni-arayuz` altında (3055) | |
-| `gateway` | nginx: `/api`, `/health`, `/ws` → backend; `/` → frontend; `/yeni-arayuz` → scalperintelligent; rate-limit, güvenlik başlıkları, gerçek istemci IP'si (`set_real_ip_from`) | Tek dışa açık servis (Traefik → :80). Upstream'ler yeniden başlayınca `depends_on … restart: true` ile kendisi de yeniden başlar |
+| `gateway` | nginx: `/api`, `/health`, `/ws` → backend; `/` → frontend; rate-limit, güvenlik başlıkları, gerçek istemci IP'si (`set_real_ip_from`) | Tek dışa açık servis (Traefik → :80). Upstream'ler yeniden başlayınca `depends_on … restart: true` ile kendisi de yeniden başlar |
 | `whatsapp-bridge` | Baileys WhatsApp köprüsü (3001, yalnız iç ağ) | Oturum `whatsapp_auth` volume'unda |
 | `db-backup` | Günde bir `pg_dump -Fc` → `scalper_pg_backups` volume'u, son 14 dosya (`scripts/pg_backup.sh`) | Postgres ile aynı imaj |
 | `autoheal` | `autoheal=true` etiketli unhealthy konteyneri yeniden başlatır (docker socket salt-okunur) | Docker tek başına unhealthy'yi restart ETMEZ |

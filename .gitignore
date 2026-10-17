@@ -13,8 +13,6 @@ scalperagent-backup-*.sqlite*
 frontend/node_modules/
 frontend/.next/
 frontend-odak/
-scalperintelligent/node_modules/
-scalperintelligent/.next/
 # scalpernew ayrı repoya taşındı (Optimus825482/scalpernew); burada yalnızca
 # silinemeyen önbellek artıkları kaldı → git tamamen yok sayar.
 scalpernew/

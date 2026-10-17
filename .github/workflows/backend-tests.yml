@@ -127,13 +127,13 @@ jobs:
 
   # 2026-10-15 denetim (bölüm 6): iki frontend'de de ESLint yoktu. Taban
   # politikası `eslint.config.mjs` içinde açıklıdır (gürültülü kurallar `warn`,
-  # gerçek hatalar `error` → job'ı kırar). `scalperintelligent` için vitest yok.
+  # gerçek hatalar `error` → job'ı kırar). (2026-10-18: scalperintelligent bu depodan kaldırıldı.)
   frontend-lint:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        app: [frontend, scalperintelligent]
+        app: [frontend]
     defaults:
       run:
         working-directory: ${{ matrix.app }}

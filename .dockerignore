@@ -12,7 +12,5 @@ frontend/.next
 # ile build edilirse anlamlıdır (compose her servisi kendi alt dizininden
 # build eder); yine de .venv/node_modules/.next sızmasın.
 backend/.venv
-scalperintelligent/node_modules
-scalperintelligent/.next
 whatsapp-bridge/node_modules
 .git
