@@ -1,0 +1,1 @@
+Eğitim penceresi (2026-10-12 →): **306 olay**, 128 sembol; kazanç medyan %4,8 (Ç1–Ç3 %4,3–%5,5, maks %12,2); süre medyan 50 dk (Ç1–Ç3 35–60). OOS (2026-09-27 → 2026-10-11): **797 olay**, 179 sembol.
