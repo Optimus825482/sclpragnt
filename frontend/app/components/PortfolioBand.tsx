@@ -77,7 +77,13 @@ function BandInner() {
       title={stale ? "Son yenileme başarısız oldu; değerler bayat olabilir" : undefined}
     >
       {sourceLabel ? (
-        <span className="pband-source" data-source={data!.source}>{sourceLabel}</span>
+        <span className="pband-source" data-source={data!.source}>
+          {sourceLabel}
+          {/* 2026-10-17: Binance'te canlı fiyat tiki son 10 sn içinde uygulandıysa yeşil nokta. */}
+          {data!.liveAt && Date.now() - data!.liveAt < 10_000 ? (
+            <span className="pband-live" title="Canlı fiyatla güncelleniyor (2 sn)" aria-label="canlı" />
+          ) : null}
+        </span>
       ) : (
         <span className="pband-source" aria-hidden="true">…</span>
       )}

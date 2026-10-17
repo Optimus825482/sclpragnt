@@ -74,10 +74,26 @@ def build_binance_band(positions: dict, daily: dict | None, now: float | None = 
     unrealized = 0.0
     cost_basis = 0.0
     measured = 0
+    # 2026-10-17: istemci `binance_price` WS tikleriyle (2 sn) toplam değeri ve anlık K/Z'yi
+    # canlı yeniden hesaplasın diye varlık başına taban değerler (fiyat · adet · maliyet).
+    # K/Z kuralı `main.binance_positions` ile aynı: (fiyat − ortalama maliyet) × adet.
+    live_holdings: list[dict] = []
     for h in holdings:
-        if str(h.get("asset") or "").upper() == "TRY":
+        asset_u = str(h.get("asset") or "").upper()
+        if asset_u == "TRY":
             continue
         value = _num(h.get("value_try"))
+        price = _num(h.get("price_try"))
+        qty_all = _num(h.get("total"))
+        if price and qty_all:
+            live_holdings.append({
+                "asset": asset_u,
+                "symbol": str(h.get("symbol") or f"{asset_u}TRY").replace("_", "").upper(),
+                "qty": qty_all,
+                "price_try": price,
+                "avg_cost_try": _num(h.get("avg_cost_try")),
+                "counted": bool(value is not None and value >= DUST_TRY),
+            })
         if value is None or value < DUST_TRY:
             continue
         open_count += 1
@@ -112,6 +128,7 @@ def build_binance_band(positions: dict, daily: dict | None, now: float | None = 
         "unrealized_pct": _round(unrealized_pct, 4),
         "daily_pnl_try": _round(daily_pnl),
         "updated_at": time.time() if now is None else now,
+        "holdings": live_holdings,
     }
 
 

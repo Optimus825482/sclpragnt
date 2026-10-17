@@ -34,6 +34,27 @@ class BuildBinanceBandTests(unittest.TestCase):
         self.assertEqual(out["daily_pnl_try"], 35.26)
         self.assertEqual(out["updated_at"], 1.0)
 
+    def test_holdings_for_live_ticks(self):
+        # 2026-10-17: istemci WS fiyat tikleriyle canlı yeniden hesap yapsın diye taban değerler.
+        p = _positions_payload()
+        for h in p["holdings"]:
+            if h["asset"] != "TRY":
+                h["price_try"] = h["value_try"] / h["total"]
+        out = pb.build_binance_band(p, None, now=1.0)
+        by = {h["asset"]: h for h in out["holdings"]}
+        self.assertNotIn("TRY", by)
+        self.assertEqual(by["SAGA"]["qty"], 10.0)
+        self.assertEqual(by["SAGA"]["price_try"], 60.0)
+        self.assertEqual(by["SAGA"]["avg_cost_try"], 50.0)
+        self.assertTrue(by["SAGA"]["counted"])
+        self.assertEqual(by["SAGA"]["symbol"], "SAGATRY")
+        self.assertFalse(by["DUST"]["counted"])  # toz: toplam değere girer, açık işlem sayılmaz
+        self.assertIsNone(by["NOCOST"]["avg_cost_try"])
+
+    def test_holdings_skip_rows_without_price(self):
+        out = pb.build_binance_band(_positions_payload(), None, now=1.0)
+        self.assertEqual(out["holdings"], [])
+
     def test_no_positions_is_zero_pnl_not_none(self):
         out = pb.build_binance_band({"holdings": [{"asset": "TRY", "total": 5, "value_try": 5}],
                                      "balances": [], "total_value_try": 5.0}, None)

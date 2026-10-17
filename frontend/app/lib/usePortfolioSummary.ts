@@ -38,7 +38,23 @@ export interface BandResponse {
   updated_at?: number | null;
   commission_pct?: number | null;
   positions?: BandPositionInput[] | null;
+  /** Yalnız Binance: canlı fiyat tikiyle yeniden hesap için varlık başına taban değerler. */
+  holdings?: BandHolding[] | null;
 }
+
+/** Binance varlığı (REST anındaki taban): fiyat · adet · ortalama maliyet. */
+export interface BandHolding {
+  asset: string;
+  symbol?: string | null;
+  qty: number;
+  price_try: number;
+  avg_cost_try?: number | null;
+  /** Toz eşiği üstünde mi (açık işlem / K/Z'ye girer). Toz yalnız toplam değere girer. */
+  counted?: boolean;
+}
+
+/** WS `binance_price` yükü: varlık (ve sembol) → canlı TL fiyatı. */
+export type BinanceTicks = Record<string, { price?: number | null } | null | undefined>;
 
 export interface BandPositionInput {
   symbol?: string | null;
@@ -69,6 +85,12 @@ export interface PortfolioBandData {
   updatedAt: number | null;
   /** Yalnız paper: WS ile canlı yeniden hesap için son bilinen komisyon oranı. */
   positions: BandPositionInput[] | null;
+  /** Yalnız Binance: REST tabanı (canlı tik her seferinde BU tabandan yeniden hesaplanır; birikim yok). */
+  holdings?: BandHolding[] | null;
+  /** Yalnız Binance: REST anındaki toplam değer (tik farkları bunun üstüne eklenir). */
+  baseTotalTry?: number | null;
+  /** Son canlı fiyat güncellemesi (ms); yoksa yalnız REST. */
+  liveAt?: number | null;
 }
 
 function finite(value: unknown): number | null {
@@ -116,12 +138,69 @@ export function normalizeBand(raw: BandResponse | null | undefined): PortfolioBa
     const agg = aggregateOpenPositions(raw.positions);
     return { ...base, openCount: agg.count, unrealizedTry: agg.pnlTry, unrealizedPct: agg.pnlPct, positions: raw.positions };
   }
+  const holdings = Array.isArray(raw.holdings)
+    ? raw.holdings.filter((h) => h && finite(h.qty) && finite(h.price_try))
+    : null;
   return {
     ...base,
     openCount: finite(raw.open_count),
     unrealizedTry: finite(raw.unrealized_try),
     unrealizedPct: finite(raw.unrealized_pct),
     positions: null,
+    holdings,
+    baseTotalTry: base.totalTry,
+    liveAt: null,
+  };
+}
+
+/**
+ * 2026-10-17: Binance bandını WS `binance_price` tikleriyle (2 sn) canlı günceller.
+ * Kural backend ile aynı (`main.binance_positions`): varlık K/Z = (fiyat − ortalama maliyet) × adet,
+ * toplam değer = REST toplamı + Σ (canlı fiyat − REST fiyatı) × adet. Her tikte REST TABANINDAN yeniden
+ * hesaplanır (birikimli hata yok). Tik gelmeyen varlık REST fiyatıyla kalır. Günlük K/Z (gerçekleşen)
+ * ve açık işlem sayısı REST'ten gelir, değişmez. Paper bantta / taban yokken `null` (değişiklik yok).
+ */
+export function applyBinanceTicks(
+  prev: PortfolioBandData | null,
+  ticks: BinanceTicks | null | undefined,
+  now: number = Date.now(),
+): PortfolioBandData | null {
+  if (!prev || prev.source !== "binance" || !ticks || typeof ticks !== "object") return null;
+  const holdings = prev.holdings;
+  if (!holdings || holdings.length === 0) return null;
+  const baseTotal = prev.baseTotalTry ?? null;
+  let totalDelta = 0;
+  let pnl = 0;
+  let cost = 0;
+  let measured = 0;
+  let unmeasured = 0;
+  let touched = false;
+  for (const h of holdings) {
+    const qty = Number(h.qty);
+    const basePrice = Number(h.price_try);
+    const tick = ticks[String(h.asset).toUpperCase()] ?? (h.symbol ? ticks[String(h.symbol).toUpperCase()] : undefined);
+    const livePrice = finite(tick?.price);
+    const price = livePrice != null && livePrice > 0 ? livePrice : basePrice;
+    if (livePrice != null && livePrice > 0 && livePrice !== basePrice) touched = true;
+    totalDelta += (price - basePrice) * qty;
+    if (!h.counted) continue;
+    const avg = finite(h.avg_cost_try);
+    if (avg == null || avg <= 0) {
+      unmeasured += 1;
+      continue;
+    }
+    pnl += (price - avg) * qty;
+    cost += avg * qty;
+    measured += 1;
+  }
+  if (!touched) return null;
+  const counted = measured + unmeasured;
+  return {
+    ...prev,
+    totalTry: baseTotal != null ? baseTotal + totalDelta : prev.totalTry,
+    unrealizedTry: counted === 0 ? 0 : measured === 0 ? null : pnl,
+    unrealizedPct: counted === 0 ? 0 : measured === 0 || cost <= 0 ? null : (pnl / cost) * 100,
+    liveAt: now,
   };
 }
 
@@ -211,6 +290,21 @@ export function usePortfolioSummary(): PortfolioSummaryState {
 
   const onLive = useCallback((message: { type: string; data?: unknown }) => {
     if (typeof document !== "undefined" && document.hidden) return;
+    // 2026-10-17: Binance kaynağında canlı fiyat tiki (2 sn) toplam değer + anlık K/Z'yi günceller;
+    // REST tazelemesi TETİKLEMEZ (tik sık gelir).
+    if (message.type === "binance_price") {
+      const ticks = (message.data as { ticks?: BinanceTicks } | undefined)?.ticks;
+      const next = applyBinanceTicks(dataRef.current, ticks);
+      if (next) {
+        dataRef.current = next;
+        const now = Date.now();
+        if (now - lastWsRenderRef.current >= WS_RENDER_MIN_MS) {
+          lastWsRenderRef.current = now;
+          setData(next);
+        }
+      }
+      return;
+    }
     if (message.type === "portfolio") {
       const next = applyPaperSnapshot(dataRef.current, message.data as PortfolioSnapshot);
       if (next) {
@@ -231,7 +325,7 @@ export function usePortfolioSummary(): PortfolioSummaryState {
       load();
     }, WS_REFETCH_DEBOUNCE_MS);
   }, [load]);
-  useLiveMessages(onLive, ["portfolio", "binance_account_update", "auto_paper_trade", "trade_updated", "reset"]);
+  useLiveMessages(onLive, ["portfolio", "binance_price", "binance_account_update", "auto_paper_trade", "trade_updated", "reset"]);
 
   return { data, status, stale };
 }

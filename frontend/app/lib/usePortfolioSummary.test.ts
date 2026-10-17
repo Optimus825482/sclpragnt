@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { applyCommissionPct, resetCommissionPct } from "./pnl";
-import { aggregateOpenPositions, applyPaperSnapshot, normalizeBand, type PortfolioBandData } from "./usePortfolioSummary";
+import { aggregateOpenPositions, applyBinanceTicks, applyPaperSnapshot, normalizeBand, type PortfolioBandData } from "./usePortfolioSummary";
 
 beforeEach(() => {
   resetCommissionPct();
@@ -56,6 +56,7 @@ describe("normalizeBand", () => {
     expect(d).toEqual({
       source: "binance", totalTry: 2552, freeTry: 1200.5, openCount: 3,
       unrealizedTry: 80, unrealizedPct: 8.7, dailyPnlTry: -4.2, updatedAt: 123, positions: null,
+      holdings: null, baseTotalTry: 2552, liveAt: null,
     });
   });
 
@@ -108,5 +109,46 @@ describe("applyPaperSnapshot", () => {
     expect(applyPaperSnapshot({ ...prev, source: "binance" }, { total_value: 1 })).toBeNull();
     expect(applyPaperSnapshot(null, { total_value: 1 })).toBeNull();
     expect(applyPaperSnapshot(prev, null)).toBeNull();
+  });
+});
+
+// 2026-10-17: Binance bandı WS binance_price tikleriyle canlı güncellenir.
+describe("applyBinanceTicks", () => {
+  const band = () => normalizeBand({
+    source: "binance", total_try: 1000, free_try: 400, open_count: 2, unrealized_try: 30, unrealized_pct: 6, daily_pnl_try: -5,
+    holdings: [
+      { asset: "SAGA", symbol: "SAGATRY", qty: 10, price_try: 30, avg_cost_try: 27, counted: true },   // K/Z +30
+      { asset: "ABC", symbol: "ABCTRY", qty: 5, price_try: 40, avg_cost_try: null, counted: true },   // maliyet yok
+      { asset: "DUST", symbol: "DUSTTRY", qty: 100, price_try: 0.05, avg_cost_try: 0.04, counted: false },
+    ],
+  })!;
+
+  it("canlı fiyatla toplam ve anlık K/Z backend kuralıyla yeniden hesaplanır; günlük ve sayı değişmez", () => {
+    const next = applyBinanceTicks(band(), { SAGA: { price: 33 }, ABCTRY: { price: 38 }, DUST: { price: 0.06 } }, 123)!;
+    // toplam: 1000 + (33−30)*10 + (38−40)*5 + (0.06−0.05)*100 = 1000 + 30 − 10 + 1 = 1021
+    expect(next.totalTry).toBeCloseTo(1021, 9);
+    // K/Z yalnız maliyeti bilinen sayılan varlıktan: (33−27)*10 = 60; maliyet 270 → %22,22
+    expect(next.unrealizedTry).toBeCloseTo(60, 9);
+    expect(next.unrealizedPct).toBeCloseTo(60 / 270 * 100, 9);
+    expect(next.openCount).toBe(2);
+    expect(next.dailyPnlTry).toBe(-5);
+    expect(next.liveAt).toBe(123);
+  });
+
+  it("her tik REST tabanından hesaplanır, birikim yok", () => {
+    const b = band();
+    const once = applyBinanceTicks(b, { SAGA: { price: 33 } })!;
+    const twice = applyBinanceTicks(once, { SAGA: { price: 33 } });
+    // ikinci tik aynı fiyatla: tabana göre yine +30; değişen fiyat olmadığı için ama "touched" true → aynı sonuç
+    expect(twice?.totalTry ?? once.totalTry).toBeCloseTo(1030, 9);
+    const back = applyBinanceTicks(once, { SAGA: { price: 30 } });
+    expect(back).toBeNull(); // taban fiyata dönüş: değişiklik yok sayılır, REST değeri geçerli
+  });
+
+  it("paper bantta, varlıksız Binance'te veya boş tikte değişiklik yok (null)", () => {
+    expect(applyBinanceTicks(normalizeBand({ source: "paper", total_try: 5, positions: [] }), { SAGA: { price: 1 } })).toBeNull();
+    expect(applyBinanceTicks(normalizeBand({ source: "binance", total_try: 5, holdings: [] }), { SAGA: { price: 1 } })).toBeNull();
+    expect(applyBinanceTicks(band(), {})).toBeNull();
+    expect(applyBinanceTicks(band(), { SAGA: { price: 0 } })).toBeNull();
   });
 });
