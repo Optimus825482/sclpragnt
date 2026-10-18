@@ -716,3 +716,15 @@ body { font-family: var(--font-plex), ui-sans-serif, system-ui, sans-serif; }
 .ra-time { margin: 0; font: 500 .72rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ra-muted); }
 .ra-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 @media (max-width: 380px) { .ra-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* 2026-10-18 (kullanıcı kararı): MASAÜSTÜNDE (≥768px) hiçbir tabloda yatay kaydırma çubuğu olmasın.
+   Hücreler satır sonuna sarılır (nowrap/whitespace-nowrap ezilir), boşluklar sıkılaşır, kaydırmalı sarmalayıcılar
+   içinde tablo varsa kaydırma kapanır. Mobil (<768px) davranışı değişmez: orada yatay kaydırma + min-width sürer.
+   LightweightCharts'ın kendi iç tablosuna dokunulmaz. */
+@media (min-width: 768px) {
+  table { max-width: 100%; }
+  table th, table td { white-space: normal !important; overflow-wrap: anywhere; }
+  .tv-lightweight-charts table th, .tv-lightweight-charts table td { white-space: nowrap !important; overflow-wrap: normal; }
+  .data-table th, .data-table td { padding: .6rem .6rem; }
+  .overflow-x-auto:has(table), .message-table-wrap, .table-scroll { overflow-x: visible; }
+}

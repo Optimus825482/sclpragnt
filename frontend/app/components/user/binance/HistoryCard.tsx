@@ -61,7 +61,7 @@ export default function HistoryCard({ enabled, refreshKey }: { enabled: boolean;
       {groups.length > 0 && (
         <>
           <div className="overflow-x-auto">
-            <table className="data-table w-full min-w-[640px]">
+            <table className="data-table w-full min-w-[640px] md:min-w-0">
               <caption className="sr-only">Seçilen günün işlemleri, coin bazında gruplu</caption>
               <thead>
                 <tr>
