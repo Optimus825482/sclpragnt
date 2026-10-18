@@ -766,12 +766,13 @@ def test_place_market_buy_sanitizes_client_id():
     assert sr.call_args[0][2]["clientId"] == "webabc123def456"
 
 
-# 2026-10-18: 3703 "Invalid client ID" → sunucu kimliğiyle BİR kez yeniden deneme (emir yerleştirilmemiştir, tekrar riski yok).
+# 2026-10-18 (canlı): 3703 "Invalid client ID" → emir KİMLİKSİZ bir kez yeniden gönderilir (doküman: clientId isteğe
+# bağlı, borsa üretir); emir yerleştirilmemiştir, tekrar riski yok. Yedek "sa/bu + hex" kimlik de canlıda 3703 almıştı.
 def _api_err(code, msg="Invalid client ID"):
     return btp.BinanceTrApiError(code, msg, http_code=200, raw={"code": code, "msg": msg})
 
 
-def test_market_sell_retries_once_with_server_client_id_on_3703():
+def test_market_sell_retries_once_without_client_id_on_3703():
     calls = []
 
     def fake_signed(method, path, params, *a, **k):
@@ -784,40 +785,43 @@ def test_market_sell_retries_once_with_server_client_id_on_3703():
         result = btp.place_market_sell("k", "s", "BTC_TRY", 0.5, None, "wb0123456789abcdef0123456789abcdef")
     assert len(calls) == 2
     assert calls[0]["clientId"] == "wb0123456789abcdef0123456789abcdef"
-    assert calls[1]["clientId"].startswith("sa") and len(calls[1]["clientId"]) == 34
+    assert "clientId" not in calls[1]
     assert calls[1]["quantity"] == calls[0]["quantity"] and calls[1]["symbol"] == "BTC_TRY"
-    assert result["client_order_id"] == calls[1]["clientId"]
+    assert result["client_order_id"] is None
     assert result["order_id"] == "77"
 
 
-def test_market_buy_and_limit_retry_prefixes_on_3703():
+def test_after_3703_same_key_sends_no_client_id_other_keys_unaffected():
     seen = []
 
-    def fake_signed(method, path, params, *a, **k):
-        seen.append(dict(params))
-        if len(seen) % 2 == 1:
+    def fake_signed(method, path, params, api_key, *a, **k):
+        seen.append((api_key, dict(params)))
+        if len(seen) == 1:
             raise _api_err("3703")
         return {"orderId": "78"}
 
     with mock.patch.object(btp, "_signed_request", side_effect=fake_signed):
-        btp.place_market_buy("k", "s", "BTC_TRY", 500.0, None, "wbdeadbeef00000000000000000000000000")
-        btp.place_limit_sell("k", "s", "BTC_TRY", 0.5, 101.0, None, None, client_order_id="wbdeadbeef00000000000000000000000001")
-    assert seen[1]["clientId"].startswith("bu")
-    assert seen[3]["clientId"].startswith("tp")
+        btp.place_market_buy("k", "s", "BTC_TRY", 500.0, None, "wbdeadbeef")
+        btp.place_limit_sell("k", "s", "BTC_TRY", 0.5, 101.0, None, None, client_order_id="wbdeadbeef01")
+        btp.place_market_buy("k2", "s", "BTC_TRY", 500.0, None, "wbdeadbeef02")
+    assert "clientId" not in seen[1][1]              # 3703 sonrası kimliksiz tekrar
+    assert "clientId" not in seen[2][1]              # aynı anahtar: artık hiç gönderilmez (boşa red yok)
+    assert len(seen) == 4 and seen[3][1]["clientId"] == "wbdeadbeef02"   # başka anahtar etkilenmez
 
 
-def test_second_3703_propagates_and_other_codes_do_not_retry():
+def test_3703_without_client_id_propagates_and_other_codes_do_not_retry():
     with mock.patch.object(btp, "_signed_request", side_effect=_api_err(3703)) as sr:
         with pytest.raises(btp.BinanceTrApiError):
             btp.place_market_sell("k", "s", "BTC_TRY", 0.5, None, "wbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     assert sr.call_count == 2
+    btp._CLIENT_ID_DISABLED_KEYS.clear()
     with mock.patch.object(btp, "_signed_request", side_effect=_api_err(-2010, "insufficient balance")) as sr:
         with pytest.raises(btp.BinanceTrApiError):
             btp.place_market_sell("k", "s", "BTC_TRY", 0.5, None, "wbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     assert sr.call_count == 1
 
 
-def test_oco_retries_with_server_list_client_id_on_3703():
+def test_oco_retries_without_list_client_id_on_3703():
     calls = []
 
     def fake_signed(method, path, params, *a, **k):
@@ -830,8 +834,8 @@ def test_oco_retries_with_server_list_client_id_on_3703():
             mock.patch.object(btp, "get_symbol_filters", return_value=None), \
             mock.patch.object(btp, "_resolve_live_price", return_value=100.0):
         res = btp.place_oco_sell("k", "s", "BTC_TRY", 0.5, 105.0, 95.0, client_order_id="wb0000000000000000000000000000000000")
-    assert calls[1]["listClientId"].startswith("oc")
-    assert res["client_order_id"] == calls[1]["listClientId"]
+    assert "listClientId" not in calls[1]
+    assert res["client_order_id"] is None and res["order_id"] == "79"
 
 
 # ---------------------------------------------------------------- 2026-10-18 doküman denetimi

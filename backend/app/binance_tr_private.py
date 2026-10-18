@@ -565,22 +565,34 @@ def _is_client_id_reject(exc: BaseException) -> bool:
     return isinstance(exc, BinanceTrApiError) and str(exc.code or "").strip() in _CLIENT_ID_REJECT_CODES
 
 
+# 2026-10-18 (canlı): yedek "sa/bu… + 32 hex" kimlik de 3703 aldı → kimlik biçimi tahminle çözülemiyor.
+# Doküman: clientId İSTEĞE BAĞLI, gönderilmezse borsa üretir. 3703 görülen API anahtarıyla bu süreç boyunca
+# kimlik hiç gönderilmez (her emirde boşa bir red + gidiş-dönüş olmasın); emir `orderId` ile izlenir.
+_CLIENT_ID_DISABLED_KEYS: set[str] = set()
+
+
 def _post_order(path: str, params: dict, api_key: str, api_secret: str, *,
                 id_key: str = "clientId", fallback_prefix: str = "sc") -> tuple[dict | list, dict]:
-    """Emir POST'u; istemci kimliği 3703 ile reddedilirse sunucu kimliğiyle bir kez yeniden dener.
+    """Emir POST'u; istemci kimliği 3703 ile reddedilirse emir KİMLİKSİZ bir kez yeniden gönderilir.
 
-    Dönüş: (cevap, gönderilen params) — çağıran `params[id_key]`i gönderilen kimlik olarak kullanmalıdır.
+    3703 emir yerleştirilmeden verilen kesin doğrulama reddidir (tekrar = mükerrer emir riski yok).
+    Dönüş: (cevap, gönderilen params) — kimlik reddedildiyse `params` içinde `id_key` YOKTUR; çağıran
+    `params.get(id_key)` kullanmalı ve emri `orderId` ile izlemelidir. `fallback_prefix` geriye uyumluluk içindir.
     """
+    key_hash = _api_key_hash(api_key)
+    if key_hash in _CLIENT_ID_DISABLED_KEYS and params.get(id_key):
+        params = {k: v for k, v in params.items() if k != id_key}
     try:
         return _signed_request("POST", path, params, api_key, api_secret, idempotent=False), params
     except BinanceTrApiError as exc:
         if not _is_client_id_reject(exc) or not params.get(id_key):
             raise
         rejected = params.get(id_key)
-        retry = dict(params)
-        retry[id_key] = new_client_order_id(fallback_prefix)
-        logger.warning("Binance TR %s reddetti (%s): %r → sunucu kimliği %s ile bir kez yeniden deneniyor (%s %s)",
-                       id_key, exc.code, rejected, retry[id_key], path, params.get("symbol"))
+        retry = {k: v for k, v in params.items() if k != id_key}
+        _CLIENT_ID_DISABLED_KEYS.add(key_hash)
+        logger.warning("Binance TR %s reddetti (%s): %r → emir kimliksiz (borsa üretir) bir kez yeniden gönderiliyor; "
+                       "bu anahtarla sonraki emirlerde kimlik gönderilmeyecek (%s %s)",
+                       id_key, exc.code, rejected, path, params.get("symbol"))
         return _signed_request("POST", path, retry, api_key, api_secret, idempotent=False), retry
 
 
@@ -974,12 +986,12 @@ def place_spot_order(api_key: str, api_secret: str, symbol: str, side: str, orde
     except RuntimeError as exc:
         # _signed_request eski genel hata metnini de belirsiz sonuç sayar.
         if "belirsiz" in str(exc).lower() or "cevap vermedi" in str(exc).lower():
-            raise BinanceTrAmbiguousOrderError(str(exc), client_order_id=params["clientId"],
+            raise BinanceTrAmbiguousOrderError(str(exc), client_order_id=params.get("clientId"),
                                                symbol=symbol_u) from exc
         raise
     _after_order_mutation(api_key)
     result = {**(data if isinstance(data, dict) else {}), "symbol": symbol_u,
-              "client_id": params["clientId"], "order_id": str(data.get("orderId")) if isinstance(data, dict) and data.get("orderId") else None}
+              "client_id": params.get("clientId"), "order_id": str(data.get("orderId")) if isinstance(data, dict) and data.get("orderId") else None}
     if client_order_id:
         _recent_order_remember(api_key, client_order_id, result)
     return result
@@ -1100,7 +1112,7 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
     fill_data = dict(data) if isinstance(data, dict) else {}
     detail: dict = {}
     if _qty_to_float(fill_data.get("executedQty")) <= 0:
-        detail = _poll_fill(api_key, api_secret, symbol_underscore, order_id, params["clientId"])
+        detail = _poll_fill(api_key, api_secret, symbol_underscore, order_id, params.get("clientId"))
         for key in ("executedQty", "executedQuoteQty", "cummulativeQuoteQty"):
             if detail.get(key) not in (None, ""):
                 fill_data[key] = detail[key]
@@ -1109,7 +1121,7 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
         # Hiç dolmadan nihai durum: satış YAPILMADI (tam dolum sanılmamalı).
         # 6 EXPIRED çoğunlukla Price Range Execution Rule; 3 CANCELED / 5 REJECTED borsa tarafı.
         logger.warning("Binance TR MARKET SELL dolmadan nihai durum=%s: %s orderId=%s clientId=%s",
-                       order_status, symbol_underscore, order_id, params["clientId"])
+                       order_status, symbol_underscore, order_id, params.get("clientId"))
         if order_status == 6:
             raise BinanceTrApiError(
                 "EXPIRED",
@@ -1123,10 +1135,10 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
     executed_qty, remaining_qty, avg_price, quote_qty = _order_fill(fill_data, requested)
     logger.info("Binance TR MARKET SELL gönderildi: %s qty=%s executed=%s orderId=%s clientId=%s",
                 symbol_underscore, params["quantity"], executed_qty, order_id,
-                params["clientId"])
+                params.get("clientId"))
     result = {"order_id": str(order_id) if order_id is not None else None,
               "symbol": symbol_underscore, "quantity": params["quantity"],
-              "client_order_id": params["clientId"],
+              "client_order_id": params.get("clientId"),
               "requested_qty": requested, "executed_qty": executed_qty,
               "fill_verified": bool(detail), "order_status": order_status}
     if avg_price is not None:
@@ -1179,16 +1191,16 @@ def place_market_buy(api_key: str, api_secret: str, symbol_underscore: str, quot
     data, params = _post_order("/open/v1/orders", params, api_key, api_secret, fallback_prefix="bu")
     order_id = data.get("orderId") if isinstance(data, dict) else None
     logger.info("Binance TR MARKET BUY gönderildi: %s quote=%s orderId=%s clientId=%s",
-                symbol_underscore, params["quoteOrderQty"], order_id, params["clientId"])
+                symbol_underscore, params["quoteOrderQty"], order_id, params.get("clientId"))
     _after_order_mutation(api_key)
     out = {"order_id": str(order_id) if order_id is not None else None,
            "symbol": symbol_underscore, "quote_qty": params["quoteOrderQty"],
-           "client_order_id": params["clientId"]}
+           "client_order_id": params.get("clientId")}
     # Doküman: yeni emir cevabı yalnız orderId taşır → dolum (onay penceresi) emir detayından okunur.
     fill_data = dict(data) if isinstance(data, dict) else {}
     detail: dict = {}
     if _qty_to_float(fill_data.get("executedQty")) <= 0:
-        detail = _poll_fill(api_key, api_secret, symbol_underscore, order_id, params["clientId"])
+        detail = _poll_fill(api_key, api_secret, symbol_underscore, order_id, params.get("clientId"))
         for key in ("executedQty", "executedQuoteQty", "cummulativeQuoteQty"):
             if detail.get(key) not in (None, ""):
                 fill_data[key] = detail[key]
@@ -1304,7 +1316,7 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
         "sl_price": stop_price_str,
         "sl_limit_price": stop_limit_price_str,
         "orders": orders,
-        "client_order_id": params["listClientId"],
+        "client_order_id": params.get("listClientId"),
         # Doküman OCO cevabı: data.orderId + createTime (orderListId yok).
         "order_id": str(data.get("orderId")) if isinstance(data, dict) and data.get("orderId") else None,
     }
@@ -1352,7 +1364,7 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
         "quantity": qty_str,
         "sl_price": stop_price_str,
         "sl_limit_price": stop_limit_price_str,
-        "client_order_id": params["clientId"],
+        "client_order_id": params.get("clientId"),
     }
 
 
@@ -1391,7 +1403,7 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
         "symbol": symbol_underscore,
         "quantity": qty_str,
         "price": price_str,
-        "client_order_id": params["clientId"],
+        "client_order_id": params.get("clientId"),
     }
 
 

@@ -32,3 +32,12 @@ def _confirm_rule_off_by_default(request, monkeypatch):
     monkeypatch.setattr(config, "RADAR_TARGET_ML_BLEND_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "RADAR_NOTIFY_SHOW_ML_PROB", True, raising=False)
     monkeypatch.setattr(config, "RADAR_FUSION_TARGET_DYNAMIC", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_binance_client_id_memory():
+    """3703 sonrası 'bu anahtarla clientId gönderme' hafızası süreç geneli; testler arasında sızmasın."""
+    from app import binance_tr_private
+    binance_tr_private._CLIENT_ID_DISABLED_KEYS.clear()
+    yield
+    binance_tr_private._CLIENT_ID_DISABLED_KEYS.clear()
