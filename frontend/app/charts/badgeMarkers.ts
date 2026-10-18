@@ -14,7 +14,7 @@ import type { Bar, StrategySignal } from "./signals";
 export type Badge = { time: number; price: number; text: string; bg: string; fg: string; above: boolean };
 
 type DrawTarget = Parameters<IPrimitivePaneRenderer["draw"]>[0];
-type Placed = { x: number; y: number; text: string; bg: string; fg: string; above: boolean };
+export type Placed = { x: number; y: number; text: string; bg: string; fg: string; above: boolean };
 
 export const BADGE_H = 18;
 export const BADGE_PAD_X = 7;
@@ -46,50 +46,60 @@ export function badgeBox(textWidth: number, x: number, yEdge: number, above: boo
     return { left, top, w, h: BADGE_H };
 }
 
+/** Çizim çekirdeği (test edilebilir): CSS piksel uzayındaki 2D bağlama rozetleri çizer; görünür alan dışı atlanır. */
+export function drawBadges(ctx: CanvasRenderingContext2D, items: readonly Placed[], mediaWidth: number): number {
+    let drawn = 0;
+    ctx.save();
+    ctx.font = BADGE_FONT;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+    for (const it of items) {
+        if (!Number.isFinite(it.x) || !Number.isFinite(it.y)) continue;
+        if (it.x < -40 || it.x > mediaWidth + 40) continue;
+        const tw = ctx.measureText(it.text).width;
+        const box = badgeBox(tw, it.x, it.y, it.above);
+        const r = BADGE_H / 2;
+        // gövde (yuvarlak köşeli hap)
+        ctx.beginPath();
+        ctx.moveTo(box.left + r, box.top);
+        ctx.lineTo(box.left + box.w - r, box.top);
+        ctx.arc(box.left + box.w - r, box.top + r, r, -Math.PI / 2, Math.PI / 2);
+        ctx.lineTo(box.left + r, box.top + box.h);
+        ctx.arc(box.left + r, box.top + r, r, Math.PI / 2, (3 * Math.PI) / 2);
+        ctx.closePath();
+        // muma bakan uç
+        const tipBaseY = it.above ? box.top + box.h : box.top;
+        const tipY = it.above ? tipBaseY + BADGE_TIP : tipBaseY - BADGE_TIP;
+        ctx.moveTo(it.x - BADGE_TIP, tipBaseY);
+        ctx.lineTo(it.x, tipY);
+        ctx.lineTo(it.x + BADGE_TIP, tipBaseY);
+        ctx.closePath();
+        ctx.fillStyle = it.bg;
+        ctx.shadowColor = "rgba(0,0,0,0.25)";
+        ctx.shadowBlur = 4;
+        ctx.shadowOffsetY = 1;
+        ctx.fill();
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetY = 0;
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "rgba(255,255,255,0.9)";
+        ctx.stroke();
+        ctx.fillStyle = it.fg;
+        ctx.fillText(it.text, box.left + box.w / 2, box.top + box.h / 2 + 0.5);
+        drawn += 1;
+    }
+    ctx.restore();
+    return drawn;
+}
+
 class BadgeRenderer implements IPrimitivePaneRenderer {
     constructor(private readonly items: readonly Placed[]) {}
 
     draw(target: DrawTarget): void {
         if (!this.items.length) return;
-        target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
-            ctx.save();
-            ctx.font = BADGE_FONT;
-            ctx.textBaseline = "middle";
-            ctx.textAlign = "center";
-            for (const it of this.items) {
-                if (!Number.isFinite(it.x) || !Number.isFinite(it.y)) continue;
-                if (it.x < -40 || it.x > mediaSize.width + 40) continue;
-                const tw = ctx.measureText(it.text).width;
-                const box = badgeBox(tw, it.x, it.y, it.above);
-                const r = BADGE_H / 2;
-                // gövde
-                ctx.beginPath();
-                ctx.moveTo(box.left + r, box.top);
-                ctx.lineTo(box.left + box.w - r, box.top);
-                ctx.arc(box.left + box.w - r, box.top + r, r, -Math.PI / 2, Math.PI / 2);
-                ctx.lineTo(box.left + r, box.top + box.h);
-                ctx.arc(box.left + r, box.top + r, r, Math.PI / 2, (3 * Math.PI) / 2);
-                ctx.closePath();
-                // muma bakan uç
-                const tipBaseY = it.above ? box.top + box.h : box.top;
-                const tipY = it.above ? tipBaseY + BADGE_TIP : tipBaseY - BADGE_TIP;
-                ctx.moveTo(it.x - BADGE_TIP, tipBaseY);
-                ctx.lineTo(it.x, tipY);
-                ctx.lineTo(it.x + BADGE_TIP, tipBaseY);
-                ctx.closePath();
-                ctx.fillStyle = it.bg;
-                ctx.shadowColor = "rgba(0,0,0,0.25)";
-                ctx.shadowBlur = 4;
-                ctx.shadowOffsetY = 1;
-                ctx.fill();
-                ctx.shadowColor = "transparent";
-                ctx.lineWidth = 1;
-                ctx.strokeStyle = "rgba(255,255,255,0.9)";
-                ctx.stroke();
-                ctx.fillStyle = it.fg;
-                ctx.fillText(it.text, box.left + box.w / 2, box.top + box.h / 2 + 0.5);
-            }
-            ctx.restore();
+        target.useMediaCoordinateSpace(({ context, mediaSize }) => {
+            drawBadges(context, this.items, mediaSize.width);
         });
     }
 }

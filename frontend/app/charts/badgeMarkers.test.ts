@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BADGE_GAP, BADGE_H, BADGE_TIP, badgeBox, badgeFromSignal } from "./badgeMarkers";
+import { BADGE_GAP, BADGE_H, BADGE_TIP, badgeBox, badgeFromSignal, drawBadges } from "./badgeMarkers";
 import type { Bar } from "./signals";
 
 const bar: Bar = { time: 100, open: 10, high: 12, low: 9, close: 11, volume: 1 };
@@ -31,5 +31,34 @@ describe("badgeBox", () => {
   it("üstte: kutu mum ucunun üstünde biter", () => {
     const b = badgeBox(20, 100, 50, true);
     expect(b.top + b.h + BADGE_TIP + BADGE_GAP).toBe(50);
+  });
+});
+
+
+describe("drawBadges (sahte 2D bağlam)", () => {
+  const fakeCtx = () => {
+    const calls: string[] = [];
+    const ctx: any = new Proxy({}, {
+      get(_t, prop: string) {
+        if (prop === "measureText") return (txt: string) => ({ width: txt.length * 7 });
+        return (..._a: unknown[]) => { calls.push(prop); };
+      },
+      set() { return true; },
+    });
+    return { ctx: ctx as CanvasRenderingContext2D, calls };
+  };
+  it("görünür rozetleri çizer (hap + uç + yazı), alan dışını atlar", () => {
+    const { ctx, calls } = fakeCtx();
+    const n = drawBadges(ctx, [
+      { x: 100, y: 50, text: "BUY", bg: "#16a34a", fg: "#fff", above: false },
+      { x: 900, y: 50, text: "BUY", bg: "#16a34a", fg: "#fff", above: false },   // alan dışı (width 600)
+      { x: NaN, y: 50, text: "BUY", bg: "#16a34a", fg: "#fff", above: true },
+    ], 600);
+    expect(n).toBe(1);
+    expect(calls.filter((c) => c === "fillText")).toHaveLength(1);
+    expect(calls.filter((c) => c === "fill")).toHaveLength(1);
+    expect(calls.filter((c) => c === "stroke")).toHaveLength(1);
+    expect(calls[0]).toBe("save");
+    expect(calls[calls.length - 1]).toBe("restore");
   });
 });
