@@ -35,6 +35,11 @@ let status: LiveStatus = "closed";
 const messageListeners = new Set<MessageListener>();
 const statusListeners = new Set<StatusListener>();
 
+/** Yeniden bağlanma bildirimi: `since` = veri akışının kesildiği an (epoch ms; son mesaj ya da kapanış). */
+export type LiveReconnectInfo = { since: number };
+type ReconnectListener = (info: LiveReconnectInfo) => void;
+const reconnectListeners = new Set<ReconnectListener>();
+
 // Abonelik tipleri: her dinleyici ilgilendiği mesaj tiplerini bildirebilir.
 // `null` = tüm tipler (geriye dönük uyumlu varsayılan). Hiçbir dinleyici
 // bir tipi istemiyorsa o mesaj JSON.parse edilmeden, ham metin üzerinde ucuz
@@ -72,13 +77,33 @@ const COMMISSION_RE = /"commission_pct"\s*:\s*([0-9.eE+-]+)/;
 //
 // `onclose` yalnızca TCP kapanışında tetiklenir; kablo/NAT oturumu düştüğünde
 // soket "open" kalır ve başlıklarda yeşil "● CANLI" yanmaya devam eder, veri
-// donar. Bu yüzden son mesaj zamanı izlenir: 15 sn'de bir kontrol edilir,
-// 45 sn boyunca hiç mesaj gelmezse bağlantı ölü sayılır ve kapatılır
-// (onclose → status "closed" → backoff'lu yeniden bağlanma).
-const HEARTBEAT_CHECK_MS = 15_000;
-const STALE_AFTER_MS = 45_000;
+// donar. Bu yüzden son mesaj zamanı izlenir: 5 sn'de bir kontrol edilir,
+// 20 sn boyunca hiç mesaj gelmezse bağlantı ölü sayılır, atılır ve hemen
+// yeniden kurulur.
+// 2026-10-18 (mobil denetimi #9): eşikler 15 sn/45 sn idi → ölü soket en kötü
+// ~60 sn "CANLI" görünüyordu. Backend `portfolio` + `binance_price` çerçevelerini
+// piyasa açıkken saniyede bir yayınlar; 20 sn sessizlik bağlantının ölü olduğuna
+// dair güçlü işarettir, yanlış alarmın maliyeti yalnız ucuz bir yeniden bağlanmadır.
+export const HEARTBEAT_CHECK_MS = 5_000;
+export const STALE_AFTER_MS = 20_000;
+/** Uygulama öne gelince/ağ dönünce: bu kadar sessizlik varsa soket beklemeden yenilenir. */
+export const RESUME_STALE_MS = 5_000;
+/** CONNECTING durumunda bu kadar takılan soket (iOS'ta arka plandan dönüşte görülür) yenilenir. */
+export const CONNECT_STUCK_MS = 8_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let lastMessageAt = 0;
+let lastDownAt = 0;
+let connectStartedAt = 0;
+let hasOpenedBefore = false;
+
+export function isSocketStale(lastAt: number, now: number, thresholdMs: number): boolean {
+  return lastAt > 0 && now - lastAt > thresholdMs;
+}
+
+/** Üstel geri çekilme + jitter + tavan: sunucu kesintisinde sabit 2 sn'lik yeniden bağlanma fırtınası olmasın. */
+export function reconnectDelayMs(attempt: number, random = Math.random()): number {
+  return Math.min(30_000, 2_000 * 2 ** Math.min(attempt, 4)) + random * 1_000;
+}
 
 function stopHeartbeat() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -89,11 +114,11 @@ function startHeartbeat() {
   stopHeartbeat();
   lastMessageAt = Date.now();
   heartbeatTimer = setInterval(() => {
-    const instance = socket;
-    if (!instance) { stopHeartbeat(); return; }
-    if (Date.now() - lastMessageAt <= STALE_AFTER_MS) return;
-    // Ölü soket: kapat → onclose → "closed" + yeniden bağlanma.
-    try { instance.close(); } catch { /* zaten kapalı */ }
+    if (!socket) { stopHeartbeat(); return; }
+    if (!isSocketStale(lastMessageAt, Date.now(), STALE_AFTER_MS)) return;
+    // Ölü soket: `close()` yarım-açık bağlantıda onclose'u uzun süre getirmeyebilir →
+    // soketi doğrudan at ve hemen yeniden kur.
+    recycleSocket();
   }, HEARTBEAT_CHECK_MS);
 }
 
@@ -109,14 +134,22 @@ function setStatus(next: LiveStatus) {
 
 function connect() {
   if (typeof window === "undefined" || socket || messageListeners.size === 0) return;
+  installLifecycleListeners();
   setStatus("connecting");
+  connectStartedAt = Date.now();
   const instance = new WebSocket(WS_URL);
   socket = instance;
   instance.onopen = () => {
     if (socket === instance) {
       reconnectAttempt = 0;
+      // Kesinti süresince kaçırılan olaylar için tüketicilere haber ver (REST ile telafi).
+      // `startHeartbeat` lastMessageAt'i sıfırladığı için ÖNCE okunur.
+      const since = lastMessageAt || lastDownAt;
+      const wasReconnect = hasOpenedBefore;
+      hasOpenedBefore = true;
       setStatus("open");
       startHeartbeat();
+      if (wasReconnect && since > 0) reconnectListeners.forEach((listener) => listener({ since }));
     }
   };
   instance.onmessage = (event) => {
@@ -162,6 +195,7 @@ function connect() {
     if (socket !== instance) return;
     socket = null;
     stopHeartbeat();
+    lastDownAt = Date.now();
     setStatus("closed");
     if (event.code === 4401) {
       window.dispatchEvent(new CustomEvent("scalper:auth-expired"));
@@ -169,11 +203,79 @@ function connect() {
     }
     // Exponential backoff with jitter and a ceiling: a backend outage must
     // not turn every open tab into a fixed 2s retry storm.
-    const delay = Math.min(30_000, 2_000 * 2 ** Math.min(reconnectAttempt, 4)) + Math.random() * 1_000;
+    const delay = reconnectDelayMs(reconnectAttempt);
     reconnectAttempt += 1;
     if (messageListeners.size > 0) reconnectTimer = setTimeout(connect, delay);
   };
   instance.onerror = () => instance.close();
+}
+
+/** Soketi sessizce bırakıp (onclose geri çağrısı tetiklemeden) bekleme olmadan yeniden kurar. */
+function recycleSocket() {
+  const instance = socket;
+  socket = null;
+  if (instance) {
+    instance.onopen = null;
+    instance.onmessage = null;
+    instance.onerror = null;
+    instance.onclose = null;
+    try { instance.close(); } catch { /* zaten kapalı */ }
+  }
+  stopHeartbeat();
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  reconnectAttempt = 0;
+  lastDownAt = Date.now();
+  setStatus("closed");
+  connect();
+}
+
+/**
+ * Uygulama öne geldi / ağ döndü / bfcache'ten çıkıldı: yeniden bağlanma geri çekilmesini
+ * beklemeden bağlan; açık görünen ama sessiz (ölü) soketi hemen yenile.
+ * 2026-10-18 (mobil denetimi #9): mobil işletim sistemi arka plandaki soketi öldürür; eskiden
+ * `visibilitychange`/`online`/`pageshow` dinlenmediği için dönüşte ~60 sn donuk veri görülürdü.
+ */
+export function wakeLive(forceRecycle = false) {
+  if (typeof window === "undefined" || messageListeners.size === 0) return;
+  const instance = socket;
+  if (!instance) {
+    // Geri çekilme zamanlayıcısı bekliyor (ya da hiç kurulmadı): hemen bağlan.
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    reconnectAttempt = 0;
+    connect();
+    return;
+  }
+  const now = Date.now();
+  const closed = instance.readyState >= 2; // CLOSING | CLOSED
+  const connectingStuck = instance.readyState === 0 && now - connectStartedAt > CONNECT_STUCK_MS;
+  if (forceRecycle || closed || connectingStuck || isSocketStale(lastMessageAt, now, RESUME_STALE_MS)) {
+    recycleSocket();
+  }
+}
+
+let lifecycleInstalled = false;
+const onVisibilityChange = () => { if (document.visibilityState === "visible") wakeLive(); };
+const onPageShow = (event: Event) => { wakeLive((event as PageTransitionEvent).persisted === true); };
+const onOnline = () => wakeLive(true);
+
+function installLifecycleListeners() {
+  if (lifecycleInstalled || typeof window === "undefined") return;
+  lifecycleInstalled = true;
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  document.addEventListener("resume", onVisibilityChange); // Chrome Page Lifecycle: dondurulmuş sekme canlandı
+  window.addEventListener("pageshow", onPageShow);
+  window.addEventListener("online", onOnline);
+}
+
+function removeLifecycleListeners() {
+  if (!lifecycleInstalled || typeof window === "undefined") return;
+  lifecycleInstalled = false;
+  document.removeEventListener("visibilitychange", onVisibilityChange);
+  document.removeEventListener("resume", onVisibilityChange);
+  window.removeEventListener("pageshow", onPageShow);
+  window.removeEventListener("online", onOnline);
 }
 
 /**
@@ -192,6 +294,10 @@ export function subscribeLive(listener: MessageListener, types?: readonly string
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = null;
       stopHeartbeat();
+      removeLifecycleListeners();
+      hasOpenedBefore = false;
+      lastMessageAt = 0;
+      lastDownAt = 0;
       const instance = socket;
       socket = null;
       if (instance) {
@@ -204,6 +310,21 @@ export function subscribeLive(listener: MessageListener, types?: readonly string
       setStatus("closed");
     }
   };
+}
+
+/** Soket kesintiden sonra yeniden bağlandığında çağrılır (ilk bağlanışta DEĞİL). */
+export function subscribeLiveReconnect(listener: ReconnectListener) {
+  reconnectListeners.add(listener);
+  return () => { reconnectListeners.delete(listener); };
+}
+
+/** `subscribeLiveReconnect` için hook: dinleyici ref'te tutulur, abonelik kopmaz. */
+export function useLiveReconnect(listener: ReconnectListener) {
+  const listenerRef = useRef(listener);
+  useEffect(() => {
+    listenerRef.current = listener;
+  }, [listener]);
+  useEffect(() => subscribeLiveReconnect((info) => listenerRef.current(info)), []);
 }
 
 export function useLiveStatus() {

@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useLiveMessages } from "../lib/liveSocket";
+import { useLiveMessages, useLiveReconnect } from "../lib/liveSocket";
+import { API_BASE, apiRequest } from "../lib/api";
+import { pickMissedAlerts, rowKey, symTimeKey, type NotificationHistoryRow } from "../lib/missedAlerts";
 import { fmtDateTime, formatPrice } from "../lib/format";
 import { SCORE_LABEL, SCORE_TOOLTIP, hitProbLabel, netTargetText } from "../lib/userUi";
 import SymbolLink from "./SymbolLink";
@@ -103,6 +105,8 @@ export default function RadarAlertModal() {
   const [queue, setQueue] = useState<RadarAlertItem[]>([]);
   const [kind, setKind] = useState<AlertKind>("radar");
   const busyRef = useRef(false);
+  // Canlı (WS) gelen bildirim anahtarları: yeniden bağlanınca REST telafisi aynısını tekrar göstermesin.
+  const seenRef = useRef<Set<string>>(new Set());
   const dialogRef = useRef<HTMLElement | null>(null);
 
   const showNext = useCallback((next: RadarAlertItem | null, nextKind: AlertKind = "radar") => {
@@ -127,6 +131,17 @@ export default function RadarAlertModal() {
       );
     }
   }, [item, queue, showNext]);
+
+  // Kuyruğa ekle: meşgulse bekletir (en çok 5), değilse ilkini hemen gösterir.
+  const enqueue = useCallback((entries: RadarAlertItem[], alertKind: AlertKind) => {
+    if (busyRef.current) {
+      setQueue((current) => [...current, ...entries].slice(-5));
+      return;
+    }
+    const [head, ...rest] = entries;
+    if (rest.length) setQueue((current) => [...current, ...rest].slice(-5));
+    showNext(head, alertKind);
+  }, [showNext]);
 
   const onLiveMessage = useCallback((message: { type: string; data?: unknown }) => {
     if (message.type !== "monitoring_alert" && message.type !== "alert"
@@ -158,16 +173,38 @@ export default function RadarAlertModal() {
       };
     });
     if (entries.length === 0) return;
-    if (busyRef.current) {
-      setQueue((current) => [...current, ...entries].slice(-5));
-      return;
+    for (const raw of freshRows) {
+      const probe = { id: raw.id ?? (raw as any).event_key, symbol: raw.symbol, detected_at: raw.detected_at ?? raw.triggered_at };
+      seenRef.current.add(rowKey(probe));
+      seenRef.current.add(symTimeKey(probe));
     }
-    const [head, ...rest] = entries;
-    if (rest.length) setQueue((current) => [...current, ...rest].slice(-5));
-    showNext(head, alertKind);
-  }, [showNext]);
+    enqueue(entries, alertKind);
+  }, [enqueue]);
 
   useLiveMessages(onLiveMessage, ["monitoring_alert", "alert", "rising_alert"]);
+
+  // 2026-10-18 (mobil denetimi #9): soket kopukken (arka plan, ağ kesintisi) yayınlanan radar
+  // bildirimleri kaçırılırdı. Yeniden bağlanınca son geçmiş REST'ten okunur; kesinti sırasında
+  // oluşmuş, bayatlamamış ve daha önce gösterilmemiş olanlar modalda sunulur.
+  useLiveReconnect(useCallback(({ since }: { since: number }) => {
+    void (async () => {
+      try {
+        const res = await apiRequest(`${API_BASE}/api/monitoring/notifications`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const history: NotificationHistoryRow[] = Array.isArray(data?.history) ? data.history : [];
+        const missed = pickMissedAlerts(history, { sinceMs: since, nowMs: Date.now(), seen: seenRef.current });
+        if (missed.length === 0) return;
+        for (const row of missed) { seenRef.current.add(rowKey(row)); seenRef.current.add(symTimeKey(row)); }
+        enqueue(missed.map((row) => ({
+          ...(row as RadarAlertItem),
+          id: row.id,
+          message: row.message || "Yeni radar fırsatı",
+          triggered_at: Number(row.detected_at) || Date.now() / 1000,
+        })), "radar");
+      } catch { /* ağ henüz hazır değil: bir sonraki yeniden bağlanmada denenir */ }
+    })();
+  }, [enqueue]));
 
   const close = useCallback(() => showNext(null), [showNext]);
 

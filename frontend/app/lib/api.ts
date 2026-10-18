@@ -1,3 +1,5 @@
+import { DEFAULT_GET_TIMEOUT_MS, fetchWithTimeout } from "./fetchTimeout";
+
 // Öncelik: NEXT_PUBLIC_API_BASE (veya eski NEXT_PUBLIC_API_URL) env değeri.
 // Yoksa browser'da: localhost geliştirmede backend portu, aksi halde same-origin
 // (gateway arkasında `/api` aynı kökten servis edilir).
@@ -20,16 +22,23 @@ export const WS_URL = `${WS_BASE.replace(/\/$/, "")}/ws`;
  * kaydedildikten sonra sekmeye geri dönüldüğünde eski değer görünebiliyordu.
  * Çağıran kendi `cache` değerini verirse o değer kazanır.
  */
-export function apiRequest(input: RequestInfo | URL, init?: RequestInit) {
+export type ApiRequestInit = RequestInit & { timeoutMs?: number };
+
+export function apiRequest(input: RequestInfo | URL, init?: ApiRequestInit) {
   const method = String(init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
   // Audit: başarısız login POST'u auth-expired yayınlamamalı (login ekranında
   // yanlış "Oturum süresi doldu" flaşı), o yüzden URL de ayrıştırılır.
   const url = input instanceof Request ? input.url : String(input);
-  const merged: RequestInit = { credentials: "include", ...init };
+  const merged: ApiRequestInit = { credentials: "include", ...init };
   if ((method === "GET" || method === "HEAD") && merged.cache === undefined) {
     merged.cache = "no-store";
   }
-  return fetch(input, merged).then((response) => {
+  // 2026-10-18 (mobil denetimi #9): GET'lerde varsayılan zaman aşımı; `timeoutMs` ile ezilebilir
+  // (0 = kapalı). Yazma istekleri (POST/PUT…) varsayılan olarak sınırsız kalır: uzun süren
+  // işlemleri (tarama, LLM) kesip çift gönderime yol açmasın.
+  const { timeoutMs, ...rest } = merged;
+  const limit = timeoutMs ?? (method === "GET" || method === "HEAD" ? DEFAULT_GET_TIMEOUT_MS : 0);
+  return fetchWithTimeout(fetch, input, rest, limit).then((response) => {
     const isLoginPost = method === "POST" && url.includes("/auth/login");
     if (response.status === 401 && typeof window !== "undefined" && !isLoginPost) {
       window.dispatchEvent(new CustomEvent("scalper:auth-expired"));
