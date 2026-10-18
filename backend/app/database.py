@@ -5822,6 +5822,20 @@ async def has_recent_monitoring_notification(symbol: str, within_sec: float) -> 
     return await _run_db(op)
 
 
+async def has_recent_pushed_notification(symbol: str, within_sec: float) -> bool:
+    """2026-10-18: son `within_sec` içinde bu sembol için GERÇEKTEN push gönderilmiş (sent_via_push) bildirim var mı?
+
+    Otonom Hız Avcısı girişi (`AUTO_PAPER_ONLY_ON_PUSH`) bununla yalnız push'lanan sinyallere bağlanır."""
+    cutoff = time.time() - max(0.0, float(within_sec))
+    def op(conn):
+        row = conn.execute(
+            "SELECT 1 FROM monitoring_notifications WHERE symbol=%s AND detected_at >= %s AND sent_via_push LIMIT 1",
+            (str(symbol).upper(), cutoff),
+        ).fetchone()
+        return row is not None
+    return await _run_db(op)
+
+
 async def get_monitoring_notification_by_id(notification_id: int) -> dict | None:
     """Bildirim ID'sine göre monitoring bildirim kaydını getir."""
     def op(conn):

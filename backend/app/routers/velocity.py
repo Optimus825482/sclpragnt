@@ -2791,6 +2791,18 @@ async def _route_velocity_through_auto_paper(candidate: dict) -> dict:
     from app.routers.auto_paper import try_open_from_notification
 
     envelope = _velocity_to_auto_paper_envelope(candidate)
+    # 2026-10-18 (AUTO_PAPER_ONLY_ON_PUSH, kullanıcı kararı): otonom giriş yalnız push bildirimi GÖNDERİLMİŞ sinyalde açılır.
+    # Bildirim henüz gitmediyse (teyit kuralı, sessiz saat, soğuma vb.) tur pas geçilir; bildirim giderse sonraki turda
+    # (ya da bildirim yolunun kendi paper girişiyle) açılır.
+    if getattr(config, "AUTO_PAPER_ONLY_ON_PUSH", False):
+        window_sec = max(int(envelope.get("horizon_minutes") or 5) + 5, 20) * 60
+        try:
+            pushed = await database.has_recent_pushed_notification(envelope["symbol"], window_sec)
+        except Exception as exc:  # noqa: BLE001 — kontrol başarısızsa AÇMA (push şartı fail-closed)
+            logger.warning("velocity→auto_paper push kontrolü hatası %s: %s", envelope["symbol"], exc)
+            pushed = False
+        if not pushed:
+            return {"symbol": envelope["symbol"], "status": "SKIPPED", "reason": "push_bildirimi_yok"}
     try:
         result = await try_open_from_notification(envelope)
     except Exception as exc:

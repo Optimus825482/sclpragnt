@@ -321,6 +321,41 @@ class VelocityRoutingTests(unittest.TestCase):
         self.assertIn("auto_paper_hata", outcome["reason"])
 
 
+class VelocityOnlyOnPushTests(unittest.TestCase):
+    """2026-10-18: AUTO_PAPER_ONLY_ON_PUSH — otonom hız avcısı yalnız push'lanan sinyalde paper açar."""
+
+    CAND = {"symbol": "JUVTRY", "velocity_score": 1400.0, "target_pct": 2.0, "horizon_minutes": 5, "price": 15.8}
+
+    def _route(self, pushed, flag=True, exc=None):
+        opener = AsyncMock(return_value={"status": "opened", "trade_id": 9, "symbol": "JUVTRY"})
+        check = AsyncMock(side_effect=exc) if exc else AsyncMock(return_value=pushed)
+        with patch.object(velocity.config, "AUTO_PAPER_ONLY_ON_PUSH", flag, create=True),              patch.object(velocity.database, "has_recent_pushed_notification", new=check),              patch.object(auto_paper, "try_open_from_notification", new=opener):
+            return _run(velocity._route_velocity_through_auto_paper(dict(self.CAND))), opener, check
+
+    def test_skips_without_pushed_notification(self):
+        outcome, opener, _ = self._route(pushed=False)
+        self.assertEqual("SKIPPED", outcome["status"])
+        self.assertEqual("push_bildirimi_yok", outcome["reason"])
+        opener.assert_not_awaited()
+
+    def test_opens_when_push_was_sent(self):
+        outcome, opener, check = self._route(pushed=True)
+        self.assertEqual("PAPER_OPENED", outcome["status"])
+        opener.assert_awaited_once()
+        self.assertEqual("JUVTRY", check.await_args.args[0])
+        self.assertGreaterEqual(check.await_args.args[1], 20 * 60)          # ufuk + 5 dk, en az 20 dk
+
+    def test_flag_off_keeps_old_behavior(self):
+        outcome, opener, check = self._route(pushed=False, flag=False)
+        self.assertEqual("PAPER_OPENED", outcome["status"])
+        check.assert_not_awaited()
+
+    def test_check_failure_is_fail_closed(self):
+        outcome, opener, _ = self._route(pushed=False, exc=RuntimeError("db"))
+        self.assertEqual("SKIPPED", outcome["status"])
+        opener.assert_not_awaited()
+
+
 class ReplayJobWiringTests(unittest.TestCase):
     """Ayarlar > Radar sekmesindeki replay butonunun arka uç kablolaması."""
 

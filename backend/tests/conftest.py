@@ -27,6 +27,8 @@ def _confirm_rule_off_by_default(request, monkeypatch):
     # 2026-10-18: net hedef tabanı ve gönderim sonrası donma da eski testlerde KAPALI (kendi sınıflarında açık).
     monkeypatch.setattr(config, "RADAR_TARGET_MIN_NET_PCT", 0.0, raising=False)
     monkeypatch.setattr(config, "RADAR_NOTIFY_FREEZE_ON_SEND", False, raising=False)
+    # 2026-10-18: otonom hız avcısı girişinin push şartı eski testlerde KAPALI (kendi sınıfında açık).
+    monkeypatch.setattr(config, "AUTO_PAPER_ONLY_ON_PUSH", False, raising=False)
     monkeypatch.setattr(config, "RADAR_TARGET_ML_BLEND_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "RADAR_NOTIFY_SHOW_ML_PROB", True, raising=False)
     monkeypatch.setattr(config, "RADAR_FUSION_TARGET_DYNAMIC", False, raising=False)
