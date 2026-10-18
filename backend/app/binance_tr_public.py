@@ -234,6 +234,11 @@ def _get_json(path: str, params: dict):
     query_string = urlencode(params) if params else ""
     full_path = f"{path}?{query_string}" if query_string else path
     last_error = None
+    # 2026-10-18 (doküman denetimi): host YALNIZ bağlantı/DNS/timeout/5xx
+    # hatasında yedeğe döner. Eskiden HER yeniden denemede (400/429/418 dahil)
+    # döndürülüyordu: 429/418 Retry-After'ı başka bir hosta (api.binance.com)
+    # istek atarak "atlatılıyor", 4xx ise farklı hostta tekrarlanıyordu.
+    host_idx = 0
 
     for attempt in range(1, REST_MAX_ATTEMPTS + 1):
         # Denetim 2026-09-28: uzun beklemeler (Retry-After / ban backoff)
@@ -250,10 +255,11 @@ def _get_json(path: str, params: dict):
         cooldown_error = None
         with _REQUEST_SEMAPHORE:
             _throttle_for_weight()
-            # Host seçimi: birincil host öncelikli, başarısız denemelerde fallback hostlar
-            host_idx = (attempt - 1) % len(REST_BASES)
-            base_url = REST_BASES[host_idx]
+            # Host seçimi: birincil host öncelikli; yedeğe yalnız `rotate_host`
+            # işaretli denemelerden sonra geçilir (aşağı bkz.).
+            base_url = REST_BASES[host_idx % len(REST_BASES)]
             url = f"{base_url}{full_path}"
+            rotate_host = False
 
             try:
                 if _HTTP_POOL is not None:
@@ -318,6 +324,9 @@ def _get_json(path: str, params: dict):
                     except Exception:
                         pass
                     last_error = RuntimeError(f"Binance TR public API HTTP {status_code}{err_detail} ({base_url})")
+                    # 5xx sunucu/ağ geçidi hatasıdır → yedek host denenir;
+                    # 4xx istemci hatasıdır → aynı hostta kalınır.
+                    rotate_host = status_code >= 500
                     if attempt < REST_MAX_ATTEMPTS:
                         retry_delay = _retry_delay(attempt, headers)
                 else:
@@ -334,10 +343,14 @@ def _get_json(path: str, params: dict):
                 # yükseltilir (W10 sözleşmesi).
                 raise
             except Exception as exc:
+                # Bağlantı/DNS/timeout (urllib3/URLError/OSError) → yedek host.
                 last_error = exc
+                rotate_host = True
                 if attempt < REST_MAX_ATTEMPTS:
                     retry_delay = _retry_delay(attempt)
 
+        if rotate_host:
+            host_idx += 1
         if cooldown_error is not None:
             raise cooldown_error from last_error
         if retry_delay > 0:
@@ -357,6 +370,9 @@ async def klines(symbol: str, interval: str, limit: int = 500, start_time_ms: in
         params["startTime"] = start_time_ms
     if end_time_ms is not None:
         params["endTime"] = end_time_ms
+    # Not (2026-10-18 doküman denetimi): TR dokümanı klines'ı api.binance.me
+    # üzerinde `/api/v1/klines` olarak listeler; `/api/v3/klines` canlıda
+    # çalıştığı için bilinçli olarak değiştirilmedi.
     return await asyncio.to_thread(_get_json, "/api/v3/klines", params)
 
 
@@ -560,40 +576,71 @@ async def _ticker_paged(path: str, symbols: list | None):
     return merged
 
 
-async def ticker_24h(symbols: list | None = None):
-    """24 saatlik ticker satırları — weight:80.
-
-    #30: radar döngüsü bu ucu ARDIŞIK iki kez çağırıyor (biri top-gainers,
-    biri aktif-mover havuzu) → 60 sn'de 160 weight, yani saniyede 160'a
-    çıkan bir istek hızı. main.py'ye dokunmadan çözmek için 5 saniyelik bir
-    modül önbelleği: aynı sembol listesiyle gelen ikinci çağrı ağa gitmez.
-    TTL radar periyodundan (60 sn) kısadır, yani 24h verisi bayatlamaz.
-    """
-    key = tuple(symbols) if symbols else None
+def _ticker_24h_cached_rows():
+    """Geçerli (TTL içinde) TAM tablo satırları; yoksa None."""
     now = time.monotonic()
     with _ticker_24h_lock:
-        if (_ticker_24h_cache.get("key") == key
+        if (_ticker_24h_cache.get("key") is None
                 and _ticker_24h_cache.get("rows") is not None
                 and now < float(_ticker_24h_cache.get("expires") or 0.0)):
-            # Önbelleklenen satırlar paylaşılır; çağıran listeyi DEĞİŞTİRMEZ.
-            return list(_ticker_24h_cache["rows"])
+            return _ticker_24h_cache["rows"]
+    return None
+
+
+def _filter_ticker_rows(rows, symbols) -> list:
+    """Tam tablodan istenen sembolleri bellekte süz (alt çizgi/büyük-küçük harf duyarsız)."""
+    wanted = {str(s).replace("_", "").upper() for s in symbols}
+    return [row for row in rows
+            if isinstance(row, dict)
+            and str(row.get("symbol") or "").replace("_", "").upper() in wanted]
+
+
+async def _ticker_24h_full_table() -> list:
+    """TAM 24h tablosu — TTL başına TEK ağ isteği (tek uçuş)."""
+    cached = _ticker_24h_cached_rows()
+    if cached is not None:
+        return cached
     # Yükleme kilidi asyncio.Lock: await sırasında BEKLEYENLER loop'u
-    # bloklamaz (bkz. yukarıdaki py-spy notu). `_ticker_24h_lock` ise
-    # yalnızca await'sız hızlı yol ve önbellek yazımı için kullanılır.
+    # bloklamaz (py-spy notu: tests/test_ticker24h_load_lock.py).
+    # `_ticker_24h_lock` yalnızca await'sız hızlı yol ve önbellek yazımı içindir.
     async with _ticker_24h_loop_lock():
-        now = time.monotonic()
-        with _ticker_24h_lock:
-            if (_ticker_24h_cache.get("key") == key
-                    and _ticker_24h_cache.get("rows") is not None
-                    and now < float(_ticker_24h_cache.get("expires") or 0.0)):
-                return list(_ticker_24h_cache["rows"])
-        rows = await _ticker_paged("/api/v3/ticker/24hr", symbols)
+        cached = _ticker_24h_cached_rows()
+        if cached is not None:
+            return cached
+        rows = await _ticker_paged("/api/v3/ticker/24hr", None)
+        rows = list(rows or [])
         with _ticker_24h_lock:
             _ticker_24h_cache.update({
-                "key": key, "rows": list(rows or []),
+                "key": None, "rows": rows,
                 "expires": time.monotonic() + TICKER_24H_CACHE_TTL_SEC,
             })
         return rows
+
+
+async def ticker_24h(symbols: list | None = None):
+    """24 saatlik ticker satırları — tam tablo weight:80.
+
+    #30: radar döngüsü bu ucu ARDIŞIK iki kez çağırıyor (biri top-gainers,
+    biri aktif-mover havuzu); modül önbelleği ikinci çağrıyı ağa göndermez.
+
+    2026-10-18 (doküman denetimi): önbellek eskiden sembol DEMETİ anahtarlı
+    TEK yuvaydı; farklı listelerle çağıran döngüler (radar tam tablo,
+    MarketData izlenen alt küme, velocity aday listesi) birbirini sürekli
+    tahliye ediyor ve her biri ayrı istek atıyordu. Artık TTL başına TAM
+    tablo bir kez çekilir (tek uçuş) ve alt küme çağrıları bellekte süzülür.
+    Tam tablo çekilemezse alt küme çağrısı eski yol olan sembol-filtreli
+    isteğe düşer (önbelleğe YAZILMAZ); tam tablo çağrısı hatayı yükseltir.
+    Satırlar paylaşılır; çağıran listeyi DEĞİŞTİRMEZ (kopya döner).
+    """
+    if not symbols:
+        return list(await _ticker_24h_full_table())
+    try:
+        rows = await _ticker_24h_full_table()
+    except Exception as exc:
+        print(f"[binance_tr_public] ticker_24h tam tablo alınamadı, alt küme isteğine düşülüyor: {exc}",
+              flush=True)
+        return await _ticker_paged("/api/v3/ticker/24hr", symbols)
+    return _filter_ticker_rows(rows, symbols)
 
 
 def ticker_24h_cache_snapshot() -> dict:
@@ -735,13 +782,32 @@ async def active_movers_pool(symbol_count: int = 15, *, quote_asset: str = "TRY"
     movers.sort(key=lambda item: item["activity_score"], reverse=True)
     return movers[:max(1, min(int(symbol_count), 50))]
 
+# 2026-10-18 (Binance TR doküman denetimi, apidocs 2026-08-28): /api/v3/depth
+# için geçerli limit kümesi. Listede olmayan bir değer en yakın ÜST değere
+# yuvarlanır, tavan 500 (eski kod 1000'e kadar her değeri geçiriyordu).
+DEPTH_ALLOWED_LIMITS = (5, 10, 20, 50, 100, 500)
+
+
+def _depth_limit(limit) -> int:
+    try:
+        requested = int(limit)
+    except (TypeError, ValueError):
+        requested = DEPTH_ALLOWED_LIMITS[0]
+    for allowed in DEPTH_ALLOWED_LIMITS:
+        if requested <= allowed:
+            return allowed
+    return DEPTH_ALLOWED_LIMITS[-1]
+
+
 async def orderbook(symbol: str, limit: int = 5):
     """Read-only best bid/ask depth from Binance TR public API."""
     normalized = symbol.replace("_", "").upper()
     # Liquidity is evaluated against the same top-five levels whether the
     # snapshot came from REST or the depth5 WebSocket stream.
+    # 2026-10-18: doküman yalnız [5,10,20,50,100,500] limitlerini kabul eder;
+    # 1-4 gibi değerler 5'e yuvarlanır (sonuç yine ilk 5 seviyeye kırpılır).
     payload = await asyncio.to_thread(_get_json, "/api/v3/depth", {
-        "symbol": normalized, "limit": min(5, max(1, int(limit)))
+        "symbol": normalized, "limit": _depth_limit(min(5, max(1, int(limit))))
     })
     if not isinstance(payload, dict):
         raise RuntimeError("Binance TR order-book yanıtı nesne değil")
@@ -763,7 +829,7 @@ async def depth(symbol: str, limit: int = 5):
     """
     normalized = symbol.replace("_", "").upper()
     payload = await asyncio.to_thread(_get_json, "/api/v3/depth", {
-        "symbol": normalized, "limit": min(1000, max(1, int(limit)))
+        "symbol": normalized, "limit": _depth_limit(limit)
     })
     if not isinstance(payload, dict):
         raise RuntimeError("Binance TR order-book yanıtı nesne değil")

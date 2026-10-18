@@ -54,7 +54,8 @@ class B01GenerationLoopTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(task, timeout=1.0)
 
     def test_lifetime_expiry_resets_ws_connected_at(self):
-        src = inspect.getsource(MarketData.connect)
+        # 2026-10-18: ömür kontrolü `_watch_reconnect` içine taşındı.
+        src = inspect.getsource(MarketData._watch_reconnect)
         # B-01: 24s ömrü dalı, bağlanma zamanlarını temizlemezse her nesil
         # aynı koşulu sağlar ve sıcak yeniden bağlanma döngüsü üretir.
         # B-07: artık tek skaler değil {group_id: ts} sözlüğü tutulduğu için
@@ -62,7 +63,7 @@ class B01GenerationLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("self.ws_connected_at = {}", src,
                       "24s ömrü dalı bağlanma zamanlarını temizlemeli "
                       "(aksi halde her nesil yeniden tetikler)")
-        self.assertIn("WS_GENERATION_MIN_INTERVAL_SEC", src,
+        self.assertIn("WS_GENERATION_MIN_INTERVAL_SEC", inspect.getsource(MarketData.connect),
                       "nesiller arasına asgari bekleme konmalı")
 
     def test_generation_interval_is_positive(self):
@@ -84,9 +85,44 @@ class B07PerGroupLifetimeTests(unittest.TestCase):
 
     def test_lifetime_check_uses_the_oldest_group(self):
         """Son bağlanan grup taze olduğu için en eski grup tetiklemelidir."""
-        src = inspect.getsource(MarketData.connect)
+        src = inspect.getsource(MarketData._ws_lifetime_expired)
+        m = MarketData(["BTCTRY"])
+        m.ws_connected_at = {1: 1_000.0, 2: 1_000.0 + 23 * 3600}
+        self.assertTrue(m._ws_lifetime_expired(now=1_000.0 + 23.6 * 3600))
+        self.assertFalse(m._ws_lifetime_expired(now=1_000.0 + 23.4 * 3600))
         self.assertIn("min(self.ws_connected_at.values())", src,
                       "ömrü dolan grup 'son bağlanan' değil EN ESKİ olan olmalı")
+
+
+class ProactiveRotationWatcherTests(unittest.IsolatedAsyncioTestCase):
+    """2026-10-18: ~23,5 saatlik bağlantı ÇALIŞAN nesil içinde geri dönüştürülür."""
+
+    async def test_watcher_requests_reconnect_when_connection_is_old(self):
+        import time as _time
+        m = MarketData(["BTCTRY"])
+        m.running = True
+        m.connection_generation = 1
+        m.reconnect_requested = False
+        m.WS_LIFETIME_CHECK_INTERVAL_SEC = 0.0
+        m.ws_connected_at = {1: _time.time() - 23.6 * 3600}
+        await asyncio.wait_for(m._watch_reconnect(1), timeout=2.0)
+        self.assertTrue(m.reconnect_requested)
+        self.assertEqual({}, m.ws_connected_at, "B-01: bağlanma zamanları temizlenmeli")
+
+    async def test_watcher_keeps_young_connection(self):
+        import time as _time
+        m = MarketData(["BTCTRY"])
+        m.running = True
+        m.connection_generation = 1
+        m.reconnect_requested = False
+        m.WS_LIFETIME_CHECK_INTERVAL_SEC = 0.0
+        m.ws_connected_at = {1: _time.time() - 3600}
+        task = asyncio.create_task(m._watch_reconnect(1))
+        await asyncio.sleep(0.3)
+        self.assertFalse(task.done())
+        self.assertFalse(m.reconnect_requested)
+        m.running = False
+        await asyncio.wait_for(task, timeout=1.0)
 
 
 class B03FailoverTests(unittest.IsolatedAsyncioTestCase):
@@ -104,8 +140,10 @@ class B03FailoverTests(unittest.IsolatedAsyncioTestCase):
         plans = m._build_ws_groups(1)
         self.assertTrue(plans)
         for plan in plans:
+            # 2026-10-18: ayrılmış arr planı include_arr ile kurulur.
             self.assertEqual(
-                m._ws_url_for(plan["base"], plan["symbols"], plan["timeframes"]),
+                m._ws_url_for(plan["base"], plan["symbols"], plan["timeframes"],
+                              bool(plan.get("include_arr"))),
                 plan["url"],
             )
 

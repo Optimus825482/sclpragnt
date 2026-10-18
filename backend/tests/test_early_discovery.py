@@ -263,16 +263,25 @@ class WsArrSubscriptionTests(unittest.TestCase):
         self.assertTrue(with_arr.endswith("!miniTicker@arr"))
         self.assertNotIn("!miniTicker@arr", without_arr)
 
-    def test_only_first_group_subscribes_to_arr(self):
+    def test_only_dedicated_group_subscribes_to_arr(self):
+        """2026-10-18: arr kendi ayrılmış bağlantısında (son plan); sembol grupları abone olmaz."""
         market = MarketData([f"S{index}TRY" for index in range(40)])
         plans = market._build_ws_groups(1)
-        self.assertGreater(len(plans), 1, "40 sembol tek gruba sığmamalı (çokyollu doğrulama)")
-        self.assertTrue(plans[0]["include_arr"], "yalnız ilk grup arr abonesi olmalı")
-        for plan in plans[1:]:
-            self.assertFalse(plan["include_arr"])
-        # test_w8 sözleşmesi: plan["url"] helper'ın 3-argümanlı çağrısıyla birebir
-        # eşleşir; arr yalnız _run_ws_group'un yeniden kurduğu gerçek URL'de olur.
-        self.assertNotIn("!miniTicker@arr", plans[0]["url"])
+        arr_plans = [plan for plan in plans if plan["include_arr"]]
+        self.assertEqual(1, len(arr_plans), "tam olarak bir arr grubu olmalı")
+        arr_plan = arr_plans[0]
+        self.assertIs(arr_plan, plans[-1])
+        self.assertEqual((), arr_plan["symbols"])
+        self.assertTrue(arr_plan["url"].endswith("/stream?streams=!miniTicker@arr"))
+        symbol_plans = [plan for plan in plans if not plan["include_arr"]]
+        self.assertGreater(len(symbol_plans), 1, "40 sembol tek gruba sığmamalı (çokyollu doğrulama)")
+        for plan in symbol_plans:
+            self.assertNotIn("!miniTicker@arr", plan["url"])
+
+    def test_arr_group_exists_even_without_symbols(self):
+        plans = MarketData([])._build_ws_groups(1)
+        self.assertEqual(1, len(plans))
+        self.assertTrue(plans[0]["include_arr"])
 
     def test_run_ws_group_rebuild_preserves_arr_flag(self):
         """Yeniden bağlanmada include_arr korunmalı (kaynak sözleşmesi)."""

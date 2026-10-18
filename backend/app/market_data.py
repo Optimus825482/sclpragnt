@@ -88,6 +88,12 @@ class MarketData:
         # her saniye 70+ sembol için numpy mean yeniden hesaplamak gereksizdi.
         self._avg_volume_cache: dict[tuple[str, str], tuple[float, float]] = {}
         self.tickers = {}
+        # 2026-10-18 (Binance TR doküman denetimi): `!miniTicker@arr` dizisinin
+        # TÜM sembolleri için hafif fiyat önbelleği. Anahtar büyük harf,
+        # alt çizgisiz (ör. "BTCTRY"); değer
+        # {"last_price", "quote_volume", "timestamp"(ms), "source"}.
+        # main.py / price_service bu adı ve şekli okur — DEĞİŞTİRME.
+        self.mini_tickers: dict[str, dict] = {}
         self.ticker_24h = {}
         self.orderflow = defaultdict(lambda: {
             "bid_price": None,
@@ -486,7 +492,18 @@ class MarketData:
             print(f"[MarketData] refresh_series hatası | symbol={sym} timeframe={tf} error={exc}", flush=True)
             return False
 
-    async def refresh_24h_tickers(self):
+    async def refresh_24h_tickers(self, price_symbols=None, book_symbols=None):
+        """REST 24h hacim + (gerekirse) fiyat/top-of-book yedeği.
+
+        2026-10-18: ``price_symbols`` / ``book_symbols`` verilirse REST fiyatı
+        yalnız o sembollere yazılır ve bookTicker yalnız o semboller için
+        istenir (boş küme → istek YOK). ``None`` = tüm izlenen semboller
+        (ilk yükleme / geriye uyum). 24h quoteVolume her zaman tüm semboller
+        için birleştirilir (likidite kapısı `REST_24H_MAX_AGE_SEC` ister);
+        adaptör tam tabloyu TTL başına bir kez çekip alt kümeyi süzer.
+        """
+        price_filter = (None if price_symbols is None
+                        else {str(sym).replace("_", "").upper() for sym in price_symbols})
         try:
             rows = await self.adapter.ticker_24h([s.upper() for s in self.symbols])
             if not isinstance(rows, list):
@@ -506,7 +523,7 @@ class MarketData:
                     last_price = float(row.get("lastPrice", 0) or 0)
                 except (TypeError, ValueError):
                     continue
-                if last_price > 0:
+                if last_price > 0 and (price_filter is None or symbol in price_filter):
                     updates[symbol] = {
                         **(self.tickers.get(symbol) or {}),
                         "symbol": symbol,
@@ -533,8 +550,12 @@ class MarketData:
         # WS top-of-book taze değilse (sessiz/ölü soket) REST bookTicker tek
         # istekle best-bid/ask yedeği sağlar; böylece likidite kapısı WS
         # kesintisinde bile güncel spread/derinlik görebilir.
+        book_request = ([str(symbol).upper() for symbol in self.symbols] if book_symbols is None
+                        else [str(symbol).replace("_", "").upper() for symbol in book_symbols])
+        if not book_request:
+            return
         try:
-            rows_book = await self.adapter.book_tickers([str(symbol).upper() for symbol in self.symbols])
+            rows_book = await self.adapter.book_tickers(book_request)
             book_now = time.time()
             for row in rows_book or []:
                 if not isinstance(row, dict):
@@ -563,10 +584,33 @@ class MarketData:
         except Exception as exc:
             print(f"[MarketData] bookTicker yenileme hatası: {exc}", flush=True)
 
+    def _rest_stale_symbols(self):
+        """WS tazeliği bayat olan semboller: (fiyat_bayat, orderbook_bayat).
+
+        2026-10-18: REST yedeği yalnız WS'nin besleyemediği sembollere gider;
+        taze WS fiyatı daha eski bir REST fiyatıyla EZİLMEZ.
+        """
+        price_stale, book_stale = [], []
+        for raw in dict.fromkeys(str(s).replace("_", "").upper() for s in self.symbols):
+            if not raw:
+                continue
+            if not self.ticker_freshness(raw)["fresh"]:
+                price_stale.append(raw)
+            if not self.orderbook_freshness(raw)["fresh"]:
+                book_stale.append(raw)
+        return price_stale, book_stale
+
     async def _rest_refresh_loop(self):
         try:
             while self.running:
-                await self.refresh_24h_tickers()
+                # 2026-10-18: yalnız WS tazeliği bayat sembolleri REST ile tazele.
+                # 24h hacim (likidite kapısı ≤ REST_24H_MAX_AGE_SEC ister) yarı
+                # süre dolunca, bayat sembol olmasa da yenilenir.
+                price_stale, book_stale = self._rest_stale_symbols()
+                volume_age = time.time() - float(self.rest_ticker_updated_at or 0.0)
+                if price_stale or book_stale or volume_age >= self.REST_24H_MAX_AGE_SEC / 2:
+                    await self.refresh_24h_tickers(price_symbols=price_stale,
+                                                   book_symbols=book_stale)
                 # Safety net: repair any series the WS left gapped (silent
                 # per-stream stalls never raise in _run_ws_group).
                 try:
@@ -583,8 +627,8 @@ class MarketData:
         """Create a fresh immutable connection plan for this generation."""
         symbols = list(dict.fromkeys(str(symbol).replace("_", "").lower() for symbol in self.symbols))
         timeframes = list(self.timeframes)
-        # kline + depth5 + aggTrade + bookTicker + ticker
-        streams_per_symbol = len(timeframes) + 4
+        # kline + depth5 + aggTrade + miniTicker
+        streams_per_symbol = len(timeframes) + 3
         # Stream sayısı dokümantasyondaki 1024 bağlantı limitinin çok altında
         # tutulur; host rotasyonu generation bazında yapılır.
         group_size = max(1, self.WS_MAX_STREAMS_PER_CONNECTION // streams_per_symbol)
@@ -599,17 +643,27 @@ class MarketData:
                 "symbols": tuple(group),
                 "timeframes": tuple(timeframes),
                 "base": base,
-                # Erken keşif (2026-09-26): `!miniTicker@arr` TÜM sembolleri tek
-                # akışta saniyede bir yayınlar; aynı verinin N grup tarafından
-                # tekrar tekrar işlenmemesi için YALNIZ İLK GRUP abone olur.
-                # Not: plan["url"] B-03 sözleşmesi gereği helper'ın 3-argümanlı
-                # (arr'sız) çağrısıyla birebir eşleşir; arr, _run_ws_group'un her
-                # denemede yeniden kurduğu URL'ye include_arr bayrağıyla eklenir.
-                "include_arr": index == 0,
+                # Sembol grupları arr'a abone OLMAZ; arr ayrılmış grupta (aşağı).
+                "include_arr": False,
                 # B-03: `url` yalnızca başlangıç değeri; `_run_ws_group`
                 # her denemede `_ws_url_for` ile yeniden kurar (host rotasyonu).
                 "url": self._ws_url_for(base, group, timeframes),
             })
+        # 2026-10-18: `!miniTicker@arr` kendi küçük, AYRILMIŞ bağlantısında.
+        # Eskiden ilk sembol grubuna ekleniyordu; o grubun hatası/yeniden
+        # bağlanması erken keşif + `mini_tickers` beslemesini de düşürüyordu ve
+        # sembol listesi boşken hiç abone olunmuyordu. Liste SONUNA eklenir
+        # (plans[0] her zaman ilk sembol grubudur). Tek akış → tek kopya işlenir.
+        plans.append({
+            "group_id": len(plans) + 1,
+            "generation": generation,
+            "symbols": (),
+            "timeframes": (),
+            "base": base,
+            "include_arr": True,
+            "arr_only": True,
+            "url": self._ws_url_for(base, (), (), True),
+        })
         return plans
 
     @staticmethod
@@ -618,14 +672,21 @@ class MarketData:
 
         ``include_arr=True`` iken listenin SONUNA `!miniTicker@arr` eklenir:
         tüm sembollerin saniyelik miniTicker dizisi (erken keşif beslemesi,
-        app/early_discovery.py). Yalnız ilk grup bu bayrakla abone olur.
+        app/early_discovery.py). Yalnız ayrılmış arr grubu bu bayrakla abone
+        olur (bkz. `_build_ws_groups`).
         """
+        # 2026-10-18 (Binance TR doküman denetimi, apidocs 2026-08-28): TR
+        # public WS dokümanı `@ticker` ve `@bookTicker` akışlarını LİSTELEMEZ.
+        # - `@ticker` → `@miniTicker`: tüketici (`_process_ws_message`) yalnız
+        #   `c` (son fiyat) ve `E` (olay zamanı) okur; ikisi de miniTicker'da var.
+        # - `@bookTicker` kaldırıldı: `@depth5@100ms` zaten en iyi bid/ask +
+        #   miktarları taşır (`_process_orderbook` ilk 5 seviyeyi okur). Gelen
+        #   bookTicker çerçeveleri (ör. global adaptör) hâlâ işlenir.
         streams = (
             [f"{symbol}@kline_{tf}" for tf in timeframes for symbol in symbols]
             + [f"{symbol}@depth5@100ms" for symbol in symbols]
             + [f"{symbol}@aggTrade" for symbol in symbols]
-            + [f"{symbol}@bookTicker" for symbol in symbols]
-            + [f"{symbol}@ticker" for symbol in symbols]
+            + [f"{symbol}@miniTicker" for symbol in symbols]
         )
         if include_arr:
             streams.append("!miniTicker@arr")
@@ -748,12 +809,29 @@ class MarketData:
                 self.ws_host_index = (self.ws_host_index + 1) % len(bases)
                 # Candles may have closed while the socket was down; splice
                 # the missing range back in before fresh bars resume.
-                self._schedule_repair(plan["symbols"], plan["timeframes"], generation, group_id)
+                # Ayrılmış arr grubunun sembol/ufku yok; boş demet onarıma
+                # "tüm semboller" diye geçerdi → atlanır.
+                if plan.get("symbols"):
+                    self._schedule_repair(plan["symbols"], plan["timeframes"], generation, group_id)
                 attempts += 1
                 await asyncio.sleep(self._ws_backoff_sec(attempts))
 
 
+    # 2026-10-18: proaktif rotasyon eşiği. Doküman: tek bağlantı en fazla 24
+    # saat geçerli; sunucu kesmeden ~30 dk önce nesil kontrollü yenilenir.
+    WS_PROACTIVE_ROTATE_SEC = 23.5 * 3600
+    WS_LIFETIME_CHECK_INTERVAL_SEC = 30.0
+
+    def _ws_lifetime_expired(self, now=None) -> bool:
+        """EN ESKİ grup bağlantısı proaktif rotasyon eşiğini aştı mı?"""
+        if not self.ws_connected_at:
+            return False
+        now = time.time() if now is None else now
+        limit = min(float(self.ws_max_lifetime_sec), float(self.WS_PROACTIVE_ROTATE_SEC))
+        return (now - min(self.ws_connected_at.values())) >= limit
+
     async def _watch_reconnect(self, generation: int):
+        last_lifetime_check = time.monotonic()
         while self.running and generation == self.connection_generation:
             # B-01: bayrağı ÖNCE kontrol etmek, nesil kurulurken bayrak zaten
             # True ise ANINDA dönmeye yol açıyordu (min-dwell yok) → grup
@@ -762,6 +840,21 @@ class MarketData:
             await asyncio.sleep(0.1)
             if self.reconnect_requested:
                 return
+            # 2026-10-18: 24s ömür kontrolü artık BURADA (çalışan nesil içinde).
+            # Eskiden yalnız `connect` döngüsünün nesil başında bakılıyordu;
+            # sağlıklı bir nesil hiç bitmediği için kontrol fiilen hiç
+            # çalışmıyor, sunucu 24. saatte bağlantıyı sert kesiyordu.
+            # B-01: tetiklenince bağlanma zamanları TEMİZLENİR (aksi hâlde yeni
+            # nesil aynı koşulu görüp sıcak döngüye girer). B-07: EN ESKİ grup.
+            mono = time.monotonic()
+            if mono - last_lifetime_check >= self.WS_LIFETIME_CHECK_INTERVAL_SEC:
+                last_lifetime_check = mono
+                if self._ws_lifetime_expired():
+                    print("[MarketData] WS bağlantı ömrü ~23,5 saati aştı; "
+                          "nesil kontrollü yenileniyor", flush=True)
+                    self.ws_connected_at = {}
+                    self.reconnect_requested = True
+                    return
 
     async def connect(self, skip_history: bool = False):
         if not skip_history:
@@ -783,21 +876,11 @@ class MarketData:
                 if not plans:
                     await asyncio.sleep(0.25)
                     continue
-                # 24 saatlik sunucu bağlantı ömrü dolduysa yeni nesil başlat.
-                # B-01: bayrağı set ettikten sonra `ws_connected_at` SIFIRLANMAZSA
-                # bir sonraki nesil de aynı koşulu sağlar; `_watch_reconnect`
-                # bayrağı görüp anında döner, `asyncio.wait(FIRST_COMPLETED)` ilk
-                # tick'te döner ve soketler el sıkışmadan iptal edilir → saniyede
-                # binlerce yarım bağlantı (ölçüldü: ~11.900/sn, 0 tamamlanan).
-                # B-07: kontrol artık EN ESKİ grubun yaşı üzerinden yapılır
-                # (eskiden tek alan "son bağlanan grup"u gösteriyordu, yani
-                # diğer grupların ömrü sessizce takip edilmiyordu).
-                now = time.time()
-                oldest = min(self.ws_connected_at.values()) if self.ws_connected_at else None
-                if oldest is not None and (now - oldest) >= self.ws_max_lifetime_sec:
-                    print("[MarketData] WS 24s ömrü doldu; yeni nesil başlatılıyor", flush=True)
-                    self.ws_connected_at = {}
-                    self.reconnect_requested = True
+                # 24 saatlik bağlantı ömrü kontrolü 2026-10-18'de
+                # `_watch_reconnect` içine taşındı (çalışan nesil içinde, ~23,5s).
+                # Yeni nesil kendi bağlanma zamanlarını yazar; eski kayıtlar
+                # temizlenir ki ömür yanlışlıkla eski nesilden devralınmasın.
+                self.ws_connected_at = {}
                 group_tasks = {
                     asyncio.create_task(
                         self._run_ws_group(plan),
@@ -839,6 +922,50 @@ class MarketData:
         self.last_event_at = max(filter(None, [self.rest_last_event_at, self.ws_last_event_at]), default=now)
         self.last_error = self.rest_last_error
 
+    MINI_TICKER_ARR_SOURCE = "ws:miniTicker@arr"
+
+    def _ingest_mini_ticker_arr(self, rows):
+        """`!miniTicker@arr` satırlarını `mini_tickers` önbelleğine yaz.
+
+        Tek bozuk satır yalnız kendisini düşürür. İzlenen semboller için
+        `tickers[sym]` yalnız satır SAKLANANDAN YENİYSE güncellenir ve mevcut
+        (daha zengin) alanlar korunur — yalnız fiyat/zaman/kaynak değişir.
+        """
+        now_ms = int(time.time() * 1000)
+        tracked = {str(s).replace("_", "").upper() for s in self.symbols}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                sym = str(row.get("s") or "").replace("_", "").upper()
+                price = float(row.get("c") or 0)
+                quote_volume = float(row.get("q") or 0)
+                event_ms = int(row.get("E") or 0) or now_ms
+            except (TypeError, ValueError):
+                continue
+            if not sym or price <= 0:
+                continue
+            self.mini_tickers[sym] = {
+                "last_price": price,
+                "quote_volume": quote_volume,
+                "timestamp": event_ms,
+                "source": self.MINI_TICKER_ARR_SOURCE,
+            }
+            if sym in tracked:
+                current = self.tickers.get(sym) or {}
+                try:
+                    stored_ms = int(current.get("timestamp") or 0)
+                except (TypeError, ValueError):
+                    stored_ms = 0
+                if event_ms > stored_ms:
+                    self.tickers[sym] = {
+                        **current,
+                        "symbol": sym,
+                        "last_price": price,
+                        "timestamp": event_ms,
+                        "source": f"{self.source_prefix}_{self.MINI_TICKER_ARR_SOURCE}",
+                    }
+
     def _process_ws_message(self, payload):
         """Preserve the combined-stream name needed by depth snapshots."""
         if not isinstance(payload, dict):
@@ -853,6 +980,9 @@ class MarketData:
         if isinstance(data, list):
             from app import early_discovery  # yerel import: WS kurulumundan bağımsız
             early_discovery.ingest_mini_ticker(data)
+            # 2026-10-18: aynı dizi tüm semboller için fiyat önbelleğine de yazılır
+            # (`mini_tickers`); izlenen sembollerin `tickers` fiyatı da tazelenir.
+            self._ingest_mini_ticker_arr(data)
             self._mark_ws_event()
             return
         if not isinstance(data, dict):

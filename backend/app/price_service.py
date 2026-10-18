@@ -22,11 +22,40 @@ logger = logging.getLogger("scalper.price_service")
 SOURCE_WS = "binance_tr_public_websocket"
 SOURCE_REST_TICKER = "binance_tr_public_rest_ticker_price"
 SOURCE_REST_KLINE = "binance_tr_public_rest_kline"
+SOURCE_WS_MINI_ARR = "binance_tr_public_ws:miniTicker@arr"
+# 2026-10-18: `market.mini_tickers` (`!miniTicker@arr`, saniyelik) satırı en
+# fazla bu kadar eskiyse REST'ten ÖNCE kaynak olarak kullanılır.
+MINI_TICKER_MAX_AGE_SEC = 5.0
 
 
 def normalize(symbol) -> str:
     """Sembolü WS/REST anahtar biçimine getirir (``BTC_TRY`` → ``BTCTRY``)."""
     return str(symbol or "").replace("_", "").upper()
+
+
+def mini_ticker_quote(symbol, *, market_obj=None, now_sec: float | None = None,
+                      max_age_sec: float = MINI_TICKER_MAX_AGE_SEC):
+    """`market.mini_tickers` (``!miniTicker@arr``) satırı < ``max_age_sec`` ise
+    ``(price, age_sec, source)``; yoksa ``None``. Yalnız okur."""
+    src = _default_market if market_obj is None else market_obj
+    cache = getattr(src, "mini_tickers", None)
+    if not isinstance(cache, dict):
+        return None
+    row = cache.get(normalize(symbol))
+    if not isinstance(row, dict):
+        return None
+    try:
+        price = float(row.get("last_price") or 0)
+        ts_ms = float(row.get("timestamp") or 0)
+    except (TypeError, ValueError):
+        return None
+    if price <= 0 or ts_ms <= 0:
+        return None
+    now = time.time() if now_sec is None else float(now_sec)
+    age = max(0.0, now - ts_ms / 1000.0)
+    if age > float(max_age_sec):
+        return None
+    return price, age, SOURCE_WS_MINI_ARR
 
 
 def ws_quote(symbol, *, market_obj=None, now_sec: float | None = None):
@@ -35,16 +64,22 @@ def ws_quote(symbol, *, market_obj=None, now_sec: float | None = None):
     ``market_obj`` çağıranın kendi market referansıdır (testlerde ve modül
     seviyesi `market` adını yamalayan çağıranlar için); verilmezse
     `app.state.market` kullanılır.
+
+    2026-10-18: sembolün kendi WS ticker'ı taze değilse `mini_tickers`
+    (``!miniTicker@arr``, < 5 sn) denenir — REST'e gitmeden önceki son WS kaynağı.
     """
     src = _default_market if market_obj is None else market_obj
     try:
         ticker = src.get_ticker(normalize(symbol)) or {}
     except Exception:
         ticker = {}
-    price = float(ticker.get("last_price") or 0)
-    ts_ms = float(ticker.get("timestamp") or 0)
+    try:
+        price = float(ticker.get("last_price") or 0)
+        ts_ms = float(ticker.get("timestamp") or 0)
+    except (TypeError, ValueError, AttributeError):
+        price, ts_ms = 0.0, 0.0
     if price <= 0 or not paper_ledger.is_fresh(ts_ms, now_sec):
-        return None
+        return mini_ticker_quote(symbol, market_obj=src, now_sec=now_sec)
     now = time.time() if now_sec is None else float(now_sec)
     age = max(0.0, now - ts_ms / 1000.0)
     return price, age, (ticker.get("source") or SOURCE_WS)
@@ -89,7 +124,10 @@ async def rest_quote(symbol):
 
 
 async def get_price(symbol, *, market_obj=None):
-    """En iyi fiyat: taze WS → REST yedeği. Bulunamazsa ``(None, None, None)``."""
+    """En iyi fiyat: taze WS ticker → taze miniTicker@arr (<5 sn) → REST yedeği.
+
+    Bulunamazsa ``(None, None, None)``.
+    """
     quote = ws_quote(symbol, market_obj=market_obj)
     if quote:
         return quote

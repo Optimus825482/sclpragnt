@@ -331,17 +331,22 @@ class Ticker24hCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(movers)
         self.assertTrue(pool)
 
-    async def test_different_symbol_sets_are_not_served_from_the_same_cache(self):
+    async def test_subset_calls_are_served_from_the_full_table(self):
+        """2026-10-18: alt küme çağrıları TAM tablodan bellekte süzülür (tek istek)."""
         calls = {"n": 0}
 
         def fake(path, params):
             calls["n"] += 1
-            return [{"symbol": params.get("symbols", "ALL")}]
+            return [{"symbol": "BTCTRY"}, {"symbol": "ETHTRY"}, {"symbol": "AVAXTRY"}]
 
         with mock.patch.object(self.pub, "_get_json", side_effect=fake):
-            await self.pub.ticker_24h()
-            await self.pub.ticker_24h(["BTCTRY"])
-        self.assertEqual(2, calls["n"])
+            full = await self.pub.ticker_24h()
+            btc = await self.pub.ticker_24h(["BTCTRY"])
+            pair = await self.pub.ticker_24h(["eth_try", "AVAXTRY", "NOPETRY"])
+        self.assertEqual(1, calls["n"])
+        self.assertEqual(3, len(full))
+        self.assertEqual([{"symbol": "BTCTRY"}], btc)
+        self.assertEqual({"ETHTRY", "AVAXTRY"}, {row["symbol"] for row in pair})
 
     async def test_cache_expires_and_refetches(self):
         calls = {"n": 0}
@@ -439,14 +444,14 @@ class PrivateAdapterTests(unittest.TestCase):
         btp._symbols_cache["filters"] = {"BTC_USDT": {"step_size": 0.001}}
         with mock.patch.object(btp, "_signed_request", return_value={"orderId": "9"}) as sr:
             result = btp.place_market_sell("k", "s", "BTC_USDT", 0.1234)
-        self.assertEqual("0.123", sr.call_args[0][2]["quantity"])
+        self.assertEqual("0.123", sr.call_args_list[0][0][2]["quantity"])
         self.assertEqual("0.123", result["quantity"])
 
     def test_place_market_sell_honours_an_explicit_step(self):
         btp = self.btp
         with mock.patch.object(btp, "_signed_request", return_value={"orderId": "9"}) as sr:
             btp.place_market_sell("k", "s", "BTC_USDT", 0.1234, step_size=0.01)
-        self.assertEqual("0.12", sr.call_args[0][2]["quantity"])
+        self.assertEqual("0.12", sr.call_args_list[0][0][2]["quantity"])
 
     def test_symbol_list_loading_is_single_flight(self):
         btp = self.btp

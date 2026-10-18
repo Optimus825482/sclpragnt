@@ -184,13 +184,22 @@ class MarketDataCacheTests(unittest.IsolatedAsyncioTestCase):
                 # (WS_GENERATION_MIN_INTERVAL_SEC) → yeni nesil anında değil, kısa
                 # bir aradan sonra kurulur. Pencere bu invariant'a göre genişletildi;
                 # testin amacı değişmedi (nesiller DÖNER).
+                # 2026-10-18: nesil başına 2 plan (sembol grubu + ayrılmış arr
+                # grubu) açıldığı için bekleme koşulu "yeni nesil göründü" olur.
                 for _ in range(300):
-                    if len(launched) >= 2:
+                    if any(plan["generation"] > first_generation for plan in launched):
                         break
                     await asyncio.sleep(0.01)
                 self.assertGreaterEqual(len(launched), 2)
                 self.assertGreater(launched[-1]["generation"], first_generation)
-                self.assertEqual(launched[-1]["symbols"], ("ethtry",))
+                # 2026-10-18: ayrılmış `!miniTicker@arr` grubu (symbols=()) da
+                # her nesilde açılır; sembol grubu ayrıca doğrulanır.
+                latest_generation = launched[-1]["generation"]
+                symbol_plans = [plan for plan in launched
+                                if plan["generation"] == latest_generation and plan["symbols"]]
+                self.assertEqual([plan["symbols"] for plan in symbol_plans], [("ethtry",)])
+                self.assertTrue(any(plan["generation"] == latest_generation and plan.get("arr_only")
+                                    for plan in launched))
                 market.stop()
                 await asyncio.gather(owner, return_exceptions=True)
                 self.assertFalse(market._ws_tasks)
@@ -253,7 +262,10 @@ class MarketDataCacheTests(unittest.IsolatedAsyncioTestCase):
 
         market = MarketData(["BTCTRY"])
         plan = market._build_ws_groups(1)[0]
-        self.assertIn("btctry@ticker", plan["url"])
+        # 2026-10-18: TR dokümanı `@ticker`/`@bookTicker` listelemez → `@miniTicker`.
+        self.assertIn("btctry@miniTicker", plan["url"])
+        self.assertNotIn("btctry@ticker", plan["url"])
+        self.assertNotIn("@bookTicker", plan["url"])
         self.assertIn("btctry@kline_", plan["url"])
         first_base = plan["base"]
         market.ws_host_index = 1
