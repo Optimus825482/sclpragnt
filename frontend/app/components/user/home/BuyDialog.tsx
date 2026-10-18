@@ -1,9 +1,9 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { call, type RiskSettings, type TradePlanResponse } from "../../../lib/tradeApi";
+import { call, type TradePlanResponse } from "../../../lib/tradeApi";
 import {
-  AMOUNT_CHIPS, describeOpenResult, errorText, fmtPct, fmtPrice, fmtQty, fmtTry, hasBlockingWarnings,
+  describeOpenResult, errorText, fmtPct, fmtPrice, fmtQty, fmtTry, hasBlockingWarnings,
   normalizeSymbol, parseTrNumber, rrLabel, scenarioTexts, type OpenResult,
 } from "../../../lib/tradeUi";
 import { useModalA11y } from "../../../lib/useModalA11y";
@@ -11,7 +11,8 @@ import { UncertainOrderError, orderFailureText, postJsonGuarded, uncertainOrderT
 import UncertainOrderNotice from "../binance/UncertainOrderNotice";
 import { buyIntentKey, describeOrderLookup, intentId, isDefinitiveReject, resetIntent, retryWhileGatewayUnavailable, type IntentRef } from "../binance/orderIntent";
 import {
-  SL_PCT_CHIPS, TP_PCT_CHIPS, checkSlTp, pctFromPrice, priceAtPct, pricesFromPlan, rrFromPrices, slPctFromPrice,
+  BUY_PCT_CHIPS, SL_PCT_CHIPS, TP_PCT_CHIPS, amountFromFree, checkSlTp, describeBuyFill, pctFromPrice, priceAtPct,
+  pricesFromPlan, rrFromPrices, slPctFromPrice, type BuyFillBody,
 } from "./buyDialogMath";
 
 type Props = {
@@ -26,21 +27,35 @@ type Props = {
 
 type Settings = { configured: boolean; sell_enabled: boolean };
 type AmountMode = { kind: "chip"; chip: number } | { kind: "custom"; text: string };
-// Onay ayrı adım DEĞİL (2026-10-18): "Alım yap" tek basışta piyasa alımı + OCO kurar; plan ekranı onay yüzeyidir.
+// Onay ayrı adım DEĞİL: "Alım yap" tek basışta emri gönderir; sonuç (dolum) onay penceresi olarak gösterilir.
 type Step = "plan" | "done";
 type Uncertain = { cid: string; key: string; symbol: string; text: string };
+type Balance = { asset: string; free: string | number };
 
 const DEBOUNCE_MS = 400;
 const DEFAULT_CHIP = 25;
 const toText = (n: number | null | undefined, digits = 8) =>
   n == null || !Number.isFinite(n) ? "" : String(Number(n.toFixed(digits))).replace(".", ",");
 
+/** Tutar: düğme → serbest TRY bakiyesinin yüzdesi; yazılan → TL. Geçersizse 0. */
+const amountOf = (a: AmountMode, freeTry: number | null) =>
+  a.kind === "chip" ? amountFromFree(freeTry, a.chip) : Math.max(0, parseTrNumber(a.text) ?? 0);
+
+/**
+ * Herhangi bir sembolde "Alım yap" penceresi.
+ *
+ * Tutar serbest TRY bakiyesinin %25/50/100'ü (ya da elle TL). OCO isteğe bağlıdır (varsayılan kapalı):
+ *  - kapalı → `/api/binance/buy` düz piyasa alımı; SL/TP sonradan Binance TR sayfasındaki kalkan düğmesiyle eklenir.
+ *  - açık   → `/api/binance/open-position`: alım dolunca seçilen SL/TP ile OCO kurulur.
+ */
 export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onClose, onTraded }: Props) {
   const symbol = normalizeSymbol(rawSymbol);
+  const coin = symbol.replace(/TRY$/, "") || "Coin";
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [risk, setRisk] = useState<RiskSettings | null>(null);
+  const [freeTry, setFreeTry] = useState<number | null>(null);
   const [loadError, setLoadError] = useState("");
   const [amount, setAmount] = useState<AmountMode>({ kind: "chip", chip: DEFAULT_CHIP });
+  const [oco, setOco] = useState(false);
   const [slText, setSlText] = useState("");
   const [tpText, setTpText] = useState("");
   const [manual, setManual] = useState(false);
@@ -51,36 +66,31 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
   const [error, setError] = useState("");
   const [step, setStep] = useState<Step>("plan");
   const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<(OpenResult & { clientOrderId: string }) | null>(null);
+  const [result, setResult] = useState<(OpenResult & { clientOrderId: string; oco: boolean }) | null>(null);
   const [protectBusy, setProtectBusy] = useState(false);
   const [uncertain, setUncertain] = useState<Uncertain | null>(null);
   const [lookup, setLookup] = useState("");
   const [lookupBusy, setLookupBusy] = useState(false);
 
-  // client_order_id "emir niyeti" (sembol+tutar) başına bir kez üretilir; BuyCard ile aynı mükerrer alım koruması.
+  // client_order_id "emir niyeti" (sembol+tutar+tür) başına bir kez üretilir; BuyCard ile aynı mükerrer alım koruması.
   const intent = useRef<IntentRef>({ key: "", id: "" });
   const sendLock = useRef(false);
   const seq = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const basePrice = useRef(0);
-  const latest = useRef({ amount, slText, tpText, manual, maxPct: 0, symbol });
-  const maxPct = risk?.max_position_pct ?? 0;
-  latest.current = { amount, slText, tpText, manual, maxPct, symbol };
+  const latest = useRef({ amount, slText, tpText, manual, freeTry, oco, symbol });
+  latest.current = { amount, slText, tpText, manual, freeTry, oco, symbol };
 
   const close = useCallback(() => { if (!sendLock.current) onClose(); }, [onClose]);
-  const a11y = useModalA11y(open, close, `${symbol || "Coin"} alım penceresi`);
+  const a11y = useModalA11y(open, close, `${coin} alım penceresi`);
 
+  // Plan yalnız OCO açıkken gerekir (güncel fiyat + SL/TP önerisi + uyarılar).
   const runPlan = useCallback(async () => {
     const cur = latest.current;
-    if (!cur.symbol || cur.maxPct <= 0) return;
-    const body: Record<string, unknown> = { symbol: cur.symbol };
-    if (cur.amount.kind === "custom") {
-      const n = parseTrNumber(cur.amount.text);
-      if (n == null || n <= 0) { setFieldError("Tutarı TL olarak yaz (örn. 250)."); setDirty(true); return; }
-      body.amount_try = n;
-    } else {
-      body.amount_pct = (cur.maxPct * cur.amount.chip) / 100;
-    }
+    if (!cur.symbol || !cur.oco) return;
+    const amountTry = amountOf(cur.amount, cur.freeTry);
+    if (!(amountTry > 0)) { setFieldError("Tutar seç ya da TL olarak yaz (örn. 250)."); setDirty(true); return; }
+    const body: Record<string, unknown> = { symbol: cur.symbol, amount_try: amountTry };
     if (cur.manual) {
       const chk = checkSlTp(basePrice.current, parseTrNumber(cur.slText), parseTrNumber(cur.tpText));
       if (!chk.ok) { setFieldError(chk.error); setDirty(true); return; }
@@ -110,57 +120,66 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
 
   const schedulePlan = useCallback((delay: number) => {
     if (timer.current) clearTimeout(timer.current);
+    if (!latest.current.oco) return;
     setDirty(true);
     timer.current = setTimeout(() => { void runPlan(); }, delay);
   }, [runPlan]);
 
-  // Açılışta: ayarlar + risk yükle, ardından ilk planı (Risk Merkezi limitinin %25'i) hazırla.
+  // Açılışta: bağlantı ayarları + serbest TRY bakiyesi.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     seq.current += 1;
     if (timer.current) clearTimeout(timer.current);
-    setSettings(null); setRisk(null); setLoadError(""); setPlan(null); setError(""); setFieldError("");
-    setAmount({ kind: "chip", chip: DEFAULT_CHIP }); setSlText(""); setTpText(""); setManual(false); setDirty(false);
+    setSettings(null); setFreeTry(null); setLoadError(""); setPlan(null); setError(""); setFieldError("");
+    setAmount({ kind: "chip", chip: DEFAULT_CHIP }); setOco(false); setSlText(""); setTpText(""); setManual(false); setDirty(false);
     setStep("plan"); setResult(null); setLookup("");
     basePrice.current = 0;
     setUncertain((u) => (u && u.symbol === symbol ? u : null));
     (async () => {
-      const [s, k] = await Promise.all([
+      const [s, a] = await Promise.all([
         call<Settings>("GET", "/api/binance/settings"),
-        call<RiskSettings>("GET", "/api/binance/risk"),
+        call<{ balances?: Balance[] }>("GET", "/api/binance/account"),
       ]);
       if (cancelled) return;
       if (!s.ok) { setLoadError(errorText(s.error, "Ayarlar yüklenemedi")); return; }
       setSettings({ configured: !!s.body.configured, sell_enabled: !!s.body.sell_enabled });
-      if (!k.ok) { setLoadError(errorText(k.error, "Risk Merkezi ayarları yüklenemedi")); return; }
-      const rk = { max_position_pct: k.body.max_position_pct, default_rr: k.body.default_rr };
-      setRisk(rk);
-      if (!s.body.configured || !symbol) return;
-      if (!(rk.max_position_pct > 0)) { setError("Risk Merkezi’nde en yüksek pozisyon yüzdesi tanımlı değil."); return; }
-      latest.current = { ...latest.current, maxPct: rk.max_position_pct, manual: false, amount: { kind: "chip", chip: DEFAULT_CHIP }, symbol };
-      void runPlan();
+      if (!s.body.configured) return;
+      if (!a.ok) { setLoadError(errorText(a.error, "Bakiye alınamadı")); return; }
+      const tryRow = (a.body.balances || []).find((b) => b.asset === "TRY");
+      setFreeTry(Number(tryRow?.free ?? 0) || 0);
     })();
     return () => { cancelled = true; if (timer.current) clearTimeout(timer.current); };
-  }, [open, symbol, runPlan]);
+  }, [open, symbol]);
 
   if (!open) return null;
 
-  const customAmount = amount.kind === "custom" ? parseTrNumber(amount.text) : null;
+  const amountTry = amountOf(amount, freeTry);
   const slNum = parseTrNumber(slText);
   const tpNum = parseTrNumber(tpText);
   const derivedSlPct = plan ? slPctFromPrice(basePrice.current, slNum ?? 0) : null;
   const derivedRr = plan ? rrFromPrices(basePrice.current, slNum ?? 0, tpNum ?? 0) : null;
   const scen = plan ? scenarioTexts({ ...plan.plan }) : null;
-  const blocked = !!plan && hasBlockingWarnings(plan.warnings);
-  const planKey = plan ? buyIntentKey(plan.symbol, plan.amount_try) : "";
-  const lockedByUncertain = !!uncertain && uncertain.key !== planKey;
+  const blocked = oco && !!plan && hasBlockingWarnings(plan.warnings);
+  const orderAmount = oco ? plan?.amount_try ?? 0 : amountTry;
+  const orderKey = `${buyIntentKey(symbol, orderAmount)}|${oco ? "oco" : "spot"}`;
+  const lockedByUncertain = !!uncertain && uncertain.key !== orderKey;
   const live = !!settings?.sell_enabled;
-  const planReady = !!plan && !dirty && !planBusy && !fieldError;
-  const canConfirm = planReady && live && !blocked && !lockedByUncertain;
+  const overFree = amount.kind === "custom" && freeTry != null && amountTry > freeTry;
+  const ready = oco ? !!plan && !dirty && !planBusy && !fieldError : amountTry > 0 && !overFree;
+  const canBuy = ready && live && !blocked && !lockedByUncertain && !!symbol;
 
-  const onAmountChip = (chip: number) => { setAmount({ kind: "chip", chip }); latest.current.amount = { kind: "chip", chip }; schedulePlan(0); };
-  const onAmountText = (text: string) => { const a: AmountMode = { kind: "custom", text }; setAmount(a); latest.current.amount = a; schedulePlan(DEBOUNCE_MS); };
+  const setAmountMode = (a: AmountMode, delay: number) => { setAmount(a); latest.current.amount = a; setFieldError(""); schedulePlan(delay); };
+  const onAmountChip = (chip: number) => setAmountMode({ kind: "chip", chip }, 0);
+  const onAmountText = (text: string) => setAmountMode({ kind: "custom", text }, DEBOUNCE_MS);
+  const onOcoToggle = (on: boolean) => {
+    setOco(on);
+    latest.current.oco = on;
+    if (on) { schedulePlan(0); return; }
+    seq.current += 1; // uçuştaki plan yanıtı geçersiz
+    if (timer.current) clearTimeout(timer.current);
+    setPlan(null); setPlanBusy(false); setDirty(false); setFieldError(""); setManual(false); setSlText(""); setTpText("");
+  };
   const onSl = (text: string) => { setSlText(text); setManual(true); latest.current = { ...latest.current, slText: text, manual: true }; schedulePlan(DEBOUNCE_MS); };
   const onTp = (text: string) => { setTpText(text); setManual(true); latest.current = { ...latest.current, tpText: text, manual: true }; schedulePlan(DEBOUNCE_MS); };
 
@@ -172,26 +191,31 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
   const chipCls = (on: boolean) =>
     `min-h-[44px] flex-1 rounded-lg border px-2 text-sm font-semibold ${on ? "ui-button-primary" : "ui-button-secondary"}`;
 
+  const sendOrder = (cid: string) =>
+    oco && plan
+      ? postJsonGuarded<Record<string, unknown> & { detail?: unknown }>("/api/binance/open-position", {
+          symbol: plan.symbol, amount_try: plan.amount_try, sl_pct: plan.plan.sl_pct, rr: plan.plan.rr,
+          client_order_id: cid, confirmation: "REAL_OPEN",
+        })
+      : postJsonGuarded<BuyFillBody & { detail?: unknown }>("/api/binance/buy", {
+          asset: coin, amount_try: amountTry, client_order_id: cid, confirmation: "REAL_BUY",
+        });
+
   const confirmBuy = async () => {
-    if (!plan || !canConfirm || sending || sendLock.current) return;
+    if (!canBuy || sending || sendLock.current) return;
     setResult(null);
     sendLock.current = true;
     setSending(true);
     setError("");
-    const cid = intentId(intent.current, buyIntentKey(plan.symbol, plan.amount_try));
+    const cid = intentId(intent.current, orderKey);
+    const describe = (status: number, body: unknown): OpenResult =>
+      oco ? describeOpenResult(status, body as never) : describeBuyFill(status, body as BuyFillBody, coin);
     try {
-      const r = await postJsonGuarded<Record<string, unknown> & { detail?: unknown }>("/api/binance/open-position", {
-        symbol: plan.symbol,
-        amount_try: plan.amount_try,
-        sl_pct: plan.plan.sl_pct,
-        rr: plan.plan.rr,
-        client_order_id: cid,
-        confirmation: "REAL_OPEN",
-      });
+      const r = await sendOrder(cid);
       if (r.status === 202) {
         // Sonucu belirsiz / işleniyor: AYNI kimlik korunur (yeni kimlik mükerrer alım demektir).
         setUncertain(null);
-        setResult({ ...describeOpenResult(r.status, r.body as never), clientOrderId: cid });
+        setResult({ ...describe(r.status, r.body), clientOrderId: cid, oco });
         setStep("done");
         onTraded?.();
         return;
@@ -202,10 +226,9 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
           resetIntent(intent.current);
           setUncertain(null);
           setError(text);
-          setStep("plan");
         } else {
-          // 408/504/gövdesiz 5xx: emir borsaya ulaşmış olabilir → onay adımı açık, aynı kimlik, sorgulama önerilir.
-          setUncertain({ cid, key: intent.current.key, symbol: plan.symbol, text });
+          // 408/504/gövdesiz 5xx: emir borsaya ulaşmış olabilir → aynı kimlik, sorgulama önerilir.
+          setUncertain({ cid, key: orderKey, symbol, text });
           setLookup("");
           onTraded?.();
         }
@@ -213,17 +236,16 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
       }
       resetIntent(intent.current);
       setUncertain(null);
-      setResult({ ...describeOpenResult(r.status, r.body as never), clientOrderId: cid });
+      setResult({ ...describe(r.status, r.body), clientOrderId: cid, oco });
       setStep("done");
       onTraded?.();
     } catch (e) {
       if (e instanceof UncertainOrderError) {
-        setUncertain({ cid, key: intent.current.key, symbol: plan.symbol, text: uncertainOrderText("buy", e.timedOut) });
+        setUncertain({ cid, key: orderKey, symbol, text: uncertainOrderText("buy", e.timedOut) });
         setLookup("");
         onTraded?.();
       } else {
         setError("Alım emri gönderilemedi");
-        setStep("plan");
       }
     } finally {
       sendLock.current = false;
@@ -247,13 +269,12 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
     const r = await call<Record<string, unknown>>("POST", "/api/binance/protect", { client_order_id: result.clientOrderId });
     setProtectBusy(false);
     if (!r.ok) { setError(errorText(r.error)); return; }
-    setResult({ ...describeOpenResult(r.status, r.body as never), clientOrderId: result.clientOrderId });
+    setResult({ ...describeOpenResult(r.status, r.body as never), clientOrderId: result.clientOrderId, oco: true });
     onTraded?.();
   };
 
   const loading = !settings && !loadError;
   const notConfigured = !!settings && !settings.configured;
-  const coin = symbol.replace(/TRY$/, "") || "Coin";
   const inputCls = "input mt-1 block min-h-[48px] w-full rounded-lg border px-3 text-base";
 
   return (
@@ -294,17 +315,17 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
 
         {settings?.configured && step === "plan" && (
           <>
-            {!live && <p className="text-sm text-yellow-300">Canlı işlem kapalı; plan görebilirsin ama alım yapılamaz. <Link href="/binance-tr" className="underline">Binance TR sayfasındaki Bağlantı bölümünden</Link> aç.</p>}
+            {!live && <p className="text-sm text-yellow-300">Canlı işlem kapalı; alım yapılamaz. <Link href="/binance-tr" className="underline">Binance TR sayfasındaki Bağlantı bölümünden</Link> aç.</p>}
 
             <div className="text-sm text-white">
-              <span id="bd-tutar">Tutar</span>
+              <span id="bd-tutar">Tutar <span className="text-bunker-muted">(serbest bakiye {freeTry == null ? "…" : fmtTry(freeTry)})</span></span>
               <div className="mt-1 flex flex-wrap gap-2" role="group" aria-labelledby="bd-tutar">
-                {AMOUNT_CHIPS.map((c) => (
+                {BUY_PCT_CHIPS.map((c) => (
                   <button
                     key={c} type="button" aria-pressed={amount.kind === "chip" && amount.chip === c} onClick={() => onAmountChip(c)}
                     className={`min-h-[48px] flex-1 rounded-lg border px-3 text-sm font-semibold ${amount.kind === "chip" && amount.chip === c ? "ui-button-primary" : "ui-button-secondary"}`}
                   >
-                    {c === 100 ? "Limit" : `%${c}`}
+                    %{c}
                   </button>
                 ))}
                 <input
@@ -314,16 +335,20 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
                 />
               </div>
               <span className="mt-1 block text-xs text-bunker-muted">
-                Limit = Risk Merkezi’ndeki en yüksek tutar{risk ? ` (bakiyenin %${risk.max_position_pct}’i)` : ""}. Yüzdeler bu limitin parçasıdır.
-                {amount.kind === "custom" && customAmount == null && amount.text.trim() ? " Geçerli bir tutar yaz." : ""}
+                {amountTry > 0 ? `Alım tutarı ${fmtTry(amountTry)}` : freeTry === 0 ? "Serbest TRY bakiyesi yok." : "Tutar seç ya da yaz."}
+                {overFree ? " Serbest bakiyeden fazla." : ""}
               </span>
             </div>
 
-            {planBusy && !plan && <p className="text-sm text-bunker-muted" aria-live="polite">Plan hazırlanıyor…</p>}
+            <label className="flex min-h-[48px] items-center gap-3 rounded-lg border border-bunker-700 px-3 text-sm text-white">
+              <input type="checkbox" checked={oco} onChange={(e) => onOcoToggle(e.target.checked)} className="h-5 w-5" />
+              <span>Alım dolunca zarar durdur / kâr al (OCO) kur</span>
+            </label>
 
-            {plan && (
+            {oco && planBusy && !plan && <p className="text-sm text-bunker-muted" aria-live="polite">Plan hazırlanıyor…</p>}
+
+            {oco && plan && (
               <div className="space-y-3" aria-live="polite">
-                <p className="text-sm text-bunker-muted">Risk Merkezi ayarlarına ve coinin anlık durumuna göre önerilen plan</p>
                 <div className="rounded-lg border border-bunker-700 p-3 text-sm text-white">
                   <p className="font-semibold">{plan.symbol} · güncel fiyat {fmtPrice(plan.price)}</p>
                   <p className="mt-1">
@@ -362,7 +387,6 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
                     : `${fmtPct(plan.plan.sl_pct)} mesafe · ${rrLabel(plan.plan.rr).replace(/ /g, "")} oran`}
                   {" "}(zarar mesafesi %0,5–10, oran 1:1–1:5 arası olabilir)
                 </p>
-                {fieldError && <p role="alert" className="text-sm text-neon-red">{fieldError}</p>}
 
                 {scen && !dirty && (
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -377,9 +401,9 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
                     {plan.warning_texts.map((w) => (<li key={w} className="text-sm text-neon-red">• {w}</li>))}
                   </ul>
                 )}
-                <p className="text-xs text-bunker-muted">{plan.disclaimer} Komisyon dahil tahmindir; emir anındaki canlı fiyata göre kurulur, gerçekleşen sonuç farklı olabilir.</p>
               </div>
             )}
+            {oco && fieldError && <p role="alert" className="text-sm text-neon-red">{fieldError}</p>}
 
             {error && <p role="alert" className="text-sm text-neon-red">{error}</p>}
             {uncertain && (
@@ -387,22 +411,23 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
             )}
             {lockedByUncertain && <p className="text-sm text-yellow-300">Önceki alımın durumu belirsiz. Önce “Durumu sorgula” ile kontrol et ya da bildirimi kapat.</p>}
 
-            {plan && live && (
+            {live && orderAmount > 0 && (
               <p className="text-xs font-semibold text-yellow-300">
-                “Alım yap” gerçek paranla {fmtTry(plan.amount_try)} piyasa alımı yapar; dolunca zarar durdur {fmtPrice(plan.plan.sl_price)} ve kâr al {fmtPrice(plan.plan.tp_price)} OCO emri otomatik kurulur. Geri alınamaz.
+                “Alım yap” gerçek paranla {fmtTry(orderAmount)} piyasa alımı yapar
+                {oco && plan ? `; dolunca zarar durdur ${fmtPrice(plan.plan.sl_price)} ve kâr al ${fmtPrice(plan.plan.tp_price)} OCO emri kurulur` : ""}. Geri alınamaz.
               </p>
             )}
             <div className="flex gap-2">
               <button type="button" onClick={close} disabled={sending} className="ui-button-secondary min-h-[48px] flex-1 rounded-lg border px-4 text-sm font-medium disabled:opacity-50">Vazgeç</button>
-              <button type="button" onClick={confirmBuy} disabled={!canConfirm || sending} className="ui-button-primary min-h-[48px] flex-[2] rounded-lg px-4 text-sm font-bold disabled:opacity-50">
-                {sending ? "Gönderiliyor…" : uncertain ? "Aynı emri tekrar gönder" : plan ? `Alım yap · ${fmtTry(plan.amount_try)}` : "Alım yap"}
+              <button type="button" onClick={confirmBuy} disabled={!canBuy || sending} className="ui-button-primary min-h-[48px] flex-[2] rounded-lg px-4 text-sm font-bold disabled:opacity-50">
+                {sending ? "Gönderiliyor…" : uncertain ? "Aynı emri tekrar gönder" : orderAmount > 0 ? `Alım yap · ${fmtTry(orderAmount)}` : "Alım yap"}
               </button>
             </div>
           </>
         )}
 
         {step === "done" && result && (
-          <div className="space-y-3">
+          <div className="space-y-3" role="alertdialog" aria-label={result.title}>
             <div className={`card u-card-${result.tone} p-3`} role="status">
               <p className="font-semibold text-white">{result.title}</p>
               {result.detail && <p className="mt-1 text-sm text-white">{result.detail}</p>}
@@ -412,8 +437,14 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
                 </button>
               )}
             </div>
+            {!result.oco && !result.pending && (
+              <p className="text-sm text-bunker-muted">Zarar durdur / kâr al eklemek için Binance TR sayfasında {coin} satırındaki kalkan (🛡) düğmesine bas.</p>
+            )}
             {error && <p role="alert" className="text-sm text-neon-red">{error}</p>}
-            <button type="button" onClick={onClose} className="ui-button-primary min-h-[48px] w-full rounded-lg px-4 text-sm font-bold">Kapat</button>
+            <div className="flex gap-2">
+              <Link href="/binance-tr" onClick={onClose} className="ui-button-secondary flex min-h-[48px] flex-1 items-center justify-center rounded-lg border px-4 text-sm font-semibold">Binance TR’de izle</Link>
+              <button type="button" onClick={onClose} className="ui-button-primary min-h-[48px] flex-1 rounded-lg px-4 text-sm font-bold">Tamam</button>
+            </div>
           </div>
         )}
       </section>

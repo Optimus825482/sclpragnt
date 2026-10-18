@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  SL_PCT_CHIPS, TP_PCT_CHIPS, checkSlTp, pctFromPrice, priceAtPct, pricesFromPlan, rrFromPrices, slPctFromPrice,
+  SL_PCT_CHIPS, TP_PCT_CHIPS, amountFromFree, checkSlTp, describeBuyFill, pctFromPrice, priceAtPct, pricesFromPlan, rrFromPrices, slPctFromPrice,
 } from "./buyDialogMath";
 
 describe("slPctFromPrice", () => {
@@ -85,5 +85,32 @@ describe("tek dokunuş SL/TP düğmeleri", () => {
     const ok = SL_PCT_CHIPS.some((sl) => TP_PCT_CHIPS.some((tp) => checkSlTp(p, priceAtPct(p, -sl), priceAtPct(p, tp)).ok));
     expect(ok).toBe(true);
     expect(checkSlTp(p, priceAtPct(p, -2), priceAtPct(p, 5)).ok).toBe(true);
+  });
+});
+
+describe("serbest bakiyeden alım tutarı", () => {
+  it("yüzdeyi kuruşa aşağı yuvarlar, bakiyeyi aşmaz", () => {
+    expect(amountFromFree(1000, 25)).toBe(250);
+    expect(amountFromFree(333.337, 100)).toBe(333.33);
+    expect(amountFromFree(100, 150)).toBe(100);
+    expect(amountFromFree(null, 50)).toBe(0);
+    expect(amountFromFree(0, 50)).toBe(0);
+  });
+});
+
+describe("describeBuyFill (alım onay penceresi)", () => {
+  it("doğrulanan dolumu miktar + ortalama fiyatla anlatır", () => {
+    const r = describeBuyFill(200, { executed_qty: 0.5, avg_price: 200, executed_quote_qty: 100 }, "BTC");
+    expect(r.tone).toBe("good");
+    expect(r.title).toContain("Alım gerçekleşti");
+    expect(r.title).toContain("BTC");
+  });
+  it("202 / belirsiz sonuçta tekrar göndermeyi önermez", () => {
+    expect(describeBuyFill(202, {}, "BTC").pending).toBe(true);
+  });
+  it("dolum bilgisi yoksa uyarı tonunda 'iletildi' der", () => {
+    const r = describeBuyFill(200, { fill_verified: false }, "BTC");
+    expect(r.tone).toBe("warn");
+    expect(r.pending).toBe(false);
   });
 });

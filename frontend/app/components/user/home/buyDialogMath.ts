@@ -6,11 +6,21 @@
  *   sl_pct = (fiyat − SL) / fiyat × 100
  *   rr     = (TP − fiyat) / (fiyat − SL)
  */
+import { fmtPrice, fmtQty, fmtTry, type OpenResult } from "../../../lib/tradeUi";
 
 export const SL_PCT_MIN = 0.5;
 export const SL_PCT_MAX = 10;
 export const RR_MIN = 1;
 export const RR_MAX = 5;
+
+/** Alım tutarı düğmeleri: serbest (boşta) TRY bakiyesinin yüzdesi. */
+export const BUY_PCT_CHIPS: readonly number[] = [25, 50, 100];
+
+/** Serbest bakiyenin `pct` yüzdesi, kuruşa AŞAĞI yuvarlı (bakiyeyi aşan emir gitmesin). Bakiye yoksa 0. */
+export function amountFromFree(freeTry: number | null | undefined, pct: number): number {
+  if (!isPos(freeTry) || !isPos(pct)) return 0;
+  return Math.floor(freeTry * Math.min(pct, 100)) / 100;
+}
 
 /** Tek dokunuş SL/TP düğmeleri: güncel fiyattan yüzde mesafe. Oran (TP%/SL%) API sınırı 1–5 içinde kalmalı. */
 export const SL_PCT_CHIPS: readonly number[] = [1, 2, 3, 5];
@@ -77,4 +87,37 @@ export function checkSlTp(price: number, sl: number | null, tp: number | null): 
   if (rr < RR_MIN) return { ok: false, error: "Kâr hedefi, zarar mesafesinden küçük olamaz (oran en az 1:1)." };
   if (rr > RR_MAX) return { ok: false, error: "Kâr hedefi çok uzak (oran en fazla 1:5 olabilir)." };
   return { ok: true, slPct, rr };
+}
+
+/** `/api/binance/buy` yanıt gövdesi (yalnız onay penceresinde kullanılan alanlar). */
+export type BuyFillBody = {
+  status?: string;
+  executed_qty?: number;
+  avg_price?: number;
+  executed_quote_qty?: number;
+  quote_qty?: string | number;
+  fill_verified?: boolean;
+  idempotent_replay?: boolean;
+};
+
+/** Düz piyasa alımı sonucunu onay penceresi metnine çevirir (dolum = emir detayından doğrulanan miktar). */
+export function describeBuyFill(httpStatus: number, body: BuyFillBody | null | undefined, coin: string): OpenResult {
+  const b = body || {};
+  if (httpStatus === 202 || b.status === "UNKNOWN") {
+    return { tone: "warn", title: "Emrin sonucu henüz belli değil", detail: "Emri tekrar göndermeyin. Birazdan Binance TR sayfasından kontrol edin.", needsProtect: false, pending: true };
+  }
+  if (b.idempotent_replay) {
+    return { tone: "warn", title: "Bu alım daha önce gönderilmişti", detail: "Aynı emir ikinci kez gönderilmedi. Binance TR sayfasından kontrol edin.", needsProtect: false, pending: false };
+  }
+  if (isPos(b.executed_qty) && isPos(b.avg_price)) {
+    const total = isPos(b.executed_quote_qty) ? b.executed_quote_qty : b.executed_qty * b.avg_price;
+    return {
+      tone: "good",
+      title: `Alım gerçekleşti: ${fmtQty(b.executed_qty)} ${coin}`,
+      detail: `Ortalama fiyat ${fmtPrice(b.avg_price)} · toplam ${fmtTry(total)}`,
+      needsProtect: false,
+      pending: false,
+    };
+  }
+  return { tone: "warn", title: "Alım emri borsaya iletildi", detail: "Dolum bilgisi henüz gelmedi; Binance TR sayfasından kontrol edin.", needsProtect: false, pending: false };
 }
