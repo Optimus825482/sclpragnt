@@ -137,6 +137,12 @@ async def _log_blocked_decision(symbol: str, reason: str, price: float, extra: d
             "llm_low_confidence": f"LLM İkinci Göz düşük güven engeli (güven: %{extra.get('confidence')} < %60)",
             "mode_not_allowed": f"Mod izinli listede değil ('{extra.get('mode') or '?'}' — izinli: {extra.get('allowed')})",
             "symbol_dedup": f"Aynı sembolde kısa süre önce giriş yapıldı, tekrar açılmadı (kalan: {extra.get('remaining_sec')} sn)",
+            # 2026-10-18: eskiden sessiz `return None` olan engeller artık karar günlüğünde görünür.
+            "auto_paper_disabled": "Otonom paper trade kapalı (ayarlardan devre dışı)",
+            "no_price": "Fiyat alınamadı (ticker ve bildirim fiyatı yok)",
+            "notification_already_processed": "Bu bildirim anahtarıyla daha önce işlem açılmıştı (saatte en fazla bir)",
+            "reopen_not_allowed": f"Aynı bildirimle yeniden açma koşulları sağlanmadı ({extra.get('detail')})",
+            "zero_quantity": "Hesaplanan adet sıfır (bakiye/fiyat)",
         }
         human_reason = reason_tr_map.get(reason, f"Giriş engellendi: {reason}")
         if reason == "liquidity" and isinstance(extra.get("liquidity"), dict):
@@ -470,7 +476,7 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
             # push gelip işlem açılmayınca operatör neden görebilsin.
             logger.info("auto_paper %s: otonom paper trade KAPALI (settings.enabled=false) — "
                         "bildirim işleme alınmadı", str(notification.get("symbol") or "?"))
-            return None
+            return _blocked(str(notification.get("symbol") or "?").upper(), "auto_paper_disabled")
 
         symbol = str(notification.get("symbol") or "").upper()
         if not symbol:
@@ -667,7 +673,7 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         if current_price <= 0:
             current_price = float(notification.get("price") or 0)
         if current_price <= 0:
-            return None
+            return _blocked(symbol, "no_price")
 
         # Ticker tazelik kapısı: REST ticker'ı getiremezse bildirim fiyatına
         # (detected_at anına ait, bayat) düşmek SL/TP çapasını yanlış sabitler.
@@ -759,7 +765,7 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
             if prior_trade:
                 logger.info("auto_paper %s: bildirim anahtarı %s daha önce işlendi — "
                             "yeniden açılmadı (R3-09)", symbol, notification_key)
-                return None
+                return _blocked(symbol, "notification_already_processed", price=current_price, key=str(notification_key))
         elif notification_id is not None:
             # Normal bildirim: id yalnızca tam sayı olabilir (bigint). String id
             # asla bigint'e yazılmaz/atanmaz → tip hatası riski yok.
@@ -777,14 +783,14 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                 # "Trailing/breakeven sonrası yeniden açma" kapalıysa eski davranış:
                 # aynı bildirimle asla tekrar açma.
                 if not bool(settings.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)):
-                    return None
+                    return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="yeniden açma kapalı")
 
                 # Kapanış biçimi nedir?
                 exit_reason = str(prior_trade.get("exit_reason") or "").lower()
                 trailing_kapanis = exit_reason in {"trailing_stop", "breakeven_stop"}
                 if not trailing_kapanis:
                     # TP/SL/reset ile kapandıysa aynı bildirimle tekrar açma.
-                    return None
+                    return _blocked(symbol, "reopen_not_allowed", price=current_price, detail=f"önceki kapanış: {exit_reason or '?'}")
 
                 # Koşul 1: güncel fiyat bildirim fiyatının üzerinde olmalı.
                 notif_price = float(notification.get("price") or 0)
@@ -792,7 +798,7 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                     logger.info("auto_paper %s: trailing kapanış sonrası fiyat bildirim "
                                 "fiyatının altında (%s <= %s) — yeniden açılmadı",
                                 symbol, current_price, notif_price)
-                    return None
+                    return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="fiyat bildirim fiyatının altında")
 
                 # Koşul 2: ufuk süresi henüz dolmamalı (bildirim detected_at + horizon).
                 detected_at = float(notification.get("detected_at") or 0)
@@ -800,7 +806,7 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                 ufuk_bitti = bool(detected_at and horizon_min and (detected_at + horizon_min * 60) < now)
                 if ufuk_bitti:
                     logger.info("auto_paper %s: trailing kapanış sonrası ufuk süresi doldu — yeniden açılmadı", symbol)
-                    return None
+                    return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="ufuk süresi doldu")
 
                 # Koşul 3: hedefe (take_profit) ulaşılmamış olmalı. Trailing/breakeven
                 # zaten TP'ye ulaşmadan kapanış olduğu için bu genellikle otomatik
@@ -812,7 +818,7 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                     logger.info("auto_paper %s: trailing kapanış sonrası hedefe ulaşıldı "
                                 "(%s >= %s) — yeniden açılmadı",
                                 symbol, current_price, prior_tp)
-                    return None
+                    return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="hedefe ulaşıldı")
 
                 logger.info("auto_paper %s: trailing/breakeven kapanışı sonrası koşullar "
                             "sağlanıyor (%s) — aynı bildirimle yeniden işlem açılıyor",
@@ -863,7 +869,9 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                                     order_value=order_value, balance=balance)
     except Exception as exc:
         logger.exception("auto_paper try_open: %s", exc)
-        return None
+        # 2026-10-18: istisna artık sessiz değil — karar günlüğüne "giriş engellendi: exception:<Tür>" düşer.
+        return _blocked(str((notification or {}).get("symbol") or "?").upper(),
+                        f"exception:{type(exc).__name__}", error=str(exc)[:160])
 
 
 async def _open_new_trade(symbol: str, notification: dict, current_price: float, settings: dict,
@@ -948,7 +956,7 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         fill_entry = paper_ledger.entry_fill(current_price, entry_slip)
         quantity = max_cost / fill_entry if fill_entry > 0 else 0
         if quantity <= 0:
-            return None
+            return _blocked(symbol, "zero_quantity", price=current_price)
 
         net_order_value = fill_entry * quantity
         # ERKAN İSTEĞİ (2026-09-18): TP hedefi NET olacak — gidiş-dönüş komisyon

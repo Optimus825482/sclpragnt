@@ -156,7 +156,9 @@ class AutoPaperChurnLogicTests(unittest.TestCase):
                 auto_paper.database.get_recent_auto_paper_trade_by_notification = original_prior
                 auto_paper.get_auto_paper_settings = original_settings
                 auto_paper.market.ticker_freshness = original_freshness
-            self.assertIsNone(result)
+            # 2026-10-18: eskiden sessiz None; artık görünür engel (karar günlüğüne düşer)
+            self.assertEqual((result or {}).get("status"), "blocked")
+            self.assertEqual((result or {}).get("reason"), "reopen_not_allowed")
             self.assertEqual(calls, [777])
 
         import asyncio
@@ -666,6 +668,25 @@ class AutoPaperTpCancelOnTrailTests(unittest.IsolatedAsyncioTestCase):
         s = await auto_paper.get_default_settings()
         self.assertIn("tp_cancel_on_trail", s)
         self.assertFalse(s["tp_cancel_on_trail"])
+
+
+class AutoPaperVisibleBlocksTests(unittest.IsolatedAsyncioTestCase):
+    """2026-10-18: eskiden sessiz `return None` olan engeller ve istisna artık görünür `blocked` döner."""
+
+    async def test_disabled_is_visible(self):
+        async def off():
+            return {"enabled": False}
+        with patch.object(auto_paper, "get_auto_paper_settings", new=off):
+            res = await auto_paper.try_open_from_notification(_make_notification(symbol="OFFTRY", score=90.0))
+        self.assertEqual((res or {}).get("reason"), "auto_paper_disabled")
+
+    async def test_exception_is_visible(self):
+        async def boom():
+            raise RuntimeError("db down")
+        with patch.object(auto_paper, "get_auto_paper_settings", new=boom):
+            res = await auto_paper.try_open_from_notification(_make_notification(symbol="BOOMTRY", score=90.0))
+        self.assertEqual((res or {}).get("status"), "blocked")
+        self.assertTrue(str(res.get("reason")).startswith("exception:RuntimeError"))
 
 
 class AutoPaperRegimeBadgeTests(unittest.IsolatedAsyncioTestCase):
