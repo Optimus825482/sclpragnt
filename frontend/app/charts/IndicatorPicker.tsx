@@ -212,11 +212,39 @@ export const SUPERTREND_ENTRY: RegistryEntry = {
     },
 };
 
+// 2026-10-18 (kullanıcı isteği): StochRSI kesişim okları (20 altı yukarı → yeşil ok altta; 80 üstü aşağı → kırmızı ok
+// üstte) + MA şerit (7/20/99) BUY etiketi (orta > yavaş iken hızlı ortayı yukarı keserse). Yalnız görsel yardımcı;
+// çizgi çizmez (MA şeridi ve StochRSI panelini ayrıca ekleyin). Sinyal matematiği signals.ts (stochMaSignals).
+export const STOCH_MA_ENTRY: RegistryEntry = {
+    id: "stoch_ma_signals",
+    name: "StochRSI Okları + MA Şerit BUY",
+    shortName: "StochRSI/MA",
+    category: "Strateji",
+    group: "custom",
+    overlay: true,
+    inputConfig: [
+        { id: "showStochArrows", type: "bool", title: "StochRSI kesişim oklarını göster", defval: true },
+        { id: "stochLow", type: "number", title: "StochRSI alt seviye (yukarı kesişim)", defval: 20, min: 1, max: 50, step: 1 },
+        { id: "stochHigh", type: "number", title: "StochRSI üst seviye (aşağı kesişim)", defval: 80, min: 50, max: 99, step: 1 },
+        { id: "stochRsiLen", type: "number", title: "StochRSI RSI Periyodu", defval: 14, min: 2, step: 1 },
+        { id: "stochLen", type: "number", title: "StochRSI Stoch Periyodu", defval: 14, min: 2, step: 1 },
+        { id: "stochK", type: "number", title: "StochRSI K Yumuşatma", defval: 3, min: 1, step: 1 },
+        { id: "stochD", type: "number", title: "StochRSI D Yumuşatma", defval: 3, min: 1, step: 1 },
+        { id: "showMaBuy", type: "bool", title: "MA şerit BUY etiketini göster", defval: true },
+        { id: "maFast", type: "number", title: "MA hızlı (turuncu)", defval: 7, min: 1, step: 1 },
+        { id: "maMid", type: "number", title: "MA orta (mavi)", defval: 20, min: 1, step: 1 },
+        { id: "maSlow", type: "number", title: "MA yavaş (mor)", defval: 99, min: 1, step: 1 },
+        { id: "maUseSma", type: "bool", title: "MA türü SMA (kapalı = EMA)", defval: false },
+    ],
+    calculate: (_bars: any[], _params: any) => ({ metadata: { overlay: true }, plots: {} }),
+};
+
 // Uygulama içi özel kayıtlar da paket registry'siyle aynı kaynaktan seçilebilmeli.
 // Aksi halde picker'da görünen ancak grafik renderer'ında bulunamayan indikatörler oluşuyordu.
 export const CUSTOM_INDICATOR_ENTRIES: RegistryEntry[] = [
     SUPERTREND_ENTRY,
     SLING_SHOT_ENTRY,
+    STOCH_MA_ENTRY,
     EMA_PULLBACK_ENTRY,
     VWAP_MACD_ENTRY,
     CMO_CRSI_ENTRY,
@@ -230,13 +258,18 @@ export default function IndicatorPicker({ onSelect, onClose }: Props) {
     const [q, setQ] = useState("");
     const [cat, setCat] = useState("Tümü");
 
-    const indicators = useMemo(
-        () => [
-            ...CUSTOM_INDICATOR_ENTRIES,
-            ...indicatorRegistry.filter((i: any) => i.group !== "candlestick-port"),
-        ] as RegistryEntry[],
-        []
-    );
+    const indicators = useMemo(() => {
+        // 2026-10-18: aynı id iki kaynakta da varsa (ör. supertrend) uygulama içi kayıt kazanır; aksi halde
+        // listede çift anahtar (React "same key") ve çift satır oluşuyordu. `findIndicatorEntry` ile aynı öncelik.
+        const seen = new Set<string>();
+        const out: RegistryEntry[] = [];
+        for (const e of [...CUSTOM_INDICATOR_ENTRIES, ...(indicatorRegistry.filter((i: any) => i.group !== "candlestick-port") as RegistryEntry[])]) {
+            if (seen.has(e.id)) continue;
+            seen.add(e.id);
+            out.push(e);
+        }
+        return out;
+    }, []);
     const cats = useMemo(
         () => ["Tümü", ...Array.from(new Set(indicators.map((i) => i.category)))],
         [indicators]

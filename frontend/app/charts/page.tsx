@@ -36,7 +36,7 @@ import {
 import {
     strongCandlestickPatterns, patternDescriptions, emaPullbackSignals,
     vwapMacdSignals, cmoCrsiSignals, rsiLast, mfiLast, obvLast, spotExecutionSignals,
-    strategySignalFns, strategyColors, strategyLabels, type Bar, type PatternMarker,
+    strategySignalFns, strategyColors, strategyLabels, type Bar, type PatternMarker, type StrategySignal,
 } from "./signals";
 
 /* H-02: null/NaN K/Z NÖTR renkte olmalı (proje kuralı: yeşil=kâr, kırmızı=zarar,
@@ -1305,14 +1305,16 @@ export default function ChartsPage() {
         utBotMarkersRef.current = null;
 
         // RQ Kernel (sling_shot) ve diğer strateji indikatörlerini topla
-        const slingShotInsts = instances.filter((i) => i.registryId === "sling_shot");
-        const otherStratInsts = instances.filter((i) => i.registryId in strategySignalFns && i.registryId !== "sling_shot");
+        // 2026-10-18: doğrudan (yürütme simülasyonsuz) çizilen görsel sinyaller: RQ Kernel ve StochRSI/MA.
+        const DIRECT_SIGNAL_IDS = new Set(["sling_shot", "stoch_ma_signals"]);
+        const slingShotInsts = instances.filter((i) => DIRECT_SIGNAL_IDS.has(i.registryId));
+        const otherStratInsts = instances.filter((i) => i.registryId in strategySignalFns && !DIRECT_SIGNAL_IDS.has(i.registryId));
         if ((!slingShotInsts.length && !otherStratInsts.length) || bars.length === 0) return;
 
         try {
             const markers = createSeriesMarkers(series, []);
             utBotMarkersRef.current = markers;
-            const all: { time: UTCTimestamp; position: "belowBar" | "aboveBar"; color: string; shape: "arrowUp" | "arrowDown" | "circle"; text: string; size: number }[] = [];
+            const all: { time: UTCTimestamp; position: "belowBar" | "aboveBar"; color: string; shape: "arrowUp" | "arrowDown" | "circle" | "square"; text: string; size: number }[] = [];
 
             // Sinyal toplama yardımcı fonksiyonu
             // useShortText=true ise "B"/"S" harfleri kullanılır (kernel renk dönüşü okları)
@@ -1325,7 +1327,7 @@ export default function ChartsPage() {
                     const showSignals = inst.params.showSignals !== false;
                     if (!showSignals) continue;
                     const raw = fn(bars, inst.params);
-                    const signals = useSpotExec ? spotExecutionSignals(bars, raw) : raw;
+                    const signals: StrategySignal[] = useSpotExec ? spotExecutionSignals(bars, raw) : raw;
                     for (const s of signals) {
                         if (s.type === "pre") {
                             // Ön sinyal (StochRSI K/D yukarı kesişimi, kernel hâlâ kırmızı): küçük amber daire "Ö"
@@ -1339,15 +1341,16 @@ export default function ChartsPage() {
                             });
                             continue;
                         }
+                        // 2026-10-18: sinyal kendi görselini (metin/şekil/renk/boyut) taşıyabilir.
                         all.push({
                             time: s.time as UTCTimestamp,
                             position: s.type === "buy" ? "belowBar" : "aboveBar",
-                            color: s.type === "buy" ? colors.buy : colors.sell,
-                            shape: s.type === "buy" ? "arrowUp" : "arrowDown",
-                            text: useShortText
+                            color: s.color ?? (s.type === "buy" ? colors.buy : colors.sell),
+                            shape: s.shape ?? (s.type === "buy" ? "arrowUp" : "arrowDown"),
+                            text: s.text ?? (useShortText
                                 ? (s.type === "buy" ? "B" : "S")
-                                : (s.type === "buy" ? `${label} BUY` : `${label} SELL`),
-                            size: 1
+                                : (s.type === "buy" ? `${label} BUY` : `${label} SELL`)),
+                            size: s.size ?? 1
                         });
                     }
                 }

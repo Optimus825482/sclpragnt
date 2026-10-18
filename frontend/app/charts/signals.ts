@@ -332,7 +332,11 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
     // Parametreler indikatör instance'ından gelir (h=8, r=2, smoothColors=false varsayılan);
     // böylece oklar çizgideki renk değişimleriyle birebir örtüşür.
     export type SignalType = "buy" | "sell" | "pre";
-    export type StrategySignal = { time: number; type: SignalType };
+    /** 2026-10-18: isteğe bağlı görsel alanlar — verilmezse strateji varsayılanı (ok + "ETİKET BUY/SELL") kullanılır. */
+    export type StrategySignal = {
+        time: number; type: SignalType;
+        text?: string; shape?: "arrowUp" | "arrowDown" | "circle" | "square"; color?: string; size?: number;
+    };
 
     export const rqKernelSignals = (bars: Bar[], params: Record<string, any>): { time: number; type: "buy" | "sell" }[] => {
         const { bullish } = rqkColors(bars.map((b) => Number(b.close)), params);
@@ -435,19 +439,111 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
         return base.concat(rqKernelPreSignals(bars, params));
     };
 
+
+    // ── StochRSI kesişim okları + MA şerit BUY etiketi (id: stoch_ma_signals) ────────────
+    // 2026-10-18 (kullanıcı isteği). Yalnız GÖRSEL yardımcı; araştırma (docs/STOCHRSI_LIMIT_GIRIS_2026-10-17.md,
+    // docs/GOSTERGE_REHBERI_V2_2026-10-18.md) bu kesişimlerin örneklem dışında net kenar vermediğini ölçtü.
+    //   * StochRSI: K, D'yi AŞAĞIDAN keser ve kesişim öncesi K < alt seviye (20) → mumun ALTINA yeşil ok;
+    //               K, D'yi YUKARIDAN keser ve kesişim öncesi K > üst seviye (80) → mumun ÜSTÜNE kırmızı ok.
+    //   * MA şerit (7/20/99): orta (20) > yavaş (99) iken hızlı (7) ortayı AŞAĞIDAN keser → "BUY" etiketi.
+    export const emaSeries = (values: number[], period: number): (number | null)[] => {
+        const n = Math.max(1, Math.round(period));
+        const out: (number | null)[] = new Array(values.length).fill(null);
+        if (values.length < n) return out;
+        const alpha = 2 / (n + 1);
+        let sum = 0;
+        for (let i = 0; i < n; i++) sum += values[i];
+        let prev = sum / n;
+        out[n - 1] = prev;
+        for (let i = n; i < values.length; i++) {
+            prev = values[i] * alpha + prev * (1 - alpha);
+            out[i] = prev;
+        }
+        return out;
+    };
+
+    export const smaSeries = (values: number[], period: number): (number | null)[] => {
+        const n = Math.max(1, Math.round(period));
+        const out: (number | null)[] = new Array(values.length).fill(null);
+        let sum = 0;
+        for (let i = 0; i < values.length; i++) {
+            sum += values[i];
+            if (i >= n) sum -= values[i - n];
+            if (i >= n - 1) out[i] = sum / n;
+        }
+        return out;
+    };
+
+    const crossUp = (a0: number, b0: number, a1: number, b1: number) => a0 <= b0 && a1 > b1;
+    const crossDown = (a0: number, b0: number, a1: number, b1: number) => a0 >= b0 && a1 < b1;
+
+    export const stochRsiCrossSignals = (bars: Bar[], params: Record<string, any>): StrategySignal[] => {
+        const p = params ?? {};
+        const low = Number(p.stochLow ?? 20);
+        const high = Number(p.stochHigh ?? 80);
+        const rsiLen = Math.max(2, Math.round(Number(p.stochRsiLen ?? 14)));
+        const stochLen = Math.max(2, Math.round(Number(p.stochLen ?? 14)));
+        const kLen = Math.max(1, Math.round(Number(p.stochK ?? 3)));
+        const dLen = Math.max(1, Math.round(Number(p.stochD ?? 3)));
+        const closes = bars.map((b) => Number(b.close));
+        const { k, d } = stochRsi(closes, rsiLen, stochLen, kLen, dLen);
+        const out: StrategySignal[] = [];
+        for (let i = 1; i < bars.length; i++) {
+            const k0 = k[i - 1], d0 = d[i - 1], k1 = k[i], d1 = d[i];
+            if (k0 == null || d0 == null || k1 == null || d1 == null) continue;
+            if (crossUp(k0, d0, k1, d1) && k0 < low) {
+                out.push({ time: bars[i].time, type: "buy", text: "", shape: "arrowUp", color: "#10b981", size: 1 });
+            } else if (crossDown(k0, d0, k1, d1) && k0 > high) {
+                out.push({ time: bars[i].time, type: "sell", text: "", shape: "arrowDown", color: "#ef4444", size: 1 });
+            }
+        }
+        return out;
+    };
+
+    export const maRibbonBuySignals = (bars: Bar[], params: Record<string, any>): StrategySignal[] => {
+        const p = params ?? {};
+        const fastLen = Math.max(1, Math.round(Number(p.maFast ?? 7)));
+        const midLen = Math.max(1, Math.round(Number(p.maMid ?? 20)));
+        const slowLen = Math.max(1, Math.round(Number(p.maSlow ?? 99)));
+        const useSma = p.maUseSma === true || String(p.maType ?? "ema").toLowerCase() === "sma";
+        const closes = bars.map((b) => Number(b.close));
+        const fn = useSma ? smaSeries : emaSeries;
+        const fast = fn(closes, fastLen), mid = fn(closes, midLen), slow = fn(closes, slowLen);
+        const out: StrategySignal[] = [];
+        for (let i = 1; i < bars.length; i++) {
+            const f0 = fast[i - 1], m0 = mid[i - 1], f1 = fast[i], m1 = mid[i], s1 = slow[i];
+            if (f0 == null || m0 == null || f1 == null || m1 == null || s1 == null) continue;
+            if (m1 > s1 && crossUp(f0, m0, f1, m1)) {
+                out.push({ time: bars[i].time, type: "buy", text: "BUY", shape: "arrowUp", color: "#f59e0b", size: 1.2 });
+            }
+        }
+        return out;
+    };
+
+    export const stochMaSignals = (bars: Bar[], params: Record<string, any>): StrategySignal[] => {
+        const p = params ?? {};
+        const out: StrategySignal[] = [];
+        if (p.showStochArrows !== false) out.push(...stochRsiCrossSignals(bars, p));
+        if (p.showMaBuy !== false) out.push(...maRibbonBuySignals(bars, p));
+        return out.sort((a, b) => a.time - b.time);
+    };
+
     export const strategySignalFns: Record<string, (bars: Bar[], params: Record<string, any>) => StrategySignal[]> = {
         ema_pullback: emaPullbackSignals,
         vwap_macd: vwapMacdSignals,
         cmo_crsi: cmoCrsiSignals,
         sling_shot: rqKernelAllSignals,
+        stoch_ma_signals: stochMaSignals,
     };
     export const strategyColors: Record<string, { buy: string; sell: string }> = {
         ema_pullback: { buy: "#38bdf8", sell: "#ef4444" }, vwap_macd: { buy: "#c084fc", sell: "#ef4444" }, cmo_crsi: { buy: "#eab308", sell: "#ef4444" },
         sling_shot: { buy: "#39FF14", sell: "#ef4444" },
+        stoch_ma_signals: { buy: "#10b981", sell: "#ef4444" },
     };
     export const strategyLabels: Record<string, string> = {
         ema_pullback: "EMA PB", vwap_macd: "VWAP MACD", cmo_crsi: "CMO CRSI",
         sling_shot: "RQ Kernel",
+        stoch_ma_signals: "StochRSI/MA",
     };
 
     // Grafik sinyallerini spot yürütme modeline dönüştür:

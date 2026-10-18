@@ -21,7 +21,7 @@
 import { describe, it, expect } from "vitest";
 import {
   rsi, cmo, crsi, mfiLast, rsiLast, obvLast, type Bar,
-  rsiSeries, stochRsi, rqKernelSignals, rqKernelPreSignals, spotExecutionSignals, strategySignalFns, strategyLabels,
+  rsiSeries, stochRsi, stochRsiCrossSignals, maRibbonBuySignals, stochMaSignals, emaSeries, smaSeries, rqKernelSignals, rqKernelPreSignals, spotExecutionSignals, strategySignalFns, strategyLabels,
 } from "./signals";
 import { rqkSeries, rqkLag2, rqkBullish, rqkColors } from "./rqk";
 import { SLING_SHOT_ENTRY } from "./IndicatorPicker";
@@ -466,5 +466,90 @@ describe("Ön sinyal (kernel + StochRSI)", () => {
     const onlyTrades = raw.filter((s) => s.type !== "pre");
     expect(spotExecutionSignals(bars, raw)).toEqual(spotExecutionSignals(bars, onlyTrades));
     expect(spotExecutionSignals(bars, raw.filter((s) => s.type === "pre"))).toEqual([]);
+  });
+});
+
+
+// 2026-10-18 (kullanıcı isteği): StochRSI kesişim okları + MA şerit BUY etiketi.
+const mkBars = (closes: number[]): Bar[] => closes.map((c, i) => ({ time: 1_700_000_000 + i * 300, open: c, high: c + 0.5, low: c - 0.5, close: c, volume: 1 }));
+
+describe("emaSeries / smaSeries", () => {
+  it("SMA tohumlu EMA ve kayan SMA", () => {
+    const v = [1, 2, 3, 4, 5, 6];
+    const sma = smaSeries(v, 3);
+    expect(sma.slice(0, 2)).toEqual([null, null]);
+    expect(sma[2]).toBeCloseTo(2, 9);
+    expect(sma[5]).toBeCloseTo(5, 9);
+    const ema = emaSeries(v, 3);
+    expect(ema[2]).toBeCloseTo(2, 9);                 // tohum = ilk 3'ün SMA'sı
+    expect(ema[3]).toBeCloseTo(2 + (4 - 2) * 0.5, 9); // alpha 0.5
+    expect(emaSeries([1, 2], 3)).toEqual([null, null]);
+  });
+});
+
+describe("stochRsiCrossSignals", () => {
+  it("20 altı yukarı kesişim → yeşil ok altta; 80 üstü aşağı kesişim → kırmızı ok üstte; aradakiler yok", () => {
+    // Uzun düşüş (K/D dibe iner), sonra sert yükseliş (K, D'yi 20 altından yukarı keser),
+    // sonra uzun yükseliş (K/D tepeye çıkar) ve düşüş (K, D'yi 80 üstünden aşağı keser).
+    const closes: number[] = [];
+    let c = 100;
+    for (let i = 0; i < 40; i++) { c -= 0.8; closes.push(c); }
+    for (let i = 0; i < 30; i++) { c += 1.1; closes.push(c); }
+    for (let i = 0; i < 30; i++) { c -= 1.0; closes.push(c); }
+    const bars = mkBars(closes);
+    const sig = stochRsiCrossSignals(bars, {});
+    const buys = sig.filter((s) => s.type === "buy");
+    const sells = sig.filter((s) => s.type === "sell");
+    expect(buys.length).toBeGreaterThanOrEqual(1);
+    expect(sells.length).toBeGreaterThanOrEqual(1);
+    expect(buys[0]).toMatchObject({ shape: "arrowUp", color: "#10b981", text: "" });
+    expect(sells[0]).toMatchObject({ shape: "arrowDown", color: "#ef4444", text: "" });
+    expect(buys[0].time).toBeLessThan(sells[0].time);
+    // Kesişim bar indeksinde K gerçekten D'yi geçmiş olmalı ve bir önceki K < 20 olmalı
+    const { k, d } = stochRsi(closes, 14, 14, 3, 3);
+    const idx = bars.findIndex((b) => b.time === buys[0].time);
+    expect(k[idx - 1]! <= d[idx - 1]! && k[idx]! > d[idx]! && k[idx - 1]! < 20).toBe(true);
+    // Seviyeler sıkılaştırılınca sinyal azalır/yok olur
+    // Düz çizgisel seride K tam 0/100 olabilir; imkânsız seviyelerle hiç sinyal üretilmemeli
+    expect(stochRsiCrossSignals(bars, { stochLow: -1, stochHigh: 101 })).toHaveLength(0);
+  });
+  it("yetersiz veri → boş", () => {
+    expect(stochRsiCrossSignals(mkBars([1, 2, 3, 4, 5]), {})).toEqual([]);
+  });
+});
+
+describe("maRibbonBuySignals", () => {
+  it("orta > yavaş iken hızlının ortayı yukarı kesmesi → BUY etiketi; aşağı trendde yok", () => {
+    // Yavaş yükseliş (orta > yavaş kurulsun), kısa geri çekilme (hızlı ortanın altına), sonra sıçrama (hızlı ortayı yukarı keser)
+    const closes: number[] = [];
+    let c = 100;
+    for (let i = 0; i < 120; i++) { c += 0.3; closes.push(c); }
+    for (let i = 0; i < 8; i++) { c -= 1.2; closes.push(c); }
+    for (let i = 0; i < 12; i++) { c += 1.5; closes.push(c); }
+    const bars = mkBars(closes);
+    const sig = maRibbonBuySignals(bars, { maFast: 7, maMid: 20, maSlow: 99 });
+    expect(sig.length).toBeGreaterThanOrEqual(1);
+    expect(sig[sig.length - 1]).toMatchObject({ type: "buy", text: "BUY", shape: "arrowUp" });
+    const idx = bars.findIndex((b) => b.time === sig[sig.length - 1].time);
+    expect(idx).toBeGreaterThan(128);                 // kesişim sıçramadan sonra
+    const fast = emaSeries(closes, 7), mid = emaSeries(closes, 20), slow = emaSeries(closes, 99);
+    expect(fast[idx - 1]! <= mid[idx - 1]! && fast[idx]! > mid[idx]! && mid[idx]! > slow[idx]!).toBe(true);
+    // Düşüş trendinde (orta < yavaş) kesişim olsa da BUY yok
+    const down = mkBars(closes.map((v, i) => 300 - v + (i % 9 === 0 ? 3 : 0)));
+    const downSig = maRibbonBuySignals(down, {});
+    const sl = emaSeries(down.map((b) => b.close), 99), md = emaSeries(down.map((b) => b.close), 20);
+    for (const s of downSig) { const j = down.findIndex((b) => b.time === s.time); expect(md[j]! > sl[j]!).toBe(true); }
+  });
+  it("sma türü ve kapatma bayrakları", () => {
+    const closes = Array.from({ length: 150 }, (_, i) => 100 + i * 0.2 + (i > 140 ? 3 : 0) - (i > 132 && i <= 140 ? 2 : 0));
+    const bars = mkBars(closes);
+    const ema = maRibbonBuySignals(bars, {});
+    const sma = maRibbonBuySignals(bars, { maType: "sma" });
+    expect(Array.isArray(ema) && Array.isArray(sma)).toBe(true);
+    const all = stochMaSignals(bars, {});
+    const none = stochMaSignals(bars, { showStochArrows: false, showMaBuy: false });
+    expect(none).toEqual([]);
+    expect(all.length).toBe(stochRsiCrossSignals(bars, {}).length + maRibbonBuySignals(bars, {}).length);
+    for (let i = 1; i < all.length; i++) expect(all[i].time).toBeGreaterThanOrEqual(all[i - 1].time);
   });
 });
