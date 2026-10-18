@@ -9,7 +9,7 @@ import time
 
 from fastapi import APIRouter, Query, Request
 
-from app import database, ma_buy_signals, ma_buy_tracker
+from app import database, ma_buy_notify, ma_buy_signals, ma_buy_tracker
 from app.api_common import require_admin, require_user
 
 router = APIRouter()
@@ -40,4 +40,11 @@ async def recent_ma_buy_notifications(request: Request, hours: int = Query(12, g
     Oturum açmış her kullanıcı görür (bildirimler zaten herkese push edilir). Salt okuma."""
     require_user(request)
     rows = await database.list_ma_buy_notified(time.time() - hours * 3600, limit=limit)
-    return {"ok": True, "hours": hours, "items": [ma_buy_tracker.public_item(r) for r in rows]}
+    items = []
+    for r in rows:
+        item = ma_buy_tracker.public_item(r)
+        # Kart (ana sayfa) durum satırı hedef + ufka göre hesaplanır: bildirimdeki/paper'daki aynı değerler.
+        item["target_pct"] = ma_buy_notify.target_pct(str(r.get("timeframe") or ""))
+        item["horizon_minutes"] = ma_buy_notify.HORIZON_MIN
+        items.append(item)
+    return {"ok": True, "hours": hours, "items": items}

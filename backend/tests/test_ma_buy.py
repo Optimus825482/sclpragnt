@@ -297,6 +297,8 @@ class RecentRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["items"][0]["rules"], ["fast_cross_mid"])
         self.assertEqual(out["items"][0]["paper_status"], "acildi")
         self.assertEqual(q.await_args.kwargs["limit"], 5)
+        self.assertEqual(out["items"][0]["horizon_minutes"], 15)
+        self.assertGreater(out["items"][0]["target_pct"], 0)
 
     def test_route_registered(self):
         from app.main import app

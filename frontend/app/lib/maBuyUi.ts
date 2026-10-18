@@ -430,6 +430,8 @@ export type MaBuyRecentItem = {
   signalPrice: number | null;
   notifiedAt: number | null; // epoch saniye
   paperStatus: string | null;
+  targetPct: number | null;
+  horizonMinutes: number | null;
 };
 
 /** Ham yanıt → güvenli liste (bozuk satırlar atılır). */
@@ -449,6 +451,8 @@ export function parseRecent(raw: unknown): MaBuyRecentItem[] {
       signalPrice: num(r.signal_price),
       notifiedAt: num(r.notified_at),
       paperStatus: r.paper_status == null ? null : String(r.paper_status),
+      targetPct: num(r.target_pct),
+      horizonMinutes: num(r.horizon_minutes),
     }];
   });
 }
@@ -464,4 +468,24 @@ export function paperStatusChip(status: string | null): { text: string; tone: "g
 export function changeSinceSignal(signalPrice: number | null, live: number | null | undefined): number | null {
   if (signalPrice === null || signalPrice <= 0 || live == null || !Number.isFinite(live) || live <= 0) return null;
   return ((live - signalPrice) / signalPrice) * 100;
+}
+
+/** Ana sayfa / radar kartı (`NotificationCard`) satırı: MA bildirimi radar kartıyla aynı görünümde çizilir. */
+export function toCardRow(it: MaBuyRecentItem): {
+  id: string; symbol: string; price: number; detected_at: number; target_pct: number | null; horizon_minutes: number | null;
+  mode: string; timeframe: string; kind_label: string; detail: string; sent_via_push: boolean;
+} {
+  return {
+    id: `ma-${it.id}`,
+    symbol: it.symbol,
+    price: it.signalPrice ?? 0,
+    detected_at: it.notifiedAt ?? 0,
+    target_pct: it.targetPct,
+    horizon_minutes: it.horizonMinutes,
+    mode: "ma_buy",
+    timeframe: it.timeframe,
+    kind_label: `MA BUY · ${timeframeLabel(it.timeframe)}`,
+    detail: it.rules.map(ruleLabel).join(" · ") || "MA kesişimi",
+    sent_via_push: true,
+  };
 }

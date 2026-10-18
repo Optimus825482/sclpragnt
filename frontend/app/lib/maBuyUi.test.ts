@@ -301,3 +301,17 @@ describe("gönderilen MA BUY bildirimleri listesi", () => {
     expect(changeSinceSignal(null, 101)).toBeNull();
   });
 });
+
+import { toCardRow } from "./maBuyUi";
+
+describe("MA bildirimi → bildirim kartı satırı", () => {
+  it("TF, kesişim metni ve hedef/ufuk taşınır", () => {
+    const [it] = parseRecent({ items: [
+      { id: 9, symbol: "ERATRY", timeframe: "1m", rules: ["fast_cross_mid"], signal_price: 3.29, notified_at: 1000, target_pct: 1, horizon_minutes: 15 },
+    ] });
+    const row = toCardRow(it);
+    expect(row).toMatchObject({ id: "ma-9", symbol: "ERATRY", price: 3.29, detected_at: 1000, target_pct: 1, horizon_minutes: 15,
+      timeframe: "1m", kind_label: "MA BUY · M1", detail: "Turuncu maviyi yukarı kesti" });
+  });
+});
+

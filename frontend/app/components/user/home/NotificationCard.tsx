@@ -25,6 +25,10 @@ export type RecentRow = {
   target_net_pct?: number | null;
   score_label?: string | null;
   llm_reasons?: unknown;
+  // 2026-10-18: MA kesişim BUY kartı (radar dışı kaynak). Verilmezse radar kartı aynen çizilir.
+  timeframe?: string | null;   // grafik bağlantısı + TF rozeti ("M5")
+  kind_label?: string | null;  // tür rozeti (varsayılan "Yükseliş adayı")
+  detail?: string | null;      // ek satır (ör. "Turuncu maviyi yukarı kesti")
 };
 
 /** "14:05 · 12 dk önce" */
@@ -40,7 +44,9 @@ export function when(ts: number): string {
 const tl = (v: number | null | undefined) => (Number(v) > 0 ? `₺${formatPrice(v)}` : "—");
 const pctText = (v: number | null | undefined) =>
   v != null && Number.isFinite(Number(v)) ? `+${Number(v).toFixed(2).replace(".", ",")}%` : "—";
-const chartHref = (symbol: string) => `/charts?symbol=${encodeURIComponent(symbol)}&timeframe=5m`;
+const chartHref = (symbol: string, timeframe?: string | null) =>
+  `/charts?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe || "5m")}`;
+const tfLabel = (tf: string) => (/^\d+m$/i.test(tf) ? `M${tf.slice(0, -1)}` : tf.toUpperCase());
 
 const BTN = "ui-button ui-button-secondary inline-flex min-h-[44px] items-center justify-center gap-1";
 
@@ -66,7 +72,9 @@ function StarButton({ symbol, fav, onClick }: { symbol: string; fav: boolean; on
   );
 }
 
-function ActionRows({ symbol, price, live, actions }: { symbol: string; price: number | null; live: number | null; actions: CardActions }) {
+function ActionRows({ symbol, price, live, actions, timeframe }: {
+  symbol: string; price: number | null; live: number | null; actions: CardActions; timeframe?: string | null;
+}) {
   const fav = actions.isFavorite(symbol);
   const pin = actions.isPinned(symbol);
   const px = live ?? price;
@@ -88,7 +96,7 @@ function ActionRows({ symbol, price, live, actions }: { symbol: string; price: n
           {pin ? "İzlemeden çıkar" : "👁 İzlemeye al"}
         </button>
       </div>
-      <Link href={chartHref(symbol)} className={`${BTN} w-full`}>📈 Grafik</Link>
+      <Link href={chartHref(symbol, timeframe)} className={`${BTN} w-full`}>📈 Grafik</Link>
     </div>
   );
 }
@@ -123,7 +131,9 @@ export default function NotificationCard({
       <div className="flex items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           {rank != null && <span className="u-chip u-chip-wait" aria-label={`Sıra ${rank}`}>{rank}</span>}
-          {hasHorizon && <span className="u-chip u-chip-info">{Math.round(Number(row.horizon_minutes))} DK</span>}
+          {row.timeframe ? (
+            <span className="u-chip u-chip-info" title="Sinyalin oluştuğu grafik zaman dilimi">{tfLabel(row.timeframe)}</span>
+          ) : hasHorizon && <span className="u-chip u-chip-info">{Math.round(Number(row.horizon_minutes))} DK</span>}
           <StarButton symbol={row.symbol} fav={actions.isFavorite(row.symbol)} onClick={() => actions.onToggleFavorite(row.symbol, live ?? row.price)} />
         </div>
         {row.target_pct != null && (
@@ -134,11 +144,12 @@ export default function NotificationCard({
       <div className="mt-2 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate font-mono text-lg">
-            <Link href={chartHref(row.symbol)} className="font-bold hover:underline">{baseSymbol(row.symbol)}</Link>
+            <Link href={chartHref(row.symbol, row.timeframe)} className="font-bold hover:underline">{baseSymbol(row.symbol)}</Link>
             <span className="text-bunker-muted"> / TRY</span>
           </p>
           <p className="text-sm">{tl(row.price)}</p>
           <p className="text-xs text-bunker-muted">{when(row.detected_at)}</p>
+          {row.detail && <p className="text-xs text-bunker-muted">{row.detail}</p>}
         </div>
         {hasScore && (
           <div className={`u-chip u-chip-${tone} shrink-0 flex-col items-center gap-0 rounded-xl px-3 py-1`} title={`${SCORE_TOOLTIP} (${badge})`}>
@@ -159,7 +170,7 @@ export default function NotificationCard({
       </dl>
 
       <p className="mt-2 flex flex-wrap items-center gap-2">
-        <span className="u-chip u-chip-info" title={mode ? `Mod: ${mode}` : undefined}>Yükseliş adayı</span>
+        <span className="u-chip u-chip-info" title={mode ? `Mod: ${mode}` : undefined}>{row.kind_label || "Yükseliş adayı"}</span>
         {regime && (
           <span className="u-chip u-chip-warn" title="Bildirim, BTC düşüş rejimindeyken gönderildi">BTC rejim</span>
         )}
@@ -172,7 +183,7 @@ export default function NotificationCard({
         <span>{status.label}</span>
       </p>
 
-      <ActionRows symbol={row.symbol} price={row.price} live={live} actions={actions} />
+      <ActionRows symbol={row.symbol} price={row.price} live={live} actions={actions} timeframe={row.timeframe} />
     </article>
   );
 }
