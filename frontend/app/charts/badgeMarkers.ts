@@ -1,0 +1,149 @@
+/**
+ * 2026-10-18: Rozet (badge) tarzı sinyal işaretleri — lightweight-charts seri primitive'i.
+ *
+ * Seri marker'larının (ok + yazı) ölçeği ayarlanamıyor ve büyütülünce grafiği kaplıyordu. Bu primitive,
+ * mumun altına/üstüne SABİT piksel boyutunda (zoom'dan bağımsız) yuvarlak köşeli bir rozet çizer:
+ * dolu zemin, beyaz kalın yazı ("BUY"), muma bakan küçük üçgen uç. Koordinatlar `update()` içinde
+ * (fiyat→y, zaman→x) hesaplanır; çizim CSS piksel uzayında yapılır (DPR'ye göre otomatik ölçek).
+ */
+import type {
+    IChartApi, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi, ISeriesPrimitive, SeriesAttachedParameter, SeriesType, Time,
+} from "lightweight-charts";
+import type { Bar, StrategySignal } from "./signals";
+
+export type Badge = { time: number; price: number; text: string; bg: string; fg: string; above: boolean };
+
+type DrawTarget = Parameters<IPrimitivePaneRenderer["draw"]>[0];
+type Placed = { x: number; y: number; text: string; bg: string; fg: string; above: boolean };
+
+export const BADGE_H = 18;
+export const BADGE_PAD_X = 7;
+export const BADGE_GAP = 6;      // mum ucu ile rozet arası (px)
+export const BADGE_TIP = 5;      // muma bakan üçgen uç yüksekliği (px)
+export const BADGE_FONT = "bold 11px 'JetBrains Mono', ui-monospace, monospace";
+
+/** Saf: strateji sinyali + mum → rozet (alış altta yeşil, satış üstte kırmızı). `badge` istemeyen sinyal → null. */
+export function badgeFromSignal(s: StrategySignal, bar: Bar | undefined): Badge | null {
+    if (!s.badge || !bar) return null;
+    const buy = s.type !== "sell";
+    const text = (s.text && s.text.trim()) || (buy ? "BUY" : "SELL");
+    return {
+        time: s.time,
+        price: buy ? Number(bar.low) : Number(bar.high),
+        text,
+        bg: s.color ?? (buy ? "#16a34a" : "#dc2626"),
+        fg: "#ffffff",
+        above: !buy,
+    };
+}
+
+/** Saf: metin genişliğinden rozet kutusu (x merkezli). */
+export function badgeBox(textWidth: number, x: number, yEdge: number, above: boolean) {
+    const w = Math.max(28, Math.round(textWidth + BADGE_PAD_X * 2));
+    const left = Math.round(x - w / 2);
+    // above=true → rozet mumun ÜSTÜNDE (kutu yEdge − gap − tip − h … yEdge − gap − tip)
+    const top = above ? yEdge - BADGE_GAP - BADGE_TIP - BADGE_H : yEdge + BADGE_GAP + BADGE_TIP;
+    return { left, top, w, h: BADGE_H };
+}
+
+class BadgeRenderer implements IPrimitivePaneRenderer {
+    constructor(private readonly items: readonly Placed[]) {}
+
+    draw(target: DrawTarget): void {
+        if (!this.items.length) return;
+        target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
+            ctx.save();
+            ctx.font = BADGE_FONT;
+            ctx.textBaseline = "middle";
+            ctx.textAlign = "center";
+            for (const it of this.items) {
+                if (!Number.isFinite(it.x) || !Number.isFinite(it.y)) continue;
+                if (it.x < -40 || it.x > mediaSize.width + 40) continue;
+                const tw = ctx.measureText(it.text).width;
+                const box = badgeBox(tw, it.x, it.y, it.above);
+                const r = BADGE_H / 2;
+                // gövde
+                ctx.beginPath();
+                ctx.moveTo(box.left + r, box.top);
+                ctx.lineTo(box.left + box.w - r, box.top);
+                ctx.arc(box.left + box.w - r, box.top + r, r, -Math.PI / 2, Math.PI / 2);
+                ctx.lineTo(box.left + r, box.top + box.h);
+                ctx.arc(box.left + r, box.top + r, r, Math.PI / 2, (3 * Math.PI) / 2);
+                ctx.closePath();
+                // muma bakan uç
+                const tipBaseY = it.above ? box.top + box.h : box.top;
+                const tipY = it.above ? tipBaseY + BADGE_TIP : tipBaseY - BADGE_TIP;
+                ctx.moveTo(it.x - BADGE_TIP, tipBaseY);
+                ctx.lineTo(it.x, tipY);
+                ctx.lineTo(it.x + BADGE_TIP, tipBaseY);
+                ctx.closePath();
+                ctx.fillStyle = it.bg;
+                ctx.shadowColor = "rgba(0,0,0,0.25)";
+                ctx.shadowBlur = 4;
+                ctx.shadowOffsetY = 1;
+                ctx.fill();
+                ctx.shadowColor = "transparent";
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = "rgba(255,255,255,0.9)";
+                ctx.stroke();
+                ctx.fillStyle = it.fg;
+                ctx.fillText(it.text, box.left + box.w / 2, box.top + box.h / 2 + 0.5);
+            }
+            ctx.restore();
+        });
+    }
+}
+
+class BadgeView implements IPrimitivePaneView {
+    private placed: Placed[] = [];
+    constructor(private readonly owner: BadgeMarkers) {}
+
+    update(): void {
+        const chart = this.owner.chart;
+        const series = this.owner.series;
+        if (!chart || !series) { this.placed = []; return; }
+        const ts = chart.timeScale();
+        const out: Placed[] = [];
+        for (const b of this.owner.badges) {
+            const x = ts.timeToCoordinate(b.time as Time);
+            const y = series.priceToCoordinate(b.price);
+            if (x == null || y == null) continue;
+            out.push({ x: Number(x), y: Number(y), text: b.text, bg: b.bg, fg: b.fg, above: b.above });
+        }
+        this.placed = out;
+    }
+
+    zOrder() { return "top" as const; }
+    renderer(): IPrimitivePaneRenderer | null { return this.placed.length ? new BadgeRenderer(this.placed) : null; }
+}
+
+export class BadgeMarkers implements ISeriesPrimitive<Time> {
+    chart: IChartApi | null = null;
+    series: ISeriesApi<SeriesType, Time> | null = null;
+    badges: Badge[] = [];
+    private requestUpdate: (() => void) | null = null;
+    private readonly view = new BadgeView(this);
+
+    attached(p: SeriesAttachedParameter<Time>): void {
+        this.chart = p.chart;
+        this.series = p.series as ISeriesApi<SeriesType, Time>;
+        this.requestUpdate = p.requestUpdate;
+        this.view.update();
+    }
+
+    detached(): void {
+        this.chart = null;
+        this.series = null;
+        this.requestUpdate = null;
+        this.badges = [];
+    }
+
+    setBadges(badges: Badge[]): void {
+        this.badges = badges.slice().sort((a, b) => a.time - b.time);
+        this.view.update();
+        this.requestUpdate?.();
+    }
+
+    updateAllViews(): void { this.view.update(); }
+    paneViews(): readonly IPrimitivePaneView[] { return [this.view]; }
+}

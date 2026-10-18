@@ -38,6 +38,7 @@ import {
     vwapMacdSignals, cmoCrsiSignals, rsiLast, mfiLast, obvLast, spotExecutionSignals,
     strategySignalFns, strategyColors, strategyLabels, type Bar, type PatternMarker, type StrategySignal,
 } from "./signals";
+import { BadgeMarkers, badgeFromSignal, type Badge } from "./badgeMarkers";
 
 /* H-02: null/NaN K/Z NÖTR renkte olmalı (proje kuralı: yeşil=kâr, kırmızı=zarar,
  * veri yok=nötr). `?? 0` ile 0'a çevirip yeşile boyamak yasak. */
@@ -169,6 +170,8 @@ export default function ChartsPage() {
     const positionMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
     const utBotMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
     const patternMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
+    // 2026-10-18: rozet tarzı sinyal etiketleri (BUY) — seri primitive'i, mum serisine bağlı yaşar.
+    const badgePrimRef = useRef<BadgeMarkers | null>(null);
 
     // localStorage yükleme: hydration uyumluluğu için client tarafında yap
     useEffect(() => {
@@ -347,10 +350,8 @@ export default function ChartsPage() {
             height: chartHeightRef.current,
             // Kullanıcı (light) teması: beyaz zemin; admin koyu kalır (2026-10-15).
             layout: { background: { color: document.documentElement.dataset.theme === "light" ? "#ffffff" : "#000000" }, textColor: document.documentElement.dataset.theme === "light" ? "#5b6478" : "#6b7280", fontFamily: "JetBrains Mono, monospace" },
-            grid: {
-                vertLines: { color: document.documentElement.dataset.theme === "light" ? "rgba(15, 23, 42, 0.08)" : "rgba(55, 65, 81, 0.2)" },
-                horzLines: { color: document.documentElement.dataset.theme === "light" ? "rgba(15, 23, 42, 0.08)" : "rgba(55, 65, 81, 0.2)" }
-            },
+            // 2026-10-18 (kullanıcı isteği): arka plan kılavuz çizgileri kapalı.
+            grid: { vertLines: { visible: false }, horzLines: { visible: false } },
             crosshair: { mode: 0, vertLine: { color: "#10b981" }, horzLine: { color: "#10b981" } },
             timeScale: { timeVisible: true, secondsVisible: false },
             // Mobilde chart dikey kaydırmayı yutmasın: parmak dikeyde sayfayı
@@ -365,10 +366,7 @@ export default function ChartsPage() {
             const light = document.documentElement.dataset.theme === "light";
             chart.applyOptions({
                 layout: { background: { color: light ? "#ffffff" : "#000000" }, textColor: light ? "#5b6478" : "#6b7280" },
-                grid: {
-                    vertLines: { color: light ? "rgba(15, 23, 42, 0.08)" : "rgba(55, 65, 81, 0.2)" },
-                    horzLines: { color: light ? "rgba(15, 23, 42, 0.08)" : "rgba(55, 65, 81, 0.2)" },
-                },
+                grid: { vertLines: { visible: false }, horzLines: { visible: false } },
             });
         };
         const themeObserver = new MutationObserver(applyChartTheme);
@@ -409,6 +407,7 @@ export default function ChartsPage() {
         return () => {
             ro.disconnect();
             themeObserver.disconnect();
+            badgePrimRef.current = null;   // primitive mum serisiyle birlikte gider
             chart.remove();
             chartRef.current = null;
             candleRef.current = null;
@@ -1303,6 +1302,7 @@ export default function ChartsPage() {
         // eski marker'ları temizle (P2-9: primitive'i söküp sızıntıyı önle)
         utBotMarkersRef.current?.detach();
         utBotMarkersRef.current = null;
+        badgePrimRef.current?.setBadges([]);
 
         // RQ Kernel (sling_shot) ve diğer strateji indikatörlerini topla
         // 2026-10-18: doğrudan (yürütme simülasyonsuz) çizilen görsel sinyaller: RQ Kernel ve StochRSI/MA.
@@ -1315,6 +1315,8 @@ export default function ChartsPage() {
             const markers = createSeriesMarkers(series, []);
             utBotMarkersRef.current = markers;
             const all: { time: UTCTimestamp; position: "belowBar" | "aboveBar"; color: string; shape: "arrowUp" | "arrowDown" | "circle" | "square"; text: string; size: number }[] = [];
+            const badges: Badge[] = [];
+            const barByTime = new Map(bars.map((b) => [b.time, b]));
 
             // Sinyal toplama yardımcı fonksiyonu
             // useShortText=true ise "B"/"S" harfleri kullanılır (kernel renk dönüşü okları)
@@ -1341,6 +1343,11 @@ export default function ChartsPage() {
                             });
                             continue;
                         }
+                        if (s.badge) {
+                            const bd = badgeFromSignal(s, barByTime.get(s.time));
+                            if (bd) badges.push(bd);
+                            continue;
+                        }
                         // 2026-10-18: sinyal kendi görselini (metin/şekil/renk/boyut) taşıyabilir.
                         all.push({
                             time: s.time as UTCTimestamp,
@@ -1364,6 +1371,13 @@ export default function ChartsPage() {
             // Zamana göre sırla ve marker'ları ayarla
             all.sort((a, b) => a.time - b.time);
             markers.setMarkers(all);
+            if (badges.length || badgePrimRef.current) {
+                if (!badgePrimRef.current) {
+                    badgePrimRef.current = new BadgeMarkers();
+                    series.attachPrimitive(badgePrimRef.current);
+                }
+                badgePrimRef.current.setBadges(badges);
+            }
         } catch { /* marker hatası sessiz geç */ }
     }, [instances, bars, symbol]);
 

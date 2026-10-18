@@ -336,6 +336,8 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
     export type StrategySignal = {
         time: number; type: SignalType;
         text?: string; shape?: "arrowUp" | "arrowDown" | "circle" | "square"; color?: string; size?: number;
+        /** true → seri marker'ı yerine sabit piksel boyutlu ROZET (badgeMarkers.ts) çizilir. */
+        badge?: boolean;
     };
 
     export const rqKernelSignals = (bars: Bar[], params: Record<string, any>): { time: number; type: "buy" | "sell" }[] => {
@@ -514,8 +516,8 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
             const f0 = fast[i - 1], m0 = mid[i - 1], f1 = fast[i], m1 = mid[i], s1 = slow[i];
             if (f0 == null || m0 == null || f1 == null || m1 == null || s1 == null) continue;
             if (m1 > s1 && crossUp(f0, m0, f1, m1)) {
-                // 2026-10-18: belirgin olsun — büyük (3×) macenta ok + "BUY" etiketi (StochRSI okları 0,8×, ikincil kalır).
-                out.push({ time: bars[i].time, type: "buy", text: "▲ BUY", shape: "arrowUp", color: "#d946ef", size: 3 });
+                // 2026-10-18: rozet tarzı (badgeMarkers.ts): zoom'dan bağımsız sabit boyutlu yeşil "BUY" etiketi.
+                out.push({ time: bars[i].time, type: "buy", text: "BUY", color: "#16a34a", badge: true });
             }
         }
         return out;
