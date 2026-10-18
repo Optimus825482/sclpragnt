@@ -200,7 +200,7 @@ class QuietHoursDeferralTests(_Base):
         self.broadcast.assert_not_awaited()
 
     def test_flush_skips_alarm_envelopes_for_record_and_broadcast(self):
-        alarm = {"message": "BTC alarmı", "title": "alarm", "url": "/alerts", "tag": "alert-1",
+        alarm = {"message": "BTC alarmı", "title": "alarm", "url": "/monitoring", "tag": "alert-1",
                  "symbol": "ALERT", "detected_at": time.time(), "horizon_minutes": 1440,
                  "deferred_alert": True}
         monitoring._deferred_push.append(alarm)

@@ -60,7 +60,7 @@ self.addEventListener("push", function (event) {
       requireInteraction: true,
       renotify: true,
       silent: false,
-      data: { url: data.url || "/alerts" }
+      data: { url: data.url || "/monitoring" }
     };
     // Android/Chrome: ses dosyasý (sound alaný)
     if (data.sound) notifOpts.sound = data.sound;
@@ -82,7 +82,7 @@ self.addEventListener("push", function (event) {
 
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
-  var target = (event.notification.data && event.notification.data.url) || "/alerts";
+  var target = (event.notification.data && event.notification.data.url) || "/monitoring";
   // 2026-09-16: eskiden her tıklama `clients.openWindow` ile YENİ SEKME açıyordu.
   // Doğrusu: açık bir pencere varsa onu ODAKLA ve hedef URL'e yönlendir; yoksa aç.
   event.waitUntil(

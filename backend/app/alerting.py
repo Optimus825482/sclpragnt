@@ -77,7 +77,7 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
         payload_obj = {
             "title": title or "Scalper Agent alarmı",
             "body": message,
-            "url": url or "/alerts",
+            "url": url or "/monitoring",
             "sound": "/alarm.wav",
         }
         if tag: payload_obj["tag"] = tag
@@ -126,7 +126,7 @@ async def deliver_alert_push(message, *, title=None, url=None, tag=None, extra=N
     açıkça kurdu; sorgu arızası onu tümüyle sessizleştirmemeli.
     """
     payload = {"message": message, "title": title or "Scalper Agent alarmı",
-               "url": url or "/alerts", "tag": tag or "scalper-alert"}
+               "url": url or "/monitoring", "tag": tag or "scalper-alert"}
     try:
         from app.routers import monitoring as _monitoring
         if await _monitoring.quiet_hours_active():

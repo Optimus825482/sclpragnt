@@ -174,7 +174,7 @@ class PushEnvelopeRobustnessTests(unittest.IsolatedAsyncioTestCase):
         sender = AsyncMock(return_value={"ok": True})
         with patch.object(monitoring, "deliver_web_push", sender):
             ok = await monitoring._send_push({
-                "message": "alarm", "title": "t", "url": "/alerts", "tag": "alert-1",
+                "message": "alarm", "title": "t", "url": "/monitoring", "tag": "alert-1",
             })
         self.assertTrue(ok)
         extra = sender.await_args.kwargs["extra"]
