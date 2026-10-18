@@ -349,3 +349,22 @@ class HeartbeatCandidateTests(unittest.TestCase):
         self.assertEqual("B", pick["symbol"])
         self.assertIsNone(np_.heartbeat_candidate_pick([], lambda c: 1))
         self.assertIsNone(np_.heartbeat_candidate_pick([{"symbol": "X", "mode": "trend_devam", "price": 1.0}], lambda c: float("nan")))
+
+
+class HeartbeatRiskBlockTests(unittest.TestCase):
+    """2026-10-18: risk nedeniyle elenmiş tarama satırları nabız adayı olamaz; eşik/yapı nedenleri olabilir."""
+
+    def setUp(self):
+        self._p = mock.patch.object(config, "RADAR_NOTIFY_CONFIRM_RULE_ENABLED", True)
+        self._p.start()
+
+    def tearDown(self):
+        self._p.stop()
+
+    def test_prefix_filter(self):
+        rows = [{"symbol": f"R{i}", "mode": "trend_devam", "price": 1.0, "s": 90 - i, "block_reason": r}
+                for i, r in enumerate(["asiri_spread:2%", "ust_fitil_tuzagi:x", "mfi_asiri_alim:90", "rsi_asiri_satim:10",
+                                       "likidite_tabani:5", "atr_yetersiz:0.1%", "yapisal_teyit_yok", "", None])]
+        pick = np_.heartbeat_candidate_pick(rows, lambda c: c["s"])
+        self.assertEqual("R5", pick["symbol"])          # ilk uygun: atr_yetersiz (risk önekleri atlanır)
+        self.assertEqual(5, len([r for r in rows if str(r["block_reason"] or "").startswith(np_.HEARTBEAT_RISK_BLOCK_PREFIXES)]))

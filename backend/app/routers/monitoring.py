@@ -439,6 +439,13 @@ def _threshold_fields(settings) -> dict:
         "rr_enabled": bool(getattr(config, "MONITORING_RR_ENABLED", True)),
         "rr_min": float(getattr(config, "MONITORING_RR_MIN", 0.18)),
         "rr_sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 5.0)),
+        # 2026-10-18: sessizlik nabzı teşhisi (süre, son başarılı push ve son nabız yaşı, son havuz notu).
+        "heartbeat_minutes": int(getattr(config, "RADAR_NOTIFY_HEARTBEAT_MINUTES", 0) or 0),
+        "heartbeat_last_push_age_sec": (round(time.time() - float(_monitoring_state["_last_push_ts"]), 1)
+                                        if _monitoring_state.get("_last_push_ts") else None),
+        "heartbeat_last_attempt_age_sec": (round(time.time() - float(_monitoring_state["_last_heartbeat_ts"]), 1)
+                                           if _monitoring_state.get("_last_heartbeat_ts") else None),
+        "heartbeat_note": _monitoring_state.get("_heartbeat_note"),
         "rr_blocked": int(_monitoring_state.get("rr_blocked", 0)),
         # 2026-09-26: Master Surge risk kapısı ölçümü.
         "surge_blocked": int(_monitoring_state.get("surge_blocked", 0)),
@@ -1404,7 +1411,7 @@ def _master_surge_gate_enabled() -> bool:
 
 
 async def _heartbeat_notification(candidates_list, notified, settings, quiet: bool, now: float,
-                                  now_mono: float, pending_by_symbol) -> dict | None:
+                                  now_mono: float, pending_by_symbol, heartbeat_pool=None) -> dict | None:
     """2026-10-18 SESSİZLİK NABZI (düzeltilmiş): RADAR_NOTIFY_HEARTBEAT_MINUTES boyunca hiç başarılı push
     gitmediyse ve bu turda push gidecek yeni bildirim yoksa, TARAMA LİSTESİNDEKİ en yüksek skorlu aday
     (eşik/teyit şartı aranmaz; kapalı modlar ve unified hariç) "TEYİTSİZ · " başlığıyla bildirim olarak
@@ -1432,15 +1439,37 @@ async def _heartbeat_notification(candidates_list, notified, settings, quiet: bo
         _monitoring_state["_last_push_ts"] = float(last)
     if not _notification_policy.heartbeat_due(now, last, _monitoring_state.get("_last_heartbeat_ts")):
         return None
+    # 2026-10-18 (ikinci düzeltme): havuz = panel eşiğini geçen adaylar + TARAMA İZLEME LİSTESİ (eşik altı).
+    # `candidates_list` yalnız eşiği geçenleri taşır; sakin piyasada boş kalıyor ve nabız hiç aday bulamıyordu.
+    pool: list = []
+    seen_syms: set[str] = set()
+    for row in list(candidates_list or []) + list(heartbeat_pool or []):
+        sym_ = str((row or {}).get("symbol") or "").upper()
+        if not sym_ or sym_ in seen_syms:
+            continue
+        seen_syms.add(sym_)
+        pool.append(row)
+    pending_syms = set((pending_by_symbol or {}).keys())
+    try:
+        extra_pending = await database.get_pending_monitoring_notifications(sorted(seen_syms))
+        pending_syms |= {str(k).upper() for k in (extra_pending or {}).keys()}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sessizlik nabzı: BEKLİYOR sorgusu başarısız: %s", exc)
 
     def _score_of(c: dict) -> float:
         if c.get("unified_pass"):
             return _num(c.get("unified_score"), 0.0) or 0.0
         return normalize_score(_num(c.get("velocity_score", 0), 0.0) or 0.0)
 
-    pick = _notification_policy.heartbeat_candidate_pick(
-        candidates_list, _score_of, skip_symbols=set((pending_by_symbol or {}).keys()))
+    pick = _notification_policy.heartbeat_candidate_pick(pool, _score_of, skip_symbols=pending_syms)
     if pick is None:
+        # Teşhis: süre doldu ama uygun aday yok — 5 dakikada en çok bir kez logla (log gürültüsü olmasın).
+        if now - float(_monitoring_state.get("_heartbeat_noaday_log_ts") or 0) >= 300:
+            _monitoring_state["_heartbeat_noaday_log_ts"] = now
+            logger.info("sessizlik nabzı: %.0f dk push yok ama uygun aday yok (havuz=%d: aday=%d izleme=%d, bekleyen=%d)",
+                        (now - float(last)) / 60, len(pool), len(candidates_list or []),
+                        len(heartbeat_pool or []), len(pending_syms))
+        _monitoring_state["_heartbeat_note"] = {"at": now, "pool": len(pool), "picked": None}
         return None
     sym = str(pick.get("symbol") or "").upper()
     notif = _build_notification(sym, pick, settings)
@@ -1448,6 +1477,7 @@ async def _heartbeat_notification(candidates_list, notified, settings, quiet: bo
     notif["sent_via_push"] = False
     _notification_policy.mark_tier(notif, _notification_policy.TIER_HEARTBEAT)
     _monitoring_state["_last_heartbeat_ts"] = now
+    _monitoring_state["_heartbeat_note"] = {"at": now, "pool": len(pool), "picked": sym}
     _monitoring_state["notified_symbols"][sym] = now_mono
     base_px = _num(notif.get("price"), 0.0) or 0.0
     if base_px > 0:
@@ -1836,7 +1866,7 @@ def _is_velocity_only(candidate: dict) -> bool:
     return _candidate_source_labels(candidate) <= {"velocity"}
 
 
-async def _notify(candidates_list, settings) -> list:
+async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
     """Eşikleri geçen adaylar için bildirim üret ve web push gönder.
 
     Aynı sembol için sonuçlanmamış (BEKLİYOR) bildirim varsa yeni bildirim
@@ -2112,7 +2142,8 @@ async def _notify(candidates_list, settings) -> list:
     # 2026-10-18 SESSİZLİK NABZI: politikaya takılanlar aşağıda düşer; nabız adayı BURADA eklenir
     # (tarama listesinin en yüksek skorlusu; `notify_tier=teyitsiz` lavaboda yeniden bloklanmaz).
     try:
-        _hb = await _heartbeat_notification(candidates_list, notified, settings, quiet, now, now_mono, pending_by_symbol)
+        _hb = await _heartbeat_notification(candidates_list, notified, settings, quiet, now, now_mono,
+                                            pending_by_symbol, heartbeat_pool=heartbeat_pool)
     except Exception as exc:  # noqa: BLE001 — nabız hiçbir zaman tarama turunu düşürmez
         logger.warning("sessizlik nabzı hatası: %s", exc)
         _hb = None
@@ -2327,6 +2358,9 @@ async def _deliver_scan_notifications(notified: list) -> None:
             # fail-open ile girişi yine yapar (mevcut davranış korunur).
             # 2026-10-17: erteleme yalnız LLM görevi GERÇEKTEN başlayacak (push denenen)
             # bildirimlerde; aksi halde giriş hiç denenmezdi.
+            # 2026-10-18: sessizlik nabzı (zayıf/teyitsiz aday) otonom paper girişi AÇMAZ.
+            if notif.get("notify_tier") == _notification_policy.TIER_HEARTBEAT:
+                continue
             if id(notif) in _attempted_ids and _defer_open_for_llm_second_eye(notif):
                 notif["_llm_entry_deferred"] = True
                 continue
@@ -2349,7 +2383,8 @@ async def _deliver_scan_notifications(notified: list) -> None:
             logger.warning("Monitoring WS broadcast hatasi: %s", exc)
     # LLM İKİNCİ GÖZ (2026-09-26): push denenen yeni bildirimler şemalı LLM
     # onayına gönderilir; karar ayrı bir bildirim olarak ekrana düşer.
-    _maybe_llm_second_eye(attempted)
+    # 2026-10-18: sessizlik nabzı (teyitsiz) LLM maliyeti doğurmaz.
+    _maybe_llm_second_eye([n for n in attempted if n.get("notify_tier") != _notification_policy.TIER_HEARTBEAT])
 
 
 async def _llm_second_eye_task(notif: dict) -> None:
@@ -5615,7 +5650,9 @@ async def _run_scan() -> dict:
     # Beklenen fiyata ulaşan veya süresi dolan sembolleri serbest bırak
     await _check_pending_targets()
 
-    new_notifications = await _notify(candidates_list, settings)
+    # 2026-10-18: sessizlik nabzı için havuz — eşik altı izleme listesi dâhil, taramanın TÜM güçlü satırları.
+    _hb_pool = list(filtered_candidates.values()) + list(watchlist_list)
+    new_notifications = await _notify(candidates_list, settings, heartbeat_pool=_hb_pool)
 
     _monitoring_state["last_scan_at"] = now
     _monitoring_state["last_candidates"] = candidates_list

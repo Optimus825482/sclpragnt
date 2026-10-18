@@ -202,6 +202,12 @@ def heartbeat_due(now: float, last_push_ts: float | None, last_attempt_ts: float
     return True
 
 
+# 2026-10-18: nabız adayı "tarama listesinin en güçlüsü" olabilir ama RİSK nedeniyle elenmiş satırlar olamaz
+# (aşırı spread, üst fitil tuzağı, aşırı alım/satım, likidite tabanı). Eşik/yapı nedenleri (atr_yetersiz,
+# bb_genisligi, yapisal_teyit_yok, ml_dusuk_olasilik, diger) nabız için sorun değildir.
+HEARTBEAT_RISK_BLOCK_PREFIXES = ("asiri_spread", "ust_fitil_tuzagi", "mfi_asiri", "rsi_asiri", "likidite")
+
+
 def heartbeat_candidate_pick(candidates, score_of, skip_symbols=None) -> dict | None:
     """2026-10-18 (düzeltme): nabız adayı = TARAMA LİSTESİNDEKİ en yüksek skorlu aday (eşik/teyit şartı aranmaz).
 
@@ -220,6 +226,9 @@ def heartbeat_candidate_pick(candidates, score_of, skip_symbols=None) -> dict | 
             continue
         mode = str(c.get("mode") or "").strip().lower()
         if mode and mode in excluded:
+            continue
+        reason = str(c.get("block_reason") or "").strip().lower()
+        if reason and reason.startswith(HEARTBEAT_RISK_BLOCK_PREFIXES):
             continue
         try:
             price = float(c.get("price") or 0)

@@ -455,3 +455,99 @@ class HeartbeatTests(unittest.TestCase):
             self.assertEqual([], _run(monitoring._notify(self._cands(), self.settings)))
         with patch.object(monitoring, "_in_quiet_hours", new=lambda s: True):
             self.assertEqual([], _run(monitoring._notify(self._cands(), self.settings)))
+
+
+class HeartbeatPoolTests(HeartbeatTests):
+    """2026-10-18 (ikinci düzeltme): nabız adayı yalnız eşiği geçenlerden değil TARAMA İZLEME LİSTESİNDEN de seçilir."""
+
+    @staticmethod
+    def _watch(symbol, score, **kw):
+        row = {"symbol": symbol, "velocity_score": score, "target_pct": 1.0, "price": 2.0,
+               "mode": "trend_devam", "sources": ["velocity"], "passes": False}
+        row.update(kw)
+        return row
+
+    def test_empty_candidate_list_uses_watchlist_pool(self):
+        pool = [self._watch("WLOW", 400.0), self._watch("WTOP", 1500.0), self._watch("WNOTR", 9000.0, mode="notr")]
+        out = _run(monitoring._notify([], self.settings, heartbeat_pool=pool))
+        self.assertEqual(["WTOP"], [n["symbol"] for n in out])
+        self.assertEqual("teyitsiz", out[0]["notify_tier"])
+
+    def test_union_takes_best_of_candidates_and_pool(self):
+        cands = [self._watch("CAND", 700.0)]
+        pool = [self._watch("POOLTOP", 2500.0)]
+        out = _run(monitoring._notify(cands, self.settings, heartbeat_pool=pool))
+        self.assertEqual(["POOLTOP"], [n["symbol"] for n in out])
+
+    def test_risk_blocked_rows_are_not_heartbeat_material(self):
+        pool = [self._watch("SPREAD", 9000.0, block_reason="asiri_spread:1.2%>0.5%_siniri"),
+                self._watch("WICK", 8000.0, block_reason="ust_fitil_tuzagi:wick_0.80_z2.1"),
+                self._watch("OVERBOUGHT", 7000.0, block_reason="mfi_asiri_alim:85"),
+                self._watch("ATRLOW", 600.0, block_reason="atr_yetersiz:0.20%<0.40%")]
+        out = _run(monitoring._notify([], self.settings, heartbeat_pool=pool))
+        self.assertEqual(["ATRLOW"], [n["symbol"] for n in out])     # eşik/yapı nedeni sorun değil, risk nedeni elenir
+
+    def test_pending_symbol_in_pool_is_skipped(self):
+        pool = [self._watch("PENDING", 5000.0), self._watch("FREE", 900.0)]
+        with patch.object(monitoring.database, "get_pending_monitoring_notifications",
+                          new=AsyncMock(return_value={"PENDING": {"id": 1}})):
+            out = _run(monitoring._notify([], self.settings, heartbeat_pool=pool))
+        self.assertEqual(["FREE"], [n["symbol"] for n in out])
+
+    def test_nothing_eligible_logs_diagnostic_and_sets_note(self):
+        pool = [self._watch("ONLYNOTR", 5000.0, mode="notr")]
+        with self.assertLogs("scalper.monitoring", level="INFO") as cm:
+            out = _run(monitoring._notify([], self.settings, heartbeat_pool=pool))
+        self.assertEqual([], out)
+        self.assertTrue(any("uygun aday yok" in m for m in cm.output), cm.output)
+        self.assertEqual({"pool": 1, "picked": None}, {k: monitoring._monitoring_state["_heartbeat_note"][k] for k in ("pool", "picked")})
+
+    def test_note_records_pick_and_status_exposes_it(self):
+        _run(monitoring._notify([], self.settings, heartbeat_pool=[self._watch("WTOP", 1500.0)]))
+        self.assertEqual("WTOP", monitoring._monitoring_state["_heartbeat_note"]["picked"])
+        fields = monitoring._threshold_fields(self.settings)
+        self.assertEqual(15, fields["heartbeat_minutes"])
+        self.assertEqual("WTOP", fields["heartbeat_note"]["picked"])
+        self.assertIsNotNone(fields["heartbeat_last_attempt_age_sec"])
+
+
+class HeartbeatDeliveryTests(_Base):
+    """Nabız bildirimi push + kayıt + yayın alır ama otonom paper girişi ve LLM ikinci göz maliyeti DOĞURMAZ."""
+
+    def test_heartbeat_skips_autonomous_paper_and_llm(self):
+        hb = _notif("HBTRY", notify_tier="teyitsiz", title="TEYİTSİZ · HBTRY", sources=["velocity"])
+        normal = _notif("OKTRY", sources=["velocity", "jump"])
+        _run(monitoring._deliver_scan_notifications([hb, normal]))
+        self.send.assert_awaited()
+        pushed = {c.args[0]["symbol"] for c in self.send.await_args_list}
+        self.assertEqual({"HBTRY", "OKTRY"}, pushed)
+        paper_syms = {c.args[0]["symbol"] for c in self.paper.await_args_list}
+        self.assertEqual({"OKTRY"}, paper_syms)                     # nabız otonom paper'a girmez
+        llm_arg = self.llm.call_args.args[0]
+        self.assertEqual(["OKTRY"], [n["symbol"] for n in llm_arg])  # LLM ikinci göz yalnız normal bildirim
+
+
+class RunScanPassesHeartbeatPoolTests(unittest.TestCase):
+    """`_run_scan`: eşik altı izleme listesi nabız havuzu olarak `_notify`'a verilir (hata: yalnız eşiği geçenler gidiyordu)."""
+
+    def test_watchlist_rows_reach_notify_as_pool(self):
+        watch_row = {"symbol": "WATCHTRY", "velocity_score": 300.0, "target_pct": 1.0, "price": 2.0,
+                     "upside_rank": 5.0, "mode": "trend_devam", "passes": False, "horizon_minutes": 5}
+
+        async def fake_detect(_filters, horizon_minutes=5, extra_symbols=None, kline_cache=None):
+            return {"candidates": [], "watchlist": [dict(watch_row)] if horizon_minutes == 5 else [],
+                    "warm": [], "horizon_minutes": horizon_minutes}
+
+        notify = AsyncMock(return_value=[])
+        settings = {"enabled": True, "min_score": 99.0, "min_score_explicit": True, "min_target_pct": 0.0}
+        with patch.object(monitoring, "detect_velocity_candidates", new=AsyncMock(side_effect=fake_detect)), \
+             patch.object(monitoring, "_journal_touch_rates", new=AsyncMock(return_value={})), \
+             patch.object(monitoring, "get_user_notification_settings", new=AsyncMock(return_value=settings)), \
+             patch.object(monitoring, "_check_pending_targets", new=AsyncMock()), \
+             patch.object(monitoring, "_persist_runtime_state", new=AsyncMock()), \
+             patch.object(monitoring, "_notify", new=notify):
+            _run(monitoring._run_scan())
+        notify.assert_awaited_once()
+        pool = notify.await_args.kwargs.get("heartbeat_pool")
+        self.assertIsNotNone(pool)
+        self.assertIn("WATCHTRY", {r["symbol"] for r in pool})
