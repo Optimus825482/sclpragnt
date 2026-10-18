@@ -2274,8 +2274,9 @@ async def _deliver_scan_notifications(notified: list) -> None:
     girer. Push denenmeyen yeni adaylar (VAPID yok, boot grace) hiçbirini üretmez;
     sessiz saatte ertelenenler kayıt/yayın olmadan kuyruğa girer ve push gerçekten
     denendiğinde (`_flush_deferred_push`) kaydedilip yayınlanır. OTONOM PAPER bundan
-    ETKİLENMEZ: `try_open_from_notification` eskisi gibi tüm (politikayla engellenmemiş)
-    adaylara uygulanır; kaydedilmeyen adaylarda `notification_id` yoktur.
+    ETKİLENMEZ: `try_open_from_notification` tüm (politikayla engellenmemiş) adaylara
+    uygulanır; kaydedilmeyen adaylarda `notification_id` yoktur. Ancak 2026-10-18'den beri
+    (AUTO_PAPER_ONLY_ON_PUSH) push'u gitmemiş aday orada push kapısına takılır.
     GÜNCELLEMELER (`updated=True`) zaten var olan bir bildirim satırının tazelenmesidir ve
     eskisi gibi yayınlanır.
     """
@@ -2376,9 +2377,9 @@ async def _deliver_scan_notifications(notified: list) -> None:
                 await _broadcast_user_whatsapp(notif)
         except Exception as exc:
             logger.debug("kullanıcı WhatsApp yayını atlandı: %s", exc)
-    # Otonom Paper Trade: push denenmiş olsun olmasın her geçerli fırsatta açık işlem yoksa
-    # pozisyon aç (2026-09-22 Erkan Kararı). Panel bildirimi kaldırıldı (2026-10-17) ama
-    # bu yol KORUNUR: aday doğrudan buradan (kayıt/yayın gerektirmeden) işlenir.
+    # Otonom Paper Trade: her geçerli fırsatta açık işlem yoksa pozisyon aç (2026-09-22 Erkan Kararı).
+    # 2026-10-18 (AUTO_PAPER_ONLY_ON_PUSH): yalnız push'u GERÇEKTEN gitmiş bildirimde açılır; kapı
+    # `try_open_from_notification` içindedir (push gitmeyen aday orada engellenir ve logda görünür).
     try:
         from app.routers.auto_paper import try_open_from_notification
         _attempted_ids = {id(n) for n in attempted}
@@ -2389,29 +2390,14 @@ async def _deliver_scan_notifications(notified: list) -> None:
             # fail-open ile girişi yine yapar (mevcut davranış korunur).
             # 2026-10-17: erteleme yalnız LLM görevi GERÇEKTEN başlayacak (push denenen)
             # bildirimlerde; aksi halde giriş hiç denenmezdi.
-            # 2026-10-18: sessizlik nabzı (zayıf/teyitsiz aday) otonom paper girişi AÇMAZ.
-            if notif.get("notify_tier") == _notification_policy.TIER_HEARTBEAT:
-                try:
-                    from app import radar_scan_log
-                    radar_scan_log.note_paper_result(notif.get("symbol"), {"status": "blocked", "reason": "teyitsiz nabız bildirimi paper açmaz"})
-                except Exception:  # noqa: BLE001
-                    pass
-                continue
             if id(notif) in _attempted_ids and _defer_open_for_llm_second_eye(notif):
                 notif["_llm_entry_deferred"] = True
                 continue
-            _paper_res = None
+            # 2026-10-18: push kapısı, nabız istisnası ve tarama logu notu `try_open_from_notification` İÇİNDE.
             try:
-                _paper_res = await try_open_from_notification(notif)
+                await try_open_from_notification(notif)
             except Exception as exc:
                 logger.warning("auto_paper %s denemesi: %s", notif.get("symbol"), exc)
-                _paper_res = {"status": "blocked", "reason": f"exception:{type(exc).__name__}"}
-            # 2026-10-18: paper giriş sonucu admin tarama günlüğüne işlenir (bildirim geldi ama paper açılmadı teşhisi).
-            try:
-                from app import radar_scan_log
-                radar_scan_log.note_paper_result(notif.get("symbol"), _paper_res)
-            except Exception:  # noqa: BLE001
-                pass
     except ImportError:
         pass
     except Exception as exc:

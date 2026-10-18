@@ -132,6 +132,18 @@ class PaperResultTests(unittest.TestCase):
         rsl.note_paper_result("GATEDTRY", None)                 # gated satıra dokunulmaz
         self.assertEqual(self._row("GATEDTRY")["reason_code"], "skor_tabani")
 
+    def test_opened_row_is_not_overwritten_by_later_attempt(self):
+        rsl.note_paper_result("NOTIFTRY", {"status": "opened", "trade_id": 3})
+        rsl.note_paper_result("NOTIFTRY", {"status": "no_change"})          # ör. sonraki velocity turu
+        rsl.note_paper_result("NOTIFTRY", {"status": "blocked", "reason": "symbol_dedup"})
+        r = self._row("NOTIFTRY")
+        self.assertEqual((r["reason_code"], r["reason_label"], r["reason_tone"]), ("paper_acildi", "Paper açıldı", "success"))
+        self.assertEqual(r["paper"], {"status": "opened", "reason": None})
+
+    def test_heartbeat_row_text_unchanged(self):
+        rsl.note_paper_result("DETTRY", {"status": "blocked", "reason": "teyitsiz nabız bildirimi paper açmaz"})
+        self.assertEqual(self._row("DETTRY")["reason"], "paper: engellendi (teyitsiz nabız bildirimi paper açmaz)")
+
     def test_unknown_symbol_and_empty_log_are_safe(self):
         rsl.note_paper_result("NOPETRY", {"status": "opened"})
         rsl.reset()

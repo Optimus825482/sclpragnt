@@ -689,6 +689,63 @@ class AutoPaperVisibleBlocksTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(str(res.get("reason")).startswith("exception:RuntimeError"))
 
 
+class AutoPaperPushGateTests(unittest.IsolatedAsyncioTestCase):
+    """2026-10-18: push kapısı + nabız istisnası `try_open_from_notification` İÇİNDE — tüm çağıranlar uyar;
+    her sonuç tarama loguna TEK kez işlenir."""
+
+    async def _try(self, notif, pushed=False):
+        check = AsyncMock(return_value=pushed)
+        impl = AsyncMock(return_value={"status": "opened", "trade_id": 1, "symbol": notif["symbol"]})
+        note = MagicMock()
+        with patch.object(config, "AUTO_PAPER_ONLY_ON_PUSH", True, create=True),              patch.object(auto_paper.database, "has_recent_pushed_notification", new=check),              patch.object(auto_paper, "_try_open_impl", new=impl),              patch("app.radar_scan_log.note_paper_result", new=note):
+            res = await auto_paper.try_open_from_notification(notif)
+        return res, impl, check, note
+
+    async def test_non_velocity_caller_without_recent_push_is_blocked(self):
+        # Hızlı yol / yükseliş / koruma-sonrası yeniden açma zarfı: push gitmemiş → açılmaz.
+        res, impl, check, note = await self._try(_make_notification(symbol="NOPUSHTRY", score=90.0))
+        self.assertEqual(res["status"], "blocked")
+        self.assertEqual(res["reason"], auto_paper._REASON_NO_PUSH)
+        impl.assert_not_awaited()
+        check.assert_awaited_once()
+        note.assert_called_once_with("NOPUSHTRY", res)
+
+    async def test_envelope_with_sent_push_skips_db_and_opens(self):
+        notif = _make_notification(symbol="PUSHEDTRY", score=90.0)
+        notif["sent_via_push"] = True
+        res, impl, check, note = await self._try(notif)
+        self.assertEqual(res["status"], "opened")
+        check.assert_not_awaited()
+        impl.assert_awaited_once()
+        note.assert_called_once_with("PUSHEDTRY", res)
+
+    async def test_recent_push_in_db_opens(self):
+        res, impl, _check, note = await self._try(_make_notification(symbol="DBPUSHTRY", score=90.0), pushed=True)
+        self.assertEqual(res["status"], "opened")
+        note.assert_called_once()
+
+    async def test_heartbeat_is_blocked_even_if_pushed(self):
+        from app import notification_policy
+        notif = _make_notification(symbol="HBTRY", score=90.0)
+        notif.update(notify_tier=notification_policy.TIER_HEARTBEAT, sent_via_push=True)
+        res, impl, _check, note = await self._try(notif, pushed=True)
+        self.assertEqual(res["reason"], auto_paper._REASON_HEARTBEAT)
+        impl.assert_not_awaited()
+        note.assert_called_once_with("HBTRY", res)
+
+    async def test_inner_block_noted_once(self):
+        # Gerçek iç akış: kapalı ayar → `_blocked`; not yine tek kez düşer.
+        async def off():
+            return {"enabled": False}
+        note = MagicMock()
+        notif = _make_notification(symbol="OFF2TRY", score=90.0)
+        notif["sent_via_push"] = True
+        with patch.object(auto_paper, "get_auto_paper_settings", new=off),              patch("app.radar_scan_log.note_paper_result", new=note):
+            res = await auto_paper.try_open_from_notification(notif)
+        self.assertEqual(res["reason"], "auto_paper_disabled")
+        note.assert_called_once_with("OFF2TRY", res)
+
+
 class AutoPaperRegimeBadgeTests(unittest.IsolatedAsyncioTestCase):
     """2026-10-18 (kullanıcı kararı): BTC rejim rozeti otonom paper girişini engellemez (bayrakla eski davranış)."""
 

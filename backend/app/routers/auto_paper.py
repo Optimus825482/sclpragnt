@@ -46,6 +46,11 @@ def _session_username(request: Request) -> str | None:
 logger = logging.getLogger("scalper.auto_paper")
 router = APIRouter()
 
+#: 2026-10-18: push kapısı / nabız istisnası engel nedenleri. Nabız nedeni Türkçe metin olarak kalır:
+#: Radar → TARAMA LOGLARI satırı ("paper: engellendi (...)") eskisiyle birebir aynı görünsün.
+_REASON_NO_PUSH = "push_bildirimi_yok"
+_REASON_HEARTBEAT = "teyitsiz nabız bildirimi paper açmaz"
+
 # 2026-10-15 (denetim düzeltmesi, madde 14): eskiden fonksiyon gövdelerine
 # gömülü sabitler (sl_cooldown 5.0, açılış bekleme 30 sn, breakeven gap
 # fallback 0.3, reopen saat kovası 3600) tek yerde ve config/env'den okunur.
@@ -108,6 +113,8 @@ def _blocked(symbol: str, reason: str, **extra) -> dict:
     """
     block = {"status": "blocked", "reason": reason, "symbol": symbol}
     block.update(extra)
+    # 2026-10-18: engel logu TEK yerde (eskiden her `return _blocked(...)` öncesinde ayrı logger.info vardı).
+    logger.info("auto_paper %s: giriş engellendi — %s %s", symbol, reason, extra or "")
     try:
         price = float(extra.get("price") or extra.get("current_price") or 0.0)
         asyncio.create_task(_log_blocked_decision(symbol, reason, price, dict(extra)))
@@ -143,6 +150,9 @@ async def _log_blocked_decision(symbol: str, reason: str, price: float, extra: d
             "notification_already_processed": "Bu bildirim anahtarıyla daha önce işlem açılmıştı (saatte en fazla bir)",
             "reopen_not_allowed": f"Aynı bildirimle yeniden açma koşulları sağlanmadı ({extra.get('detail')})",
             "zero_quantity": "Hesaplanan adet sıfır (bakiye/fiyat)",
+            # 2026-10-18: push kapısı ve nabız istisnası artık try_open_from_notification içinde (tüm yollar).
+            _REASON_NO_PUSH: "Bu sinyal için push bildirimi gönderilmedi (AUTO_PAPER_ONLY_ON_PUSH)",
+            _REASON_HEARTBEAT: "Teyitsiz sessizlik nabzı bildirimi otonom paper açmaz",
         }
         human_reason = reason_tr_map.get(reason, f"Giriş engellendi: {reason}")
         if reason == "liquidity" and isinstance(extra.get("liquidity"), dict):
@@ -432,7 +442,55 @@ async def restore_runtime_state() -> None:
 # ---------------------------------------------------------------------------
 # Core: bildirim → pozisyon açılışı
 # ---------------------------------------------------------------------------
+async def _push_gate(notification: dict) -> dict | None:
+    """2026-10-18 (AUTO_PAPER_ONLY_ON_PUSH, kullanıcı kararı): otonom giriş yalnız push bildirimi GÖNDERİLMİŞ sinyalde.
+
+    Eskiden yalnız velocity yolunda (çağıran tarafta) uygulanıyordu; radar teslimi, hızlı yol, yükseliş,
+    LLM-sonrası ve koruma-sonrası yeniden açma yolları kapıyı atlıyordu. Artık TÜM yollar buradan geçer.
+    - Sessizlik nabzı (teyitsiz katman) bayraktan bağımsız olarak paper AÇMAZ.
+    - Zarf push'un başarıyla gittiğini kendisi taşıyorsa (`sent_via_push=True`) DB sorgusu yapılmaz;
+      taşımıyorsa (velocity zarfı, yeniden açma) son ufuk+5 dk (en az 20 dk) içinde push'lanmış kayıt aranır.
+    - Kontrol hatasında AÇILMAZ (fail-closed). Engel yoksa None."""
+    from app import notification_policy
+    symbol = str(notification.get("symbol") or "").upper()
+    if notification.get("notify_tier") == notification_policy.TIER_HEARTBEAT:
+        return _blocked(symbol or "?", _REASON_HEARTBEAT)
+    if not getattr(config, "AUTO_PAPER_ONLY_ON_PUSH", False) or not symbol or notification.get("sent_via_push"):
+        return None
+    window_sec = max(int(notification.get("horizon_minutes") or 5) + 5, 20) * 60
+    try:
+        pushed = await database.has_recent_pushed_notification(symbol, window_sec)
+    except Exception as exc:  # noqa: BLE001 — kontrol başarısızsa AÇMA (push şartı fail-closed)
+        logger.warning("auto_paper %s push kontrolü hatası: %s", symbol, exc)
+        pushed = False
+    return None if pushed else _blocked(symbol, _REASON_NO_PUSH, window_sec=window_sec)
+
+
+def _note_scan_log(notification: dict, result) -> None:
+    """Giriş sonucunu (açıldı / engellendi:neden / denenmedi) son radar tarama kaydına işle — TEK nokta."""
+    try:
+        from app import radar_scan_log
+        radar_scan_log.note_paper_result((notification or {}).get("symbol"), result)
+    except Exception:  # noqa: BLE001 — teşhis kaydı giriş akışını bozmaz
+        pass
+
+
 async def try_open_from_notification(notification: dict) -> dict | None:
+    """Bir bildirim/aday zarfından otonom paper pozisyonu aç — TÜM otonom giriş yollarının tek kapısı.
+
+    Önce push kapısı (`_push_gate`), sonra giriş kuralları (`_try_open_impl`). Her sonuç (engel dahil)
+    burada bir kez Radar tarama loguna işlenir; çağıranlar ayrıca kapı/log uygulamaz."""
+    result = None
+    try:
+        result = await _push_gate(notification)
+        if result is None:
+            result = await _try_open_impl(notification)
+        return result
+    finally:
+        _note_scan_log(notification, result)
+
+
+async def _try_open_impl(notification: dict) -> dict | None:
     """Bir monitoring bildirimi geldiğinde otonom paper pozisyonu aç.
 
     Giriş kuralları:
@@ -474,8 +532,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         if not settings.get("enabled", True):
             # 2026-09-27: sessiz None yerine görünür log — otonom kapalıyken
             # push gelip işlem açılmayınca operatör neden görebilsin.
-            logger.info("auto_paper %s: otonom paper trade KAPALI (settings.enabled=false) — "
-                        "bildirim işleme alınmadı", str(notification.get("symbol") or "?"))
             return _blocked(str(notification.get("symbol") or "?").upper(), "auto_paper_disabled")
 
         symbol = str(notification.get("symbol") or "").upper()
@@ -485,8 +541,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         score = float(notification.get("score") or 0)
         min_score = float(settings.get("min_score", config.AUTO_PAPER_MIN_SCORE_DEFAULT))
         if score < min_score:
-            logger.info("auto_paper %s: skor %.1f < min_score %.1f — açılmadı",
-                        symbol, score, min_score)
             # 2026-09-27: eskiden sessiz None dönüyordu → push gelip işlem
             # açılmayınca operatör NEDENİ göremiyordu. Engelin nedenini
             # decision_logs'a yaz (R3-06 deseni: sessiz düşme yok).
@@ -514,8 +568,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         if allowed_modes:
             notif_mode = str(notification.get("mode") or "").strip()
             if notif_mode not in allowed_modes:
-                logger.info("auto_paper %s: mod '%s' izinli listede degil %s — acilmadi",
-                            symbol, notif_mode or "?", allowed_modes)
                 return _blocked(symbol, "mode_not_allowed", mode=notif_mode,
                                 allowed=allowed_modes)
 
@@ -546,8 +598,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                     _last_entry = None
                 if _last_entry and (time.time() - _last_entry) < (dedup_min * 60.0):
                     rem = round(dedup_min * 60.0 - (time.time() - _last_entry), 0)
-                    logger.info("auto_paper %s: ayni sembolde %.0f dk once giris yapildi — "
-                                "tekrar acilmadi (kalan %.0f sn)", symbol, dedup_min, rem)
                     return _blocked(symbol, "symbol_dedup", remaining_sec=rem,
                                     dedup_cooldown_minutes=dedup_min)
 
@@ -580,7 +630,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
             # 2026-10-18 (kullanıcı kararı): rejim rozeti artık otonom paper girişini ENGELLEMEZ
             # (AUTO_PAPER_BLOCK_ON_REGIME_BADGE=1 eski davranışı geri getirir).
             if getattr(config, "AUTO_PAPER_BLOCK_ON_REGIME_BADGE", False):
-                logger.info("auto_paper %s: BTC rejim kalkanı (rozet modu) — otonom giriş açılmadı", symbol)
                 return _blocked(symbol, f"risk_blocked:{_regime_badge}", block_reason=_regime_badge)
             logger.info("auto_paper %s: BTC rejim rozeti var ama otonom girişi engellemiyor (kullanıcı kararı)", symbol)
         if notification.get("master_surge_passed") is False:
@@ -640,8 +689,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
 
         if now_ts < sl_cooldown_until:
             rem = round(sl_cooldown_until - now_ts, 0)
-            logger.info("auto_paper %s: stop_loss sonrası bekleme süresi devrede (kalan: %.0f sn) — açılmadı",
-                        symbol, rem)
             return _blocked(symbol, "stop_loss_cooldown", remaining_sec=rem)
 
         # Kârlı işlem sonrası kâr koruma beklemesi (post-win cooldown) kapısı:
@@ -659,8 +706,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
 
         if now_ts < win_cooldown_until:
             rem = round(win_cooldown_until - now_ts, 0)
-            logger.info("auto_paper %s: karlı kapanış sonrası kâr koruma beklemesi devrede (kalan: %.0f sn) — açılmadı",
-                        symbol, rem)
             return _blocked(symbol, "post_win_cooldown", remaining_sec=rem)
 
         # Aktif işleme giren sembol pasif listesinden temizlenir
@@ -763,8 +808,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
             except Exception:
                 prior_trade = None
             if prior_trade:
-                logger.info("auto_paper %s: bildirim anahtarı %s daha önce işlendi — "
-                            "yeniden açılmadı (R3-09)", symbol, notification_key)
                 return _blocked(symbol, "notification_already_processed", price=current_price, key=str(notification_key))
         elif notification_id is not None:
             # Normal bildirim: id yalnızca tam sayı olabilir (bigint). String id
@@ -795,9 +838,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                 # Koşul 1: güncel fiyat bildirim fiyatının üzerinde olmalı.
                 notif_price = float(notification.get("price") or 0)
                 if notif_price <= 0 or current_price <= notif_price:
-                    logger.info("auto_paper %s: trailing kapanış sonrası fiyat bildirim "
-                                "fiyatının altında (%s <= %s) — yeniden açılmadı",
-                                symbol, current_price, notif_price)
                     return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="fiyat bildirim fiyatının altında")
 
                 # Koşul 2: ufuk süresi henüz dolmamalı (bildirim detected_at + horizon).
@@ -805,7 +845,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                 horizon_min = float(notification.get("horizon_minutes") or 0)
                 ufuk_bitti = bool(detected_at and horizon_min and (detected_at + horizon_min * 60) < now)
                 if ufuk_bitti:
-                    logger.info("auto_paper %s: trailing kapanış sonrası ufuk süresi doldu — yeniden açılmadı", symbol)
                     return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="ufuk süresi doldu")
 
                 # Koşul 3: hedefe (take_profit) ulaşılmamış olmalı. Trailing/breakeven
@@ -815,9 +854,6 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                 # düştüğü için hep false dönüp yeniden açmayı engelliyordu.)
                 prior_tp = float(prior_trade.get("take_profit") or 0)
                 if prior_tp > 0 and current_price >= prior_tp:
-                    logger.info("auto_paper %s: trailing kapanış sonrası hedefe ulaşıldı "
-                                "(%s >= %s) — yeniden açılmadı",
-                                symbol, current_price, prior_tp)
                     return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="hedefe ulaşıldı")
 
                 logger.info("auto_paper %s: trailing/breakeven kapanışı sonrası koşullar "

@@ -28,7 +28,7 @@ class ReopenKeyContractTests(unittest.TestCase):
         assert "f\"reopen:" in src or "reopen:{str(symbol).upper()}:{bucket}" in src
 
     def test_open_path_consults_the_key_first(self):
-        src = inspect.getsource(auto_paper.try_open_from_notification)
+        src = inspect.getsource(auto_paper._try_open_impl)  # giriş kuralları gövdesi (2026-10-18)
         assert "get_recent_auto_paper_trade_by_notification_key" in src
         assert "notification_key" in src
 
@@ -62,7 +62,7 @@ class EntryGateContractTests(unittest.TestCase):
         assert "MAX_CLUSTER_EXPOSURE_PCT" in src
 
     def test_passes_guard_blocks_false_candidates(self):
-        src = inspect.getsource(auto_paper.try_open_from_notification)
+        src = inspect.getsource(auto_paper._try_open_impl)  # giriş kuralları gövdesi (2026-10-18)
         assert "passes" in src
         assert '"not_passing"' in src
 

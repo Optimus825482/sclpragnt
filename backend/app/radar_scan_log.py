@@ -231,31 +231,33 @@ def build_entry(*, scan_no: int, scan_at: float, scans: dict, candidates: Iterab
 def note_paper_result(symbol: str, result) -> None:
     """Teslim aşamasında otonom paper girişinin sonucunu SON tarama kaydının ilgili satırına işler (teşhis).
 
-    `result`: `try_open_from_notification` dönüşü (dict ya da None). Satırın nedeni "paper: ..." olur; durum değişmez."""
+    `result`: `try_open_from_notification` dönüşü (dict ya da None); tek çağıran odur (her sonuçta bir kez).
+    Satırın nedeni "paper: ..." olur; durum değişmez. Bir satır "AÇILDI" olarak işlendiyse sonraki
+    denemeler (ör. velocity turunun TP güncellemesi/dedup engeli) onu EZMEZ."""
     sym = str(symbol or "").upper()
     if not sym:
         return
-    if isinstance(result, dict):
-        status = str(result.get("status") or "")
-        if status in ("opened",):
-            text, code = "paper: otonom pozisyon AÇILDI", "paper_acildi"
-        elif status in ("tp_updated", "no_change"):
-            text, code = "paper: açık pozisyon vardı (TP güncellendi/değişmedi)", "paper_guncellendi"
-        else:
-            text, code = f"paper: engellendi ({result.get('reason') or status or '?'})", "paper_engellendi"
-    else:
+    tried = isinstance(result, dict)
+    res = result if tried else {}
+    status = str(res.get("status") or "")
+    if not tried:
         text, code = "paper: giriş denenmedi/sonuç yok (otonom kapalı ya da sessiz çıkış)", "paper_denenmedi"
+    elif status == "opened":
+        text, code = "paper: otonom pozisyon AÇILDI", "paper_acildi"
+    elif status in ("tp_updated", "no_change"):
+        text, code = "paper: açık pozisyon vardı (TP güncellendi/değişmedi)", "paper_guncellendi"
+    else:
+        text, code = f"paper: engellendi ({res.get('reason') or status or '?'})", "paper_engellendi"
+    label, tone = REASON_META[code]
     with _lock:
         if not _log:
             return
         for row in _log[-1].get("rows", []):
             if row.get("symbol") == sym and row.get("status") in ("notified", "detected", "held"):
-                row.update(reason_info(text))
-                row["reason_code"] = code
-                label, tone = REASON_META.get(code, (code, "neutral"))
-                row["reason_label"], row["reason_tone"] = label, tone
-                row["paper"] = {"status": str(result.get("status")) if isinstance(result, dict) else None,
-                                "reason": result.get("reason") if isinstance(result, dict) else None}
+                if (row.get("paper") or {}).get("status") == "opened" and status != "opened":
+                    break
+                row.update({"reason": text, "reason_code": code, "reason_label": label, "reason_tone": tone,
+                            "paper": {"status": str(res.get("status")) if tried else None, "reason": res.get("reason")}})
                 break
 
 

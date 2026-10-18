@@ -329,7 +329,7 @@ class VelocityOnlyOnPushTests(unittest.TestCase):
     def _route(self, pushed, flag=True, exc=None):
         opener = AsyncMock(return_value={"status": "opened", "trade_id": 9, "symbol": "JUVTRY"})
         check = AsyncMock(side_effect=exc) if exc else AsyncMock(return_value=pushed)
-        with patch.object(velocity.config, "AUTO_PAPER_ONLY_ON_PUSH", flag, create=True),              patch.object(velocity.database, "has_recent_pushed_notification", new=check),              patch.object(auto_paper, "try_open_from_notification", new=opener):
+        with patch.object(velocity.config, "AUTO_PAPER_ONLY_ON_PUSH", flag, create=True),              patch.object(velocity.database, "has_recent_pushed_notification", new=check),              patch.object(auto_paper, "_try_open_impl", new=opener):  # kapı try_open_from_notification İÇİNDE
             return _run(velocity._route_velocity_through_auto_paper(dict(self.CAND))), opener, check
 
     def test_skips_without_pushed_notification(self):

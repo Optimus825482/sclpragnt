@@ -521,8 +521,10 @@ class HeartbeatDeliveryTests(_Base):
         self.send.assert_awaited()
         pushed = {c.args[0]["symbol"] for c in self.send.await_args_list}
         self.assertEqual({"HBTRY", "OKTRY"}, pushed)
+        # 2026-10-18: nabız istisnası artık `try_open_from_notification` İÇİNDE (burada sahte); teslim her ikisini
+        # de kapıya verir, nabzın engellendiği test_auto_paper.AutoPaperPushGateTests'te sınanır.
         paper_syms = {c.args[0]["symbol"] for c in self.paper.await_args_list}
-        self.assertEqual({"OKTRY"}, paper_syms)                     # nabız otonom paper'a girmez
+        self.assertEqual({"HBTRY", "OKTRY"}, paper_syms)
         llm_arg = self.llm.call_args.args[0]
         self.assertEqual(["OKTRY"], [n["symbol"] for n in llm_arg])  # LLM ikinci göz yalnız normal bildirim
 
