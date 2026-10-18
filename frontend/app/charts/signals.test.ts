@@ -553,3 +553,47 @@ describe("maRibbonBuySignals", () => {
     for (let i = 1; i < all.length; i++) expect(all[i].time).toBeGreaterThanOrEqual(all[i - 1].time);
   });
 });
+
+
+describe("maRibbonBuySignals — ikinci koşul: hızlı > orta iken orta yavaşı yukarı keser", () => {
+  // Uzun yatay/hafif düşüş (orta < yavaş), sonra güçlü yükseliş: hızlı ortanın üstüne çıkar, ardından orta yavaşı keser.
+  const closes: number[] = [];
+  let c = 100;
+  for (let i = 0; i < 130; i++) { c -= 0.05; closes.push(c); }
+  for (let i = 0; i < 40; i++) { c += 0.9; closes.push(c); }
+  const bars = mkBars(closes);
+
+  it("orta yavaşı yukarı keserken hızlı ortanın üstündeyse BUY; açılıp kapatılabilir", () => {
+    const fast = emaSeries(closes, 7), mid = emaSeries(closes, 20), slow = emaSeries(closes, 99);
+    let crossIdx = -1;
+    for (let i = 100; i < closes.length; i++) {      // yavaş EMA ısınmasından sonra (null karşılaştırması olmasın)
+      if (mid[i - 1]! <= slow[i - 1]! && mid[i]! > slow[i]!) { crossIdx = i; break; }
+    }
+    expect(crossIdx).toBeGreaterThan(130);
+    expect(fast[crossIdx]! > mid[crossIdx]!).toBe(true);
+    const on = maRibbonBuySignals(bars, {});
+    expect(on.some((s) => s.time === bars[crossIdx].time)).toBe(true);
+    const off = maRibbonBuySignals(bars, { showMaSlowCross: false });
+    expect(off.some((s) => s.time === bars[crossIdx].time)).toBe(false);   // koşul 1 bu barda yok (orta henüz yavaşın altındaydı)
+  });
+
+  it("hızlı ortanın ALTINDAYKEN orta yavaşı keserse etiket yok; bar başına en çok bir BUY", () => {
+    // Yavaş yükselen orta çizgi yavaşı keserken hızlı çizgiyi geride bırakan keskin düşüşle bitir: hızlı < orta
+    const cl: number[] = [];
+    let v = 100;
+    for (let i = 0; i < 130; i++) { v -= 0.05; cl.push(v); }
+    for (let i = 0; i < 36; i++) { v += 0.9; cl.push(v); }
+    for (let i = 0; i < 4; i++) { v -= 6; cl.push(v); }                     // hızlı EMA sert döner
+    const b = mkBars(cl);
+    const fast = emaSeries(cl, 7), mid = emaSeries(cl, 20), slow = emaSeries(cl, 99);
+    const sigs = maRibbonBuySignals(b, {});
+    for (const s of sigs) {
+      const j = b.findIndex((x) => x.time === s.time);
+      const cond1 = mid[j]! > slow[j]! && fast[j - 1]! <= mid[j - 1]! && fast[j]! > mid[j]!;
+      const cond2 = fast[j]! > mid[j]! && mid[j - 1]! <= slow[j - 1]! && mid[j]! > slow[j]!;
+      expect(cond1 || cond2).toBe(true);
+    }
+    const times = sigs.map((s) => s.time);
+    expect(new Set(times).size).toBe(times.length);
+  });
+});

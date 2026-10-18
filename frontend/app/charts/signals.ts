@@ -512,11 +512,17 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
         const fn = useSma ? smaSeries : emaSeries;
         const fast = fn(closes, fastLen), mid = fn(closes, midLen), slow = fn(closes, slowLen);
         const out: StrategySignal[] = [];
+        const wantSlowCross = p.showMaSlowCross !== false;
         for (let i = 1; i < bars.length; i++) {
-            const f0 = fast[i - 1], m0 = mid[i - 1], f1 = fast[i], m1 = mid[i], s1 = slow[i];
+            const f0 = fast[i - 1], m0 = mid[i - 1], s0 = slow[i - 1], f1 = fast[i], m1 = mid[i], s1 = slow[i];
             if (f0 == null || m0 == null || f1 == null || m1 == null || s1 == null) continue;
-            if (m1 > s1 && crossUp(f0, m0, f1, m1)) {
+            // Koşul 1: orta (mavi) > yavaş (mor) iken hızlı (turuncu) ortayı yukarı keser.
+            const fastCrossesMid = m1 > s1 && crossUp(f0, m0, f1, m1);
+            // Koşul 2 (2026-10-18, kullanıcı isteği): hızlı (turuncu) ortanın (mavi) ÜSTÜNDEYKEN orta yavaşı (mor) yukarı keser.
+            const midCrossesSlow = wantSlowCross && s0 != null && f1 > m1 && crossUp(m0, s0, m1, s1);
+            if (fastCrossesMid || midCrossesSlow) {
                 // 2026-10-18: rozet tarzı (badgeMarkers.ts): zoom'dan bağımsız sabit boyutlu yeşil "BUY" etiketi.
+                // İki koşul aynı barda olursa tek etiket (bar başına en çok bir BUY).
                 out.push({ time: bars[i].time, type: "buy", text: "BUY", color: "#16a34a", badge: true });
             }
         }
