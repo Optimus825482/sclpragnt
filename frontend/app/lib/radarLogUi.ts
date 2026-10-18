@@ -42,6 +42,14 @@ export type RadarLogRow = {
   horizons: RadarLogHorizon[];
 };
 
+export type RadarLogNotifyContext = {
+  quietHours: boolean | null;
+  vapid: boolean | null;
+  minutesSincePush: number | null;
+  heartbeatMinutes: number | null;
+  heartbeatPicked: string | null;
+};
+
 export type RadarLogCatalogItem = { status: string; label: string; tone: RadarLogTone };
 
 export type RadarLogScan = {
@@ -51,6 +59,8 @@ export type RadarLogScan = {
   riskOff: boolean;
   riskOffUnknown: boolean;
   minPanelScore: number | null;
+  /** Bildirim aşaması bağlamı (sessiz saat, VAPID, son push yaşı, nabız notu). */
+  notifyContext: RadarLogNotifyContext | null;
   pool: { horizon: number; count: number }[];
   counts: Record<string, number>;
   rows: RadarLogRow[];
@@ -72,6 +82,7 @@ export const TONES: readonly RadarLogTone[] = ["success", "info", "warn", "muted
 export const DEFAULT_STATUS_CATALOG: readonly RadarLogCatalogItem[] = [
   { status: "notified", label: "Bildirildi", tone: "success" },
   { status: "detected", label: "Tespit edildi", tone: "info" },
+  { status: "held", label: "Bildirilmedi", tone: "warn" },
   { status: "gated", label: "Kapıya takıldı", tone: "warn" },
   { status: "below_threshold", label: "Eşik altı", tone: "muted" },
   { status: "open_position", label: "Açık pozisyon", tone: "muted" },
@@ -135,6 +146,19 @@ const REASONS: Record<string, { label: string; tone: RadarLogTone }> = {
   aile_devre_disi: { label: "Aile devre dışı", tone: "muted" },
   radar_kapisi_gecilmedi: { label: "Radar kapısı geçilmedi", tone: "warn" },
   diger: { label: "Diğer", tone: "neutral" },
+  teyit_yetersiz: { label: "Teyit yetersiz", tone: "caution" },
+  teyit_kurali: { label: "Teyit kuralı", tone: "caution" },
+  mod_devre_disi: { label: "Mod devre dışı", tone: "muted" },
+  unified_skor_tabani: { label: "Unified skor tabanı", tone: "muted" },
+  sembol_soguma: { label: "Sembol soğuma", tone: "muted" },
+  gunluk_tavan: { label: "Günlük tavan", tone: "muted" },
+  bildirim_zaten_gonderildi: { label: "Zaten bildirildi", tone: "info" },
+  beklenen_fiyata_ulasilmadi: { label: "Ufuk dolmadı", tone: "info" },
+  debounce: { label: "Debounce", tone: "muted" },
+  fiyat_son_bildirimden_beri_yeterince_degismedi: { label: "Fiyat değişmedi", tone: "muted" },
+  risk_odul_kapisi: { label: "Risk/ödül kapısı", tone: "warn" },
+  macd_histerezisi: { label: "MACD histerezisi", tone: "muted" },
+  yalniz_hiz_adayi_izleme_listesine_alindi: { label: "Yalnız-hız adayı", tone: "muted" },
 };
 
 /** Neden kodu -> Türkçe etiket + ton. Bilinmeyen kod: ham kod, nötr ton, `known=false`. Boşsa null. */
@@ -270,10 +294,25 @@ export function normalizeScan(raw: unknown, index = 0, catalog: readonly RadarLo
     riskOff: raw.risk_off === true,
     riskOffUnknown: raw.risk_off_unknown === true,
     minPanelScore: num(raw.min_panel_score),
+    notifyContext: normNotifyContext(raw.notify_context),
     pool: normPool(raw.pool),
     counts,
     rows,
   };
+}
+
+function normNotifyContext(v: unknown): RadarLogNotifyContext | null {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const note = typeof o.heartbeat_note === "object" && o.heartbeat_note !== null ? (o.heartbeat_note as Record<string, unknown>) : null;
+  const ctx: RadarLogNotifyContext = {
+    quietHours: typeof o.quiet_hours === "boolean" ? o.quiet_hours : null,
+    vapid: typeof o.vapid === "boolean" ? o.vapid : null,
+    minutesSincePush: num(o.minutes_since_push),
+    heartbeatMinutes: num(o.heartbeat_minutes),
+    heartbeatPicked: note && typeof note.picked === "string" ? note.picked : null,
+  };
+  return Object.values(ctx).every((x) => x === null) ? null : ctx;
 }
 
 /** Yanıtı savunmacı biçimde normalleştirir: eksik anahtar/yanlış tip hata fırlatmaz. Taramalar en yeni önce sıralanır. */
@@ -466,6 +505,21 @@ export function scanLabel(scan: Pick<RadarLogScan, "scanNo" | "scanAt">): string
 /** Eşik etiketi: `Panel eşiği 71,5`; yoksa "Panel eşiği —". */
 export function thresholdLabel(v: number | null | undefined): string {
   return `Panel eşiği ${fmtScore(v)}`;
+}
+
+/** Bildirim bağlamı rozetleri: sessiz saat, push (VAPID), son push yaşı, nabız. Bağlam yoksa boş liste. */
+export function notifyContextBadges(ctx: RadarLogNotifyContext | null | undefined): { label: string; tone: RadarLogTone }[] {
+  if (!ctx) return [];
+  const out: { label: string; tone: RadarLogTone }[] = [];
+  if (ctx.quietHours !== null) out.push(ctx.quietHours ? { label: "Sessiz saat: AÇIK (push yok)", tone: "danger" } : { label: "Sessiz saat: kapalı", tone: "success" });
+  if (ctx.vapid !== null) out.push(ctx.vapid ? { label: "Push: hazır", tone: "success" } : { label: "Push: VAPID yok", tone: "danger" });
+  if (ctx.minutesSincePush !== null) {
+    const limit = ctx.heartbeatMinutes && ctx.heartbeatMinutes > 0 ? ctx.heartbeatMinutes : null;
+    const late = limit !== null && ctx.minutesSincePush >= limit;
+    out.push({ label: `Son push: ${Math.round(ctx.minutesSincePush)} dk önce${late ? " (nabız zamanı)" : ""}`, tone: late ? "caution" : "muted" });
+  }
+  if (ctx.heartbeatPicked) out.push({ label: `Nabız adayı: ${ctx.heartbeatPicked}`, tone: "info" });
+  return out;
 }
 
 export type RiskBadge = { label: string; tone: RadarLogTone };

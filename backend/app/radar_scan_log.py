@@ -18,6 +18,7 @@ from typing import Callable, Iterable
 STATUS_CATALOG = (
     ("notified", "Bildirildi", "success"),
     ("detected", "Tespit edildi", "info"),
+    ("held", "Bildirilmedi", "warn"),
     ("gated", "Kapıya takıldı", "warn"),
     ("below_threshold", "Eşik altı", "muted"),
     ("open_position", "Açık pozisyon", "muted"),
@@ -47,6 +48,20 @@ REASON_META = {
     "extreme_long": ("Aşırı şişkin long", "danger"),
     "btc_panik": ("BTC panik", "danger"),
     "diger": ("Diğer", "neutral"),
+    # bildirim aşaması (aday kapıyı geçti ama push üretilmedi)
+    "teyit_yetersiz": ("Teyit yetersiz", "caution"),
+    "teyit_kurali": ("Teyit kuralı", "caution"),
+    "mod_devre_disi": ("Mod devre dışı", "muted"),
+    "unified_skor_tabani": ("Unified skor tabanı", "muted"),
+    "sembol_soguma": ("Sembol soğuma", "muted"),
+    "gunluk_tavan": ("Günlük tavan", "muted"),
+    "bildirim_zaten_gonderildi": ("Zaten bildirildi", "info"),
+    "beklenen_fiyata_ulasilmadi": ("Ufuk dolmadı", "info"),
+    "debounce": ("Debounce", "muted"),
+    "fiyat_son_bildirimden_beri_yeterince_degismedi": ("Fiyat değişmedi", "muted"),
+    "risk_odul_kapisi": ("Risk/ödül kapısı", "warn"),
+    "macd_histerezisi": ("MACD histerezisi", "muted"),
+    "yalniz_hiz_adayi_izleme_listesine_alindi": ("Yalnız-hız adayı", "muted"),
 }
 
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
@@ -123,9 +138,11 @@ def _row(symbol: str, status: str, *, reason=None, audit: dict | None = None, pa
 def build_entry(*, scan_no: int, scan_at: float, scans: dict, candidates: Iterable[dict], watchlist: Iterable[dict],
                 notified_symbols: Iterable[str], open_symbols: Iterable[str], gate: Callable[[dict], str | None],
                 panel: Callable[[float], float], min_panel_score: float | None, min_raw_score: float | None,
-                risk_off: bool = False, risk_off_unknown: bool = False) -> dict:
+                risk_off: bool = False, risk_off_unknown: bool = False, skip_reasons: dict | None = None,
+                notify_context: dict | None = None) -> dict:
     """Bir tarama turunun günlük kaydı. `scans`: {ufuk_dk: velocity sonucu (scan_audit / no_data_symbols taşır)}."""
     notified = {str(s or "").upper() for s in notified_symbols}
+    skips = {str(k or "").upper(): v for k, v in (skip_reasons or {}).items()}
     opens = {str(s or "").upper() for s in open_symbols}
     cand_by_sym = {str(c.get("symbol") or "").upper(): c for c in candidates if isinstance(c, dict)}
     watch_syms = {str(w.get("symbol") or "").upper() for w in watchlist if isinstance(w, dict)}
@@ -163,10 +180,14 @@ def build_entry(*, scan_no: int, scan_at: float, scans: dict, candidates: Iterab
                        horizon=best_h, horizons=horizons)
         elif cand is not None:
             blocked = gate(cand)
-            row = (_row(sym, "gated", reason=blocked, audit=best, panel_score=panel_score, horizon=best_h, horizons=horizons)
-                   if blocked else
-                   _row(sym, "detected", audit=best, panel_score=panel_score, horizon=best_h, horizons=horizons,
-                        target_pct=cand.get("target_pct")))
+            if blocked:
+                row = _row(sym, "gated", reason=blocked, audit=best, panel_score=panel_score, horizon=best_h, horizons=horizons)
+            elif sym in skips:
+                row = _row(sym, "held", reason=skips[sym], audit=best, panel_score=panel_score, horizon=best_h,
+                           horizons=horizons, target_pct=cand.get("target_pct"))
+            else:
+                row = _row(sym, "detected", audit=best, panel_score=panel_score, horizon=best_h, horizons=horizons,
+                           target_pct=cand.get("target_pct"))
         elif any_pass:
             thr = f"{min_panel_score:.1f}" if min_panel_score is not None else "?"
             ps = f"{panel_score:.1f}" if panel_score is not None else "?"
@@ -183,8 +204,9 @@ def build_entry(*, scan_no: int, scan_at: float, scans: dict, candidates: Iterab
         if sym in by_sym:
             continue
         blocked = gate(cand)
-        status = "notified" if sym in notified else ("gated" if blocked else "detected")
-        rows.append(_row(sym, status, reason=blocked if status == "gated" else None, audit=cand,
+        status = ("notified" if sym in notified else "gated" if blocked else "held" if sym in skips else "detected")
+        rows.append(_row(sym, status, reason=blocked if status == "gated" else skips.get(sym) if status == "held" else None,
+                         audit=cand,
                          panel_score=cand.get("unified_score") or cand.get("panel_score"), horizon=None,
                          horizons={}, notified=sym in notified, target_pct=cand.get("target_pct")))
 
@@ -197,7 +219,8 @@ def build_entry(*, scan_no: int, scan_at: float, scans: dict, candidates: Iterab
         counts[r["status"]] += 1
     return {"scan_no": int(scan_no), "scan_at": float(scan_at), "risk_off": bool(risk_off),
             "risk_off_unknown": bool(risk_off_unknown), "min_panel_score": _round(min_panel_score, 1),
-            "min_raw_score": _round(min_raw_score, 1), "pool": pool, "counts": counts, "rows": rows}
+            "min_raw_score": _round(min_raw_score, 1), "pool": pool, "counts": counts, "rows": rows,
+            "notify_context": dict(notify_context or {})}
 
 
 def record(entry: dict) -> None:

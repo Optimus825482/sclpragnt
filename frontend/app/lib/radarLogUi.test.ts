@@ -8,6 +8,7 @@ import {
   deriveReasonCode,
   errorMessage,
   filterRows,
+  notifyContextBadges,
   fmtHorizon,
   fmtPctValue,
   fmtRatio,
@@ -146,7 +147,7 @@ describe("rozet eşleme", () => {
     expect(statusMeta("gated", [{ status: "gated", label: "Kapı", tone: "danger" }])).toEqual({ label: "Kapı", tone: "danger" });
     expect(statusMeta("yeni_durum")).toEqual({ label: "yeni_durum", tone: "neutral" });
     expect(statusMeta("")).toEqual({ label: "Bilinmiyor", tone: "neutral" });
-    expect(DEFAULT_STATUS_CATALOG).toHaveLength(8);
+    expect(DEFAULT_STATUS_CATALOG).toHaveLength(9);
   });
 
   it("neden kodları Türkçe etiket + ton; bilinmeyen kod ham metin + nötr", () => {
@@ -271,5 +272,24 @@ describe("biçimleyiciler", () => {
     expect(errorMessage(401)).toContain("yalnızca yönetici");
     expect(errorMessage(500, "Sunucu hatası")).toBe("Sunucu hatası");
     expect(errorMessage(null, "  ")).toBe("Radar tarama logları alınamadı");
+  });
+});
+
+describe("radarLogUi — bildirim bağlamı", () => {
+  it("normalize ve rozetler", () => {
+    const resp = normalizeResponse({ ok: true, scans: [{ scan_no: 1, scan_at: 1, rows: [], notify_context: {
+      quiet_hours: false, vapid: true, minutes_since_push: 62, heartbeat_minutes: 15, heartbeat_note: { picked: "ABCTRY" } } }] });
+    const badges = notifyContextBadges(resp.scans[0].notifyContext);
+    expect(badges.map((b) => b.label)).toEqual(["Sessiz saat: kapalı", "Push: hazır", "Son push: 62 dk önce (nabız zamanı)", "Nabız adayı: ABCTRY"]);
+    expect(notifyContextBadges(null)).toEqual([]);
+    expect(normalizeResponse({ ok: true, scans: [{ scan_no: 2, rows: [] }] }).scans[0].notifyContext).toBeNull();
+  });
+  it("sessiz saat / VAPID yok uyarı tonu", () => {
+    const b = notifyContextBadges({ quietHours: true, vapid: false, minutesSincePush: null, heartbeatMinutes: 15, heartbeatPicked: null });
+    expect(b.map((x) => x.tone)).toEqual(["danger", "danger"]);
+  });
+  it("yeni neden kodları ve held durumu bilinir", () => {
+    expect(reasonMeta("teyit_yetersiz")?.known).toBe(true);
+    expect(statusMeta("held").label).toBe("Bildirilmedi");
   });
 });

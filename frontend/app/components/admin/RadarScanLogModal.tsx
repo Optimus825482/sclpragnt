@@ -23,6 +23,7 @@ import {
   normalizeResponse,
   poolLine,
   reasonMeta,
+  notifyContextBadges,
   riskBadge,
   scanLabel,
   selectedIndex,
@@ -313,6 +314,7 @@ export function RadarScanLogModal({ onClose }: ModalProps) {
                       );
                     })}
                     {risk && <ToneBadge tone={risk.tone} label={risk.label} />}
+                    {notifyContextBadges(scan.notifyContext).map((b) => <ToneBadge key={b.label} tone={b.tone} label={b.label} />)}
                     <ToneBadge tone="info" label={thresholdLabel(scan.minPanelScore)} />
                     <span className="font-mono text-[11px] text-bunker-muted">Havuz: {poolLine(scan.pool)}</span>
                   </div>

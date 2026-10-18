@@ -1437,6 +1437,8 @@ async def _heartbeat_notification(candidates_list, notified, settings, quiet: bo
         if last is None:
             last = _monitoring_state.get("_boot_time") or now
         _monitoring_state["_last_push_ts"] = float(last)
+    _ctx = _monitoring_state.setdefault("_notify_context", {})
+    _ctx["minutes_since_push"] = round((now - float(last)) / 60.0, 1)
     if not _notification_policy.heartbeat_due(now, last, _monitoring_state.get("_last_heartbeat_ts")):
         return None
     # 2026-10-18 (ikinci düzeltme): havuz = panel eşiğini geçen adaylar + TARAMA İZLEME LİSTESİ (eşik altı).
@@ -1866,6 +1868,14 @@ def _is_velocity_only(candidate: dict) -> bool:
     return _candidate_source_labels(candidate) <= {"velocity"}
 
 
+def _note_notify_skip(sym: str, text: str) -> None:
+    """2026-10-18: aday eşiği/kapıyı geçti ama bildirim ÜRETİLMEDİ — nedeni admin tarama günlüğü için tutulur."""
+    try:
+        _monitoring_state.setdefault("_notify_skip", {})[str(sym or "").upper()] = str(text)[:160]
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
     """Eşikleri geçen adaylar için bildirim üret ve web push gönder.
 
@@ -1885,6 +1895,9 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
     min_raw = _effective_min_raw_score(settings)
     eff_min_score = _effective_min_score(settings)
     quiet = _in_quiet_hours(settings)
+    _monitoring_state["_notify_skip"] = {}
+    _monitoring_state["_notify_context"] = {"quiet_hours": bool(quiet), "vapid": bool(_vapid_configured()),
+                                            "heartbeat_minutes": int(getattr(config, "RADAR_NOTIFY_HEARTBEAT_MINUTES", 0) or 0)}
     # F-07: `now` duvar saati — KALICI/yayınlanan alanlar (detected_at,
     # pending_targets.set_at, DB horizon karşılaştırması) buna bağlı.
     now = time.time()
@@ -1986,6 +1999,7 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
                 if not existing_pending.get("candidate_id") and c.get("candidate_id"):
                     await database.set_monitoring_notification_candidate(existing_pending["id"], c.get("candidate_id"))
                 _monitoring_state["candidate_streak"].pop(sym, None)
+                _note_notify_skip(sym, "bildirim zaten gönderildi (ufuk dolmadı; hedef/skor donduruldu)")
                 continue
             first_price = float(existing_pending.get("price") or 0) or float(c.get("price", 0) or 0)
             # Ufuk daralmasın: bildirim SON ufuk süresi dolana kadar takipte kalır;
@@ -2030,17 +2044,20 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
         fast_lane = score >= float(config.MONITORING_FAST_LANE_SCORE)
         if not fast_lane and streak < config.MONITORING_DEBOUNCE_SCANS:
             _monitoring_state["candidate_streak"][sym] = streak
+            _note_notify_skip(sym, f"debounce: {streak}/{config.MONITORING_DEBOUNCE_SCANS} ardışık tarama (hızlı şerit ≥{config.MONITORING_FAST_LANE_SCORE:g})")
             continue
         _monitoring_state["candidate_streak"][sym] = streak
         # Kısa vadeli soğama (F-07: monotonik ölçüm → duvar saati adımına dayanıklı)
         last_sent = _monitoring_state["notified_symbols"].get(sym)
         if last_sent is not None and now_mono - last_sent < NOTIFY_COOLDOWN_SEC:
+            _note_notify_skip(sym, f"sembol soğuma ({NOTIFY_COOLDOWN_SEC / 60:g} dk)")
             continue
         # Beklenen fiyata ulaşana kadar aynı sembolü tekrar bildirme
         pending = _monitoring_state["pending_targets"].get(sym)
         if pending:
             horizon_sec = int(pending.get("horizon_minutes", 5) + 2) * 60
             if now - float(pending.get("set_at", 0)) < horizon_sec:
+                _note_notify_skip(sym, "beklenen fiyata ulaşılmadı (ufuk dolmadı; tekrar bildirim yok)")
                 continue
             _monitoring_state["pending_targets"].pop(sym, None)
         # D-07: fiyat DEGISTI mi? Zaman kapıları doldu ama fiyat aynıysa
@@ -2054,12 +2071,14 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
         if last_px > 0 and base_px > 0 and (
                 abs(base_px - last_px) / last_px * 100 < MONITORING_REFIRE_MIN_MOVE_PCT):
             _monitoring_state["refire_blocked"] = int(_monitoring_state.get("refire_blocked", 0)) + 1
+            _note_notify_skip(sym, "fiyat son bildirimden beri yeterince değişmedi")
             continue
         # A4: R/R kapisi — dusuk risk/odul adayi yalnizca YENI bildirimde
         # engellenir (mevcut BEKLIYOR bildirim guncellenmesi etkilenmez).
         # Sayaç kaliibrasyon icin tutulur: "kac aday bastirildi" gorunur olmali.
         if _rr_gate_blocks(base_px, float(c.get("target_pct") or 0) or 0.0):
             _monitoring_state["rr_blocked"] = int(_monitoring_state.get("rr_blocked", 0)) + 1
+            _note_notify_skip(sym, "risk/ödül kapısı")
             continue
         # A5: MACD-teyitli histerezis — skor yukselmedigi ve MACD teyidi zayif
         # oldugunda yeniden bildirim basma. Anahtar SETTINGS'ten okunur (admin
@@ -2070,18 +2089,21 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
             prev_score = _ns.get(sym)
             macd_strong = bool(c.get("macd_bullish") or c.get("macd_rising"))
             if prev_score is not None and not macd_strong and score <= float(prev_score):
+                _note_notify_skip(sym, "MACD histerezisi: skor yükselmedi, MACD teyidi zayıf")
                 continue
         # 2026-10-15 (radar iyileştirme): yalnız-velocity aday (bayrak açıkken) push GÖNDERİLMEZ;
         # izleme listesine alınır (`last_candidates` üzerinden görünür kalır).
         if _NOTIFY_LEADLAG_PRIORITY and _is_velocity_only(c):
             c["watchlist_only"] = True
             logger.info("radar: velocity-only aday izleme listesine alındı %s", sym)
+            _note_notify_skip(sym, "yalnız-hız adayı izleme listesine alındı")
             continue
         # 2026-10-15 (radar iyileştirme): sembol soğuma + günlük tavan. Mevcut kapılardan
         # SONRA çalışır; mevcut sembol soğuması (NOTIFY_COOLDOWN_SEC) aynen korunur.
         _policy_reason = _notify_policy_allows(sym, now)
         if _policy_reason:
             logger.info("radar bildirimi atlandı %s: %s", sym, _policy_reason)
+            _note_notify_skip(sym, str(_policy_reason))
             continue
         notif = _build_notification(sym, c, settings)
         notif["updated"] = False
@@ -2163,6 +2185,7 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
         for n in _policy_blocked:
             logger.info("bildirim politikası: %s (mod=%s) teslimden düşürüldü — %s",
                         n.get("symbol"), n.get("mode"), n.get("policy_blocked"))
+            _note_notify_skip(n.get("symbol"), str(n.get("policy_blocked")))
         notified = [n for n in notified if not n.get("policy_blocked")]
         if not notified:
             return []
@@ -5670,7 +5693,10 @@ async def _run_scan() -> dict:
             watchlist=watchlist_list, notified_symbols=[n.get("symbol") for n in (new_notifications or []) if isinstance(n, dict)],
             open_symbols=open_symbols, gate=gate_candidate, panel=normalize_score,
             min_panel_score=effective_min_score, min_raw_score=effective_min_raw_score,
-            risk_off=risk_off, risk_off_unknown=risk_off_unknown))
+            risk_off=risk_off, risk_off_unknown=risk_off_unknown,
+            skip_reasons=dict(_monitoring_state.get("_notify_skip") or {}),
+            notify_context={**(_monitoring_state.get("_notify_context") or {}),
+                            "heartbeat_note": _monitoring_state.get("_heartbeat_note")}))
     except Exception as exc:  # noqa: BLE001
         logger.debug("radar tarama günlüğü yazılamadı: %s", exc)
 

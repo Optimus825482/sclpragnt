@@ -87,6 +87,31 @@ class BuildEntryTests(unittest.TestCase):
         self.assertEqual({r["symbol"] for r in e["rows"]}, {"XTRY", "ZTRY"})
 
 
+class HeldTests(unittest.TestCase):
+    def test_detected_with_skip_reason_becomes_held(self):
+        e = _entry(skip_reasons={"DETTRY": "teyit yetersiz (1 < 2 kaynak)", "FUSIONTRY": "mod devre dışı: unified"},
+                   notify_context={"quiet_hours": False, "vapid": True, "minutes_since_push": 62.0})
+        by = {r["symbol"]: r for r in e["rows"]}
+        self.assertEqual(by["DETTRY"]["status"], "held")
+        self.assertEqual(by["DETTRY"]["reason_code"], "teyit_yetersiz")
+        self.assertEqual(by["FUSIONTRY"]["status"], "held")
+        self.assertEqual(by["FUSIONTRY"]["reason_code"], "mod_devre_disi")
+        self.assertEqual(e["counts"]["held"], 2)
+        self.assertEqual(e["notify_context"]["minutes_since_push"], 62.0)
+
+    def test_skip_reason_codes_map_to_known_labels(self):
+        for text, code in [("sembol soğuma (5 dk)", "sembol_soguma"), ("günlük tavan (3)", "gunluk_tavan"),
+                           ("bildirim zaten gönderildi (ufuk dolmadı; hedef/skor donduruldu)", "bildirim_zaten_gonderildi"),
+                           ("beklenen fiyata ulaşılmadı (ufuk dolmadı; tekrar bildirim yok)", "beklenen_fiyata_ulasilmadi"),
+                           ("risk/ödül kapısı", "risk_odul_kapisi"), ("MACD histerezisi: skor yükselmedi", "macd_histerezisi"),
+                           ("fiyat son bildirimden beri yeterince değişmedi", "fiyat_son_bildirimden_beri_yeterince_degismedi"),
+                           ("yalnız-hız adayı izleme listesine alındı", "yalniz_hiz_adayi_izleme_listesine_alindi"),
+                           ("debounce: 1/2 ardışık tarama", "debounce")]:
+            info = rsl.reason_info(text)
+            self.assertEqual(info["reason_code"], code, text)
+            self.assertIn(code, rsl.REASON_META, text)
+
+
 class LogBufferTests(unittest.TestCase):
     def setUp(self):
         rsl.reset()
@@ -102,7 +127,7 @@ class LogBufferTests(unittest.TestCase):
         self.assertEqual(only["scans"][0]["counts"]["gated"], 1)          # sayaçlar süzmeden etkilenmez
         sym = rsl.get_log(limit=1, symbol="atrt")
         self.assertEqual([r["symbol"] for r in sym["scans"][0]["rows"]], ["ATRTRY"])
-        self.assertEqual(len(out["status_catalog"]), 8)
+        self.assertEqual(len(out["status_catalog"]), 9)
 
     def test_ring_buffer_is_bounded(self):
         with patch.object(rsl, "_keep", return_value=5):
