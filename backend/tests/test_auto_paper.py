@@ -668,6 +668,30 @@ class AutoPaperTpCancelOnTrailTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(s["tp_cancel_on_trail"])
 
 
+class AutoPaperRegimeBadgeTests(unittest.IsolatedAsyncioTestCase):
+    """2026-10-18 (kullanıcı kararı): BTC rejim rozeti otonom paper girişini engellemez (bayrakla eski davranış)."""
+
+    async def _try(self, flag):
+        notif = _make_notification(symbol="REGTRY", score=88.0)
+        notif["regime_badge"] = "BTC_BEAR_REGIME_SHIELD"
+        with patch.object(config, "AUTO_PAPER_BLOCK_ON_REGIME_BADGE", flag, create=True):
+            return await auto_paper.try_open_from_notification(notif)
+
+    async def test_badge_does_not_block_by_default(self):
+        res = await self._try(False)
+        self.assertNotEqual((res or {}).get("reason"), "risk_blocked:BTC_BEAR_REGIME_SHIELD")
+
+    async def test_badge_blocks_when_flag_on(self):
+        res = await self._try(True)
+        self.assertEqual((res or {}).get("reason"), "risk_blocked:BTC_BEAR_REGIME_SHIELD")
+
+    async def test_hard_risk_block_reason_still_blocks(self):
+        notif = _make_notification(symbol="PANICTRY", score=88.0)
+        notif["block_reason"] = "BTC_PANIC_DOWNTREND"
+        res = await auto_paper.try_open_from_notification(notif)
+        self.assertEqual((res or {}).get("reason"), "risk_blocked:BTC_PANIC_DOWNTREND")
+
+
 class AutoPaperQualityFiltersTests(unittest.IsolatedAsyncioTestCase):
     """Otonom işlem kalite ve kârlılık kapıları: Zayıf MTF ve Stop Loss bekleme süresi."""
 

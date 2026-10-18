@@ -941,6 +941,9 @@ class Config:
     # paper girişi engellenir (auto_paper kendi kontrolünü yapar). "block": eski davranış (bildirim
     # ve liste kesilir). Kalkanın kendisi (BTC_REGIME_SHIELD_ENABLED) dokunulmaz.
     RADAR_SHIELD_MODE = os.getenv("RADAR_SHIELD_MODE", "badge").strip().lower()
+    # 2026-10-18 (kullanıcı kararı; 90 günlük doğrulama kalkanın faydasını göstermedi): BTC rejim rozeti otonom paper
+    # girişini ENGELLEMEZ (bildirim rozeti aynen gider). 1 = eski davranış (rozet varsa otonom giriş engellenir).
+    AUTO_PAPER_BLOCK_ON_REGIME_BADGE = os.getenv("AUTO_PAPER_BLOCK_ON_REGIME_BADGE", "0").strip().lower() in {"1", "true", "yes", "on"}
     # 2026-10-17 (aynı ölçüm, tablo 2/2b): kalkan kapalıyken MFI≥90/RSI≥80 ile elenen trend_devam
     # adayları geçenlerle aynı isabette (hit60 %19,0 vs %19,8, MAE daha küçük) → "penalty": eleme
     # yerine skor çarpanı (ceza) — yalnız trend_devam ve rejim kalkanı KAPALIYKEN; kalkan açıkken

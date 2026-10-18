@@ -571,8 +571,12 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
             except Exception:
                 _regime_badge = None
         if _regime_badge:
-            logger.info("auto_paper %s: BTC rejim kalkanı (rozet modu) — otonom giriş açılmadı", symbol)
-            return _blocked(symbol, f"risk_blocked:{_regime_badge}", block_reason=_regime_badge)
+            # 2026-10-18 (kullanıcı kararı): rejim rozeti artık otonom paper girişini ENGELLEMEZ
+            # (AUTO_PAPER_BLOCK_ON_REGIME_BADGE=1 eski davranışı geri getirir).
+            if getattr(config, "AUTO_PAPER_BLOCK_ON_REGIME_BADGE", False):
+                logger.info("auto_paper %s: BTC rejim kalkanı (rozet modu) — otonom giriş açılmadı", symbol)
+                return _blocked(symbol, f"risk_blocked:{_regime_badge}", block_reason=_regime_badge)
+            logger.info("auto_paper %s: BTC rejim rozeti var ama otonom girişi engellemiyor (kullanıcı kararı)", symbol)
         if notification.get("master_surge_passed") is False:
             logger.warning("auto_paper %s: Master Surge kontrolünden geçmedi — açılmadı", symbol)
             return _blocked(symbol, "master_surge_failed")
