@@ -29,6 +29,7 @@ import IndicatorPicker, {
 import IndicatorSettings from "../charts/IndicatorSettings";
 import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "../charts/types";
 
+import { istanbulLocalization, istanbulTickMarkFormatter } from "../lib/chartTime";
 export type Holding = {
   asset: string;
   free: number;
@@ -587,10 +588,12 @@ export default function BinancePositionChartModal({
         vertLine: { color: "#00f3ff", width: 1, style: LineStyle.Dotted },
         horzLine: { color: "#00f3ff", width: 1, style: LineStyle.Dotted },
       },
+      localization: istanbulLocalization,
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
         borderColor: "#1f2937",
+        tickMarkFormatter: istanbulTickMarkFormatter,
       },
       rightPriceScale: {
         borderColor: "#1f2937",

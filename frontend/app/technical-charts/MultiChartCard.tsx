@@ -16,6 +16,7 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { formatPrice, pricePrecision } from "../lib/format";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 
+import { istanbulLocalization, istanbulTickMarkFormatter } from "../lib/chartTime";
 export interface ChartIndicators {
     // EMAs
     ema9: boolean;
@@ -438,7 +439,8 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
             layout: { background: { type: ColorType.Solid, color: "#06080d" }, textColor: "#9ca3af", fontFamily: "JetBrains Mono, monospace", fontSize: 11 },
             grid: { vertLines: { color: "rgba(31,41,55,0.4)" }, horzLines: { color: "rgba(31,41,55,0.4)" } },
             crosshair: { mode: 0, vertLine: { color: "#10b981", width: 1, style: LineStyle.Dashed }, horzLine: { color: "#10b981", width: 1, style: LineStyle.Dashed } },
-            timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#1f2937" },
+            localization: istanbulLocalization,
+            timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#1f2937", tickMarkFormatter: istanbulTickMarkFormatter },
             rightPriceScale: { borderColor: "#1f2937", scaleMargins: { top: 0.1, bottom: 0.15 } },
             handleScroll: { vertTouchDrag: false, horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true },
         });

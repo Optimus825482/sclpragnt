@@ -40,6 +40,7 @@ import {
 } from "./signals";
 import { BadgeMarkers, badgeFromSignal, type Badge } from "./badgeMarkers";
 
+import { istanbulLocalization, istanbulTickMarkFormatter } from "../lib/chartTime";
 /* H-02: null/NaN K/Z NÖTR renkte olmalı (proje kuralı: yeşil=kâr, kırmızı=zarar,
  * veri yok=nötr). `?? 0` ile 0'a çevirip yeşile boyamak yasak. */
 const pnlToneClass = (v?: number | null) =>
@@ -353,7 +354,8 @@ export default function ChartsPage() {
             // 2026-10-18 (kullanıcı isteği): arka plan kılavuz çizgileri kapalı.
             grid: { vertLines: { visible: false }, horzLines: { visible: false } },
             crosshair: { mode: 0, vertLine: { color: "#10b981" }, horzLine: { color: "#10b981" } },
-            timeScale: { timeVisible: true, secondsVisible: false },
+            localization: istanbulLocalization,
+            timeScale: { timeVisible: true, secondsVisible: false, tickMarkFormatter: istanbulTickMarkFormatter },
             // Mobilde chart dikey kaydırmayı yutmasın: parmak dikeyde sayfayı
             // kaydırır, yatayda chart'ı. Touch tuzak UX hatasını önler.
             handleScroll: { vertTouchDrag: false, horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true }
