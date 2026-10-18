@@ -12,6 +12,7 @@ import { ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
 import { scoreToneClass, scoreToneText } from "../lib/scoreTone";
 import AppLoader from "../components/AppLoader";
 import UserRadar from "../components/user/UserRadar";
+import MaBuyRecent from "../components/MaBuyRecent";
 import { RadarScanLogButton } from "../components/admin/RadarScanLogModal";
 import { useIsUserView } from "../lib/adminView";
 
@@ -1063,6 +1064,9 @@ function AdminMonitoringPage() {
           )}
         </div>
       </div>
+
+      {/* 2026-10-18: gönderilen MA kesişim BUY bildirimleri (M1/M5) + Alım yap */}
+      <MaBuyRecent />
 
       {/* 2. HATA VE BİLGİLENDİRME ŞERİTLERİ */}
       {(stateError || settingsError) && (

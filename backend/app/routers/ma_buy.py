@@ -1,4 +1,4 @@
-"""Yönetici: MA şerit BUY sinyal kaydı (`GET /api/admin/ma-buy-signals`). Yalnız okuma; emir/karar YOK.
+"""MA şerit BUY sinyalleri: yönetici kaydı (`GET /api/admin/ma-buy-signals`) + kullanıcı listesi (`GET /api/ma-buy/recent`).
 
 2026-10-18 (kullanıcı isteği). Sinyaller `app/ma_buy_tracker.py` tarafından yazılır; bu uç listeyi ve özeti döndürür.
 Erişim: `require_admin` (eksik oturum 401, yönetici değil 403).
@@ -10,7 +10,7 @@ import time
 from fastapi import APIRouter, Query, Request
 
 from app import database, ma_buy_signals, ma_buy_tracker
-from app.api_common import require_admin
+from app.api_common import require_admin, require_user
 
 router = APIRouter()
 
@@ -30,3 +30,14 @@ async def list_ma_buy_signals(request: Request, days: int = Query(7, ge=1, le=12
     return {"ok": True, "days": days, "total": len(items), "items": items[:limit],
             "summary": ma_buy_tracker.summarize(rows),
             "tracker": ma_buy_tracker.status_snapshot()}
+
+
+@router.get("/api/ma-buy/recent")
+async def recent_ma_buy_notifications(request: Request, hours: int = Query(12, ge=1, le=72),
+                                      limit: int = Query(30, ge=1, le=100)):
+    """Push'u gönderilmiş son MA BUY sinyalleri (ana sayfa + radar "MA kesişim" listesi; Alım yap düğmesiyle).
+
+    Oturum açmış her kullanıcı görür (bildirimler zaten herkese push edilir). Salt okuma."""
+    require_user(request)
+    rows = await database.list_ma_buy_notified(time.time() - hours * 3600, limit=limit)
+    return {"ok": True, "hours": hours, "items": [ma_buy_tracker.public_item(r) for r in rows]}

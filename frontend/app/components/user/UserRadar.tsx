@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import MaBuyRecent from "../MaBuyRecent";
 import Link from "next/link";
 import { API_BASE, apiRequest } from "../../lib/api";
 import { formatPrice, toMs } from "../../lib/format";
@@ -326,6 +327,7 @@ export default function UserRadar() {
         <h1 className="text-xl font-bold text-white">Radar</h1>
         <RadarScanLogButton />
       </div>
+      <div className="mt-3"><MaBuyRecent /></div>
       {/* 2026-10-18: rejim bandı kaldırıldı — kalkan rozet modunda (RADAR_SHIELD_MODE=badge) bildirimler durmaz;
           durum bildirim kartındaki "BTC rejim" rozetiyle gösterilir. */}
       <div role="tablist" aria-label="Radar bölümleri" className="mt-3 flex gap-2 overflow-x-auto pb-1">

@@ -229,6 +229,12 @@ def rate_limit(name: str, *, rate_per_sec: float, burst: float, now: float | Non
     return bucket.allow(now)
 
 
+def require_user(request) -> dict:
+    """Oturum açmış kullanıcı kapısı (eksik oturum 401); `require_admin` ile aynı geç çözümleme deseni."""
+    from app import main
+    return main._require_user(request)
+
+
 def require_admin(request) -> dict:
     """Router'ların kullandığı yönetici kapısı (G-23).
 

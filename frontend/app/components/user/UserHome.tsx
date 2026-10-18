@@ -4,6 +4,7 @@ import { getJSON } from "../../lib/api";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
 import { useWatchPrices } from "../../lib/useWatchPrices";
 import { useWatchPrefs } from "../../lib/useWatchPrefs";
+import MaBuyRecent from "../MaBuyRecent";
 import RecentNotifications, { type RecentRow } from "./RecentNotifications";
 import WatchStrip from "./home/FavoritesStrip";
 
@@ -47,6 +48,7 @@ export default function UserHome() {
       <WatchStrip pinned={prefs.pinned} favorites={prefs.favorites} prices={prices} onRemove={onRemove} />
       {error && <p role="alert" className="rounded-lg bg-neon-red/10 p-3 text-sm text-neon-red">{error}</p>}
       <RecentNotifications rows={recent} prices={prices} failed={recentFailed} prefs={prefs} />
+      <MaBuyRecent />
     </div>
   );
 }

@@ -5387,6 +5387,16 @@ async def claim_ma_buy_notify(symbol: str, timeframe: str, bar_open_ms: int) -> 
     return await _run_db(op)
 
 
+async def list_ma_buy_notified(since_ts: float, limit: int = 30) -> list[dict]:
+    """Kullanıcıya push'u GERÇEKTEN gitmiş MA BUY sinyalleri (en yeni önce) — ana sayfa / radar listesi."""
+    def op(conn):
+        rows = conn.execute(
+            "SELECT * FROM ma_buy_signals WHERE notified_at >= ? AND push_ok = TRUE ORDER BY notified_at DESC LIMIT ?",
+            (float(since_ts), int(limit))).fetchall()
+        return [_ma_buy_row(r) for r in rows]
+    return await _run_db(op)
+
+
 async def mark_ma_buy_delivery(signal_id: int, *, push_ok: bool | None = None, paper_status: str | None = None,
                                paper_trade_id: int | None = None) -> None:
     """Bildirim/otonom paper sonucunu sinyal satırına yazar (None alanlar korunur)."""

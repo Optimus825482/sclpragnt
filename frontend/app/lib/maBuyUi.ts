@@ -419,3 +419,49 @@ export function formatTargetPct(map: Record<string, number | null | undefined>):
     return typeof v === "number" && Number.isFinite(v) && v > 0;
   }).map((t) => `${t}:${map[t]}`).join(",");
 }
+
+// ---------------------------------------------------------------- Ana sayfa / radar: gönderilen MA BUY bildirimleri
+/** GET /api/ma-buy/recent öğesi (push'u gitmiş sinyal). */
+export type MaBuyRecentItem = {
+  id: number;
+  symbol: string;
+  timeframe: string;
+  rules: string[];
+  signalPrice: number | null;
+  notifiedAt: number | null; // epoch saniye
+  paperStatus: string | null;
+};
+
+/** Ham yanıt → güvenli liste (bozuk satırlar atılır). */
+export function parseRecent(raw: unknown): MaBuyRecentItem[] {
+  const items = (raw as { items?: unknown })?.items;
+  if (!Array.isArray(items)) return [];
+  return items.flatMap((it) => {
+    const r = it as Record<string, unknown>;
+    const symbol = String(r?.symbol ?? "").toUpperCase();
+    const id = num(r?.id);
+    if (!symbol || id === null) return [];
+    return [{
+      id,
+      symbol,
+      timeframe: String(r.timeframe ?? ""),
+      rules: Array.isArray(r.rules) ? r.rules.map(String) : String(r.rules ?? "").split(",").filter(Boolean),
+      signalPrice: num(r.signal_price),
+      notifiedAt: num(r.notified_at),
+      paperStatus: r.paper_status == null ? null : String(r.paper_status),
+    }];
+  });
+}
+
+/** Otonom paper sonucu → kısa etiket + ton. */
+export function paperStatusChip(status: string | null): { text: string; tone: "good" | "muted" } | null {
+  if (!status) return null;
+  if (status === "acildi") return { text: "Paper açıldı", tone: "good" };
+  return { text: "Paper açılmadı", tone: "muted" };
+}
+
+/** Sinyal fiyatından bu yana değişim (%); fiyatlardan biri yoksa null. */
+export function changeSinceSignal(signalPrice: number | null, live: number | null | undefined): number | null {
+  if (signalPrice === null || signalPrice <= 0 || live == null || !Number.isFinite(live) || live <= 0) return null;
+  return ((live - signalPrice) / signalPrice) * 100;
+}

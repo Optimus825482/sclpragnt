@@ -279,3 +279,25 @@ describe("Ayarlar > MA BUY yardımcıları", () => {
     expect(formatTargetPct({ "1m": NaN, "5m": 0 })).toBe("");
   });
 });
+
+import { changeSinceSignal, paperStatusChip, parseRecent } from "./maBuyUi";
+
+describe("gönderilen MA BUY bildirimleri listesi", () => {
+  it("yanıtı ayrıştırır, bozuk satırı atar", () => {
+    const items = parseRecent({ items: [
+      { id: 1, symbol: "senttry", timeframe: "5m", rules: ["fast_cross_mid"], signal_price: "1.06", notified_at: 100, paper_status: "acildi" },
+      { id: null, symbol: "X" },
+      { id: 2, symbol: "", timeframe: "1m" },
+    ] });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ symbol: "SENTTRY", signalPrice: 1.06, paperStatus: "acildi" });
+    expect(parseRecent(null)).toEqual([]);
+  });
+  it("paper durumu ve değişim", () => {
+    expect(paperStatusChip("acildi")?.tone).toBe("good");
+    expect(paperStatusChip("symbol_dedup")?.text).toBe("Paper açılmadı");
+    expect(paperStatusChip(null)).toBeNull();
+    expect(changeSinceSignal(100, 101)).toBeCloseTo(1);
+    expect(changeSinceSignal(null, 101)).toBeNull();
+  });
+});

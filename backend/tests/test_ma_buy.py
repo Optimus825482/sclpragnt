@@ -257,5 +257,51 @@ class RouterAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/admin/ma-buy-signals", app.openapi()["paths"])
 
 
+
+class SentTryRegressionTests(unittest.TestCase):
+    """2026-10-18 canlı hata: SENTTRY M5 22:45 — grafikteki MA Ribbon (SMA) hızlıyı ortanın ALTINA indirirken
+    EMA ile hesap 'turuncu maviyi yukarı kesti' bildirimi üretti. Gerçek 130 kapanış (son mum = 22:45)."""
+
+    CLOSES = [1.0662,1.0712,1.0633,1.0677,1.0673,1.0689,1.0791,1.081,1.0856,1.1008,1.1012,1.1064,1.0952,1.0907,1.0933,1.0755,1.0722,1.0789,1.0804,1.0725,1.0757,1.0706,1.0741,1.075,1.0726,1.0736,1.076,1.072,1.0779,1.0753,1.0744,1.0789,1.0741,1.062,1.0667,1.0715,1.0694,1.0718,1.0708,1.0696,1.0692,1.0641,1.056,1.0556,1.0586,1.0595,1.0655,1.0614,1.0605,1.0584,1.0585,1.0562,1.0588,1.0574,1.0486,1.048,1.0509,1.0552,1.0608,1.0606,1.054,1.06,1.0555,1.0604,1.0554,1.0535,1.0473,1.0491,1.0503,1.0394,1.0462,1.0486,1.0519,1.0575,1.0537,1.0527,1.0502,1.0448,1.0512,1.0546,1.0568,1.0621,1.0603,1.0609,1.0568,1.0558,1.0562,1.0595,1.0606,1.058,1.0534,1.0545,1.0534,1.055,1.053,1.0522,1.0563,1.05,1.0482,1.0474,1.0521,1.0495,1.052,1.0597,1.0575,1.0559,1.0536,1.0505,1.0565,1.0616,1.0604,1.0626,1.0596,1.0597,1.0623,1.0658,1.0631,1.0643,1.0693,1.0683,1.069,1.0737,1.0751,1.0758,1.0724,1.0608,1.057,1.0603,1.0561,1.0694]
+
+    def test_ema_fires_but_chart_sma_does_not(self):
+        last = len(self.CLOSES) - 1
+        ema = [h["index"] for h in ma_buy_signals.detect_ma_buy(self.CLOSES, (7, 20, 99), use_sma=False, stoch_max=80.0)]
+        sma = [h["index"] for h in ma_buy_signals.detect_ma_buy(self.CLOSES, (7, 20, 99), use_sma=True, stoch_max=80.0)]
+        self.assertIn(last, ema)       # hatanın kaynağı: EMA bu mumda yukarı kesişim görüyor
+        self.assertNotIn(last, sma)    # grafik (SMA) görmüyor → varsayılan SMA olmalı
+
+    def test_tracker_default_uses_sma(self):
+        from app.config import config
+        self.assertEqual(str(config.MA_BUY_MA_TYPE).lower(), "sma")
+
+
+class RecentRouteTests(unittest.IsolatedAsyncioTestCase):
+    """Kullanıcı listesi: push'u gitmiş MA sinyalleri (ana sayfa + radar)."""
+
+    async def test_requires_login(self):
+        from fastapi import HTTPException
+        from app.routers import ma_buy
+        with patch("app.main._require_user", side_effect=HTTPException(status_code=401, detail="login")):
+            with self.assertRaises(HTTPException) as cm:
+                await ma_buy.recent_ma_buy_notifications(MagicMock(), hours=12, limit=10)
+        self.assertEqual(cm.exception.status_code, 401)
+
+    async def test_lists_notified_items(self):
+        from app.routers import ma_buy
+        rows = [{"id": 7, "symbol": "AAATRY", "timeframe": "5m", "rules": "fast_cross_mid", "signal_price": 1.0,
+                 "notified_at": 100.0, "push_ok": True, "paper_status": "acildi", "eval_attempts": 0}]
+        q = AsyncMock(return_value=rows)
+        with patch("app.main._require_user", return_value={"username": "u"}),                 patch.object(ma_buy.database, "list_ma_buy_notified", q):
+            out = await ma_buy.recent_ma_buy_notifications(MagicMock(), hours=6, limit=5)
+        self.assertEqual(out["items"][0]["rules"], ["fast_cross_mid"])
+        self.assertEqual(out["items"][0]["paper_status"], "acildi")
+        self.assertEqual(q.await_args.kwargs["limit"], 5)
+
+    def test_route_registered(self):
+        from app.main import app
+        self.assertIn("/api/ma-buy/recent", app.openapi()["paths"])
+
+
 if __name__ == "__main__":
     unittest.main()
