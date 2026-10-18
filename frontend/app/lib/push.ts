@@ -22,9 +22,63 @@ export function detectBrowser(): BrowserKind {
   return "other";
 }
 
+/**
+ * iPhone/iPad/iPod mu? iPadOS 13+ Safari kendini "Macintosh" olarak tanıtır (masaüstü UA);
+ * Mac'ten tek ayrım dokunmatik noktalardır (`maxTouchPoints > 1`). Saf: testlenebilsin diye
+ * UA/platform/dokunma sayısı parametre alır.
+ */
+export function isIOSLike(ua: string, platform = "", maxTouchPoints = 0): boolean {
+  if (/iphone|ipad|ipod/i.test(ua)) return true;
+  return (platform === "MacIntel" || /macintosh/i.test(ua)) && maxTouchPoints > 1;
+}
+
+export function isIOS(): boolean {
+  if (typeof window === "undefined") return false;
+  return isIOSLike(navigator.userAgent || "", navigator.platform || "", navigator.maxTouchPoints || 0);
+}
+
+/** UA'dan iOS/iPadOS sürümü: "OS 17_4" (iPhone/iPad UA) ya da "Version/17.4" (iPadOS masaüstü UA). */
+export function parseIosVersion(ua: string): { major: number; minor: number } | null {
+  const match = /\bOS (\d+)[_.](\d+)/.exec(ua) || /\bVersion\/(\d+)\.(\d+)/.exec(ua);
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2]) };
+}
+
+/**
+ * Web Push iOS/iPadOS'ta 16.4'te geldi ve YALNIZ Ana Ekrana eklenen uygulamada çalışır.
+ * Sürüm okunamazsa engelleme (null → destekli say; asıl kapı `PushManager` kontrolüdür).
+ */
+export function iosSupportsWebPush(ua: string): boolean {
+  const version = parseIosVersion(ua);
+  if (!version) return true;
+  return version.major > 16 || (version.major === 16 && version.minor >= 4);
+}
+
+export type OnboardingStep = "ios_old" | "browser_warn" | "install" | "notify";
+
+/**
+ * Onboarding'in İLK adımı. iOS'ta "Chrome kullanın" uyarısı YOKTUR (doğru tarayıcı Safari;
+ * kurulum Paylaş → Ana Ekrana Ekle ile yapılır) ve kurulu (standalone) değilken bildirim
+ * adımına GEÇİLMEZ: Safari sekmesinde `PushManager` yoktur, izin istemek çıkmaz sokaktır.
+ */
+export function firstOnboardingStep(env: {
+  ios: boolean;
+  iosPushOk: boolean;
+  browser: BrowserKind;
+  standalone: boolean;
+}): OnboardingStep {
+  if (env.ios) {
+    if (!env.iosPushOk) return "ios_old";
+    return env.standalone ? "notify" : "install";
+  }
+  if (env.browser !== "chrome") return "browser_warn";
+  return env.standalone ? "notify" : "install";
+}
+
 export function isMobileDevice(): boolean {
   if (typeof window === "undefined") return false;
-  return /android|iphone|ipad|ipod|mobile|iemobile/i.test(navigator.userAgent || "");
+  // iPadOS "Macintosh" UA'sı taşıdığı için ayrıca `isIOS()` bakılır (iPad de mobil akışa girer).
+  return /android|iphone|ipad|ipod|mobile|iemobile/i.test(navigator.userAgent || "") || isIOS();
 }
 
 export function isStandalonePwa(): boolean {

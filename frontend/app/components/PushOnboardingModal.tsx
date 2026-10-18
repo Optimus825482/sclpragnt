@@ -4,25 +4,32 @@
  * Mobil/standalone PWA onboarding — tarayıcı uyarısı → kurulum uyarısı → bildirim izni.
  *
  * Akış (yalnız mobilde, oturum açılınca, bir kez):
+ *  Android/diğer:
  *  1. Chrome DEĞİLSE      → "Sistem en iyi Chrome ile çalışır" uyarısı (kapatılabilir)
- *  2. PWA kurulu DEĞİLSE  → "Uygulama olarak yükle" adımı (Android: native kurulum,
- *                           iOS: Paylaş → Ana Ekrana Ekle talimatı)
+ *  2. PWA kurulu DEĞİLSE  → "Uygulama olarak yükle" adımı (native kurulum)
  *  3. PWA kurulu ise      → bildirim izni iste + push aboneliği kaydet
+ *  iPhone/iPad (2026-10-18, mobil denetimi I1): "Chrome önerilir" uyarısı YOK (doğru tarayıcı
+ *  Safari). iOS < 16.4 → "güncelle" bilgisi. Kurulu (standalone) DEĞİLSE yalnız Paylaş →
+ *  Ana Ekrana Ekle yönergesi gösterilir ve bildirim adımına GEÇİLMEZ (Safari sekmesinde
+ *  PushManager yoktur); bildirim izni uygulama ana ekrandan açılınca sorulur.
  *
  * Kurulum tamamlandıktan sonra kullanıcı PWA'yı standalone açtığında adım 3
  * (bildirim izni) tekrar gösterilir — standalone modal'ları atlamaz.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ensurePushSubscription, detectBrowser, isMobileDevice, isStandalonePwa, pushSupported } from "../lib/push";
+import {
+  ensurePushSubscription, detectBrowser, firstOnboardingStep, iosSupportsWebPush, isIOS, isMobileDevice,
+  isStandalonePwa, pushSupported, type OnboardingStep,
+} from "../lib/push";
 
-type Step = "browser_warn" | "install" | "notify" | null;
+type Step = OnboardingStep | null;
 
 const STORAGE_KEY = "scalper:mobile-onboarding";
 const NOTIF_ASKED_KEY = "scalper:notif-asked";
 
-function iOS() {
-  if (typeof window === "undefined") return false;
-  return /iphone|ipad|ipod/i.test(navigator.userAgent || "");
+/** iOS'ta Safari dışı bir tarayıcı mı (Chrome/Firefox/Edge/Opera iOS)? */
+function iosNonSafari() {
+  return typeof navigator !== "undefined" && /crios|fxios|edgios|opios/i.test(navigator.userAgent || "");
 }
 
 export default function PushOnboardingModal({ active = false }: { active?: boolean }) {
@@ -62,12 +69,13 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
 
       const timer = window.setTimeout(() => {
         if (cancelled) return;
-        // 1) Chrome dışı tarayıcı uyarısı önce gelir
-        if (detectBrowser() !== "chrome") { setStep("browser_warn"); return; }
-        // 2) Kurulu değilse kurulum adımı
-        if (!isStandalonePwa()) { setStep("install"); return; }
-        // 3) Kurulu PWA → bildirim izni (standalone'da modal atlanmaz artık)
-        setStep("notify");
+        // İlk adım platforma göre seçilir (iOS'ta Chrome uyarısı yok; kurulu değilse bildirim adımı yok).
+        setStep(firstOnboardingStep({
+          ios: isIOS(),
+          iosPushOk: iosSupportsWebPush(navigator.userAgent || ""),
+          browser: detectBrowser(),
+          standalone: isStandalonePwa(),
+        }));
       }, 1200);
       return () => window.clearTimeout(timer);
     };
@@ -114,6 +122,12 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
   const enableNotifications = async () => {
     setBusy(true); setError("");
     try {
+      // iOS'ta bildirim yalnız Ana Ekrana eklenen uygulamada çalışır; Safari sekmesinde izin istemek anlamsız.
+      if (isIOS() && !isStandalonePwa()) {
+        setError("iPhone/iPad'de bildirimler yalnız Ana Ekrana eklenen uygulamada çalışır. Önce Paylaş → Ana Ekrana Ekle, sonra uygulamayı ana ekrandan aç.");
+        setStep("install");
+        return;
+      }
       const result = await ensurePushSubscription();
       if (!result.ok) {
         if (result.reason === "izin_verilmedi") {
@@ -128,7 +142,9 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
         } else if (result.reason === "vapid_key_gecersiz" || result.reason === "vapid_key_gecersiz_boyut") {
           setError("Bildirim anahtarı geçersiz. Sistem yöneticisi VAPID public key'i yeniden üretip yapılandırmalı.");
         } else if (result.reason === "push_yok" || result.reason === "service_worker_yok") {
-          setError("Bu tarayıcı/sürüm Web Push desteklemiyor — Chrome ile açmayı deneyin.");
+          setError(isIOS()
+            ? "Bu iOS sürümü Web Push desteklemiyor (iOS 16.4 veya üstü gerekir) ya da uygulama Ana Ekrandan açılmadı. Ana Ekrana ekleyip oradan açın."
+            : "Bu tarayıcı/sürüm Web Push desteklemiyor — Chrome ile açmayı deneyin.");
         } else {
           setError(`Bildirimler etkinleştirilemedi: ${result.reason}`);
         }
@@ -146,7 +162,7 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
 
   if (!step) return null;
 
-  const isIOS = iOS();
+  const ios = isIOS();
 
   return (
     <div className="fixed inset-0 z-[115] grid place-items-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-labelledby="push-onboard-title">
@@ -168,6 +184,31 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
               <div className="flex justify-end gap-2 pt-1">
                 <button type="button" onClick={dismissNow} className="ui-button ui-button-secondary">KAPAT</button>
                 <button type="button" onClick={browserWarnOk} className="ui-button ui-button-primary">DEVAM ET</button>
+              </div>
+              <div className="text-center">
+                <button type="button" onClick={dismissForever} className="font-mono text-[11px] text-bunker-muted/70 underline-offset-2 hover:text-bunker-muted hover:underline">
+                  BİR DAHA GÖSTERME
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {step === "ios_old" && (
+          <>
+            <div className="flex items-center gap-2 border-b border-bunker-800 px-5 py-4">
+              <span className="text-xl">📱</span>
+              <div>
+                <p className="eyebrow">BİLDİRİMLER</p>
+                <h2 id="push-onboard-title" className="font-mono text-lg font-bold text-white">iOS güncellemesi gerekli</h2>
+              </div>
+            </div>
+            <div className="space-y-3 p-5">
+              <p className="text-sm leading-relaxed text-bunker-muted">
+                iPhone/iPad&apos;de web bildirimleri <strong className="text-white">iOS 16.4 veya üstünde</strong> çalışır. Ayarlar → Genel → Yazılım Güncelleme&apos;den güncelledikten sonra uygulamayı Ana Ekrana ekleyip bildirimleri açabilirsin.
+              </p>
+              <div className="flex justify-end gap-2 pt-1">
+                <button type="button" onClick={dismissNow} className="ui-button ui-button-primary">TAMAM</button>
               </div>
               <div className="text-center">
                 <button type="button" onClick={dismissForever} className="font-mono text-[11px] text-bunker-muted/70 underline-offset-2 hover:text-bunker-muted hover:underline">
@@ -200,19 +241,34 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
                     Kurulum tamamlanınca uygulamayı ana ekrandan aç — bildirim izni orada sorulacak.
                   </p>
                 </div>
+              ) : ios ? (
+                <div className="space-y-2 text-sm leading-relaxed text-bunker-muted">
+                  {iosNonSafari() && (
+                    <p className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-amber-200">
+                      Şu an Safari dışı bir tarayıcıdasın. En güvenlisi bu adresi <strong className="text-white">Safari</strong>&apos;de açmaktır.
+                    </p>
+                  )}
+                  <ol className="list-decimal space-y-1.5 pl-5">
+                    <li><strong className="text-white">Paylaş</strong> simgesine (⎋ — kareden çıkan ok) dokun. iPhone&apos;da ekranın altında, iPad&apos;de üstündedir.</li>
+                    <li>Listeyi kaydırıp <strong className="text-white">“Ana Ekrana Ekle”</strong>yi seç, sonra <strong className="text-white">Ekle</strong>.</li>
+                    <li>Uygulamayı <strong className="text-white">ana ekrandaki simgesinden</strong> aç. Bildirim izni orada sorulacak.</li>
+                  </ol>
+                  <p className="text-xs">Bildirimler iPhone/iPad&apos;de yalnız Ana Ekrana eklenen uygulamada çalışır (iOS 16.4 veya üstü).</p>
+                </div>
               ) : (
                 <p className="text-sm leading-relaxed text-bunker-muted">
-                  {isIOS
-                    ? "Safari'de Paylaş (⎋) → “Ana Ekrana Ekle” ile uygulamayı kur. Bildirimler yalnız kurulu uygulamada çalışır."
-                    : "Uygulamayı cihazına kurduğunda bildirimler kapalıyken bile çalışır ve hızlı erişim sağlarsın."}
+                  Uygulamayı cihazına kurduğunda bildirimler kapalıyken bile çalışır ve hızlı erişim sağlarsın.
                 </p>
               )}
               {error && <p role="alert" className="rounded-lg border border-neon-red/40 bg-neon-red/10 px-3 py-2 text-sm text-neon-red">{error}</p>}
               <div className="flex justify-end gap-2 pt-1">
-                <button type="button" onClick={() => setStep("notify")} className="ui-button ui-button-secondary">SONRA</button>
-                {isIOS ? (
-                  <button type="button" onClick={() => setStep("notify")} className="ui-button ui-button-primary">ANLADIM</button>
+                {ios ? (
+                  // iOS'ta kurulu değilken bildirim adımına GEÇİLMEZ.
+                  <button type="button" onClick={dismissNow} className="ui-button ui-button-primary">TAMAM</button>
                 ) : (
+                  <button type="button" onClick={() => setStep("notify")} className="ui-button ui-button-secondary">SONRA</button>
+                )}
+                {!ios && (
                   <button type="button" onClick={installPwa} disabled={busy} className="ui-button ui-button-primary">
                     {busy ? "KURULUYOR…" : installHelp ? "KURDUM, DEVAM ET" : "📲 UYGULAMA OLARAK YÜKLE"}
                   </button>

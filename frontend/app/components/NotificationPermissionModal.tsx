@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ensurePushSubscription } from "../lib/push";
+import { ensurePushSubscription, isMobileDevice } from "../lib/push";
 
 const STORAGE_KEY = "scalper:notification-permission-asked";
 
@@ -15,7 +15,7 @@ export default function NotificationPermissionModal({ active = false }: { active
 
   useEffect(() => {
     if (typeof window === "undefined" || !active) return;
-    const mobile = /android|iphone|ipad|ipod|mobile|iemobile/i.test(navigator.userAgent || "");
+    const mobile = isMobileDevice();
     if (mobile) return; // mobilde PushOnboardingModal çalışır
     if (!("Notification" in window) || !("serviceWorker" in navigator)) return;
     if (Notification.permission === "denied") return; // kalıcı red — tekrar sorma
