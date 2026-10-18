@@ -159,6 +159,10 @@ const REASONS: Record<string, { label: string; tone: RadarLogTone }> = {
   risk_odul_kapisi: { label: "Risk/ödül kapısı", tone: "warn" },
   macd_histerezisi: { label: "MACD histerezisi", tone: "muted" },
   yalniz_hiz_adayi_izleme_listesine_alindi: { label: "Yalnız-hız adayı", tone: "muted" },
+  paper_acildi: { label: "Paper açıldı", tone: "success" },
+  paper_guncellendi: { label: "Paper TP güncellendi", tone: "info" },
+  paper_engellendi: { label: "Paper engellendi", tone: "warn" },
+  paper_denenmedi: { label: "Paper denenmedi", tone: "muted" },
 };
 
 /** Neden kodu -> Türkçe etiket + ton. Bilinmeyen kod: ham kod, nötr ton, `known=false`. Boşsa null. */

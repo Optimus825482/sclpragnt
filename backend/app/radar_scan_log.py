@@ -62,6 +62,11 @@ REASON_META = {
     "risk_odul_kapisi": ("Risk/ödül kapısı", "warn"),
     "macd_histerezisi": ("MACD histerezisi", "muted"),
     "yalniz_hiz_adayi_izleme_listesine_alindi": ("Yalnız-hız adayı", "muted"),
+    # otonom paper giriş sonucu (bildirildi satırlarında)
+    "paper_acildi": ("Paper açıldı", "success"),
+    "paper_guncellendi": ("Paper TP güncellendi", "info"),
+    "paper_engellendi": ("Paper engellendi", "warn"),
+    "paper_denenmedi": ("Paper denenmedi", "muted"),
 }
 
 _SLUG_RE = re.compile(r"[^a-z0-9_]+")
@@ -221,6 +226,37 @@ def build_entry(*, scan_no: int, scan_at: float, scans: dict, candidates: Iterab
             "risk_off_unknown": bool(risk_off_unknown), "min_panel_score": _round(min_panel_score, 1),
             "min_raw_score": _round(min_raw_score, 1), "pool": pool, "counts": counts, "rows": rows,
             "notify_context": dict(notify_context or {})}
+
+
+def note_paper_result(symbol: str, result) -> None:
+    """Teslim aşamasında otonom paper girişinin sonucunu SON tarama kaydının ilgili satırına işler (teşhis).
+
+    `result`: `try_open_from_notification` dönüşü (dict ya da None). Satırın nedeni "paper: ..." olur; durum değişmez."""
+    sym = str(symbol or "").upper()
+    if not sym:
+        return
+    if isinstance(result, dict):
+        status = str(result.get("status") or "")
+        if status in ("opened",):
+            text, code = "paper: otonom pozisyon AÇILDI", "paper_acildi"
+        elif status in ("tp_updated", "no_change"):
+            text, code = "paper: açık pozisyon vardı (TP güncellendi/değişmedi)", "paper_guncellendi"
+        else:
+            text, code = f"paper: engellendi ({result.get('reason') or status or '?'})", "paper_engellendi"
+    else:
+        text, code = "paper: giriş denenmedi/sonuç yok (otonom kapalı ya da sessiz çıkış)", "paper_denenmedi"
+    with _lock:
+        if not _log:
+            return
+        for row in _log[-1].get("rows", []):
+            if row.get("symbol") == sym and row.get("status") in ("notified", "detected", "held"):
+                row.update(reason_info(text))
+                row["reason_code"] = code
+                label, tone = REASON_META.get(code, (code, "neutral"))
+                row["reason_label"], row["reason_tone"] = label, tone
+                row["paper"] = {"status": str(result.get("status")) if isinstance(result, dict) else None,
+                                "reason": result.get("reason") if isinstance(result, dict) else None}
+                break
 
 
 def record(entry: dict) -> None:

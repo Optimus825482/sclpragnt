@@ -112,6 +112,32 @@ class HeldTests(unittest.TestCase):
             self.assertIn(code, rsl.REASON_META, text)
 
 
+class PaperResultTests(unittest.TestCase):
+    def setUp(self):
+        rsl.reset()
+        rsl.record(_entry())
+
+    def _row(self, sym):
+        return next(r for r in rsl.get_log(limit=1)["scans"][0]["rows"] if r["symbol"] == sym)
+
+    def test_opened_blocked_and_none(self):
+        rsl.note_paper_result("NOTIFTRY", {"status": "opened", "trade_id": 3})
+        r = self._row("NOTIFTRY")
+        self.assertEqual((r["status"], r["reason_code"]), ("notified", "paper_acildi"))
+        rsl.note_paper_result("DETTRY", {"status": "blocked", "reason": "max_open"})
+        r = self._row("DETTRY")
+        self.assertEqual(r["reason_code"], "paper_engellendi")
+        self.assertIn("max_open", r["reason"])
+        self.assertEqual(r["paper"]["reason"], "max_open")
+        rsl.note_paper_result("GATEDTRY", None)                 # gated satıra dokunulmaz
+        self.assertEqual(self._row("GATEDTRY")["reason_code"], "skor_tabani")
+
+    def test_unknown_symbol_and_empty_log_are_safe(self):
+        rsl.note_paper_result("NOPETRY", {"status": "opened"})
+        rsl.reset()
+        rsl.note_paper_result("NOTIFTRY", None)
+
+
 class LogBufferTests(unittest.TestCase):
     def setUp(self):
         rsl.reset()

@@ -2391,14 +2391,27 @@ async def _deliver_scan_notifications(notified: list) -> None:
             # bildirimlerde; aksi halde giriş hiç denenmezdi.
             # 2026-10-18: sessizlik nabzı (zayıf/teyitsiz aday) otonom paper girişi AÇMAZ.
             if notif.get("notify_tier") == _notification_policy.TIER_HEARTBEAT:
+                try:
+                    from app import radar_scan_log
+                    radar_scan_log.note_paper_result(notif.get("symbol"), {"status": "blocked", "reason": "teyitsiz nabız bildirimi paper açmaz"})
+                except Exception:  # noqa: BLE001
+                    pass
                 continue
             if id(notif) in _attempted_ids and _defer_open_for_llm_second_eye(notif):
                 notif["_llm_entry_deferred"] = True
                 continue
+            _paper_res = None
             try:
-                await try_open_from_notification(notif)
+                _paper_res = await try_open_from_notification(notif)
             except Exception as exc:
-                logger.debug("auto_paper %s denemesi: %s", notif.get("symbol"), exc)
+                logger.warning("auto_paper %s denemesi: %s", notif.get("symbol"), exc)
+                _paper_res = {"status": "blocked", "reason": f"exception:{type(exc).__name__}"}
+            # 2026-10-18: paper giriş sonucu admin tarama günlüğüne işlenir (bildirim geldi ama paper açılmadı teşhisi).
+            try:
+                from app import radar_scan_log
+                radar_scan_log.note_paper_result(notif.get("symbol"), _paper_res)
+            except Exception:  # noqa: BLE001
+                pass
     except ImportError:
         pass
     except Exception as exc:
