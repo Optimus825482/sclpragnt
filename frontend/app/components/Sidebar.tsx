@@ -12,6 +12,7 @@ import AdminViewSwitch from "./AdminViewSwitch";
 import { useAuth } from "../lib/auth";
 import { canViewMacdMonitor } from "../lib/macdAccess";
 import { ML_PROB_CLASS, ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
+import { openAssistant } from "../lib/assistantEvents";
 
 const MENU_ITEMS = [
     { href: "/profile", label: "Profil", icon: "👤", desc: "Hesap ve şifre" },
@@ -179,6 +180,20 @@ export default function Sidebar() {
                         </div>
                     );
                 })}
+                {/* Mobilde yüzen asistan düğmesi yok; grafik sayfasında asistan menüden açılır (masaüstünde düğme durur). */}
+                {pathname.startsWith("/charts") && (
+                    <button
+                        type="button"
+                        onClick={() => { setOpen(false); openAssistant(); }}
+                        className="md:hidden block w-full text-left px-3 py-2.5 rounded-lg border border-cyan-400/30 bg-cyan-500/10 touch-target"
+                    >
+                        <span className="flex items-center gap-2.5">
+                            <span className="text-sm">🤖</span>
+                            <span className="font-mono text-sm text-white">Asistan</span>
+                        </span>
+                        <span className="block text-[11px] text-bunker-muted mt-0.5 ml-7">Grafik asistanını aç</span>
+                    </button>
+                )}
             </nav>
 
             <div className="p-4 border-t border-bunker-800">

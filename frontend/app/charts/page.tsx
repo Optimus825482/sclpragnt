@@ -40,6 +40,7 @@ import {
 } from "./signals";
 import { BadgeMarkers, badgeFromSignal, type Badge } from "./badgeMarkers";
 
+import { OPEN_ASSISTANT_EVENT } from "../lib/assistantEvents";
 import { istanbulLocalization, istanbulTickMarkFormatter } from "../lib/chartTime";
 /* H-02: null/NaN K/Z NÖTR renkte olmalı (proje kuralı: yeşil=kâr, kırmızı=zarar,
  * veri yok=nötr). `?? 0` ile 0'a çevirip yeşile boyamak yasak. */
@@ -120,6 +121,12 @@ export default function ChartsPage() {
     const [symbols, setSymbols] = useState<string[]>(FALLBACK_SYMBOLS);
     const [analysisOpen, setAnalysisOpen] = useState(false);
     const [assistantOpen, setAssistantOpen] = useState(false);
+    // Mobilde asistan yüzen düğme yerine menüden açılır (`open-assistant` olayı).
+    useEffect(() => {
+        const handleOpen = () => setAssistantOpen(true);
+        window.addEventListener(OPEN_ASSISTANT_EVENT, handleOpen);
+        return () => window.removeEventListener(OPEN_ASSISTANT_EVENT, handleOpen);
+    }, []);
     const [interval, setTf] = useState<string>("5m");
     const [loading, setLoading] = useState(true);
     const [mode] = useUiMode();
@@ -2285,7 +2292,7 @@ export default function ChartsPage() {
                 <button
                     type="button"
                     onClick={() => setAssistantOpen(true)}
-                    className="fixed bottom-20 md:bottom-5 right-4 md:right-5 z-[80] flex items-center gap-2 rounded-full border border-cyan-400/60 bg-cyan-600/90 hover:bg-cyan-500 text-white px-4 py-2.5 shadow-xl shadow-cyan-950/60 transition-all hover:scale-105 active:scale-95 font-sans font-bold text-xs"
+                    className="fixed bottom-5 right-5 z-[80] hidden md:flex items-center gap-2 rounded-full border border-cyan-400/60 bg-cyan-600/90 hover:bg-cyan-500 text-white px-4 py-2.5 shadow-xl shadow-cyan-950/60 transition-all hover:scale-105 active:scale-95 font-sans font-bold text-xs"
                     title={`${symbol} Grafik Asistanını Aç`}
                 >
                     <span className="text-base">🤖</span>
