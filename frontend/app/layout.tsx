@@ -6,6 +6,7 @@ import "./user-palette.generated.css";
 import "./user-theme.manual.css";
 import AuthGate from "./components/AuthGate";
 import AppShell from "./components/AppShell";
+import AppUpdater from "./components/AppUpdater";
 
 export const BUILD_ID = process.env.NEXT_PUBLIC_BUILD_ID || "dev";
 
@@ -53,6 +54,7 @@ export default function RootLayout({
       <head><meta name="mobile-web-app-capable" content="yes" /><meta name="build-id" content={BUILD_ID} /></head>
       {/* Extension noise lands on <body> too; same suppression, children unaffected. */}
       <body suppressHydrationWarning className={`${plex.variable} ${poppins.variable} ${inter.variable} ${jetbrains.variable}`}>
+        <AppUpdater />
         <AuthGate>
         <AppShell>{children}</AppShell>
         </AuthGate>

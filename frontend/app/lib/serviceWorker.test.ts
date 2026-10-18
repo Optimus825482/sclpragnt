@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { serviceWorkerUrl } from "./serviceWorker";
+import { MIN_UPDATE_CHECK_GAP_MS, SERVICE_WORKER_URL, shouldRunUpdateCheck } from "./serviceWorker";
 
-describe("serviceWorkerUrl", () => {
-  it("build ve vapid anahtarını sorguya koyar", () => {
-    expect(serviceWorkerUrl("abc123", "BKey_-9")).toBe("/sw.js?v=abc123&vapid=BKey_-9");
+describe("serviceWorker", () => {
+  it("SW adresi sabit: sorgu (build/vapid) yok", () => {
+    expect(SERVICE_WORKER_URL).toBe("/sw.js");
   });
-  it("vapid yoksa yalnız build", () => {
-    expect(serviceWorkerUrl("abc123", "")).toBe("/sw.js?v=abc123");
+
+  it("sürüm denetimi: hiç yapılmadıysa çalışır", () => {
+    expect(shouldRunUpdateCheck(0, 1_000)).toBe(true);
   });
-  it("build boşsa dev", () => {
-    expect(serviceWorkerUrl("", "")).toBe("/sw.js?v=dev");
+  it("sürüm denetimi: aralık dolmadan tekrarlanmaz", () => {
+    expect(shouldRunUpdateCheck(10_000, 10_000 + MIN_UPDATE_CHECK_GAP_MS - 1)).toBe(false);
   });
-  it("özel karakterleri kodlar", () => {
-    expect(serviceWorkerUrl("1", "a+b/c")).toBe("/sw.js?v=1&vapid=a%2Bb%2Fc");
+  it("sürüm denetimi: aralık dolunca çalışır", () => {
+    expect(shouldRunUpdateCheck(10_000, 10_000 + MIN_UPDATE_CHECK_GAP_MS)).toBe(true);
   });
 });

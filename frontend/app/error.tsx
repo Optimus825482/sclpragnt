@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
+import { isChunkLoadError, reloadForChunkError } from "./lib/chunkError";
 
 export default function ErrorPage({
   error,
@@ -9,6 +11,23 @@ export default function ErrorPage({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  // Deploy sonrası bayat sayfa: eski chunk artık yok → bir kez otomatik yenile (yeni build gelir).
+  const chunkError = isChunkLoadError(error);
+  useEffect(() => { reloadForChunkError(error); }, [error]);
+  if (chunkError) {
+    return (
+      <main className="page-shell">
+        <div className="card mt-10 flex flex-col items-center gap-4 px-6 py-12 text-center">
+          <p className="eyebrow">YENİ SÜRÜM</p>
+          <h1 className="font-mono text-xl font-bold text-white">Uygulama güncellendi</h1>
+          <p className="max-w-md text-sm text-bunker-muted">Yeni sürüm yükleniyor. Otomatik açılmazsa aşağıdaki düğmeyi kullan.</p>
+          <button type="button" className="ui-button ui-button-primary touch-target" onClick={() => window.location.reload()}>
+            SAYFAYI YENİLE
+          </button>
+        </div>
+      </main>
+    );
+  }
   return (
     <main className="page-shell">
       <div className="card mt-10 flex flex-col items-center gap-4 border-neon-red/30 bg-neon-red/5 px-6 py-12 text-center">
