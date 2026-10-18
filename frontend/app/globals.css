@@ -728,3 +728,8 @@ body { font-family: var(--font-plex), ui-sans-serif, system-ui, sans-serif; }
   .data-table th, .data-table td { padding: .6rem .6rem; }
   .overflow-x-auto:has(table), .message-table-wrap, .table-scroll { overflow-x: visible; }
 }
+
+/* 2026-10-18: `.data-table td { color }` (0,1,1) Tailwind `text-neon-*` (0,1,0) sınıfını eziyordu → tablo hücrelerinde kâr/zarar
+   renkleri görünmüyordu (İşlem geçmişi Sonuç / K/Z %). Hücre içi neon metin sınıfları artık çalışır. */
+.data-table td.text-neon-green, .data-table td.text-neon-green * { color: #79f2b4; }
+.data-table td.text-neon-red, .data-table td.text-neon-red * { color: #fb7185; }

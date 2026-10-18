@@ -56,3 +56,9 @@
 [data-theme="light"] .bg-neon-red.text-black,
 [data-theme="light"] .bg-neon-red\/90.text-white,
 [data-theme="light"] .bg-neon-red\/90.text-black { color: #fff; }
+
+/* 2026-10-18: açık temada tablo hücresi kâr/zarar renkleri (`.data-table td` rengi sınıfı eziyordu; koyu pastel yeşil/kırmızı açık zeminde okunmaz). */
+[data-theme="light"] .data-table td.text-neon-green, [data-theme="light"] .data-table td.text-neon-green *,
+[data-theme="light"] .data-table td.ui-tone-positive { color: rgb(4 108 78); }
+[data-theme="light"] .data-table td.text-neon-red, [data-theme="light"] .data-table td.text-neon-red *,
+[data-theme="light"] .data-table td.ui-tone-negative { color: rgb(185 28 28); }
