@@ -47,6 +47,7 @@ from app import binance_tr_public
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import ml_forecast
+from app import ma_buy_notify
 from app.ma_buy_tracker import ma_buy_loop
 from app import chat_prediction_learning
 from app import chat_prediction_replay
@@ -1825,14 +1826,16 @@ CONFIG_FIELDS = {
     "take_profit_pct": "SPOT_PROFIT_TARGET_PCT",
     "hard_stop_loss_pct": "HARD_STOP_LOSS_PCT",
     "cooldown_bars": "COOLDOWN_BARS",
+    # 2026-10-18: MA BUY push + otonom paper ayarları (Ayarlar > MA BUY); doğrulama `ma_buy_notify.normalize_setting`.
+    **ma_buy_notify.SETTINGS_FIELDS,
 }
 
 
 
-BOOL_FIELDS = {"top_gainers_auto_activate", "liquidity_filter_enabled", "symbol_activity_m1_flat_filter_enabled"}
+BOOL_FIELDS = {"top_gainers_auto_activate", "liquidity_filter_enabled", "symbol_activity_m1_flat_filter_enabled", *ma_buy_notify.SETTINGS_BOOL}
 DISABLED_LIVE_STRATEGY_FIELDS = set()
 INT_FIELDS = {"top_gainers_limit", "top_gainers_refresh_sec", "gainer_radar_min_score", "max_open_positions", "cooldown_bars", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
-STR_FIELDS = set()
+STR_FIELDS = set(ma_buy_notify.SETTINGS_STR)
 
 
 @app.get("/api/config")
@@ -1843,6 +1846,7 @@ async def get_config():
         "top_gainers_refresh_sec": config.TOP_GAINERS_REFRESH_SEC,
         "gainer_radar_min_score": config.GAINER_RADAR_MIN_SCORE,
         "symbols": config.SYMBOLS,
+        **ma_buy_notify.settings_snapshot(),
         "min_notional": config.MIN_NOTIONAL,
         # H-01: açık pozisyon K/Z'si frontend'de de net hesaplanabilsin diye
         # komisyon oranı tek kaynaktan (config) yayınlanır.
@@ -2318,9 +2322,9 @@ async def _apply_config_update(payload: dict, request: Request = None):
                     raise ValueError("30 dk düz M1 mum eşiği 1 ile 30 arasında olmalıdır")
                 setattr(config, attr, number)
             elif key in STR_FIELDS:
-                setattr(config, attr, str(val))
+                setattr(config, attr, str(ma_buy_notify.normalize_setting(key, val)))
             else:
-                number = float(val)
+                number = float(ma_buy_notify.normalize_setting(key, val))
                 if key in {"min_notional", "default_order_usdt", "min_24h_quote_volume_try", "high_liquidity_bypass_volume_try", "min_volume_ratio", "min_orderbook_depth_multiplier"} and number <= 0:
                     raise ValueError(f"{key} pozitif olmalıdır")
                 if key == "order_pct" and not 0 < number <= 1:

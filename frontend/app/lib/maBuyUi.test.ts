@@ -262,3 +262,20 @@ describe("maBuyUi — zaman dilimi", () => {
     expect(buildQuery({ days: 7 })).not.toContain("timeframe");
   });
 });
+
+import { formatTargetPct, formatTfList, parseTargetPct, parseTfList } from "./maBuyUi";
+
+describe("Ayarlar > MA BUY yardımcıları", () => {
+  it("TF listesi geçersizleri atar ve sabit sırayla yazar", () => {
+    const s = parseTfList("5m, 4h,1m");
+    expect([...s].sort()).toEqual(["1m", "5m"]);
+    expect(formatTfList(new Set(["5m", "1m"]))).toBe("1m,5m");
+    expect(formatTfList(new Set())).toBe("");
+  });
+  it("hedef % dizesi gidiş-dönüş korunur, boş değer yazılmaz", () => {
+    const m = parseTargetPct("1m:1,5m:1.5,15m:x");
+    expect(m).toEqual({ "1m": 1, "5m": 1.5 });
+    expect(formatTargetPct({ ...m, "15m": 2 })).toBe("1m:1,5m:1.5,15m:2");
+    expect(formatTargetPct({ "1m": NaN, "5m": 0 })).toBe("");
+  });
+});

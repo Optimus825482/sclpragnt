@@ -178,3 +178,58 @@ async def deliver(rows: list[dict], periods: tuple, now_ms: int | None = None) -
         except Exception as exc:  # noqa: BLE001
             logger.warning("MA BUY WS yayını hatası: %s", exc)
     return len(pushed)
+
+
+# ---------------------------------------------------------------------------------- admin ayarları (/api/config)
+# Ayarlar > MA BUY sekmesi bu anahtarları düzenler; `main.CONFIG_FIELDS` kalıcılığı (runtime_config) sağlar.
+SETTINGS_FIELDS = {
+    "ma_buy_tracker_enabled": "MA_BUY_TRACKER_ENABLED",
+    "ma_buy_notify_enabled": "MA_BUY_NOTIFY_ENABLED",
+    "ma_buy_auto_paper_enabled": "MA_BUY_AUTO_PAPER_ENABLED",
+    "ma_buy_notify_timeframes": "MA_BUY_NOTIFY_TIMEFRAMES",
+    "ma_buy_notify_cooldown_min": "MA_BUY_NOTIFY_COOLDOWN_MIN",
+    "ma_buy_notify_max_age_sec": "MA_BUY_NOTIFY_MAX_AGE_SEC",
+    "ma_buy_target_pct": "MA_BUY_TARGET_PCT",
+}
+SETTINGS_BOOL = {"ma_buy_tracker_enabled", "ma_buy_notify_enabled", "ma_buy_auto_paper_enabled"}
+SETTINGS_STR = {"ma_buy_notify_timeframes", "ma_buy_target_pct"}
+_FLOAT_BOUNDS = {"ma_buy_notify_cooldown_min": (0.0, 240.0, "bekleme süresi 0–240 dk"),
+                 "ma_buy_notify_max_age_sec": (10.0, 600.0, "tazelik sınırı 10–600 sn")}
+_TFS = ("1m", "5m", "15m")
+
+
+def normalize_setting(key: str, value):
+    """Ayar değerini doğrular ve normal biçime çevirir; geçersizse Türkçe `ValueError`."""
+    if key == "ma_buy_notify_timeframes":
+        items = [t.strip() for t in str(value or "").split(",") if t.strip()]
+        bad = [t for t in items if t not in _TFS]
+        if bad:
+            raise ValueError(f"MA BUY bildirim zaman dilimi geçersiz: {', '.join(bad)} (1m, 5m, 15m)")
+        return ",".join(t for t in _TFS if t in items)
+    if key == "ma_buy_target_pct":
+        out = []
+        for part in str(value or "").split(","):
+            if not part.strip():
+                continue
+            tf, _, raw = part.partition(":")
+            tf = tf.strip()
+            try:
+                pct = float(raw)
+            except ValueError:
+                pct = -1.0
+            if tf not in _TFS or not 0 < pct <= 20:
+                raise ValueError(f"MA BUY hedefi geçersiz: '{part.strip()}' (örn. 1m:1.0, hedef %0–20)")
+            out.append(f"{tf}:{pct:g}")
+        return ",".join(out)
+    if key in _FLOAT_BOUNDS:
+        lo, hi, label = _FLOAT_BOUNDS[key]
+        number = float(value)
+        if not lo <= number <= hi:
+            raise ValueError(f"MA BUY {label} olmalıdır")
+        return number
+    return value
+
+
+def settings_snapshot() -> dict:
+    """GET /api/config için mevcut (canlı) MA BUY ayarları."""
+    return {key: getattr(config, attr, None) for key, attr in SETTINGS_FIELDS.items()}

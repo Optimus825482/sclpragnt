@@ -386,3 +386,36 @@ export function errorMessage(status: number | null, detail?: string | null): str
   if (status === 401) return "Oturum bulunamadı veya süresi doldu. Lütfen yeniden giriş yapın.";
   return detail && detail.trim() ? detail : "MA BUY sinyalleri alınamadı";
 }
+
+// ---------------------------------------------------------------- Ayarlar > MA BUY (push + otonom paper)
+/** Bildirim/paper zaman dilimleri (backend `ma_buy_notify._TFS` ile aynı sıra). */
+export const MA_BUY_NOTIFY_TFS = ["1m", "5m", "15m"] as const;
+
+/** "1m,5m" → seçili TF kümesi. */
+export function parseTfList(raw: string | null | undefined): Set<string> {
+  return new Set(String(raw ?? "").split(",").map((t) => t.trim()).filter((t) => (MA_BUY_NOTIFY_TFS as readonly string[]).includes(t)));
+}
+
+/** Seçili TF kümesi → "1m,5m" (sabit sıra). */
+export function formatTfList(selected: Set<string>): string {
+  return MA_BUY_NOTIFY_TFS.filter((t) => selected.has(t)).join(",");
+}
+
+/** "1m:1,5m:1.5" → { "1m": 1, "5m": 1.5 } (bozuk parça atlanır). */
+export function parseTargetPct(raw: string | null | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const part of String(raw ?? "").split(",")) {
+    const [tf, val] = part.split(":").map((s) => s.trim());
+    const n = Number(val);
+    if (tf && (MA_BUY_NOTIFY_TFS as readonly string[]).includes(tf) && Number.isFinite(n) && n > 0) out[tf] = n;
+  }
+  return out;
+}
+
+/** { "1m": 1, "5m": 1.5 } → "1m:1,5m:1.5" (boş/geçersiz değerler yazılmaz; backend 0–20 aralığını doğrular). */
+export function formatTargetPct(map: Record<string, number | null | undefined>): string {
+  return MA_BUY_NOTIFY_TFS.filter((t) => {
+    const v = map[t];
+    return typeof v === "number" && Number.isFinite(v) && v > 0;
+  }).map((t) => `${t}:${map[t]}`).join(",");
+}
