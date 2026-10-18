@@ -20,6 +20,28 @@ export function fmtSignedTry(value: number | null | undefined, digits = 2): stri
   return body;
 }
 
+/** İşaretli yüzde: +%3,37 / −%1,80 / %0,00 (kâr/zarar sütunları için). */
+export function fmtSignedPct(value: number | null | undefined, digits = 2): string {
+  const n = Number(value);
+  if (value == null || !Number.isFinite(n)) return "—";
+  const body = `%${Math.abs(n).toLocaleString(TR, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+  if (n > 0) return `+${body}`;
+  if (n < 0) return `−${body}`;
+  return body;
+}
+
+/**
+ * Gerçekleşen net K/Z'nin SATILAN kısmın maliyetine oranı (%). Maliyet = satış tutarı − net K/Z (komisyon dahil);
+ * böylece yüzde, tabloda gösterilen net K/Z ile birebir tutarlıdır. Veri yoksa ya da maliyet ≤ 0 ise null.
+ */
+export function pnlPctOfCost(pnl: number | null | undefined, sellQuote: number | null | undefined): number | null {
+  const p = Number(pnl);
+  const q = Number(sellQuote);
+  if (pnl == null || sellQuote == null || !Number.isFinite(p) || !Number.isFinite(q)) return null;
+  const cost = q - p;
+  return cost > 0 ? (p / cost) * 100 : null;
+}
+
 export function fmtPct(value: number | null | undefined, digits = 1): string {
   const n = Number(value);
   if (value == null || !Number.isFinite(n)) return "—";
@@ -205,6 +227,8 @@ export type SymbolGroup = {
   sellQuote: number;
   sellAvg: number | null;
   pnl: number | null;
+  /** Net K/Z'nin satılan kısmın maliyetine oranı (%); K/Z ya da satış yoksa null. */
+  pnlPct: number | null;
   count: number;
   lastTime: number;
 };
@@ -220,7 +244,7 @@ export function groupTradesBySymbol(trades: readonly TradeLike[]): SymbolGroup[]
   for (const t of trades) {
     const key = String(t.symbol || "").replace("_", "/");
     if (!key) continue;
-    const g = map.get(key) ?? { symbol: key, buyQty: 0, buyQuote: 0, buyAvg: null, sellQty: 0, sellQuote: 0, sellAvg: null, pnl: null, count: 0, lastTime: 0 };
+    const g = map.get(key) ?? { symbol: key, buyQty: 0, buyQuote: 0, buyAvg: null, sellQty: 0, sellQuote: 0, sellAvg: null, pnl: null, pnlPct: null, count: 0, lastTime: 0 };
     const qty = num(t.qty);
     const quote = num(t.quoteQty) || qty * num(t.price);
     if (t.isBuyer) { g.buyQty += qty; g.buyQuote += quote; }
@@ -231,7 +255,12 @@ export function groupTradesBySymbol(trades: readonly TradeLike[]): SymbolGroup[]
     map.set(key, g);
   }
   return Array.from(map.values())
-    .map((g) => ({ ...g, buyAvg: g.buyQty > 0 ? g.buyQuote / g.buyQty : null, sellAvg: g.sellQty > 0 ? g.sellQuote / g.sellQty : null }))
+    .map((g) => ({
+      ...g,
+      buyAvg: g.buyQty > 0 ? g.buyQuote / g.buyQty : null,
+      sellAvg: g.sellQty > 0 ? g.sellQuote / g.sellQty : null,
+      pnlPct: pnlPctOfCost(g.pnl, g.sellQty > 0 ? g.sellQuote : null),
+    }))
     .sort((a, b) => b.lastTime - a.lastTime);
 }
 

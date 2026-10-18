@@ -9,7 +9,7 @@ import { commissionPct, netOpenPnlPct, netOpenPnlTry } from "../lib/pnl";
 import { useAuth } from "../lib/auth";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { useModalA11y } from "../lib/useModalA11y";
-import { newClientOrderId } from "../lib/tradeUi";
+import { newClientOrderId, fmtSignedPct, pnlPctOfCost } from "../lib/tradeUi";
 import {
   UncertainOrderError, ceilPriceStr, checkSlTpInputs, describeSellFill, exactQtyInput, orderFailureText, parseMoneyInput,
   postJsonGuarded, qtyToInput, roundPriceStr, summarizeCancelAll, uncertainOrderText,
@@ -1984,6 +1984,7 @@ function BinanceTrPageInner() {
                               </th>
                             );
                           })}
+                          <th className="text-right" title="Net K/Z'nin satılan kısmın maliyetine oranı (komisyon dahil)">Net K/Z %</th>
                           <th></th>
                         </tr>
                       </thead>
@@ -2014,6 +2015,12 @@ function BinanceTrPageInner() {
                                   )}
                                 </td>
                                 <td className="font-mono text-xs text-right text-bunker-muted">{s.fills}</td>
+                                <td className={`font-mono text-xs font-bold text-right ${pnlCls}`}>
+                                  {(() => {
+                                    const pct = pnlPctOfCost(s.realized_pnl_try, s.sell_revenue_try);
+                                    return pct == null ? <span className="text-bunker-muted">—</span> : fmtSignedPct(pct);
+                                  })()}
+                                </td>
                                 <td className="text-right">
                                   <button
                                     type="button"
@@ -2047,6 +2054,9 @@ function BinanceTrPageInner() {
                                       )}
                                     </td>
                                     <td className="font-mono text-[11px] text-right text-bunker-muted">₺{fmtPrice(t.quoteQty, 2)}</td>
+                                    <td className={`font-mono text-[11px] font-bold text-right ${t.realized_pnl_try != null && t.realized_pnl_try !== 0 ? (t.realized_pnl_try > 0 ? "text-neon-green !text-[#00ff88]" : "text-neon-red !text-[#ff3b69]") : "text-bunker-muted"}`}>
+                                      {t.isBuyer || t.realized_pnl_try == null || t.realized_pnl_try === 0 ? "—" : fmtSignedPct(pnlPctOfCost(t.realized_pnl_try, Number(t.quoteQty)))}
+                                    </td>
                                     <td />
                                   </tr>
                                 ))}

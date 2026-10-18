@@ -2,12 +2,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { call, type DayTrade } from "../../../lib/tradeApi";
 import { localDateInput } from "../../../lib/format";
-import { fmtPrice, fmtQty, fmtSignedTry, fmtTry, groupTradesBySymbol } from "../../../lib/tradeUi";
+import { fmtPrice, fmtQty, fmtSignedPct, fmtSignedTry, fmtTry, groupTradesBySymbol } from "../../../lib/tradeUi";
 
 type DayResponse = { trades?: DayTrade[]; daily?: { realized_pnl_try?: number; wins?: number; losses?: number } | null };
 
 const TH = "whitespace-nowrap px-3 py-2 text-right text-xs font-semibold text-bunker-muted";
-const TD = "whitespace-nowrap px-3 py-2 text-right text-sm text-white";
+const TD_BASE = "whitespace-nowrap px-3 py-2 text-right text-sm";
+const TD = `${TD_BASE} text-white`;
+// Kâr yeşil, zarar kırmızı (TD'deki `text-white` renk sınıfıyla çakışıp rengi ezmesin diye taban sınıf ayrı).
+const pnlTone = (v: number | null | undefined) => (v == null ? "text-white" : v > 0 ? "text-neon-green" : v < 0 ? "text-neon-red" : "text-white");
 
 export default function HistoryCard({ enabled, refreshKey }: { enabled: boolean; refreshKey: number }) {
   const [day, setDay] = useState(() => localDateInput());
@@ -70,6 +73,7 @@ export default function HistoryCard({ enabled, refreshKey }: { enabled: boolean;
                   <th scope="col" className={TH}>Ort. satış fiyatı</th>
                   <th scope="col" className={TH}>Satış tutarı</th>
                   <th scope="col" className={TH}>Sonuç</th>
+                  <th scope="col" className={TH}>K/Z %</th>
                 </tr>
               </thead>
               <tbody>
@@ -85,8 +89,11 @@ export default function HistoryCard({ enabled, refreshKey }: { enabled: boolean;
                     <td className={TD}>{g.sellQty > 0 ? fmtQty(g.sellQty) : "—"}</td>
                     <td className={TD}>{g.sellAvg != null ? fmtPrice(g.sellAvg) : "—"}</td>
                     <td className={TD}>{g.sellQty > 0 ? fmtTry(g.sellQuote) : "—"}</td>
-                    <td className={`${TD} font-semibold ${g.pnl == null ? "" : g.pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                    <td className={`${TD_BASE} font-semibold ${pnlTone(g.pnl)}`}>
                       {g.pnl == null ? "—" : fmtSignedTry(g.pnl)}
+                    </td>
+                    <td className={`${TD_BASE} font-semibold ${pnlTone(g.pnlPct)}`}>
+                      {g.pnlPct == null ? "—" : fmtSignedPct(g.pnlPct)}
                     </td>
                   </tr>
                 ))}

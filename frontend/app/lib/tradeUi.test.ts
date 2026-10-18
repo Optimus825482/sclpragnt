@@ -151,7 +151,7 @@ describe("suggestSymbols USDT çiftleri", () => {
     expect(suggestSymbols(["ADATRY", "ADAUSDT"], "ada")).toEqual(["ADA"]));
 });
 
-import { filterSmallBalances, groupTradesBySymbol } from "./tradeUi";
+import { filterSmallBalances, fmtSignedPct, groupTradesBySymbol, pnlPctOfCost } from "./tradeUi";
 
 describe("groupTradesBySymbol", () => {
   const trades = [
@@ -210,4 +210,29 @@ describe("validateSlTpPrices", () => {
   it("TP güncel fiyatın üstünde", () => expect(validateSlTpPrices(99, null, 100)).toContain("üstünde"));
   it("hiçbiri yok", () => expect(validateSlTpPrices(null, null, 100)).toContain("En az bir"));
   it("güncel fiyat yoksa yalnız kendi aralarında", () => expect(validateSlTpPrices(110, 95, null)).toBeNull());
+});
+
+describe("K/Z yüzdesi", () => {
+  it("pnlPctOfCost: maliyet = satış tutarı − net K/Z", () => {
+    expect(pnlPctOfCost(1.78, 54.65)).toBeCloseTo(3.367, 2);       // SANDTRY örneği
+    expect(pnlPctOfCost(-1.01, 55.08)).toBeCloseTo(-1.80, 2);      // PORTOTRY örneği
+    expect(pnlPctOfCost(0, 50)).toBe(0);
+    expect(pnlPctOfCost(null, 50)).toBeNull();
+    expect(pnlPctOfCost(5, null)).toBeNull();
+    expect(pnlPctOfCost(60, 50)).toBeNull();                       // maliyet ≤ 0 → anlamsız
+  });
+  it("fmtSignedPct işaret ve biçim", () => {
+    expect(fmtSignedPct(3.367)).toBe("+%3,37");
+    expect(fmtSignedPct(-1.8)).toBe("−%1,80");
+    expect(fmtSignedPct(0)).toBe("%0,00");
+    expect(fmtSignedPct(null)).toBe("—");
+  });
+  it("groupTradesBySymbol pnlPct: satış yoksa null", () => {
+    const g = groupTradesBySymbol([
+      { symbol: "AAA_TRY", isBuyer: true, qty: 1, price: 10, quoteQty: 10, time: 1 },
+      { symbol: "BBB_TRY", isBuyer: false, qty: 1, price: 11, quoteQty: 11, time: 2, realized_pnl_try: 1 },
+    ] as any);
+    expect(g.find((x) => x.symbol.startsWith("AAA"))?.pnlPct).toBeNull();
+    expect(g.find((x) => x.symbol.startsWith("BBB"))?.pnlPct).toBeCloseTo(10, 5);
+  });
 });
