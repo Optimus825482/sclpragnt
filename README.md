@@ -26,7 +26,7 @@ main.py (app kurulumu + lifecycle + WS) ──► WebSocket /ws üzerinden front
 
 ### Modüler API yapısı
 
-Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **17** modül dosyası vardır; bunların **14**'si `APIRouter` tanımlar ve `main.py` içinde **14** adet `include_router` kaydı yapılır (2026-10-16 doğrulaması; aşağıdaki tablo eksiksizdir ve `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır). `runtime.py`, `global_radar.py` ve `llm_position_tools.py` `APIRouter` **kullanmaz**: `runtime.py` uzun-ömürlü döngüleri ve yardımcıları taşır (fonksiyonları `main.py` tarafından doğrudan import edilir), `global_radar.py` Binance Global arka plan tarama döngüsünü çalıştırır, `llm_position_tools.py` yalnız LLM araç (tool) şema tanımlarını sağlar.
+Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **18** modül dosyası vardır; bunların **15**'si `APIRouter` tanımlar ve `main.py` içinde **15** adet `include_router` kaydı yapılır (2026-10-16 doğrulaması; aşağıdaki tablo eksiksizdir ve `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır). `runtime.py`, `global_radar.py` ve `llm_position_tools.py` `APIRouter` **kullanmaz**: `runtime.py` uzun-ömürlü döngüleri ve yardımcıları taşır (fonksiyonları `main.py` tarafından doğrudan import edilir), `global_radar.py` Binance Global arka plan tarama döngüsünü çalıştırır, `llm_position_tools.py` yalnız LLM araç (tool) şema tanımlarını sağlar.
 
 | Modül | Sorumluluk |
 |---|---|
@@ -50,6 +50,7 @@ Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. 
 | `app/routers/user_prefs.py` | Kullanıcı başına bildirim tercihleri (uygulama-içi, ses, WhatsApp) ve maskeli WhatsApp telefon numarası |
 | `app/routers/journal.py` | Kullanıcıya özel işlem günlüğü (scalping disiplin notları, strateji etiketi); salt-not, emir/pozisyon değiştirmez |
 | `app/routers/portfolio_band.py` | Üst menü altındaki portföy bandı için tek istekte özet (`/api/portfolio/band`): API anahtarı varsa Binance TR, yoksa paper değerleri; 10 sn önbellek |
+| `app/routers/ma_buy.py` | Yönetici: MA şerit BUY sinyal kaydı (`GET /api/admin/ma-buy-signals`); sinyalleri `app/ma_buy_tracker.py` arka plan döngüsü yazar, 15 dk sonraki en yüksek yükseliş vb. ölçümlerle listeler (yalnız okuma) |
 
 Frontend'de `frontend/app/charts/` altında grafik mantığı `chartShared.ts` (format/yerleşim sabitleri) ve `signals.ts` (gösterge/strateji sinyal matematiği) olarak ayrılmıştır.
 

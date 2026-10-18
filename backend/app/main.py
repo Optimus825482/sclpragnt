@@ -47,6 +47,7 @@ from app import binance_tr_public
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import ml_forecast
+from app.ma_buy_tracker import ma_buy_loop
 from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app import llm_analysis
@@ -205,6 +206,8 @@ app.include_router(binance_trade_routes.router)
 app.include_router(journal_routes.router)
 from app.routers import portfolio_band as portfolio_band_routes
 app.include_router(portfolio_band_routes.router)
+from app.routers import ma_buy as ma_buy_routes
+app.include_router(ma_buy_routes.router)
 
 
 _TTS_VOICE = "tr-TR-EmelNeural"
@@ -1230,6 +1233,9 @@ async def startup_services():
     _start_background(retention_loop, "retention")
     await asyncio.sleep(_yield)
     _start_background(ml_training_loop, "ml_training")
+    await asyncio.sleep(_yield)
+    # 2026-10-18: MA şerit BUY sinyal izleyici (yalnız yönetici sayfası; emir/bildirim yok). MA_BUY_TRACKER_ENABLED=0 → döngü boşta.
+    _start_background(ma_buy_loop, "ma-buy-tracker")
     await asyncio.sleep(_yield)
     _start_background(calibration_refresh_loop, "calibration-refresh")
     await asyncio.sleep(_yield)

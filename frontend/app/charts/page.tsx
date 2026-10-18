@@ -36,7 +36,7 @@ import {
 import {
     strongCandlestickPatterns, patternDescriptions, emaPullbackSignals,
     vwapMacdSignals, cmoCrsiSignals, rsiLast, mfiLast, obvLast, spotExecutionSignals,
-    strategySignalFns, strategyColors, strategyLabels, type Bar, type PatternMarker, type StrategySignal,
+    strategySignalFns, strategyColors, strategyLabels, withRibbonParams, type Bar, type PatternMarker, type StrategySignal,
 } from "./signals";
 import { BadgeMarkers, badgeFromSignal, type Badge } from "./badgeMarkers";
 
@@ -1328,7 +1328,9 @@ export default function ChartsPage() {
                     // showSignals parametresi false isa sinyal gösterme
                     const showSignals = inst.params.showSignals !== false;
                     if (!showSignals) continue;
-                    const raw = fn(bars, inst.params);
+                    // 2026-10-18: grafikte MA Ribbon varsa BUY etiketi onun çizgilerini (uzunluk + SMA/EMA türü) kullanır;
+                    // yoksa rozet, görünen çizgilerden farklı bir ortalamaya göre hesaplanıp "yanlış yerde" görünüyordu.
+                    const raw = fn(bars, inst.registryId === "stoch_ma_signals" ? withRibbonParams(inst.params, instances) : inst.params);
                     const signals: StrategySignal[] = useSpotExec ? spotExecutionSignals(bars, raw) : raw;
                     for (const s of signals) {
                         if (s.type === "pre") {

@@ -40,6 +40,7 @@ import { useAuth } from "../lib/auth";
 
 import UserSettings from "../components/user/UserSettings";
 import { useIsUserView } from "../lib/adminView";
+import MaBuyLink from "../components/admin/MaBuyLink";
 
 function AdminSettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
@@ -609,6 +610,8 @@ function SettingsPageInner() {
           </h1>
           <p className="eyebrow mt-1">Strateji parametreleri - anında uygulanır</p>
         </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+        {isAdmin && <MaBuyLink />}
         {cfg && (
           <button
             onClick={save}
@@ -621,6 +624,7 @@ function SettingsPageInner() {
             {saving ? "KAYDEDİLİYOR..." : saved ? "✓ KAYDEDİLDİ" : "KAYDET"}
           </button>
         )}
+        </div>
       </header>
 
       {error && (

@@ -7,6 +7,7 @@ import { ensurePushSubscription, pushPermissionState } from "../../lib/push";
 import { useAuth } from "../../lib/auth";
 import AdminViewSwitch from "../AdminViewSwitch";
 import ProfilePanel from "../ProfilePanel";
+import MaBuyLink from "../admin/MaBuyLink";
 
 const TAB_KEY = "scalper:user-settings-tab";
 const CARD = "rounded-xl border border-bunker-700 bg-bunker-900 p-4";
@@ -278,6 +279,15 @@ export default function UserSettings() {
             <AdminViewSwitch />
           </div>
           <p className="mt-2 text-xs text-bunker-muted">Basit: kullanıcıların gördüğü arayüz. Gelişmiş: mevcut yönetim arayüzü.</p>
+        </section>
+      )}
+      {role === "admin" && (
+        <section className="rounded-xl border border-bunker-800 bg-bunker-900/60 p-4" aria-label="Yönetici kayıtları">
+          <h2 className="text-sm font-medium text-bunker-muted">Yönetici: sinyal kayıtları</h2>
+          <div className="mt-2">
+            <MaBuyLink className="ui-button ui-button-secondary inline-flex min-h-[44px] items-center" />
+          </div>
+          <p className="mt-2 text-xs text-bunker-muted">MA BUY kuralının tetiklediği sinyaller ve 15 dakika sonraki en yüksek yükselişleri.</p>
         </section>
       )}
     </div>

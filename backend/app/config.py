@@ -456,6 +456,18 @@ class Config:
     # isabet DEĞİŞMEZ. Eskiden bekleyen bildirim her taramada yeni hedefle güncelleniyordu (1,15 → 0,7 gibi).
     # 0 = eski davranış (her taramada güncelle).
     RADAR_NOTIFY_FREEZE_ON_SEND = os.getenv("RADAR_NOTIFY_FREEZE_ON_SEND", "1").strip().lower() not in {"0", "false", "no", "off"}
+    # 2026-10-18 MA ŞERİT BUY İZLEYİCİ (kullanıcı isteği; app/ma_buy_tracker.py): aktif sembollerde yeni kapanan mumda
+    # "MA şerit BUY" kuralı (grafikteki rozetle aynı) tetiklenince kaydedilir, 15 dk sonra en yüksek yükseliş ölçülür.
+    # Yalnız yönetici sayfası içindir (emir/bildirim/karar YOK). 0 = kapalı.
+    MA_BUY_TRACKER_ENABLED = os.getenv("MA_BUY_TRACKER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    # "active" = symbol_activity_status ACTIVE olanlar (yoksa izlenen semboller); "tracked" = yalnız izlenen semboller.
+    MA_BUY_SYMBOL_SCOPE = os.getenv("MA_BUY_SYMBOL_SCOPE", "active").strip().lower() or "active"
+    MA_BUY_TIMEFRAMES = os.getenv("MA_BUY_TIMEFRAMES", "5m").strip() or "5m"        # virgüllü: 5m,15m
+    MA_BUY_PERIODS = os.getenv("MA_BUY_PERIODS", "7,20,99").strip() or "7,20,99"    # hızlı, orta, yavaş (EMA)
+    MA_BUY_MA_TYPE = (os.getenv("MA_BUY_MA_TYPE", "ema").strip().lower() or "ema")   # ema | sma — grafikteki MA Ribbon türüyle aynı seçin
+    MA_BUY_LOOKBACK_BARS = max(1, int(os.getenv("MA_BUY_LOOKBACK_BARS", "3") or 3))   # her turda son N kapanmış mum
+    MA_BUY_SCAN_INTERVAL_SEC = max(10.0, float(os.getenv("MA_BUY_SCAN_INTERVAL_SEC", "30") or 30))
+    MA_BUY_RETENTION_DAYS = max(0, int(os.getenv("MA_BUY_RETENTION_DAYS", "120") or 0))  # 0 = silme yok
     RADAR_TARGET_MODE = (os.getenv("RADAR_TARGET_MODE", "measured").strip().lower() or "measured")
     # a,b,c,d (sırayla: sabit, ATR üssü, skor katsayısı, ufuk üssü); nominal %30 isabet.
     RADAR_TARGET_MEASURED_COEFS = os.getenv("RADAR_TARGET_MEASURED_COEFS", "0.27,0.71,0.06,0.51").strip()

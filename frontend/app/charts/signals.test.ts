@@ -1,3 +1,4 @@
+import { readFileSync } from "fs";
 // `charts/signals.ts` — GÖSTERGE MATEMATİĞİ (backend ile aynı olması gereken).
 //
 // REFERANS: `backend/app/technical_analysis.py`
@@ -21,7 +22,7 @@
 import { describe, it, expect } from "vitest";
 import {
   rsi, cmo, crsi, mfiLast, rsiLast, obvLast, type Bar,
-  rsiSeries, stochRsi, stochRsiCrossSignals, maRibbonBuySignals, stochMaSignals, emaSeries, smaSeries, rqKernelSignals, rqKernelPreSignals, spotExecutionSignals, strategySignalFns, strategyLabels,
+  rsiSeries, stochRsi, stochRsiCrossSignals, maRibbonBuySignals, stochMaSignals, emaSeries, smaSeries, withRibbonParams, rqKernelSignals, rqKernelPreSignals, spotExecutionSignals, strategySignalFns, strategyLabels,
 } from "./signals";
 import { rqkSeries, rqkLag2, rqkBullish, rqkColors } from "./rqk";
 import { SLING_SHOT_ENTRY } from "./IndicatorPicker";
@@ -595,5 +596,37 @@ describe("maRibbonBuySignals — ikinci koşul: hızlı > orta iken orta yavaş�
     }
     const times = sigs.map((s) => s.time);
     expect(new Set(times).size).toBe(times.length);
+  });
+});
+
+
+describe("maRibbonBuySignals — Python ile parite (backend/tests/fixtures/ma_buy_parity.json)", () => {
+  const fx = JSON.parse(readFileSync("../backend/tests/fixtures/ma_buy_parity.json", "utf-8"));
+  const bars = (fx.closes as number[]).map((c, i) => ({ time: 1_700_000_000 + i * 300, open: c, high: c, low: c, close: c, volume: 1 }));
+  for (const c of fx.cases) {
+    it(`${c.use_sma ? "SMA" : "EMA"} · yavaş kesişim ${c.slow_cross ? "açık" : "kapalı"}: aynı mumlar`, () => {
+      const got = maRibbonBuySignals(bars as any, { maUseSma: c.use_sma, showMaSlowCross: c.slow_cross });
+      expect(got.map((g) => (g.time - 1_700_000_000) / 300)).toEqual(c.signals.map((s: any) => s.index));
+    });
+  }
+});
+
+describe("withRibbonParams / çizgi başına MA türü", () => {
+  const base = { maFast: 7, maMid: 20, maSlow: 99 };
+  it("ribbon yoksa parametreler değişmez", () => {
+    expect(withRibbonParams(base, [{ registryId: "rsi", params: {} }])).toEqual(base);
+  });
+  it("ribbon uzunluk ve türünü devralır; SMMA/WMA türünde kendi ayarı kalır", () => {
+    const out = withRibbonParams({ ...base, maUseSma: false }, [
+      { registryId: "ma-ribbon", params: { ma1Length: 5, ma1Type: "SMA", ma2Length: 21, ma2Type: "EMA", ma3Length: 89, ma3Type: "SMMA (RMA)" } },
+    ]);
+    expect(out).toMatchObject({ maFast: 5, maMid: 21, maSlow: 89, maFastType: "sma", maMidType: "ema" });
+    expect(out.maSlowType).toBeUndefined();
+  });
+  it("ribbonun SMA çizgileri sinyali SMA serisinden üretir", () => {
+    const closes = Array.from({ length: 160 }, (_, i) => 100 + 8 * Math.sin(i / 6) + (i % 7) * 0.3);
+    const bars = closes.map((c, i) => ({ time: i, open: c, high: c, low: c, close: c, volume: 1 })) as any;
+    const viaRibbon = maRibbonBuySignals(bars, withRibbonParams({ ...base }, [{ registryId: "ma-ribbon", params: { ma1Length: 7, ma1Type: "SMA", ma2Length: 20, ma2Type: "SMA", ma3Length: 99, ma3Type: "SMA" } }]));
+    expect(viaRibbon.map((s) => s.time)).toEqual(maRibbonBuySignals(bars, { ...base, maUseSma: true }).map((s) => s.time));
   });
 });

@@ -478,6 +478,10 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
 
     const crossUp = (a0: number, b0: number, a1: number, b1: number) => a0 <= b0 && a1 > b1;
     const crossDown = (a0: number, b0: number, a1: number, b1: number) => a0 >= b0 && a1 < b1;
+    // MA kesişimi: kayan nokta farkı (ör. 2.950000000000003 vs 2.9499999999999984) sahte kesişim üretmesin diye göreli
+    // 1e-9 tolerans — "eşit" sayılan ortalamalar kesişim değildir (paketin çizdiği çizgilerle aynı mumda sonuçlanır).
+    const maEps = (b: number) => Math.abs(b) * 1e-9;
+    const maCrossUp = (a0: number, b0: number, a1: number, b1: number) => a0 <= b0 + maEps(b0) && a1 > b1 + maEps(b1);
 
     export const stochRsiCrossSignals = (bars: Bar[], params: Record<string, any>): StrategySignal[] => {
         const p = params ?? {};
@@ -509,22 +513,51 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
         const slowLen = Math.max(1, Math.round(Number(p.maSlow ?? 99)));
         const useSma = p.maUseSma === true || String(p.maType ?? "ema").toLowerCase() === "sma";
         const closes = bars.map((b) => Number(b.close));
-        const fn = useSma ? smaSeries : emaSeries;
-        const fast = fn(closes, fastLen), mid = fn(closes, midLen), slow = fn(closes, slowLen);
+        // 2026-10-18: çizgi başına tür (grafikteki MA Ribbon'un her çizgisi farklı türde olabilir); verilmezse ortak tür.
+        const pick = (t: unknown) => {
+            const k = String(t ?? "").toLowerCase();
+            if (k === "sma") return smaSeries;
+            if (k === "ema") return emaSeries;
+            return useSma ? smaSeries : emaSeries;
+        };
+        const fast = pick(p.maFastType)(closes, fastLen), mid = pick(p.maMidType)(closes, midLen), slow = pick(p.maSlowType)(closes, slowLen);
         const out: StrategySignal[] = [];
         const wantSlowCross = p.showMaSlowCross !== false;
         for (let i = 1; i < bars.length; i++) {
             const f0 = fast[i - 1], m0 = mid[i - 1], s0 = slow[i - 1], f1 = fast[i], m1 = mid[i], s1 = slow[i];
             if (f0 == null || m0 == null || f1 == null || m1 == null || s1 == null) continue;
             // Koşul 1: orta (mavi) > yavaş (mor) iken hızlı (turuncu) ortayı yukarı keser.
-            const fastCrossesMid = m1 > s1 && crossUp(f0, m0, f1, m1);
+            const fastCrossesMid = m1 > s1 && maCrossUp(f0, m0, f1, m1);
             // Koşul 2 (2026-10-18, kullanıcı isteği): hızlı (turuncu) ortanın (mavi) ÜSTÜNDEYKEN orta yavaşı (mor) yukarı keser.
-            const midCrossesSlow = wantSlowCross && s0 != null && f1 > m1 && crossUp(m0, s0, m1, s1);
+            const midCrossesSlow = wantSlowCross && s0 != null && f1 > m1 && maCrossUp(m0, s0, m1, s1);
             if (fastCrossesMid || midCrossesSlow) {
                 // 2026-10-18: rozet tarzı (badgeMarkers.ts): zoom'dan bağımsız sabit boyutlu yeşil "BUY" etiketi.
                 // İki koşul aynı barda olursa tek etiket (bar başına en çok bir BUY).
                 out.push({ time: bars[i].time, type: "buy", text: "BUY", color: "#16a34a", badge: true });
             }
+        }
+        return out;
+    };
+
+    /**
+     * Grafikte "MA Ribbon" (`ma-ribbon`) göstergesi varsa BUY etiketinin ortalamalarını ondan al:
+     * 1./2./3. çizgi = hızlı/orta/yavaş (uzunluk + SMA/EMA). Görünür olmayan ya da SMMA/WMA/VWMA türündeki
+     * çizgi için kendi ayarı kullanılır. Böylece rozet, ekrandaki çizgilerin kesiştiği muma oturur.
+     */
+    export const withRibbonParams = (
+        params: Record<string, any>,
+        instances: { registryId: string; params: Record<string, any> }[],
+    ): Record<string, any> => {
+        const ribbon = instances.find((i) => i.registryId === "ma-ribbon");
+        if (!ribbon) return params;
+        const rp = ribbon.params ?? {};
+        const out = { ...params };
+        const slots: [string, string, string][] = [["ma1", "maFast", "maFastType"], ["ma2", "maMid", "maMidType"], ["ma3", "maSlow", "maSlowType"]];
+        for (const [slot, lenKey, typeKey] of slots) {
+            const len = Number(rp[`${slot}Length`]);
+            if (Number.isFinite(len) && len >= 1) out[lenKey] = len;
+            const t = String(rp[`${slot}Type`] ?? "SMA").trim().toUpperCase();
+            if (t === "SMA" || t === "EMA") out[typeKey] = t.toLowerCase();
         }
         return out;
     };

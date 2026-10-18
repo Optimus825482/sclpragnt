@@ -5296,6 +5296,92 @@ async def remove_push_subscriptions(endpoints: list[str]):
     return await _run_db(op)
 
 
+# ----------------------------------------------------------------------------------------------------------------
+# 2026-10-18: MA şerit BUY sinyal kaydı (migration 026; app/ma_buy_tracker.py yazar, yönetici sayfası okur).
+_MA_BUY_COLS = ("id", "symbol", "timeframe", "bar_open_ms", "bar_close_ms", "detected_at", "rules", "signal_price",
+                "ema_fast", "ema_mid", "ema_slow", "status", "max_rise_5m_pct", "max_rise_10m_pct", "max_rise_15m_pct",
+                "max_drop_15m_pct", "close_15m_pct", "peak_bar_minutes", "evaluated_at", "eval_attempts")
+
+
+def _ma_buy_row(r) -> dict:
+    d = dict(r)
+    return {k: d.get(k) for k in _MA_BUY_COLS}
+
+
+async def insert_ma_buy_signals(rows) -> int:
+    """Yeni sinyalleri yazar; (sembol, zaman dilimi, sinyal mumu) tekrarı yazılmaz. Dönüş: yeni satır sayısı."""
+    rows = [r for r in (rows or []) if isinstance(r, dict) and r.get("symbol") and r.get("bar_open_ms") is not None]
+    if not rows:
+        return 0
+
+    def op(conn):
+        cur = conn.executemany(
+            "INSERT INTO ma_buy_signals (symbol, timeframe, bar_open_ms, bar_close_ms, detected_at, rules, signal_price, "
+            "ema_fast, ema_mid, ema_slow) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (symbol, timeframe, bar_open_ms) DO NOTHING",
+            [(str(r["symbol"]).upper(), str(r.get("timeframe") or "5m"), int(r["bar_open_ms"]), int(r["bar_close_ms"]),
+              float(r.get("detected_at") or time.time()), str(r.get("rules") or "")[:80], float(r["signal_price"]),
+              r.get("ema_fast"), r.get("ema_mid"), r.get("ema_slow")) for r in rows])
+        conn.commit()
+        return int(cur.rowcount or 0)
+    return await _run_db(op)
+
+
+async def list_ma_buy_open(limit: int = 300) -> list[dict]:
+    """Ölçümü bekleyen (status='open') sinyaller, en eskiden başlayarak."""
+    def op(conn):
+        rows = conn.execute(
+            "SELECT * FROM ma_buy_signals WHERE status='open' ORDER BY bar_close_ms ASC LIMIT ?",
+            (int(limit),)).fetchall()
+        return [_ma_buy_row(r) for r in rows]
+    return await _run_db(op)
+
+
+async def update_ma_buy_outcome(signal_id: int, metrics: dict | None, *, status: str, attempts_inc: bool = False) -> bool:
+    """Ölçümü yazar (`status`: done | no_data | open); `metrics` None ise yalnız durum/deneme sayısı güncellenir."""
+    m = metrics or {}
+
+    def op(conn):
+        conn.execute(
+            "UPDATE ma_buy_signals SET status=?, max_rise_5m_pct=?, max_rise_10m_pct=?, max_rise_15m_pct=?, "
+            "max_drop_15m_pct=?, close_15m_pct=?, peak_bar_minutes=?, "
+            "evaluated_at=CASE WHEN ? IN ('done','no_data') THEN ? ELSE evaluated_at END, "
+            "eval_attempts=eval_attempts + ? WHERE id=?",
+            (status, m.get("max_rise_5m_pct"), m.get("max_rise_10m_pct"), m.get("max_rise_15m_pct"),
+             m.get("max_drop_15m_pct"), m.get("close_15m_pct"), m.get("peak_bar_minutes"),
+             status, time.time(), 1 if attempts_inc else 0, int(signal_id)))
+        conn.commit()
+        return True
+    return await _run_db(op)
+
+
+async def list_ma_buy_signals(since_ms: int, symbol: str | None = None, status: str | None = None,
+                              limit: int = 5000) -> list[dict]:
+    """Yönetici sayfası: `bar_close_ms >= since_ms` olan sinyaller, en yeniden başlayarak (en çok `limit`)."""
+    def op(conn):
+        sql = "SELECT * FROM ma_buy_signals WHERE bar_close_ms >= ?"
+        args: list = [int(since_ms)]
+        if symbol:
+            sql += " AND symbol = ?"
+            args.append(str(symbol).upper())
+        if status:
+            sql += " AND status = ?"
+            args.append(str(status))
+        sql += " ORDER BY bar_close_ms DESC, id DESC LIMIT ?"
+        args.append(int(limit))
+        return [_ma_buy_row(r) for r in conn.execute(sql, tuple(args)).fetchall()]
+    return await _run_db(op)
+
+
+async def prune_ma_buy_signals(before_ms: int) -> int:
+    """Saklama süresi dolan kayıtları siler (`bar_close_ms < before_ms`). Dönüş: silinen satır sayısı."""
+    def op(conn):
+        cur = conn.execute("DELETE FROM ma_buy_signals WHERE bar_close_ms < ?", (int(before_ms),))
+        conn.commit()
+        return int(cur.rowcount or 0)
+    return await _run_db(op)
+
+
 async def save_notification_shadow(rows) -> int:
     """2026-10-17: gölge kural kaydı (migration 022). Tekrar (aynı sembol+zaman+kural) yazılmaz.
 
