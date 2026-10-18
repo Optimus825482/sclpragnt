@@ -183,8 +183,9 @@ export default function UserSignalReport() {
                 );
               })}
             </div>
-            <div className="card hidden overflow-x-auto md:block">
-              <table className="data-table w-full text-sm">
+            {/* Masaüstünde yatay kaydırma YOK: kompakt boşluk + hücreler satır sonuna sarılır (Kaynak/Zaman/başlıklar). */}
+            <div className="card hidden overflow-hidden md:block">
+              <table className="data-table table-compact w-full text-sm [&_td]:!whitespace-normal [&_th]:!whitespace-normal [&_td]:align-top">
                 <thead><tr><th>Zaman</th><th>Sembol</th><th>Kaynak</th><th>Bildirim fiyatı</th><th>Hedef</th><th>Ufuk</th><th>En yüksek getiri</th><th>Sonuç</th></tr></thead>
                 <tbody>
                   {filtered.slice(0, shown).map((r) => {
