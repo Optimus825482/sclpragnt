@@ -10,6 +10,9 @@
  * Tazeleme:
  *  - REST: 15 sn'de bir; sekme gizliyken durur, öne gelince hemen çalışır
  *    (`useVisibleInterval`).
+ *  - 2026-10-18: TEK modül düzeyi depo — hook'u kullanan her bileşen (üst bant,
+ *    Binance sayfası, ana sayfa…) aynı veriyi paylaşır; uçuştaki istek tekilleşir,
+ *    taze veri varken yeni örnek ek istek atmaz, WS aboneliği tektir.
  *  - WS (`subscribeLive`): paper kaynakta `portfolio` mesajı bantı ANINDA
  *    günceller (saniyelik polling yok); `binance_account_update`,
  *    `auto_paper_trade`, `trade_updated`, `reset` kısa bir debounce ile REST
@@ -18,9 +21,9 @@
  * K/Z matematiği `lib/pnl.ts` yardımcılarındadır (Portföy sayfasıyla aynı
  * net, gidiş-dönüş komisyonlu kural) — burada formül kopyalanmaz.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { API_BASE, apiRequest } from "./api";
-import { useLiveMessages } from "./liveSocket";
+import { subscribeLive, type LiveMessage } from "./liveSocket";
 import { useVisibleInterval } from "./useVisibleInterval";
 import { applyCommissionPct, netOpenPnlTry } from "./pnl";
 
@@ -245,87 +248,124 @@ const WS_REFETCH_DEBOUNCE_MS = 1_000;
 // gürültüsünü azaltmak için bant görünümü en fazla bu aralıkla güncellenir.
 const WS_RENDER_MIN_MS = 2_000;
 
+// ── Paylaşılan depo ────────────────────────────────────────────────────────
+// Eskiden her hook örneği kendi /api/portfolio/band isteğini, 15 sn yoklamasını
+// ve WS aboneliğini kuruyordu (aynı sayfada 2-3 kopya istek).
+const LIVE_TYPES = ["portfolio", "binance_price", "binance_account_update", "auto_paper_trade", "trade_updated", "reset"];
+const INITIAL_STATE: PortfolioSummaryState = { data: null, status: "loading", stale: false };
+
+let state: PortfolioSummaryState = INITIAL_STATE;
+/** Son WS uygulanmış veri (render kısıtlamasından bağımsız, her zaman en güncel). */
+let latest: PortfolioBandData | null = null;
+const subscribers = new Set<() => void>();
+let inflight: Promise<void> | null = null;
+/** Uçuş sürerken yeni tazeleme istendi (WS olayı): bitince bir kez daha çekilir (eski yanıt son söz olmasın). */
+let refetchAfterInflight = false;
+let lastStartedAt = 0;
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let lastWsRenderAt = 0;
+let unsubscribeLive: (() => void) | null = null;
+
+function setState(next: Partial<PortfolioSummaryState>) {
+  state = { ...state, ...next };
+  subscribers.forEach((notify) => notify());
+}
+
+/** REST tazelemesi; uçuşta istek varsa ona katılır (tekilleştirme). */
+function load(): Promise<void> {
+  if (inflight) return inflight;
+  lastStartedAt = Date.now();
+  inflight = apiRequest(`${API_BASE}/api/portfolio/band`, { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    .then((raw: BandResponse) => {
+      const next = normalizeBand(raw);
+      if (!next) throw new Error("boş yanıt");
+      applyCommissionPct(raw.commission_pct);
+      latest = next;
+      setState({ data: next, status: "ok", stale: false });
+    })
+    .catch(() => {
+      if (latest) setState({ stale: true });
+      else setState({ status: "error" });
+    })
+    .finally(() => {
+      inflight = null;
+      if (refetchAfterInflight) {
+        refetchAfterInflight = false;
+        void load();
+      }
+    });
+  return inflight;
+}
+
+/** Yoklama/yeni örnek: son istek yeterince yeniyse ek istek atılmaz. */
+function loadIfStale(maxAgeMs: number) {
+  if (inflight || Date.now() - lastStartedAt < maxAgeMs) return;
+  void load();
+}
+
+function requestRefresh() {
+  if (inflight) refetchAfterInflight = true;
+  else void load();
+}
+
+function renderLive(next: PortfolioBandData) {
+  latest = next;
+  const now = Date.now();
+  if (now - lastWsRenderAt >= WS_RENDER_MIN_MS) {
+    lastWsRenderAt = now;
+    setState({ data: next });
+  }
+}
+
+function onLive(message: LiveMessage) {
+  if (typeof document !== "undefined" && document.hidden) return;
+  // 2026-10-17: Binance kaynağında canlı fiyat tiki (2 sn) toplam değer + anlık K/Z'yi günceller;
+  // REST tazelemesi TETİKLEMEZ (tik sık gelir).
+  if (message.type === "binance_price") {
+    const ticks = (message.data as { ticks?: BinanceTicks } | undefined)?.ticks;
+    const next = applyBinanceTicks(latest, ticks);
+    if (next) renderLive(next);
+    return;
+  }
+  if (message.type === "portfolio") {
+    const next = applyPaperSnapshot(latest, message.data as PortfolioSnapshot);
+    if (next) {
+      applyCommissionPct((message.data as PortfolioSnapshot)?.commission_pct);
+      renderLive(next);
+    }
+    return;
+  }
+  // Hesap/işlem olayları: günlük K/Z ve gerçek bakiye için REST'i hafifçe tazele.
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    debounceTimer = null;
+    requestRefresh();
+  }, WS_REFETCH_DEBOUNCE_MS);
+}
+
+function subscribe(notify: () => void) {
+  subscribers.add(notify);
+  if (!unsubscribeLive) unsubscribeLive = subscribeLive(onLive, LIVE_TYPES);
+  return () => {
+    subscribers.delete(notify);
+    if (subscribers.size === 0) {
+      unsubscribeLive?.();
+      unsubscribeLive = null;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+  };
+}
+
+const getSnapshot = () => state;
+const getServerSnapshot = () => INITIAL_STATE;
+
 export function usePortfolioSummary(): PortfolioSummaryState {
-  const [data, setData] = useState<PortfolioBandData | null>(null);
-  const [status, setStatus] = useState<BandStatus>("loading");
-  const [stale, setStale] = useState(false);
-  const seqRef = useRef(0);
-  const mountedRef = useRef(true);
-  const dataRef = useRef<PortfolioBandData | null>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastWsRenderRef = useRef(0);
-
-  const load = useCallback(() => {
-    const seq = ++seqRef.current;
-    apiRequest(`${API_BASE}/api/portfolio/band`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((raw: BandResponse) => {
-        if (!mountedRef.current || seq !== seqRef.current) return;
-        const next = normalizeBand(raw);
-        if (!next) throw new Error("boş yanıt");
-        applyCommissionPct(raw.commission_pct);
-        dataRef.current = next;
-        setData(next);
-        setStatus("ok");
-        setStale(false);
-      })
-      .catch(() => {
-        if (!mountedRef.current || seq !== seqRef.current) return;
-        if (dataRef.current) setStale(true);
-        else setStatus("error");
-      });
-  }, []);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    load();
-    return () => {
-      mountedRef.current = false;
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = null;
-    };
-  }, [load]);
-
-  useVisibleInterval(load, POLL_MS);
-
-  const onLive = useCallback((message: { type: string; data?: unknown }) => {
-    if (typeof document !== "undefined" && document.hidden) return;
-    // 2026-10-17: Binance kaynağında canlı fiyat tiki (2 sn) toplam değer + anlık K/Z'yi günceller;
-    // REST tazelemesi TETİKLEMEZ (tik sık gelir).
-    if (message.type === "binance_price") {
-      const ticks = (message.data as { ticks?: BinanceTicks } | undefined)?.ticks;
-      const next = applyBinanceTicks(dataRef.current, ticks);
-      if (next) {
-        dataRef.current = next;
-        const now = Date.now();
-        if (now - lastWsRenderRef.current >= WS_RENDER_MIN_MS) {
-          lastWsRenderRef.current = now;
-          setData(next);
-        }
-      }
-      return;
-    }
-    if (message.type === "portfolio") {
-      const next = applyPaperSnapshot(dataRef.current, message.data as PortfolioSnapshot);
-      if (next) {
-        applyCommissionPct((message.data as PortfolioSnapshot)?.commission_pct);
-        dataRef.current = next;
-        const now = Date.now();
-        if (now - lastWsRenderRef.current >= WS_RENDER_MIN_MS) {
-          lastWsRenderRef.current = now;
-          setData(next);
-        }
-      }
-      return;
-    }
-    // Hesap/işlem olayları: günlük K/Z ve gerçek bakiye için REST'i hafifçe tazele.
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = null;
-      load();
-    }, WS_REFETCH_DEBOUNCE_MS);
-  }, [load]);
-  useLiveMessages(onLive, ["portfolio", "binance_price", "binance_account_update", "auto_paper_trade", "trade_updated", "reset"]);
-
-  return { data, status, stale };
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  // İlk örnek hemen çeker; sonradan bağlanan örnekler taze veri varsa istek atmaz.
+  useEffect(() => { loadIfStale(POLL_MS / 3); }, []);
+  // Birden çok örneğin zamanlayıcısı aynı periyotta tek isteğe iner (son istek yeniyse atlanır).
+  useVisibleInterval(() => loadIfStale(POLL_MS - 1_000), POLL_MS);
+  return snapshot;
 }

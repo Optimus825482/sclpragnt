@@ -266,7 +266,9 @@ textarea.input { min-height: 6rem; resize: vertical; }
 input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .data-table { width: 100%; border-collapse: separate; border-spacing: 0; font: .78rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .data-table th { padding: .8rem .9rem; color: rgb(148 163 184); font-size: .68rem; font-weight: 600; letter-spacing: .08em; text-align: left; text-transform: uppercase; white-space: nowrap; background: rgb(5 8 13 / .45); border-bottom: 1px solid rgb(31 41 55); }
-.data-table td { padding: .8rem .9rem; color: rgb(226 232 240); border-bottom: 1px solid rgb(31 41 55 / .7); white-space: nowrap; }
+/* 2026-10-18: hücre rengi `:where` ile SIFIR ek özgüllükte (0,0,1) — td üzerindeki Tailwind `text-*` sınıfı
+   (kâr/zarar yeşil/kırmızı, soluk metin) artık ezilmez; eski `td.text-neon-*` yamalarına gerek kalmadı. */
+:where(.data-table) td { padding: .8rem .9rem; color: rgb(226 232 240); border-bottom: 1px solid rgb(31 41 55 / .7); white-space: nowrap; }
 .data-table tbody tr { transition: background-color 120ms ease-out; }
 .data-table tbody tr:hover { background: rgb(30 41 59 / .35); }
 .data-table tbody tr:last-child td { border-bottom: 0; }
@@ -456,16 +458,12 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .ui-tone-positive { color: #79f2b4; }
 .ui-tone-negative { color: #fb7185; }
 .ui-tone-muted { color: rgb(148 163 184); }
-.data-table td.ui-tone-positive { color: #79f2b4; }
-.data-table td.ui-tone-negative { color: #fb7185; }
 .ui-tone-warning { color: #facc15; }
-/* TD içi renk tonları: `.data-table td` (beyaz) Tailwind text-* sınıfını
-   özgüllükte ezer → tablo hücrelerinde renk için bu sınıflar kullanılır. */
+/* TD içi renk tonları (tablo hücrelerinde kullanılır). */
 .data-table td.ui-tone-green { color: #79f2b4; }
 .data-table td.ui-tone-amber { color: #fcd34d; }
 .data-table td.ui-tone-sky { color: #7dd3fc; }
 .data-table td.ui-tone-red { color: #fb7185; }
-.data-table td.ui-tone-muted { color: rgb(148 163 184); }
 .ui-tabs { display: flex; gap: .35rem; overflow-x: auto; padding: .35rem; border: 1px solid rgb(51 65 85 / .8); border-radius: .85rem; background: rgb(15 23 42 / .55); box-shadow: 0 8px 24px rgb(2 6 23 / .18), inset 0 1px rgb(255 255 255 / .04); scrollbar-width: none; }
 .ui-tabs::-webkit-scrollbar { display: none; }
 .ui-tabs button { flex: 0 0 auto; min-height: 2.5rem; padding: .6rem .85rem; border-radius: .55rem; color: rgb(148 163 184); font: 600 .72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; transition: color 160ms ease-out, background-color 160ms ease-out, transform 160ms ease-out; }
@@ -729,7 +727,3 @@ body { font-family: var(--font-plex), ui-sans-serif, system-ui, sans-serif; }
   .overflow-x-auto:has(table), .message-table-wrap, .table-scroll { overflow-x: visible; }
 }
 
-/* 2026-10-18: `.data-table td { color }` (0,1,1) Tailwind `text-neon-*` (0,1,0) sınıfını eziyordu → tablo hücrelerinde kâr/zarar
-   renkleri görünmüyordu (İşlem geçmişi Sonuç / K/Z %). Hücre içi neon metin sınıfları artık çalışır. */
-.data-table td.text-neon-green, .data-table td.text-neon-green * { color: #79f2b4; }
-.data-table td.text-neon-red, .data-table td.text-neon-red * { color: #fb7185; }

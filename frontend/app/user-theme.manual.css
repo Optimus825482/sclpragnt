@@ -32,7 +32,7 @@
 [data-theme="light"] .section-tabs button:hover { color: var(--u-ink); background: var(--u-page); }
 [data-theme="light"] .section-tabs button.active { color: var(--u-brand-text); background: var(--u-brand); box-shadow: none; }
 [data-theme="light"] .data-table th { color: var(--u-muted); background: var(--u-page); border-bottom-color: var(--u-line); }
-[data-theme="light"] .data-table td { color: var(--u-ink); border-bottom-color: #e6ebf5; }
+:where([data-theme="light"] .data-table) td { color: var(--u-ink); border-bottom-color: #e6ebf5; }
 [data-theme="light"] .data-table tbody tr:hover { background: var(--u-page); }
 [data-theme="light"] .ui-badge-neutral { color: var(--u-wait-fg); background: var(--u-wait-bg); border-color: #cbd5e1; }
 [data-theme="light"] .ui-badge-positive { color: var(--u-good-fg); background: var(--u-good-bg); border-color: #6ee7b7; }
@@ -57,8 +57,7 @@
 [data-theme="light"] .bg-neon-red\/90.text-white,
 [data-theme="light"] .bg-neon-red\/90.text-black { color: #fff; }
 
-/* 2026-10-18: açık temada tablo hücresi kâr/zarar renkleri (`.data-table td` rengi sınıfı eziyordu; koyu pastel yeşil/kırmızı açık zeminde okunmaz). */
-[data-theme="light"] .data-table td.text-neon-green, [data-theme="light"] .data-table td.text-neon-green *,
-[data-theme="light"] .data-table td.ui-tone-positive { color: rgb(4 108 78); }
-[data-theme="light"] .data-table td.text-neon-red, [data-theme="light"] .data-table td.text-neon-red *,
-[data-theme="light"] .data-table td.ui-tone-negative { color: rgb(185 28 28); }
+/* 2026-10-18: açık temada kâr/zarar tonları (koyu tema pastel yeşil/kırmızı açık zeminde okunmaz). `text-neon-*`
+   açık tema karşılıkları user-theme.generated.css'te; td rengi artık `:where` ile sınıfları ezmez. */
+[data-theme="light"] .ui-tone-positive { color: rgb(4 108 78); }
+[data-theme="light"] .ui-tone-negative { color: rgb(185 28 28); }

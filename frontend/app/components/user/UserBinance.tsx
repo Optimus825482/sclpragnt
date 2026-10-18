@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLiveMessages } from "../../lib/liveSocket";
+import { subscribeTopic, useLiveMessages } from "../../lib/liveSocket";
 import { grossOpenPnlTry } from "../../lib/pnl";
 import { call, type Holding, type OpenOrder, type RiskSettings } from "../../lib/tradeApi";
 import { fmtSignedTry, fmtTry } from "../../lib/tradeUi";
@@ -162,20 +162,58 @@ export default function UserBinance() {
   }, [configured]);
 
   // Sekme öne gelince hemen tazele (arka planda beklerken emirler/bakiye eskimiş olabilir).
-  // 2026-10-17 (basit arayüz): 20 sn → 10 sn (sunucuda 3 sn yanıt + 300 sn maliyet cache'i var, ek yük yok);
-  // günlük K/Z daha ağır olduğundan ayrı ve daha seyrek (30 sn) yenilenir.
-  useVisibleInterval(() => { if (configured) loadAccount(); }, configured ? 10000 : null, { runOnVisible: true });
+  // 2026-10-18: varlık/bakiye artık WS `binance_account_update` ile gelir (abonelikte anında + 15 sn'de bir);
+  // REST yoklaması yalnız WS kesintisine karşı 60 sn'lik yedek. Günlük K/Z ayrı ve 30 sn'de bir yenilenir.
+  useVisibleInterval(() => { if (configured) loadAccount(); }, configured ? 60000 : null, { runOnVisible: true });
   useVisibleInterval(() => { if (configured) loadToday(); }, configured ? 30000 : null, { runOnVisible: false });
 
-  // Binance hesap/dolum olayı (WS): 1 sn debounce ile hesabı ve günlük sonucu tazele.
+  // Sunucu `binance_account` konusuna abonelikte güncel hesap durumunu hemen iter (15 sn döngüyü beklemeden).
+  useEffect(() => (configured ? subscribeTopic("binance_account") : undefined), [configured]);
+
+  // Hesap push'u (WS): /positions + /open-orders + /trades-day yeniden çekilmez; varlıklar doğrudan uygulanır.
+  // Sunucu satırında eksik alanlar (maliyet cache'i soğuk, aktif emir bilgisi) önceki satırdan korunur.
+  const onAccountUpdate = useCallback((m: { type: string; data?: unknown }) => {
+    if (!configured) return;
+    const incoming = (m.data as { holdings?: Holding[] } | null)?.holdings;
+    if (!Array.isArray(incoming)) return;
+    setHoldings((prev) => {
+      const prevMap = new Map(prev.map((p) => [p.asset, p]));
+      return incoming.map((h) => {
+        const old = prevMap.get(h.asset);
+        const avg = h.avg_cost_try ?? old?.avg_cost_try ?? null;
+        const price = Number(h.price_try);
+        const derived = h.pnl_try == null && avg && price > 0;
+        return {
+          ...old,
+          ...h,
+          avg_cost_try: avg,
+          pnl_try: derived ? grossOpenPnlTry(avg, price, h.total) : h.pnl_try,
+          pnl_pct: derived ? ((price - Number(avg)) / Number(avg)) * 100 : h.pnl_pct,
+          active_orders: h.active_orders ?? old?.active_orders,
+          has_active_order: h.has_active_order ?? old?.has_active_order,
+          active_sl_price: h.active_sl_price ?? old?.active_sl_price,
+          active_tp_price: h.active_tp_price ?? old?.active_tp_price,
+        };
+      });
+    });
+    setTotal(incoming.reduce((sum, h) => sum + (Number(h.value_try) || 0), 0));
+    setLivePrices({}); // sunucu fiyatı taze; sonraki WS tick'i üzerine yazar
+    setLastOkAt(Date.now());
+    setAccountError("");
+    setPositionsLoading(false);
+  }, [configured]);
+  useLiveMessages(onAccountUpdate, ["binance_account_update"]);
+
+  // Dolum/emir olayı (WS `binance_user_event`): açık emirler ve günlük sonuç değişmiş olabilir →
+  // 1 sn debounce ile hesabı ve günlük sonucu REST'ten tazele.
   const wsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (wsTimer.current) clearTimeout(wsTimer.current); }, []);
-  const onLive = useCallback(() => {
+  const onUserEvent = useCallback(() => {
     if (!configured || (typeof document !== "undefined" && document.hidden)) return;
     if (wsTimer.current) clearTimeout(wsTimer.current);
     wsTimer.current = setTimeout(() => { wsTimer.current = null; loadAccount(); loadToday(); }, 1000);
   }, [configured, loadAccount, loadToday]);
-  useLiveMessages(onLive, ["binance_account_update"]);
+  useLiveMessages(onUserEvent, ["binance_user_event"]);
 
   // 2026-10-17 (basit arayüz): canlı fiyat — backend `binance_price` (2 sn'de bir, TRY'ye çevrilmiş
   // {VARLIK: {price}} haritası) ile elde tutulan varlıkların fiyat/değer/K-Z'si iki yoklama arasında da kayar.

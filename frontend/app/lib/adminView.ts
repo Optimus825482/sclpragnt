@@ -7,6 +7,7 @@ const KEY = "scalper:admin-view";
 const EVENT = "scalper:admin-view";
 
 function read(): AdminView {
+  if (typeof window === "undefined") return "advanced";
   try {
     return localStorage.getItem(KEY) === "simple" ? "simple" : "advanced";
   } catch {
@@ -16,7 +17,9 @@ function read(): AdminView {
 
 /** Admin arayüz seçimi: "advanced" = mevcut arayüz, "simple" = kullanıcıların gördüğü arayüz. */
 export function useAdminView() {
-  const [view, setViewState] = useState<AdminView>("advanced");
+  // 2026-10-18: seçim ilk render'da okunur (SSR'da "advanced"); basit arayüzdeki admin önce gelişmiş
+  // sayfayı mount edip onun isteklerini başlatmasın.
+  const [view, setViewState] = useState<AdminView>(read);
   useEffect(() => {
     setViewState(read());
     const onChange = () => setViewState(read());

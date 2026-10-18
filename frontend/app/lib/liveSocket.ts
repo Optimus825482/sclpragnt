@@ -40,6 +40,15 @@ export type LiveReconnectInfo = { since: number };
 type ReconnectListener = (info: LiveReconnectInfo) => void;
 const reconnectListeners = new Set<ReconnectListener>();
 
+// Sunucu tarafı konu abonelikleri (ör. `binance_account`): konu adı → abone sayısı.
+// Soket her (yeniden) açılışta tüm konuları tekrar gönderir; sunucu abonelik
+// karesine anında güncel durumla (ör. `binance_account_update`) yanıt verir.
+const topicRefs = new Map<string, number>();
+
+function sendTopic(instance: WebSocket, topic: string) {
+  try { instance.send(JSON.stringify({ type: "subscribe", topic })); } catch { /* soket kapanıyor */ }
+}
+
 // Abonelik tipleri: her dinleyici ilgilendiği mesaj tiplerini bildirebilir.
 // `null` = tüm tipler (geriye dönük uyumlu varsayılan). Hiçbir dinleyici
 // bir tipi istemiyorsa o mesaj JSON.parse edilmeden, ham metin üzerinde ucuz
@@ -149,6 +158,7 @@ function connect() {
       hasOpenedBefore = true;
       setStatus("open");
       startHeartbeat();
+      topicRefs.forEach((_count, topic) => sendTopic(instance, topic));
       if (wasReconnect && since > 0) reconnectListeners.forEach((listener) => listener({ since }));
     }
   };
@@ -309,6 +319,27 @@ export function subscribeLive(listener: MessageListener, types?: readonly string
       }
       setStatus("closed");
     }
+  };
+}
+
+/**
+ * Sunucu konusuna abone ol: `{"type":"subscribe","topic":...}` soket açıksa hemen,
+ * değilse ilk açılışta gönderilir; her yeniden bağlanışta tekrarlanır. Konu
+ * mesajlarını almak için ayrıca `subscribeLive`/`useLiveMessages` ile dinlenmelidir
+ * (soketi açan dinleyicidir). Dönen fonksiyon yerel kaydı bırakır (sunucuya
+ * abonelik iptali gönderilmez — sözleşmede yok; soket kapanınca sunucu düşürür).
+ */
+export function subscribeTopic(topic: string): () => void {
+  topicRefs.set(topic, (topicRefs.get(topic) ?? 0) + 1);
+  const instance = socket;
+  if (instance && instance.readyState === 1) sendTopic(instance, topic);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const next = (topicRefs.get(topic) ?? 1) - 1;
+    if (next <= 0) topicRefs.delete(topic);
+    else topicRefs.set(topic, next);
   };
 }
 
