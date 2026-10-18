@@ -9,6 +9,8 @@ import {
   DAY_OPTIONS,
   DEFAULT_GROSS_FLOOR_PCT,
   RULE_OPTIONS,
+  TIMEFRAME_OPTIONS,
+  timeframeLabel,
   STATUS_OPTIONS,
   buildQuery,
   errorMessage,
@@ -75,7 +77,8 @@ const SignalRow = memo(function SignalRow({ item, floor, nowSec }: { item: MaBuy
   return (
     <tr>
       <td className="font-mono text-xs text-bunker-muted"><span title={`Yakalanma: ${fmtTrTime(item.detectedAt)}`}>{fmtTrTime(signalTimeSec(item))}</span></td>
-      <td className="font-mono text-xs font-bold"><SymbolLink symbol={item.symbol} timeframe="5m" /></td>
+      <td className="font-mono text-xs font-bold"><SymbolLink symbol={item.symbol} timeframe={item.timeframe} /></td>
+      <td><span className="ui-badge ui-badge-info font-mono" title={`Sinyal ${timeframeLabel(item.timeframe)} mumunda tespit edildi`}>{timeframeLabel(item.timeframe)}</span></td>
       <td className="!whitespace-normal"><RuleTags rules={item.rules} /></td>
       <td className="font-mono text-xs text-right">{fmtSignalPrice(item.signalPrice)}</td>
       <td className={`font-mono text-xs text-right ${riseClass(item.maxRise5)}`}>{fmtPct(item.maxRise5)}</td>
@@ -100,7 +103,8 @@ const SignalCard = memo(function SignalCard({ item, floor, nowSec }: { item: MaB
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <SymbolLink symbol={item.symbol} timeframe="5m" className="font-mono text-base font-bold text-white hover:text-neon-green" />
+            <SymbolLink symbol={item.symbol} timeframe={item.timeframe} className="font-mono text-base font-bold text-white hover:text-neon-green" />
+            <span className="ui-badge ui-badge-info font-mono">{timeframeLabel(item.timeframe)}</span>
             {hit && <FloorBadge floor={floor} />}
           </div>
           <p className="mt-0.5 font-mono text-[11px] text-bunker-muted">{fmtTrTime(signalTimeSec(item))} · fiyat {fmtSignalPrice(item.signalPrice)}</p>
@@ -143,6 +147,7 @@ function SortHeader({ label, k, sortKey, sortDir, onSort, right }: { label: stri
 export default function MaBuySignals() {
   const [days, setDays] = useState<number>(7);
   const [rule, setRule] = useState("");
+  const [timeframe, setTimeframe] = useState("");
   const [status, setStatus] = useState("");
   const [symbolQuery, setSymbolQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("time");
@@ -157,7 +162,7 @@ export default function MaBuySignals() {
   const load = useCallback(async () => {
     const seq = ++seqRef.current;
     try {
-      const response = await apiRequest(`${API_BASE}/api/admin/ma-buy-signals?${buildQuery({ days, rule, status })}`, { cache: "no-store" });
+      const response = await apiRequest(`${API_BASE}/api/admin/ma-buy-signals?${buildQuery({ days, rule, status, timeframe })}`, { cache: "no-store" });
       const body = await response.json().catch(() => ({}));
       if (seq !== seqRef.current) return;
       if (!response.ok) {
@@ -176,7 +181,7 @@ export default function MaBuySignals() {
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }
-  }, [days, rule, status]);
+  }, [days, rule, status, timeframe]);
 
   // Süzgeç değişince hemen yükle (sunucu süzgeçleri: gün, kural, durum).
   useEffect(() => {
@@ -307,6 +312,9 @@ export default function MaBuySignals() {
                   {DAY_OPTIONS.map((d) => <option key={d} value={d}>{d === 1 ? "Son 1 gün" : `Son ${d} gün`}</option>)}
                 </select>
               </label>
+              <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)} className="input !w-auto" aria-label="Zaman dilimi">
+                {TIMEFRAME_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
               <select value={rule} onChange={(e) => setRule(e.target.value)} className="input !w-auto" aria-label="Kural">
                 {RULE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -314,7 +322,7 @@ export default function MaBuySignals() {
                 {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
               <input value={symbolQuery} onChange={(e) => setSymbolQuery(e.target.value)} className="input min-w-36 flex-1" placeholder="Sembol ara (örn. SAND)" aria-label="Sembol ara" />
-              <button type="button" onClick={() => { setDays(7); setRule(""); setStatus(""); setSymbolQuery(""); }} className="ui-button ui-button-secondary">SIFIRLA</button>
+              <button type="button" onClick={() => { setDays(7); setRule(""); setTimeframe(""); setStatus(""); setSymbolQuery(""); }} className="ui-button ui-button-secondary">SIFIRLA</button>
               <span className="ml-auto font-mono text-xs text-bunker-muted">
                 {rows.length.toLocaleString("tr-TR")} satır{data && data.total !== rows.length ? ` / ${data.total.toLocaleString("tr-TR")} kayıt` : ""}
               </span>
@@ -337,6 +345,7 @@ export default function MaBuySignals() {
                       <tr>
                         <SortHeader label="Mum zamanı" k="time" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                         <th>Sembol</th>
+                        <th>Zaman dilimi</th>
                         <th>Kural</th>
                         <th className="text-right">Sinyal fiyatı</th>
                         <th className="text-right">5 dk ↑</th>

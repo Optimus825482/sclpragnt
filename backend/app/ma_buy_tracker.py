@@ -22,7 +22,7 @@ from app.config import config
 
 logger = logging.getLogger("scalper.ma_buy")
 
-SUPPORTED_TF_MS = {"5m": 300_000, "15m": 900_000}
+SUPPORTED_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
 HORIZON_MIN = 15
 FETCH_LIMIT = 250
 CLOSE_SKEW_MS = 1_500          # sunucu saati ileride olsa da kapanmamış mum alınmasın
@@ -50,8 +50,12 @@ def periods() -> tuple:
     return tuple(vals) if len(vals) == 3 and all(v >= 1 for v in vals) else ma_buy_signals.DEFAULT_PERIODS
 
 
-def stoch_max() -> float | None:
-    """2. kural StochRSI K üst sınırı (varsayılan 80; 100+ ya da geçersiz → kapalı)."""
+def stoch_max(tf: str = "5m") -> float | None:
+    """2. kural StochRSI K üst sınırı (varsayılan 80). `MA_BUY_STOCH_OFF_TIMEFRAMES` (varsayılan "1m") zaman dilimlerinde,
+    ya da değer 100+/geçersizse sınır yok (None)."""
+    off = {t.strip() for t in str(getattr(config, "MA_BUY_STOCH_OFF_TIMEFRAMES", "1m") or "").split(",") if t.strip()}
+    if tf in off:
+        return None
     try:
         v = float(getattr(config, "MA_BUY_STOCH_MAX", 80.0))
     except (TypeError, ValueError):
@@ -186,7 +190,7 @@ async def _scan_symbol(symbol: str, tf: str, now_ms: int, sem: asyncio.Semaphore
         return 0
     use_sma = str(getattr(config, "MA_BUY_MA_TYPE", "ema")).strip().lower() == "sma"
     found = signals_from_bars(symbol, tf, bars, now_ms, lookback=int(getattr(config, "MA_BUY_LOOKBACK_BARS", 3) or 3),
-                              per=periods(), use_sma=use_sma, stoch_max=stoch_max())
+                              per=periods(), use_sma=use_sma, stoch_max=stoch_max(tf))
     inserted = await database.insert_ma_buy_signals(found) if found else 0
     _state["seen"][key] = bars[-1]["open_ms"]
     if inserted:
@@ -234,7 +238,8 @@ async def evaluate_once(now_ms: int | None = None) -> int:
             continue
         try:
             async with sem:
-                rows = await fetch_klines(row["symbol"], tf, limit=8, start_time_ms=int(row["bar_open_ms"]) + tf_ms)
+                rows = await fetch_klines(row["symbol"], tf, limit=HORIZON_MIN * 60_000 // tf_ms + 4,
+                                         start_time_ms=int(row["bar_open_ms"]) + tf_ms)
             bars = [b for b in closed_bars(rows, tf_ms, now_ms) if b["open_ms"] >= int(row["bar_open_ms"]) + tf_ms]
             metrics = ma_buy_signals.outcome_metrics(float(row["signal_price"]), bars, tf_ms // 60_000, HORIZON_MIN)
         except Exception as exc:  # noqa: BLE001

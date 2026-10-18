@@ -17,14 +17,16 @@ router = APIRouter()
 
 @router.get("/api/admin/ma-buy-signals")
 async def list_ma_buy_signals(request: Request, days: int = Query(7, ge=1, le=120), symbol: str = "", rule: str = "",
-                              status: str = "", limit: int = Query(500, ge=1, le=2000)):
+                              status: str = "", timeframe: str = "", limit: int = Query(500, ge=1, le=2000)):
     require_admin(request)
     since_ms = int((time.time() - days * 86400) * 1000)
     status_f = status if status in {"open", "done", "no_data"} else None
     rows = await database.list_ma_buy_signals(since_ms, symbol=symbol.strip() or None, status=status_f, limit=5000)
-    items = [ma_buy_tracker.public_item(r) for r in rows]
+    if timeframe in ma_buy_tracker.SUPPORTED_TF_MS:
+        rows = [r for r in rows if r.get("timeframe") == timeframe]
     if rule in ma_buy_signals.ALL_RULES:
-        items = [i for i in items if rule in i["rules"]]
+        rows = [r for r in rows if rule in str(r.get("rules") or "").split(",")]
+    items = [ma_buy_tracker.public_item(r) for r in rows]
     return {"ok": True, "days": days, "total": len(items), "items": items[:limit],
-            "summary": ma_buy_tracker.summarize(rows if not rule else [r for r in rows if rule in str(r.get("rules") or "").split(",")]),
+            "summary": ma_buy_tracker.summarize(rows),
             "tracker": ma_buy_tracker.status_snapshot()}

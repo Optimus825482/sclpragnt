@@ -76,6 +76,19 @@ export const RULE_OPTIONS: { value: "" | MaBuyRule; label: string }[] = [
   { value: "fast_cross_mid", label: "Turuncu maviyi yukarı kesti" },
   { value: "mid_cross_slow", label: "Mavi morun üstüne çıktı" },
 ];
+export const TIMEFRAME_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Tüm zaman dilimleri" },
+  { value: "1m", label: "M1" },
+  { value: "5m", label: "M5" },
+  { value: "15m", label: "M15" },
+];
+
+/** `5m` -> `M5`, `1m` -> `M1`, `15m` -> `M15`; tanınmayan değer olduğu gibi büyük harfle. */
+export function timeframeLabel(tf: string | null | undefined): string {
+  const m = /^(\d+)m$/i.exec(String(tf ?? "").trim());
+  return m ? `M${m[1]}` : String(tf ?? "").toUpperCase() || "—";
+}
+
 export const STATUS_OPTIONS: { value: "" | MaBuyStatus; label: string }[] = [
   { value: "", label: "Tüm durumlar" },
   { value: "done", label: "Ölçüldü" },
@@ -248,11 +261,12 @@ export function filterBySymbol(items: readonly MaBuySignal[], query: string): Ma
 }
 
 /** Sunucu sorgu dizesi (sembol süzgeci istemci tarafındadır, gönderilmez). */
-export function buildQuery(opts: { days: number; rule?: string; status?: string; limit?: number }): string {
+export function buildQuery(opts: { days: number; rule?: string; status?: string; timeframe?: string; limit?: number }): string {
   const p = new URLSearchParams();
   p.set("days", String(opts.days));
   if (opts.rule) p.set("rule", opts.rule);
   if (opts.status) p.set("status", opts.status);
+  if (opts.timeframe) p.set("timeframe", opts.timeframe);
   p.set("limit", String(opts.limit ?? 500));
   return p.toString();
 }

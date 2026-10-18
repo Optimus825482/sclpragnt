@@ -525,7 +525,8 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
         const wantSlowCross = p.showMaSlowCross !== false;
         // 2026-10-18 (kullanıcı kuralı): 2. koşul (mavi morun üstüne çıkar) StochRSI K, `slowCrossStochMax` (varsayılan 80)
         // değerinin ÜSTÜNDEYKEN etiket üretmez. 100 ya da üstü = kapalı. K tanımsızsa (ısınma) engellemez.
-        const stochMax = Number(p.slowCrossStochMax ?? 80);
+        // M1 (1 dk) grafikte bu sınır UYGULANMAZ (kullanıcı kararı); M5/M15 ve diğerlerinde geçerli.
+        const stochMax = String(p.chartInterval ?? "") === "1m" ? 100 : Number(p.slowCrossStochMax ?? 80);
         const stochK = wantSlowCross && Number.isFinite(stochMax) && stochMax < 100
             ? stochRsi(closes,
                 Math.max(2, Math.round(Number(p.stochRsiLen ?? 14))), Math.max(2, Math.round(Number(p.stochLen ?? 14))),

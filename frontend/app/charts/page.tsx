@@ -1330,7 +1330,7 @@ export default function ChartsPage() {
                     if (!showSignals) continue;
                     // 2026-10-18: grafikte MA Ribbon varsa BUY etiketi onun çizgilerini (uzunluk + SMA/EMA türü) kullanır;
                     // yoksa rozet, görünen çizgilerden farklı bir ortalamaya göre hesaplanıp "yanlış yerde" görünüyordu.
-                    const raw = fn(bars, inst.registryId === "stoch_ma_signals" ? withRibbonParams(inst.params, instances) : inst.params);
+                    const raw = fn(bars, inst.registryId === "stoch_ma_signals" ? { ...withRibbonParams(inst.params, instances), chartInterval: interval } : inst.params);
                     const signals: StrategySignal[] = useSpotExec ? spotExecutionSignals(bars, raw) : raw;
                     for (const s of signals) {
                         if (s.type === "pre") {
@@ -1381,7 +1381,7 @@ export default function ChartsPage() {
                 badgePrimRef.current.setBadges(badges);
             }
         } catch { /* marker hatası sessiz geç */ }
-    }, [instances, bars, symbol]);
+    }, [instances, bars, symbol, interval]);
 
     // Güçlü mum formasyonlarını seçili timeframe üzerinde marker olarak göster.
     useEffect(() => {

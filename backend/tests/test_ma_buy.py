@@ -85,6 +85,30 @@ class StochCapTests(unittest.TestCase):
         self.assertTrue(vals and all(-1e-9 <= v <= 100 + 1e-9 for v in vals))
 
 
+class TimeframeTests(unittest.TestCase):
+    def test_stoch_cap_off_on_m1_only(self):
+        self.assertIsNone(ma_buy_tracker.stoch_max("1m"))
+        self.assertEqual(ma_buy_tracker.stoch_max("5m"), 80.0)
+        self.assertEqual(ma_buy_tracker.stoch_max("15m"), 80.0)
+
+    def test_supported_timeframes_and_default(self):
+        self.assertEqual(set(ma_buy_tracker.SUPPORTED_TF_MS), {"1m", "5m", "15m"})
+        self.assertEqual(ma_buy_tracker.timeframes(), ["1m", "5m", "15m"])
+
+    def test_outcome_on_one_minute_bars(self):
+        bars = [{"high": 100.0 + i * 0.1, "low": 99.9, "close": 100.0 + i * 0.1} for i in range(1, 16)]
+        m = ma_buy_signals.outcome_metrics(100.0, bars, 1)
+        self.assertEqual(m["max_rise_5m_pct"], 0.5)
+        self.assertEqual(m["max_rise_10m_pct"], 1.0)
+        self.assertEqual(m["max_rise_15m_pct"], 1.5)
+        self.assertEqual(m["peak_bar_minutes"], 15)
+
+    def test_outcome_on_fifteen_minute_bar(self):
+        m = ma_buy_signals.outcome_metrics(100.0, [{"high": 102.0, "low": 99.0, "close": 101.0}], 15)
+        self.assertIsNone(m["max_rise_5m_pct"])
+        self.assertEqual(m["max_rise_15m_pct"], 2.0)
+
+
 class TrackerPureTests(unittest.TestCase):
     def test_closed_bars_drops_open_bar_and_dupes(self):
         now = BASE + 3 * TF + 10_000
@@ -115,6 +139,9 @@ class TrackerPureTests(unittest.TestCase):
 class TrackerFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         ma_buy_tracker._state.update({"seen": {}, "last_error": None})
+        p = patch.object(ma_buy_tracker.config, "MA_BUY_TIMEFRAMES", "5m", create=True)   # akış testleri tek zaman dilimi (5m)
+        p.start()
+        self.addCleanup(p.stop)
 
     async def test_scan_inserts_recent_signal_once(self):
         fx = _fixture()
@@ -195,7 +222,7 @@ class RouterAccessTests(unittest.IsolatedAsyncioTestCase):
         from app.routers import ma_buy
         with patch("app.main._require_admin", side_effect=HTTPException(status_code=403, detail="admin")):
             with self.assertRaises(HTTPException) as cm:
-                await ma_buy.list_ma_buy_signals(MagicMock(), days=7, symbol="", rule="", status="", limit=10)
+                await ma_buy.list_ma_buy_signals(MagicMock(), days=7, symbol="", rule="", status="", timeframe="", limit=10)
         self.assertEqual(cm.exception.status_code, 403)
 
     async def test_lists_items_and_summary(self):
@@ -207,12 +234,22 @@ class RouterAccessTests(unittest.IsolatedAsyncioTestCase):
                  "rules": "mid_cross_slow", "signal_price": 1.0, "status": "open", "eval_attempts": 0}]
         with patch("app.main._require_admin", return_value={"role": "admin"}), \
              patch.object(ma_buy.database, "list_ma_buy_signals", AsyncMock(return_value=rows)):
-            out = await ma_buy.list_ma_buy_signals(MagicMock(), days=7, symbol="", rule="mid_cross_slow", status="", limit=10)
+            out = await ma_buy.list_ma_buy_signals(MagicMock(), days=7, symbol="", rule="mid_cross_slow", status="", timeframe="", limit=10)
         self.assertTrue(out["ok"])
         self.assertEqual([i["symbol"] for i in out["items"]], ["BBBTRY"])
         self.assertEqual(out["items"][0]["rules"], ["mid_cross_slow"])
         self.assertEqual(out["summary"]["count"], 1)
         self.assertIn("tracker", out)
+
+    async def test_timeframe_filter(self):
+        from app.routers import ma_buy
+        base = {"bar_open_ms": 1, "bar_close_ms": 2, "detected_at": 1.0, "rules": "fast_cross_mid", "signal_price": 1.0,
+                "status": "open", "eval_attempts": 0}
+        rows = [{**base, "id": 1, "symbol": "AAATRY", "timeframe": "1m"}, {**base, "id": 2, "symbol": "BBBTRY", "timeframe": "15m"}]
+        with patch("app.main._require_admin", return_value={"role": "admin"}),              patch.object(ma_buy.database, "list_ma_buy_signals", AsyncMock(return_value=rows)):
+            out = await ma_buy.list_ma_buy_signals(MagicMock(), days=7, symbol="", rule="", status="", timeframe="15m", limit=10)
+        self.assertEqual([i["symbol"] for i in out["items"]], ["BBBTRY"])
+        self.assertEqual(out["summary"]["count"], 1)
 
     def test_route_registered(self):
         from app.main import app

@@ -19,6 +19,7 @@ import {
   signalTimeSec,
   sortSignals,
   statusChip,
+  timeframeLabel,
   trackerLine,
   type MaBuySignal,
 } from "./maBuyUi";
@@ -248,5 +249,16 @@ describe("maBuyUi — mum zamanı", () => {
     expect(t).toBe(close / 1000 - 300);
     expect(signalTimeSec({ barCloseMs: close, detectedAt: null, timeframe: "15m" })).toBe(close / 1000 - 900);
     expect(signalTimeSec({ barCloseMs: null, detectedAt: 123, timeframe: "5m" })).toBe(123);
+  });
+});
+
+describe("maBuyUi — zaman dilimi", () => {
+  it("etiket ve sorgu", () => {
+    expect(timeframeLabel("1m")).toBe("M1");
+    expect(timeframeLabel("5m")).toBe("M5");
+    expect(timeframeLabel("15m")).toBe("M15");
+    expect(timeframeLabel("")).toBe("—");
+    expect(buildQuery({ days: 7, timeframe: "15m" })).toContain("timeframe=15m");
+    expect(buildQuery({ days: 7 })).not.toContain("timeframe");
   });
 });

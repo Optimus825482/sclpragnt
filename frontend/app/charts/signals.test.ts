@@ -593,6 +593,18 @@ describe("maRibbonBuySignals — ikinci koşul: hızlı > orta iken orta yavaş�
     expect(maRibbonBuySignals(bars, { slowCrossStochMax: Math.ceil(k) }).some((s) => s.time === t)).toBe(true);
   });
 
+  it("1 dk grafikte StochRSI sınırı uygulanmaz; 5 dk ve 15 dk'da uygulanır", () => {
+    const mid = emaSeries(closes, 20), slow = emaSeries(closes, 99);
+    let crossIdx = -1;
+    for (let i = 100; i < closes.length; i++) {
+      if (mid[i - 1]! <= slow[i - 1]! && mid[i]! > slow[i]!) { crossIdx = i; break; }
+    }
+    const t = bars[crossIdx].time;
+    expect(maRibbonBuySignals(bars, { chartInterval: "1m" }).some((s) => s.time === t)).toBe(true);
+    expect(maRibbonBuySignals(bars, { chartInterval: "5m" }).some((s) => s.time === t)).toBe(false);
+    expect(maRibbonBuySignals(bars, { chartInterval: "15m" }).some((s) => s.time === t)).toBe(false);
+  });
+
   it("hızlı ortanın ALTINDAYKEN orta yavaşı keserse etiket yok; bar başına en çok bir BUY", () => {
     // Yavaş yükselen orta çizgi yavaşı keserken hızlı çizgiyi geride bırakan keskin düşüşle bitir: hızlı < orta
     const cl: number[] = [];
