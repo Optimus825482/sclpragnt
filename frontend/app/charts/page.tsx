@@ -2260,7 +2260,7 @@ export default function ChartsPage() {
             </div>
 
             <p className="text-xs text-bunker-muted font-mono">
-                <SymbolLink symbol={symbol} className="text-bunker-muted hover:text-neon-green" /> · {interval} periyodu · mumlar UTC — bot 1m kline kullanır, analiz zaman dilimiyle birebir uyumlu
+                <SymbolLink symbol={symbol} className="text-bunker-muted hover:text-neon-green" /> · {interval} periyodu · mumlar Türkiye saati (UTC+3) — bot 1m kline kullanır, analiz zaman dilimiyle birebir uyumlu
             </p>
 
             {picking && <IndicatorPicker onSelect={(e) => { setPicking(false); setEditTarget({ entry: e }); }} onClose={() => setPicking(false)} />}

@@ -74,8 +74,9 @@ export default function DisclaimerModal() {
             tasarlanmıştır ve <strong className="text-yellow-300">herhangi bir garanti vermez</strong>.
           </p>
           <p className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-xs">
-            Bu uygulama yalnızca kağıt (paper) ticaret üzerinde çalışır; gerçek para kullanılmaz. Alacağınız
-            tüm kararların sorumluluğu size aittir.
+            Uygulamanın paper (sanal) ticaret bölümlerinde gerçek para kullanılmaz. Binance TR bağlantısını
+            açtığınızda ise alım/satım ve SL/TP emirleri <strong className="text-white">gerçek paranızla</strong> verilir,
+            geri alınamaz ve kayıp riski taşır. Alacağınız tüm kararların sorumluluğu size aittir.
           </p>
         </div>
 
