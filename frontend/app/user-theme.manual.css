@@ -44,3 +44,15 @@
 @media (prefers-reduced-motion: reduce) {
   [data-theme="light"] * { animation: none !important; transition: none !important; }
 }
+
+/* 2026-10-18 (mobil denetim #7): açık temada koyu yeşil/kırmızı dolgu üzerindeki metin. .text-white / .text-black bu
+   temada koyu mürekkebe çevrildiği için bg-neon-green/red + text-white ≈2,9:1 çıkıyordu (Sat, tehlikeli onay, toast,
+   birincil düğmeler). Dolgu koyu kaldığından metni beyaza çeviriyoruz (≈6,4:1). Özgüllük (0,3,0) `.text-white` kuralını yener. */
+[data-theme="light"] .bg-neon-green.text-white,
+[data-theme="light"] .bg-neon-green.text-black,
+[data-theme="light"] .bg-neon-green\/90.text-white,
+[data-theme="light"] .bg-neon-green\/90.text-black,
+[data-theme="light"] .bg-neon-red.text-white,
+[data-theme="light"] .bg-neon-red.text-black,
+[data-theme="light"] .bg-neon-red\/90.text-white,
+[data-theme="light"] .bg-neon-red\/90.text-black { color: #fff; }
