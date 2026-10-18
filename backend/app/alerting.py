@@ -66,6 +66,46 @@ def _rule_value(rule, market, ticker):
     return (last_price / closes[-2] - 1.0) * 100.0
 
 
+# --- Web push teslimat kalitesi (2026-10-18, mobil/PWA denetimi P3) --------------------
+# pywebpush varsayılanı `ttl=0` ("anında teslim edilemiyorsa at"): telefon Doze/uçak modu/
+# kapsama dışındayken kısa süre erişilemezse bildirim KAYBOLUR; ayrıca `Urgency` yok ve
+# `timeout=None` (askıda bir uç nokta tüm turu bloke eder). Burada:
+PUSH_TTL_MIN_SEC = 300      # bildirim en az 5 dk teslim edilmeye çalışılır
+PUSH_TTL_MAX_SEC = 900      # ... en çok 15 dk (radar ufku 5-15 dk; sonrası bayat bilgi)
+PUSH_TTL_DEFAULT_SEC = 600
+PUSH_TIMEOUT_SEC = 10
+PUSH_CONCURRENCY = 8
+
+
+def push_ttl_seconds(extra=None) -> int:
+    """Bildirimin anlamlı kaldığı süre (sn): `horizon_minutes` varsa onunla hizalı, 300-900 sn aralığına kırpılır."""
+    try:
+        horizon = float((extra or {}).get("horizon_minutes"))
+    except (TypeError, ValueError):
+        return PUSH_TTL_DEFAULT_SEC
+    if horizon <= 0:
+        return PUSH_TTL_DEFAULT_SEC
+    return int(max(PUSH_TTL_MIN_SEC, min(PUSH_TTL_MAX_SEC, horizon * 60)))
+
+
+def push_topic(tag) -> str | None:
+    """RFC 8030 `Topic`: aynı konulu, henüz teslim edilmemiş bildirimin yerini alır (kopya birikmez).
+
+    Yalnız URL-güvenli base64 karakterleri (A-Z a-z 0-9 - _), en çok 32 karakter; diğerleri '-' olur.
+    """
+    cleaned = "".join(ch if (ch.isascii() and (ch.isalnum() or ch in "-_")) else "-" for ch in str(tag or ""))
+    cleaned = cleaned[:32].strip("-")
+    return cleaned or None
+
+
+def push_headers(tag) -> dict:
+    headers = {"Urgency": "high"}
+    topic = push_topic(tag)
+    if topic:
+        headers["Topic"] = topic
+    return headers
+
+
 async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=None, usernames=None):
     vapid_private, subject = os.getenv("VAPID_PRIVATE_KEY", "").strip(), os.getenv("VAPID_SUBJECT", "mailto:alerts@example.com").strip()
     if not vapid_private: return {"ok": False, "skipped": True, "reason": "vapid_not_configured"}
@@ -78,27 +118,40 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
             "title": title or "Scalper Agent alarmı",
             "body": message,
             "url": url or "/monitoring",
-            "sound": "/alarm.wav",
         }
         if tag: payload_obj["tag"] = tag
         if extra: payload_obj.update(extra)
         payload = json.dumps(payload_obj)
         success_count = 0
         dead_subscriptions = []
-        for subscription in subscriptions:
-            try:
-                await asyncio.to_thread(webpush, subscription_info=subscription, data=payload,
-                                        vapid_private_key=vapid_private,
-                                        vapid_claims={"sub": subject})
+        ttl = push_ttl_seconds(extra)
+        headers = push_headers(tag)
+        # Abonelikler sınırlı paralellikle gönderilir: askıda bir uç nokta (timeout'a kadar)
+        # diğerlerini bekletmesin.
+        gate = asyncio.Semaphore(PUSH_CONCURRENCY)
+
+        async def _send_one(subscription):
+            async with gate:
+                try:
+                    await asyncio.to_thread(webpush, subscription_info=subscription, data=payload,
+                                            vapid_private_key=vapid_private,
+                                            vapid_claims={"sub": subject},
+                                            ttl=ttl, headers=dict(headers), timeout=PUSH_TIMEOUT_SEC)
+                    return subscription, None
+                except Exception as sub_exc:
+                    return subscription, sub_exc
+
+        for subscription, sub_exc in await asyncio.gather(*(_send_one(sub) for sub in subscriptions)):
+            if sub_exc is None:
                 success_count += 1
-            except Exception as sub_exc:
-                err_str = str(sub_exc).lower()
-                # 410 Gone, 404 Not Found,  expired endpoint → subscription ölü
-                if "410" in err_str or "404" in err_str or "gone" in err_str or "expired" in err_str:
-                    dead_subscriptions.append(subscription.get("endpoint", ""))
-                    logger.warning("Push: ölü abonelik tespit edildi: %s", subscription.get("endpoint", "")[:60])
-                else:
-                    logger.warning("Push: abonelik gönderim hatası: %s", sub_exc)
+                continue
+            err_str = str(sub_exc).lower()
+            # 410 Gone, 404 Not Found,  expired endpoint → subscription ölü
+            if "410" in err_str or "404" in err_str or "gone" in err_str or "expired" in err_str:
+                dead_subscriptions.append(subscription.get("endpoint", ""))
+                logger.warning("Push: ölü abonelik tespit edildi: %s", subscription.get("endpoint", "")[:60])
+            else:
+                logger.warning("Push: abonelik gönderim hatası: %s", sub_exc)
         if dead_subscriptions:
             try:
                 await database.remove_push_subscriptions(dead_subscriptions)

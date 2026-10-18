@@ -9,7 +9,12 @@ const TEMPLATE = readFileSync(path.join(__dirname, "..", "sw.js", "sw.template.j
 type Handler = (event: any) => void;
 
 /** Şablonu sahte SW ortamında çalıştırır; kayıtlı olay dinleyicilerini ve sahte önbelleği döndürür. */
-function bootServiceWorker(build: string, vapid = "", fetchImpl?: (req: any) => Promise<any>) {
+function bootServiceWorker(
+  build: string,
+  vapid = "",
+  fetchImpl?: (req: any) => Promise<any>,
+  env: { windows?: any[]; userAgent?: string } = {},
+) {
   const handlers: Record<string, Handler> = {};
   const stores = new Map<string, Map<string, any>>();
   const cachesStub = {
@@ -30,15 +35,23 @@ function bootServiceWorker(build: string, vapid = "", fetchImpl?: (req: any) => 
     },
   };
   const posted: unknown[] = [];
+  const notifications: Array<{ title: string; options: any }> = [];
+  const closed: string[] = [];
   const self = {
+    navigator: { userAgent: env.userAgent ?? "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36" },
     location: new URL("https://app.example/sw.js"),
     addEventListener: (type: string, fn: Handler) => { handlers[type] = fn; },
     skipWaiting: async () => undefined,
     clients: {
       claim: async () => undefined,
-      matchAll: async () => [{ postMessage: (m: unknown) => posted.push(m) }],
+      matchAll: async () => env.windows ?? [{ postMessage: (m: unknown) => posted.push(m) }],
     },
-    registration: { showNotification: async () => undefined },
+    registration: {
+      showNotification: async (title: string, options: any) => { notifications.push({ title, options }); },
+      getNotifications: async (filter?: { tag?: string }) => notifications
+        .filter((n) => !filter?.tag || n.options.tag === filter.tag)
+        .map((n) => ({ close: () => { closed.push(n.options.tag); } })),
+    },
   };
   const context: Record<string, unknown> = {
     self, caches: cachesStub, clients: self.clients, Request, Response, URL, Promise, setTimeout, clearTimeout,
@@ -46,7 +59,7 @@ function bootServiceWorker(build: string, vapid = "", fetchImpl?: (req: any) => 
     atob, Uint8Array, console,
   };
   vm.runInNewContext(renderServiceWorker(TEMPLATE, build, vapid), context);
-  return { handlers, stores, posted };
+  return { handlers, stores, posted, notifications, closed };
 }
 
 function fetchEvent(url: string, init: { mode?: string; destination?: string } = {}) {
@@ -159,5 +172,29 @@ describe("sw.js davranışı (sahte SW ortamı)", () => {
     sw.handlers.fetch(ev);
     const res = (await ev.responded) as Response;
     expect(res.status).toBe(503);
+  });
+});
+
+function pushEvent(payload: Record<string, unknown>) {
+  let done: Promise<unknown> = Promise.resolve();
+  return {
+    data: { json: () => payload, text: () => JSON.stringify(payload) },
+    waitUntil: (p: Promise<unknown>) => { done = p; },
+    get done() { return done; },
+  };
+}
+
+describe("push bildirimi (sahte SW ortamı)", () => {
+  it("ikon ve rozet PNG'dir (Android SVG desteklemez), `sound` alanı yoktur", async () => {
+    const sw = bootServiceWorker("b-1");
+    const ev = pushEvent({ title: "Radar", body: "BTCTRY", tag: "radar-BTCTRY", url: "/charts?symbol=BTCTRY" });
+    sw.handlers.push(ev);
+    await ev.done;
+    expect(sw.notifications).toHaveLength(1);
+    const { options } = sw.notifications[0];
+    expect(options.icon).toMatch(/\.png$/);
+    expect(options.badge).toMatch(/\.png$/);
+    expect(options).not.toHaveProperty("sound");
+    expect(options.data.url).toBe("/charts?symbol=BTCTRY");
   });
 });

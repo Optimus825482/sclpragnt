@@ -20,6 +20,8 @@ var SHELL_URL = "/";
 // Ağ bu süre içinde yanıt vermezse (bağlantı var, veri yok — "lie-fi") ve
 // önbellekte sayfa varsa önbellek sunulur; ağ isteği arka planda sürer.
 var NAV_TIMEOUT_MS = 4000;
+var ICON_URL = "/icons/Android/Icon-192.png";
+var BADGE_URL = "/icons/badge-96.png";
 
 function noop() {}
 
@@ -95,12 +97,14 @@ self.addEventListener("push", function (event) {
   };
 
   var show = function () {
-    // PWA kapalı olsa bile sesli bildirim: Android/Chrome ses dosyası destekler,
-    // iOS Safari vibrate ile destekler; her ikisini birden sağlıyoruz.
+    // PWA kapalı olsa bile titreşimli bildirim (iOS vibrate'i yok sayar). NOT: Notification
+    // `sound` alanı hiçbir tarayıcıda yoktur; bildirim sesini işletim sistemi çalar.
     var notifOpts = {
       body: data.body || data.message || "Yeni market alarmı",
-      icon: "/icon.svg",
-      badge: "/icon.svg",
+      // Android bildirim ikonu SVG desteklemez (varsayılan/boş ikon çıkar); `badge` tek renkli
+      // şeffaf PNG olmalı (aksi halde gri varsayılan). iOS badge'i yok sayar.
+      icon: ICON_URL,
+      badge: BADGE_URL,
       vibrate: [300, 150, 300, 150, 500, 150, 300],
       tag: data.tag || "scalper-alert",
       requireInteraction: true,
@@ -108,8 +112,6 @@ self.addEventListener("push", function (event) {
       silent: false,
       data: { url: data.url || "/monitoring" }
     };
-    // Android/Chrome: ses dosyası (sound alanı)
-    if (data.sound) notifOpts.sound = data.sound;
     // ML olasılık varsa başlığa ekle
     if (data.ml_hit_probability != null) {
       var prob = Math.round(Number(data.ml_hit_probability) * 100);
