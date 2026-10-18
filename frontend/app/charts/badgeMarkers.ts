@@ -16,11 +16,15 @@ export type Badge = { time: number; price: number; text: string; bg: string; fg:
 type DrawTarget = Parameters<IPrimitivePaneRenderer["draw"]>[0];
 export type Placed = { x: number; y: number; text: string; bg: string; fg: string; above: boolean };
 
-export const BADGE_H = 18;
-export const BADGE_PAD_X = 7;
-export const BADGE_GAP = 6;      // mum ucu ile rozet arası (px)
-export const BADGE_TIP = 5;      // muma bakan üçgen uç yüksekliği (px)
-export const BADGE_FONT = "bold 11px 'JetBrains Mono', ui-monospace, monospace";
+// 2026-10-18 (kullanıcı örneği): TradingView "label.up" tarzı — köşeleri hafif yuvarlak DİKDÖRTGEN kutu,
+// üstünde muma bakan belirgin üçgen uç, kalın beyaz yazı, düz yeşil zemin.
+export const BADGE_H = 28;
+export const BADGE_PAD_X = 10;
+export const BADGE_GAP = 8;       // mum ucu ile üçgen ucu arası (px)
+export const BADGE_TIP = 9;       // muma bakan üçgen uç yüksekliği (px)
+export const BADGE_RADIUS = 3;    // köşe yarıçapı (px)
+export const BADGE_MIN_W = 44;
+export const BADGE_FONT = "bold 13px -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
 
 /** Saf: strateji sinyali + mum → rozet (alış altta yeşil, satış üstte kırmızı). `badge` istemeyen sinyal → null. */
 export function badgeFromSignal(s: StrategySignal, bar: Bar | undefined): Badge | null {
@@ -39,7 +43,7 @@ export function badgeFromSignal(s: StrategySignal, bar: Bar | undefined): Badge 
 
 /** Saf: metin genişliğinden rozet kutusu (x merkezli). */
 export function badgeBox(textWidth: number, x: number, yEdge: number, above: boolean) {
-    const w = Math.max(28, Math.round(textWidth + BADGE_PAD_X * 2));
+    const w = Math.max(BADGE_MIN_W, Math.round(textWidth + BADGE_PAD_X * 2));
     const left = Math.round(x - w / 2);
     // above=true → rozet mumun ÜSTÜNDE (kutu yEdge − gap − tip − h … yEdge − gap − tip)
     const top = above ? yEdge - BADGE_GAP - BADGE_TIP - BADGE_H : yEdge + BADGE_GAP + BADGE_TIP;
@@ -58,33 +62,35 @@ export function drawBadges(ctx: CanvasRenderingContext2D, items: readonly Placed
         if (it.x < -40 || it.x > mediaWidth + 40) continue;
         const tw = ctx.measureText(it.text).width;
         const box = badgeBox(tw, it.x, it.y, it.above);
-        const r = BADGE_H / 2;
-        // gövde (yuvarlak köşeli hap)
-        ctx.beginPath();
-        ctx.moveTo(box.left + r, box.top);
-        ctx.lineTo(box.left + box.w - r, box.top);
-        ctx.arc(box.left + box.w - r, box.top + r, r, -Math.PI / 2, Math.PI / 2);
-        ctx.lineTo(box.left + r, box.top + box.h);
-        ctx.arc(box.left + r, box.top + r, r, Math.PI / 2, (3 * Math.PI) / 2);
-        ctx.closePath();
-        // muma bakan uç
-        const tipBaseY = it.above ? box.top + box.h : box.top;
+        const r = BADGE_RADIUS;
+        const { left, top, w, h } = box;
+        // gövde (köşeleri hafif yuvarlak dikdörtgen) + muma bakan üçgen uç, TEK yol
+        const tipBaseY = it.above ? top + h : top;
         const tipY = it.above ? tipBaseY + BADGE_TIP : tipBaseY - BADGE_TIP;
-        ctx.moveTo(it.x - BADGE_TIP, tipBaseY);
-        ctx.lineTo(it.x, tipY);
-        ctx.lineTo(it.x + BADGE_TIP, tipBaseY);
+        const halfTip = Math.min(BADGE_TIP, w / 2 - r - 1);
+        ctx.beginPath();
+        ctx.moveTo(left + r, top);
+        if (!it.above) {   // uç üstte (alış rozeti mumun altında)
+            ctx.lineTo(it.x - halfTip, top);
+            ctx.lineTo(it.x, tipY);
+            ctx.lineTo(it.x + halfTip, top);
+        }
+        ctx.lineTo(left + w - r, top);
+        ctx.quadraticCurveTo(left + w, top, left + w, top + r);
+        ctx.lineTo(left + w, top + h - r);
+        ctx.quadraticCurveTo(left + w, top + h, left + w - r, top + h);
+        if (it.above) {    // uç altta (satış rozeti mumun üstünde)
+            ctx.lineTo(it.x + halfTip, top + h);
+            ctx.lineTo(it.x, tipY);
+            ctx.lineTo(it.x - halfTip, top + h);
+        }
+        ctx.lineTo(left + r, top + h);
+        ctx.quadraticCurveTo(left, top + h, left, top + h - r);
+        ctx.lineTo(left, top + r);
+        ctx.quadraticCurveTo(left, top, left + r, top);
         ctx.closePath();
         ctx.fillStyle = it.bg;
-        ctx.shadowColor = "rgba(0,0,0,0.25)";
-        ctx.shadowBlur = 4;
-        ctx.shadowOffsetY = 1;
         ctx.fill();
-        ctx.shadowColor = "transparent";
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetY = 0;
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = "rgba(255,255,255,0.9)";
-        ctx.stroke();
         ctx.fillStyle = it.fg;
         ctx.fillText(it.text, box.left + box.w / 2, box.top + box.h / 2 + 0.5);
         drawn += 1;

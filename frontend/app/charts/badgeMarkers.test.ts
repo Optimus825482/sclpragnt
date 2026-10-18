@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BADGE_GAP, BADGE_H, BADGE_TIP, badgeBox, badgeFromSignal, drawBadges } from "./badgeMarkers";
+import { BADGE_GAP, BADGE_H, BADGE_MIN_W, BADGE_PAD_X, BADGE_TIP, badgeBox, badgeFromSignal, drawBadges } from "./badgeMarkers";
 import type { Bar } from "./signals";
 
 const bar: Bar = { time: 100, open: 10, high: 12, low: 9, close: 11, volume: 1 };
@@ -23,10 +23,10 @@ describe("badgeFromSignal", () => {
 });
 
 describe("badgeBox", () => {
-  it("altta: kutu mum ucunun altında, gap + uç kadar boşlukla; genişlik metin + dolgu, en az 28", () => {
-    const b = badgeBox(20, 100, 50, false);
-    expect(b).toEqual({ left: 83, top: 50 + BADGE_GAP + BADGE_TIP, w: 34, h: BADGE_H });
-    expect(badgeBox(4, 100, 50, false).w).toBe(28);
+  it("altta: kutu mum ucunun altında, gap + uç kadar boşlukla; genişlik metin + dolgu, en az BADGE_MIN_W", () => {
+    const b = badgeBox(40, 100, 50, false);
+    expect(b).toEqual({ left: 100 - (40 + BADGE_PAD_X * 2) / 2, top: 50 + BADGE_GAP + BADGE_TIP, w: 40 + BADGE_PAD_X * 2, h: BADGE_H });
+    expect(badgeBox(4, 100, 50, false).w).toBe(BADGE_MIN_W);
   });
   it("üstte: kutu mum ucunun üstünde biter", () => {
     const b = badgeBox(20, 100, 50, true);
@@ -57,7 +57,6 @@ describe("drawBadges (sahte 2D bağlam)", () => {
     expect(n).toBe(1);
     expect(calls.filter((c) => c === "fillText")).toHaveLength(1);
     expect(calls.filter((c) => c === "fill")).toHaveLength(1);
-    expect(calls.filter((c) => c === "stroke")).toHaveLength(1);
     expect(calls[0]).toBe("save");
     expect(calls[calls.length - 1]).toBe("restore");
   });
