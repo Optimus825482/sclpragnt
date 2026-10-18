@@ -523,13 +523,22 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
         const fast = pick(p.maFastType)(closes, fastLen), mid = pick(p.maMidType)(closes, midLen), slow = pick(p.maSlowType)(closes, slowLen);
         const out: StrategySignal[] = [];
         const wantSlowCross = p.showMaSlowCross !== false;
+        // 2026-10-18 (kullanıcı kuralı): 2. koşul (mavi morun üstüne çıkar) StochRSI K, `slowCrossStochMax` (varsayılan 80)
+        // değerinin ÜSTÜNDEYKEN etiket üretmez. 100 ya da üstü = kapalı. K tanımsızsa (ısınma) engellemez.
+        const stochMax = Number(p.slowCrossStochMax ?? 80);
+        const stochK = wantSlowCross && Number.isFinite(stochMax) && stochMax < 100
+            ? stochRsi(closes,
+                Math.max(2, Math.round(Number(p.stochRsiLen ?? 14))), Math.max(2, Math.round(Number(p.stochLen ?? 14))),
+                Math.max(1, Math.round(Number(p.stochK ?? 3))), Math.max(1, Math.round(Number(p.stochD ?? 3)))).k
+            : null;
         for (let i = 1; i < bars.length; i++) {
             const f0 = fast[i - 1], m0 = mid[i - 1], s0 = slow[i - 1], f1 = fast[i], m1 = mid[i], s1 = slow[i];
             if (f0 == null || m0 == null || f1 == null || m1 == null || s1 == null) continue;
             // Koşul 1: orta (mavi) > yavaş (mor) iken hızlı (turuncu) ortayı yukarı keser.
             const fastCrossesMid = m1 > s1 && maCrossUp(f0, m0, f1, m1);
             // Koşul 2 (2026-10-18, kullanıcı isteği): hızlı (turuncu) ortanın (mavi) ÜSTÜNDEYKEN orta yavaşı (mor) yukarı keser.
-            const midCrossesSlow = wantSlowCross && s0 != null && f1 > m1 && maCrossUp(m0, s0, m1, s1);
+            const midCrossesSlow = wantSlowCross && s0 != null && f1 > m1 && maCrossUp(m0, s0, m1, s1)
+                && !(stochK != null && stochK[i] != null && (stochK[i] as number) > stochMax);
             if (fastCrossesMid || midCrossesSlow) {
                 // 2026-10-18: rozet tarzı (badgeMarkers.ts): zoom'dan bağımsız sabit boyutlu yeşil "BUY" etiketi.
                 // İki koşul aynı barda olursa tek etiket (bar başına en çok bir BUY).

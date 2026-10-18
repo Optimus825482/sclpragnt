@@ -232,6 +232,7 @@ export const STOCH_MA_ENTRY: RegistryEntry = {
         { id: "stochD", type: "number", title: "StochRSI D Yumuşatma", defval: 3, min: 1, step: 1 },
         { id: "showMaBuy", type: "bool", title: "MA şerit BUY etiketini göster", defval: true },
         { id: "showMaSlowCross", type: "bool", title: "BUY: turuncu mavinin üstündeyken mavi morun üstüne çıkarsa", defval: true },
+        { id: "slowCrossStochMax", type: "number", title: "BUY 2. kural: StochRSI K bu seviyenin üstündeyse etiket yok (100 = kapalı)", defval: 80, min: 1, max: 100, step: 1 },
         { id: "maFast", type: "number", title: "MA hızlı (turuncu)", defval: 7, min: 1, step: 1 },
         { id: "maMid", type: "number", title: "MA orta (mavi)", defval: 20, min: 1, step: 1 },
         { id: "maSlow", type: "number", title: "MA yavaş (mor)", defval: 99, min: 1, step: 1 },

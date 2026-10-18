@@ -39,13 +39,13 @@ class PureSignalTests(unittest.TestCase):
     def test_parity_fixture_matches_detector(self):
         fx = _fixture()
         for case in fx["cases"]:
-            got = ma_buy_signals.detect_ma_buy(fx["closes"], tuple(case["periods"]), case["use_sma"], case["slow_cross"])
+            got = ma_buy_signals.detect_ma_buy(fx["closes"], tuple(case["periods"]), case["use_sma"], case["slow_cross"], case["stoch_max"])
             self.assertEqual([{"index": g["index"], "rules": g["rules"]} for g in got], case["signals"])
         rules = {r for c in fx["cases"] for s in c["signals"] for r in s["rules"]}
         self.assertEqual(rules, set(ma_buy_signals.ALL_RULES))
 
     def test_slow_cross_off_leaves_only_fast_cross_mid(self):
-        got = ma_buy_signals.detect_ma_buy(_fixture()["closes"], (7, 20, 99), False, False)
+        got = ma_buy_signals.detect_ma_buy(_fixture()["closes"], (7, 20, 99), False, False, None)
         self.assertTrue(got)
         self.assertTrue(all(g["rules"] == [ma_buy_signals.RULE_FAST_CROSS_MID] for g in got))
 
@@ -60,6 +60,29 @@ class PureSignalTests(unittest.TestCase):
         self.assertEqual(m["close_15m_pct"], -1.0)
         self.assertEqual(m["peak_bar_minutes"], 10)
         self.assertIsNone(ma_buy_signals.outcome_metrics(100.0, bars[:2], 5))
+
+
+class StochCapTests(unittest.TestCase):
+    def test_second_rule_blocked_when_stoch_k_above_cap(self):
+        closes = _fixture()["closes"]
+        free = ma_buy_signals.detect_ma_buy(closes, (7, 20, 99), False, True, None)
+        capped = ma_buy_signals.detect_ma_buy(closes, (7, 20, 99), False, True, 80.0)
+        k = ma_buy_signals.stoch_rsi_k(closes)
+        dropped = [h for h in free if ma_buy_signals.RULE_MID_CROSS_SLOW in h["rules"]
+                   and h["index"] not in {c["index"] for c in capped if ma_buy_signals.RULE_MID_CROSS_SLOW in c["rules"]}]
+        for h in dropped:
+            self.assertGreater(k[h["index"]], 80.0)
+        # 1. kural stoch'tan etkilenmez
+        fast_free = [h["index"] for h in free if ma_buy_signals.RULE_FAST_CROSS_MID in h["rules"]]
+        fast_cap = [h["index"] for h in capped if ma_buy_signals.RULE_FAST_CROSS_MID in h["rules"]]
+        self.assertEqual(fast_free, fast_cap)
+
+    def test_stoch_rsi_k_range_and_warmup(self):
+        closes = _fixture()["closes"]
+        k = ma_buy_signals.stoch_rsi_k(closes)
+        self.assertTrue(all(v is None for v in k[:16]))
+        vals = [v for v in k if v is not None]
+        self.assertTrue(vals and all(-1e-9 <= v <= 100 + 1e-9 for v in vals))
 
 
 class TrackerPureTests(unittest.TestCase):

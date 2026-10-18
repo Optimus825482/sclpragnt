@@ -572,10 +572,25 @@ describe("maRibbonBuySignals — ikinci koşul: hızlı > orta iken orta yavaş�
     }
     expect(crossIdx).toBeGreaterThan(130);
     expect(fast[crossIdx]! > mid[crossIdx]!).toBe(true);
-    const on = maRibbonBuySignals(bars, {});
+    const on = maRibbonBuySignals(bars, { slowCrossStochMax: 100 });
     expect(on.some((s) => s.time === bars[crossIdx].time)).toBe(true);
     const off = maRibbonBuySignals(bars, { showMaSlowCross: false });
     expect(off.some((s) => s.time === bars[crossIdx].time)).toBe(false);   // koşul 1 bu barda yok (orta henüz yavaşın altındaydı)
+  });
+
+  it("2. kural: StochRSI K sınırın (80) üstündeyse etiket yok; sınır kapatılınca (100) ya da yükseltilince çıkar", () => {
+    const mid = emaSeries(closes, 20), slow = emaSeries(closes, 99);
+    let crossIdx = -1;
+    for (let i = 100; i < closes.length; i++) {
+      if (mid[i - 1]! <= slow[i - 1]! && mid[i]! > slow[i]!) { crossIdx = i; break; }
+    }
+    const k = stochRsi(closes, 14, 14, 3, 3).k[crossIdx]!;
+    expect(k).toBeGreaterThan(80);                                        // güçlü yükseliş → StochRSI üstte
+    const t = bars[crossIdx].time;
+    expect(maRibbonBuySignals(bars, {}).some((s) => s.time === t)).toBe(false);                       // varsayılan 80
+    expect(maRibbonBuySignals(bars, { slowCrossStochMax: 80 }).some((s) => s.time === t)).toBe(false);
+    expect(maRibbonBuySignals(bars, { slowCrossStochMax: 100 }).some((s) => s.time === t)).toBe(true);
+    expect(maRibbonBuySignals(bars, { slowCrossStochMax: Math.ceil(k) }).some((s) => s.time === t)).toBe(true);
   });
 
   it("hızlı ortanın ALTINDAYKEN orta yavaşı keserse etiket yok; bar başına en çok bir BUY", () => {
@@ -604,8 +619,8 @@ describe("maRibbonBuySignals — Python ile parite (backend/tests/fixtures/ma_bu
   const fx = JSON.parse(readFileSync("../backend/tests/fixtures/ma_buy_parity.json", "utf-8"));
   const bars = (fx.closes as number[]).map((c, i) => ({ time: 1_700_000_000 + i * 300, open: c, high: c, low: c, close: c, volume: 1 }));
   for (const c of fx.cases) {
-    it(`${c.use_sma ? "SMA" : "EMA"} · yavaş kesişim ${c.slow_cross ? "açık" : "kapalı"}: aynı mumlar`, () => {
-      const got = maRibbonBuySignals(bars as any, { maUseSma: c.use_sma, showMaSlowCross: c.slow_cross });
+    it(`${c.use_sma ? "SMA" : "EMA"} · yavaş kesişim ${c.slow_cross ? "açık" : "kapalı"} · StochRSI üst sınır ${c.stoch_max ?? "yok"}: aynı mumlar`, () => {
+      const got = maRibbonBuySignals(bars as any, { maUseSma: c.use_sma, showMaSlowCross: c.slow_cross, slowCrossStochMax: c.stoch_max ?? 100 });
       expect(got.map((g) => (g.time - 1_700_000_000) / 300)).toEqual(c.signals.map((s: any) => s.index));
     });
   }

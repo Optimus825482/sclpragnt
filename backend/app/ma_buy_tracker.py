@@ -50,6 +50,15 @@ def periods() -> tuple:
     return tuple(vals) if len(vals) == 3 and all(v >= 1 for v in vals) else ma_buy_signals.DEFAULT_PERIODS
 
 
+def stoch_max() -> float | None:
+    """2. kural StochRSI K üst sınırı (varsayılan 80; 100+ ya da geçersiz → kapalı)."""
+    try:
+        v = float(getattr(config, "MA_BUY_STOCH_MAX", 80.0))
+    except (TypeError, ValueError):
+        return 80.0
+    return v if v < 100 else None
+
+
 def enabled() -> bool:
     return bool(getattr(config, "MA_BUY_TRACKER_ENABLED", True))
 
@@ -80,14 +89,15 @@ def closed_bars(rows, tf_ms: int, now_ms: int) -> list[dict]:
 
 
 def signals_from_bars(symbol: str, tf: str, bars: list[dict], now_ms: int, *, lookback: int, per: tuple,
-                      use_sma: bool = False, slow_cross: bool = True) -> list[dict]:
+                      use_sma: bool = False, slow_cross: bool = True, stoch_max: float | None = None) -> list[dict]:
     """Son `lookback` kapanmış mumda tetiklenen sinyaller → DB satırları (saf)."""
     if len(bars) < max(per) + 2:
         return []
     closes = [b["close"] for b in bars]
     first_index = len(bars) - max(1, int(lookback))
     rows = []
-    for hit in ma_buy_signals.detect_ma_buy(closes, per, use_sma=use_sma, slow_cross=slow_cross):
+    for hit in ma_buy_signals.detect_ma_buy(closes, per, use_sma=use_sma, slow_cross=slow_cross,
+                                               stoch_max=stoch_max):
         if hit["index"] < first_index:
             continue
         bar = bars[hit["index"]]
@@ -176,7 +186,7 @@ async def _scan_symbol(symbol: str, tf: str, now_ms: int, sem: asyncio.Semaphore
         return 0
     use_sma = str(getattr(config, "MA_BUY_MA_TYPE", "ema")).strip().lower() == "sma"
     found = signals_from_bars(symbol, tf, bars, now_ms, lookback=int(getattr(config, "MA_BUY_LOOKBACK_BARS", 3) or 3),
-                              per=periods(), use_sma=use_sma)
+                              per=periods(), use_sma=use_sma, stoch_max=stoch_max())
     inserted = await database.insert_ma_buy_signals(found) if found else 0
     _state["seen"][key] = bars[-1]["open_ms"]
     if inserted:
