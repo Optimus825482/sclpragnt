@@ -1,4 +1,4 @@
-"""MA şerit BUY sinyal izleyici: tara → kaydet → 15 dk sonra ölç (yalnız yönetici sayfası için; emir/karar YOK).
+"""MA şerit BUY sinyal izleyici: tara → kaydet → push + otonom paper (`ma_buy_notify`) → 15 dk sonra ölç.
 
 2026-10-18 (kullanıcı isteği). Her taramada (varsayılan 30 sn) AKTİF sembollerin (`symbol_activity_status` = ACTIVE; yoksa
 izlenen semboller) yeni kapanmış 5 dk mumu için kural `app/ma_buy_signals.py` ile (grafikteki BUY rozetiyle BİREBİR) değerlendirilir.
@@ -16,7 +16,7 @@ import logging
 import statistics
 import time
 
-from app import database, ma_buy_signals, notify_metrics
+from app import database, ma_buy_notify, ma_buy_signals, notify_metrics
 from app.binance_tr_public import klines as fetch_klines
 from app.config import config
 
@@ -31,7 +31,7 @@ NO_DATA_AFTER_MS = 6 * 3_600_000
 _FETCH_CONCURRENCY = 4
 
 _state: dict = {"last_scan_at": None, "last_scan_symbols": 0, "last_error": None, "seen": {}, "last_prune": 0.0,
-                "last_evaluated": 0, "last_inserted": 0}
+                "last_evaluated": 0, "last_inserted": 0, "last_pushed": 0}
 
 
 # ---------------------------------------------------------------------------------------------------------- config
@@ -177,17 +177,18 @@ async def active_symbols() -> list[str]:
     return active or tracked
 
 
-async def _scan_symbol(symbol: str, tf: str, now_ms: int, sem: asyncio.Semaphore) -> int:
+async def _scan_symbol(symbol: str, tf: str, now_ms: int, sem: asyncio.Semaphore) -> tuple[int, list[dict]]:
+    """Dönüş: (yeni kaydedilen sinyal sayısı, son kapanan mumun sinyalleri — bildirim adayı)."""
     tf_ms = SUPPORTED_TF_MS[tf]
     due = due_bar_open(now_ms, tf_ms)
     key = (symbol, tf)
     if _state["seen"].get(key, 0) >= due:
-        return 0
+        return 0, []
     async with sem:
         rows = await fetch_klines(symbol, tf, limit=FETCH_LIMIT)
     bars = closed_bars(rows, tf_ms, now_ms)
     if not bars:
-        return 0
+        return 0, []
     use_sma = str(getattr(config, "MA_BUY_MA_TYPE", "ema")).strip().lower() == "sma"
     found = signals_from_bars(symbol, tf, bars, now_ms, lookback=int(getattr(config, "MA_BUY_LOOKBACK_BARS", 3) or 3),
                               per=periods(), use_sma=use_sma, stoch_max=stoch_max(tf))
@@ -196,7 +197,8 @@ async def _scan_symbol(symbol: str, tf: str, now_ms: int, sem: asyncio.Semaphore
     if inserted:
         logger.info("MA BUY sinyali kaydedildi: %s %s %s (%d yeni)", symbol, tf,
                     ",".join(sorted({r["rules"] for r in found})), inserted)
-    return int(inserted or 0)
+    latest = [r for r in found if r["bar_open_ms"] == bars[-1]["open_ms"]]
+    return int(inserted or 0), latest
 
 
 async def scan_once(now_ms: int | None = None) -> dict:
@@ -206,18 +208,28 @@ async def scan_once(now_ms: int | None = None) -> dict:
     sem = asyncio.Semaphore(_FETCH_CONCURRENCY)
     inserted = 0
     errors: list[str] = []
+    fresh: list[dict] = []
     for tf in timeframes():
         results = await asyncio.gather(*(_scan_symbol(s, tf, now_ms, sem) for s in symbols), return_exceptions=True)
         for sym, res in zip(symbols, results):
             if isinstance(res, BaseException):
                 errors.append(f"{sym}/{tf}: {type(res).__name__}")
             else:
-                inserted += res
+                inserted += res[0]
+                fresh.extend(res[1])
+    pushed = 0
+    if fresh:
+        # Push + otonom paper (2026-10-18): tarama semaforlarının DIŞINDA; hata taramayı bozmaz.
+        try:
+            pushed = await ma_buy_notify.deliver(fresh, periods(), now_ms)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MA BUY bildirim teslimi başarısız: %s", exc)
+    _state["last_pushed"] = pushed
     _state["last_scan_at"] = now_ms / 1000.0
     _state["last_scan_symbols"] = len(symbols)
     _state["last_inserted"] = inserted
     _state["last_error"] = ("; ".join(errors[:3]) + (f" (+{len(errors) - 3})" if len(errors) > 3 else "")) if errors else None
-    return {"symbols": len(symbols), "inserted": inserted, "errors": len(errors)}
+    return {"symbols": len(symbols), "inserted": inserted, "errors": len(errors), "pushed": pushed}
 
 
 # ---------------------------------------------------------------------------------------------------------- ölçüm

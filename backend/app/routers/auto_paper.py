@@ -50,6 +50,8 @@ router = APIRouter()
 #: Radar → TARAMA LOGLARI satırı ("paper: engellendi (...)") eskisiyle birebir aynı görünsün.
 _REASON_NO_PUSH = "push_bildirimi_yok"
 _REASON_HEARTBEAT = "teyitsiz nabız bildirimi paper açmaz"
+# Skorsuz kural sinyali kaynakları: skor/mod kapısı yerine kendi anahtarı (bkz. `_try_open_impl`).
+_RULE_SIGNAL_SOURCES = frozenset({"ma_buy"})
 
 # 2026-10-15 (denetim düzeltmesi, madde 14): eskiden fonksiyon gövdelerine
 # gömülü sabitler (sl_cooldown 5.0, açılış bekleme 30 sn, breakeven gap
@@ -538,9 +540,15 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         if not symbol:
             return None
 
+        # KURAL SİNYALİ (2026-10-18, MA BUY): skoru yoktur ve modu radar mod listesinde değildir → skor ve mod
+        # kapıları yerine kendi anahtarı (`MA_BUY_AUTO_PAPER_ENABLED`) uygulanır. Diğer TÜM kapılar aynen geçerli.
+        rule_signal = str(notification.get("source") or "") in _RULE_SIGNAL_SOURCES
+        if rule_signal and not getattr(config, "MA_BUY_AUTO_PAPER_ENABLED", True):
+            return _blocked(symbol, "ma_buy_paper_kapali")
+
         score = float(notification.get("score") or 0)
         min_score = float(settings.get("min_score", config.AUTO_PAPER_MIN_SCORE_DEFAULT))
-        if score < min_score:
+        if not rule_signal and score < min_score:
             # 2026-09-27: eskiden sessiz None dönüyordu → push gelip işlem
             # açılmayınca operatör NEDENİ göremiyordu. Engelin nedenini
             # decision_logs'a yaz (R3-06 deseni: sessiz düşme yok).
@@ -565,7 +573,7 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         # `global_lead_lag` listede YOKTUR. Bos liste = tum modlar (eski
         # davranisa donus).
         allowed_modes = settings.get("allowed_modes") or []
-        if allowed_modes:
+        if allowed_modes and not rule_signal:
             notif_mode = str(notification.get("mode") or "").strip()
             if notif_mode not in allowed_modes:
                 return _blocked(symbol, "mode_not_allowed", mode=notif_mode,

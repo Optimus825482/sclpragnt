@@ -5300,7 +5300,8 @@ async def remove_push_subscriptions(endpoints: list[str]):
 # 2026-10-18: MA şerit BUY sinyal kaydı (migration 026; app/ma_buy_tracker.py yazar, yönetici sayfası okur).
 _MA_BUY_COLS = ("id", "symbol", "timeframe", "bar_open_ms", "bar_close_ms", "detected_at", "rules", "signal_price",
                 "ema_fast", "ema_mid", "ema_slow", "status", "max_rise_5m_pct", "max_rise_10m_pct", "max_rise_15m_pct",
-                "max_drop_15m_pct", "close_15m_pct", "peak_bar_minutes", "evaluated_at", "eval_attempts")
+                "max_drop_15m_pct", "close_15m_pct", "peak_bar_minutes", "evaluated_at", "eval_attempts",
+                "notified_at", "push_ok", "paper_status", "paper_trade_id")
 
 
 def _ma_buy_row(r) -> dict:
@@ -5371,6 +5372,31 @@ async def list_ma_buy_signals(since_ms: int, symbol: str | None = None, status: 
         args.append(int(limit))
         return [_ma_buy_row(r) for r in conn.execute(sql, tuple(args)).fetchall()]
     return await _run_db(op)
+
+
+async def claim_ma_buy_notify(symbol: str, timeframe: str, bar_open_ms: int) -> int | None:
+    """Sinyali bildirim için ATOMİK sahiplen (migration 027): `notified_at` boşsa doldurur ve satır id'sini döner;
+    zaten bildirilmişse (yeniden başlatma, çift tur) None. Aynı sinyal mumu en fazla bir kez push edilir."""
+    def op(conn):
+        row = conn.execute(
+            "UPDATE ma_buy_signals SET notified_at=? WHERE symbol=? AND timeframe=? AND bar_open_ms=? "
+            "AND notified_at IS NULL RETURNING id",
+            (time.time(), str(symbol).upper(), str(timeframe), int(bar_open_ms))).fetchone()
+        conn.commit()
+        return int(row[0]) if row else None
+    return await _run_db(op)
+
+
+async def mark_ma_buy_delivery(signal_id: int, *, push_ok: bool | None = None, paper_status: str | None = None,
+                               paper_trade_id: int | None = None) -> None:
+    """Bildirim/otonom paper sonucunu sinyal satırına yazar (None alanlar korunur)."""
+    def op(conn):
+        conn.execute(
+            "UPDATE ma_buy_signals SET push_ok=COALESCE(?, push_ok), paper_status=COALESCE(?, paper_status), "
+            "paper_trade_id=COALESCE(?, paper_trade_id) WHERE id=?",
+            (push_ok, (str(paper_status)[:80] if paper_status else None), paper_trade_id, int(signal_id)))
+        conn.commit()
+    await _run_db(op)
 
 
 async def prune_ma_buy_signals(before_ms: int) -> int:

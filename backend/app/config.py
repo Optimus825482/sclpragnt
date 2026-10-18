@@ -472,6 +472,13 @@ class Config:
     MA_BUY_LOOKBACK_BARS = max(1, int(os.getenv("MA_BUY_LOOKBACK_BARS", "3") or 3))   # her turda son N kapanmış mum
     MA_BUY_SCAN_INTERVAL_SEC = max(10.0, float(os.getenv("MA_BUY_SCAN_INTERVAL_SEC", "30") or 30))
     MA_BUY_RETENTION_DAYS = max(0, int(os.getenv("MA_BUY_RETENTION_DAYS", "120") or 0))  # 0 = silme yok
+    # 2026-10-18 (kullanıcı isteği): MA BUY sinyali → push (TF etiketli) + otonom paper (app/ma_buy_notify.py).
+    MA_BUY_NOTIFY_ENABLED = os.getenv("MA_BUY_NOTIFY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    MA_BUY_NOTIFY_TIMEFRAMES = os.getenv("MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m").strip()      # push + paper bu TF'lerde
+    MA_BUY_NOTIFY_COOLDOWN_MIN = max(0.0, float(os.getenv("MA_BUY_NOTIFY_COOLDOWN_MIN", "15") or 0))  # sembol başına (TF'ler ortak)
+    MA_BUY_NOTIFY_MAX_AGE_SEC = max(10.0, float(os.getenv("MA_BUY_NOTIFY_MAX_AGE_SEC", "90") or 90))  # mum kapanışından bu kadar sonra bayat
+    MA_BUY_AUTO_PAPER_ENABLED = os.getenv("MA_BUY_AUTO_PAPER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    MA_BUY_TARGET_PCT = os.getenv("MA_BUY_TARGET_PCT", "1m:1.0,5m:1.5,15m:2.0").strip()  # TF:hedef% (paper TP)
     RADAR_TARGET_MODE = (os.getenv("RADAR_TARGET_MODE", "measured").strip().lower() or "measured")
     # a,b,c,d (sırayla: sabit, ATR üssü, skor katsayısı, ufuk üssü); nominal %30 isabet.
     RADAR_TARGET_MEASURED_COEFS = os.getenv("RADAR_TARGET_MEASURED_COEFS", "0.27,0.71,0.06,0.51").strip()
