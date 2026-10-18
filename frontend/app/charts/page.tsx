@@ -2087,7 +2087,7 @@ export default function ChartsPage() {
                         <p className="font-mono text-sm text-neon-green animate-pulse">YÜKLENİYOR...</p>
                     </div>
                 )}
-                <div ref={containerRef} className="w-full" />
+                <div ref={containerRef} className="chart-canvas-host w-full" />
                 {/* Alıcı/satıcı basınç bandı — grafiğin hemen altı, gösterge şeridinin üstü */}
                 {showPressure && (
                     <div className="border-t border-bunker-800 bg-bunker-950 px-3 py-2 sm:px-4">

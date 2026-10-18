@@ -520,7 +520,9 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .ui-section-actions > .ui-button { flex: 1 1 12rem; }
   .data-table th, .data-table td { padding: .7rem .75rem; }
   h1 { font-size: 1rem; }
+  /* lightweight-charts kendi iç <table>'ını kurar; 680px tabanı fiyat eksenini kırpardı (denetim #5). */
   table { min-width: 680px; }
+  .tv-lightweight-charts table { min-width: 0; }
   .table-scroll { position: relative; }
   .live-terminal .portfolio-summary { align-items: flex-start; }
   .live-terminal .portfolio-summary > div { flex: 1 1 8rem; }
@@ -563,7 +565,7 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .chart-toolbar .chart-intervals::-webkit-scrollbar { display: none; }
   .chart-interval-button { flex: 1 0 2.75rem; min-height: 2.75rem; padding-inline: .55rem; }
   .chart-card { border-radius: .75rem; }
-  .chart-card > div:first-of-type { min-height: 22rem; }
+  .chart-card > .chart-canvas-host { min-height: 22rem; }
   .chart-card .absolute.top-3.right-3 { top: .5rem; right: .5rem; padding: .35rem .5rem; font-size: .58rem; }
 }
 
