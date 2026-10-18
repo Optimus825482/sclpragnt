@@ -2,11 +2,14 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useAuth } from "../../lib/auth";
 import { visibleMenu } from "../../lib/userUi";
 import { openAssistant } from "../../lib/assistantEvents";
 
 export default function UserBottomNav({ hidden }: { hidden: string[] }) {
   const pathname = usePathname();
+  // Mobilde UserNav (kullanıcı adı + Çıkış) gizli olduğundan oturum kapatma "Diğer" menüsünde (denetim #1).
+  const { username, logout } = useAuth();
   const items = visibleMenu(hidden);
   const main = items.slice(0, 4);
   const rest = items.slice(4);
@@ -85,6 +88,22 @@ export default function UserBottomNav({ hidden }: { hidden: string[] }) {
                   </Link>
                 </li>
               ))}
+              <li role="none" className="mt-1 border-t border-bunker-800 pt-1">
+                {username && (
+                  <p className="truncate px-3 py-1 text-xs text-bunker-muted" title={username}>
+                    {username}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setMoreOpen(false); void logout?.(); }}
+                  className="flex min-h-[44px] w-full items-center gap-2 rounded-lg px-3 text-left text-sm text-white"
+                >
+                  <span aria-hidden>🚪</span>
+                  Çıkış
+                </button>
+              </li>
             </ul>
           )}
         </li>
