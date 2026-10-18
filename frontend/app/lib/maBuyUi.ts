@@ -150,10 +150,22 @@ export function fmtTrTime(ts: number | null | undefined): string {
   return `${get("day")}.${get("month")} ${get("hour")}:${get("minute")}`;
 }
 
-/** Sinyalin zaman damgası (epoch saniye): önce detected_at, yoksa mum kapanışı. */
-export function signalTimeSec(item: Pick<MaBuySignal, "detectedAt" | "barCloseMs">): number | null {
+/** Mum süresi (sn): "5m" -> 300, "15m" -> 900; bilinmiyorsa 5 dk. */
+function timeframeSec(tf: string | null | undefined): number {
+  const m = /^(\d+)m$/.exec(String(tf ?? ""));
+  return m ? Number(m[1]) * 60 : 300;
+}
+
+/**
+ * Sinyalin MUM zamanı (epoch saniye) = sinyal mumunun AÇILIŞI; grafikte o mumun üzerinde görünen saatle aynıdır.
+ * (Eskiden `detected_at` — tarayıcının sinyali yakaladığı an — gösteriliyordu; mum zamanından geç olabilir.)
+ * Mum bilinmiyorsa yakalanma anına düşer.
+ */
+export function signalTimeSec(
+  item: Pick<MaBuySignal, "detectedAt" | "barCloseMs"> & { timeframe?: string },
+): number | null {
+  if (item.barCloseMs !== null && item.barCloseMs > 0) return item.barCloseMs / 1000 - timeframeSec(item.timeframe);
   if (item.detectedAt !== null && item.detectedAt > 0) return item.detectedAt;
-  if (item.barCloseMs !== null && item.barCloseMs > 0) return item.barCloseMs / 1000;
   return null;
 }
 

@@ -16,6 +16,7 @@ import {
   num,
   openCountdown,
   ruleLabel,
+  signalTimeSec,
   sortSignals,
   statusChip,
   trackerLine,
@@ -133,9 +134,9 @@ describe("maBuyUi — kural etiketi, eşik, geri sayım", () => {
 });
 
 describe("maBuyUi — sıralama ve süzme", () => {
-  const a = sig({ id: 1, symbol: "AAATRY", detectedAt: 1000, maxRise15: 0.5 });
-  const b = sig({ id: 2, symbol: "BBBTRY", detectedAt: 3000, maxRise15: 2.0 });
-  const c = sig({ id: 3, symbol: "CCCTRY", detectedAt: 2000, maxRise15: null, status: "open" });
+  const a = sig({ id: 1, symbol: "AAATRY", barCloseMs: 1_000_000, maxRise15: 0.5 });
+  const b = sig({ id: 2, symbol: "BBBTRY", barCloseMs: 3_000_000, maxRise15: 2.0 });
+  const c = sig({ id: 3, symbol: "CCCTRY", barCloseMs: 2_000_000, maxRise15: null, status: "open" });
 
   it("zamana göre: yeni önce / eski önce", () => {
     expect(sortSignals([a, b, c], "time", "desc").map((x) => x.id)).toEqual([2, 3, 1]);
@@ -236,5 +237,16 @@ describe("maBuyUi — normalizeResponse", () => {
     expect(errorMessage(401)).toContain("giriş");
     expect(errorMessage(500, "sunucu hatası")).toBe("sunucu hatası");
     expect(errorMessage(500)).toBe("MA BUY sinyalleri alınamadı");
+  });
+});
+
+describe("maBuyUi — mum zamanı", () => {
+  it("gösterilen zaman yakalanma anı değil, sinyal mumunun açılışıdır", () => {
+    // mum 05:40-05:45 (kapanış 05:45); tarayıcı 05:49'da yakaladı
+    const close = 1_792_290_000_000;
+    const t = signalTimeSec({ barCloseMs: close, detectedAt: close / 1000 + 240, timeframe: "5m" });
+    expect(t).toBe(close / 1000 - 300);
+    expect(signalTimeSec({ barCloseMs: close, detectedAt: null, timeframe: "15m" })).toBe(close / 1000 - 900);
+    expect(signalTimeSec({ barCloseMs: null, detectedAt: 123, timeframe: "5m" })).toBe(123);
   });
 });

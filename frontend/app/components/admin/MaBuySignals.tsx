@@ -74,7 +74,7 @@ const SignalRow = memo(function SignalRow({ item, floor, nowSec }: { item: MaBuy
   const hit = hitsGrossFloor(item, floor);
   return (
     <tr>
-      <td className="font-mono text-xs text-bunker-muted">{fmtTrTime(signalTimeSec(item))}</td>
+      <td className="font-mono text-xs text-bunker-muted"><span title={`Yakalanma: ${fmtTrTime(item.detectedAt)}`}>{fmtTrTime(signalTimeSec(item))}</span></td>
       <td className="font-mono text-xs font-bold"><SymbolLink symbol={item.symbol} timeframe="5m" /></td>
       <td className="!whitespace-normal"><RuleTags rules={item.rules} /></td>
       <td className="font-mono text-xs text-right">{fmtSignalPrice(item.signalPrice)}</td>
@@ -335,7 +335,7 @@ export default function MaBuySignals() {
                   <table className="data-table">
                     <thead>
                       <tr>
-                        <SortHeader label="Zaman" k="time" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                        <SortHeader label="Mum zamanı" k="time" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                         <th>Sembol</th>
                         <th>Kural</th>
                         <th className="text-right">Sinyal fiyatı</th>
@@ -358,7 +358,7 @@ export default function MaBuySignals() {
                 <div className="md:hidden">
                   <div className="flex items-center gap-2 border-b border-bunker-800 px-3 py-2 font-mono text-xs text-bunker-muted">
                     Sırala:
-                    <button type="button" onClick={() => onSort("time")} className={`rounded border border-bunker-700 px-2 py-1 ${sortKey === "time" ? "text-white" : ""}`}>Zaman {sortKey === "time" ? (sortDir === "asc" ? "▲" : "▼") : ""}</button>
+                    <button type="button" onClick={() => onSort("time")} className={`rounded border border-bunker-700 px-2 py-1 ${sortKey === "time" ? "text-white" : ""}`}>Mum zamanı {sortKey === "time" ? (sortDir === "asc" ? "▲" : "▼") : ""}</button>
                     <button type="button" onClick={() => onSort("rise15")} className={`rounded border border-bunker-700 px-2 py-1 ${sortKey === "rise15" ? "text-white" : ""}`}>15 dk ↑ {sortKey === "rise15" ? (sortDir === "asc" ? "▲" : "▼") : ""}</button>
                   </div>
                   <ul className="space-y-2 p-3">
