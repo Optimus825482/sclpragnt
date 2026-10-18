@@ -12,6 +12,7 @@ import { ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
 import { scoreToneClass, scoreToneText } from "../lib/scoreTone";
 import AppLoader from "../components/AppLoader";
 import UserRadar from "../components/user/UserRadar";
+import { RadarScanLogButton } from "../components/admin/RadarScanLogModal";
 import { useIsUserView } from "../lib/adminView";
 
 type NotificationSettings = {
@@ -1047,6 +1048,8 @@ function AdminMonitoringPage() {
               🔒 Tarama: Yönetici
             </span>
           )}
+
+          {isAdmin && <RadarScanLogButton />}
 
           {isAdmin && (
             <button

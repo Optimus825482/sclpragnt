@@ -5447,7 +5447,7 @@ async def _run_scan() -> dict:
         for _h in _act_h():
             try:
                 scans[_h] = await detect_velocity_candidates(
-                    {"limit": 10}, horizon_minutes=_h,
+                    {"limit": 10, "audit": True}, horizon_minutes=_h,
                     extra_symbols=watch_symbols, kline_cache=_kline_cache)
             except Exception:
                 # Ek ufuk (30/60) patlarsa turu DÜŞÜRME — 5/15 korunur.
@@ -5661,6 +5661,18 @@ async def _run_scan() -> dict:
     # 2026-10-18: sessizlik nabzı için havuz — eşik altı izleme listesi dâhil, taramanın TÜM güçlü satırları.
     _hb_pool = list(filtered_candidates.values()) + list(watchlist_list)
     new_notifications = await _notify(candidates_list, settings, heartbeat_pool=_hb_pool)
+
+    # 2026-10-18: admin Radar tarama günlüğü (bellek içi; yalnız gözlem — karar/bildirim yolunu etkilemez, hata yutulur).
+    try:
+        from app import radar_scan_log
+        radar_scan_log.record(radar_scan_log.build_entry(
+            scan_no=int(_monitoring_state["scan_count"]) + 1, scan_at=now, scans=scans, candidates=candidates_list,
+            watchlist=watchlist_list, notified_symbols=[n.get("symbol") for n in (new_notifications or []) if isinstance(n, dict)],
+            open_symbols=open_symbols, gate=gate_candidate, panel=normalize_score,
+            min_panel_score=effective_min_score, min_raw_score=effective_min_raw_score,
+            risk_off=risk_off, risk_off_unknown=risk_off_unknown))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("radar tarama günlüğü yazılamadı: %s", exc)
 
     _monitoring_state["last_scan_at"] = now
     _monitoring_state["last_candidates"] = candidates_list

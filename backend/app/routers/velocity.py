@@ -1431,12 +1431,22 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                              "note": "v2: hacim şartı kaldırıldı; BB genişliği + RSI/MFI uç elmesi + LinReg/Aroon teyidi. live_hit_pct canlı journal'dan gelir."},
             "candidates": candidates[:limit], "watchlist": watchlist[:5],
             "warm": warm_list,
+            # 2026-10-18 (admin Radar tarama logu): taranan TÜM sembollerin sonucu (geçen/elenen + neden). Yalnız
+            # `args["audit"]` ile istenir (API yanıtlarını şişirmesin); `app/radar_scan_log.py` tüketir.
+            **({"scan_audit": [{k: r.get(k) for k in _AUDIT_KEYS} for r in results if r],
+                "no_data_symbols": [str(s) for s, r in zip(pool, results) if not r]}
+               if (args or {}).get("audit") else {}),
             "leading_summary": {
                 "scanned": len(results),
                 "leading_ok_count": sum(1 for r in results if r and r.get("leading_ok")),
                 "note": "M1/M3 öncü ATR kesişimi (M1>1.0 VE M3>1.0) dokunuşu ~2.5x artırır; skorda 1.5x öncelik.",
             },
             "data_policy": "kapanmış 1m mumlar; tahmin/garanti değil, paper-only"}
+
+
+# Admin Radar tarama logu (scan_audit) için satır başına tutulan alanlar.
+_AUDIT_KEYS = ("symbol", "price", "passes", "block_reason", "exhausted", "velocity_score", "atr_pct", "rsi", "mfi",
+               "ret3_pct", "volume_ratio", "mode", "target_pct", "warm", "warm_reason", "bb_width_pct", "horizon_minutes")
 
 
 _velocity_learning_state = {"last_run_at": None, "measured": 0, "last_error": None,

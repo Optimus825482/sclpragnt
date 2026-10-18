@@ -39,6 +39,8 @@
 [data-theme="light"] .ui-badge-negative { color: var(--u-bad-fg); background: var(--u-bad-bg); border-color: #fca5a5; }
 [data-theme="light"] .ui-badge-warning { color: var(--u-warn-fg); background: var(--u-warn-bg); border-color: #fcd34d; }
 [data-theme="light"] .ui-badge-info { color: var(--u-info-fg); background: var(--u-info-bg); border-color: #93c5fd; }
+[data-theme="light"] .ui-badge-orange { color: #9a3412; background: #ffedd5; border-color: #fdba74; }
+[data-theme="light"] .ui-badge-muted { color: #64748b; background: #f1f5f9; border-color: #cbd5e1; }
 @media (prefers-reduced-motion: reduce) {
   [data-theme="light"] * { animation: none !important; transition: none !important; }
 }

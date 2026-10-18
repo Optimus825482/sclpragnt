@@ -208,6 +208,8 @@ from app.routers import portfolio_band as portfolio_band_routes
 app.include_router(portfolio_band_routes.router)
 from app.routers import ma_buy as ma_buy_routes
 app.include_router(ma_buy_routes.router)
+from app.routers import radar_log as radar_log_routes
+app.include_router(radar_log_routes.router)
 
 
 _TTS_VOICE = "tr-TR-EmelNeural"
