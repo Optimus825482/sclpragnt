@@ -336,3 +336,101 @@ class TestDbContract:
         text = open(path, encoding="utf-8").read()
         assert text.count("ADD COLUMN IF NOT EXISTS") == 2
         assert "hit_prob_calibrated" in text and "breakeven_hit_prob" in text
+
+
+# 2026-10-18 (kullanıcı kararı): NET hedef ≥ %1,5 (komisyon sonrası) ve gönderimden sonra hedef DEĞİŞMEZ.
+class TestNetTargetFloor:
+    def test_floor_is_min_net_plus_tp_cost_rounded_up(self):
+        with patch.object(config, "RADAR_TARGET_MIN_NET_PCT", 1.5), patch.object(config, "PAPER_TP_MAKER_FILL", True), \
+                patch.object(config, "ESTIMATED_SLIPPAGE_PCT", 0.00025):
+            floor = nm.min_gross_target_pct()
+            assert floor == pytest.approx(1.705, abs=1e-9)
+            assert nm.target_net_pct(floor) >= 1.5 - 1e-9
+            assert nm.min_gross_target_pct(cost_tp_pct=0.33) == pytest.approx(1.83, abs=1e-9)
+            assert nm.min_gross_target_pct(min_net_pct=2.0, cost_tp_pct=0.33) == pytest.approx(2.33, abs=1e-9)
+
+    def test_disabled_and_bad_input(self):
+        with patch.object(config, "RADAR_TARGET_MIN_NET_PCT", 0.0):
+            assert nm.min_gross_target_pct() == 0.0
+            assert nm.apply_net_floor(0.7) == 0.7
+        assert math.isnan(nm.apply_net_floor(float("nan")))   # bozuk girdi olduğu gibi döner, istisna yok
+        assert nm.apply_net_floor(None) is None
+
+    def test_apply_floor_raises_low_targets_keeps_high_and_caps(self):
+        with patch.object(config, "RADAR_TARGET_MIN_NET_PCT", 1.5):
+            floor = nm.min_gross_target_pct()
+            assert nm.apply_net_floor(0.7) == pytest.approx(floor)
+            assert nm.apply_net_floor(1.151) == pytest.approx(floor)     # kullanıcının ekran görüntüsündeki ilk hedef
+            assert nm.apply_net_floor(3.0) == 3.0
+            assert nm.apply_net_floor(9.0) == nm.TARGET_MAX_PCT
+
+    def test_dynamic_target_never_below_floor_in_both_modes(self):
+        with patch.object(config, "RADAR_TARGET_MIN_NET_PCT", 1.5):
+            floor = nm.min_gross_target_pct()
+            with patch.object(config, "RADAR_TARGET_MODE", "measured"):
+                t = velocity.dynamic_target_pct(score=85.0, base_target_pct=2.2, atr_pct=0.12, horizon_minutes=5)
+                assert t >= floor - 1e-9
+                assert nm.target_net_pct(t) >= 1.5 - 1e-9
+            with patch.object(config, "RADAR_TARGET_MODE", "chain"):
+                t = velocity.dynamic_target_pct(score=40.0, base_target_pct=0.5, atr_pct=0.12, horizon_minutes=5)
+                assert t >= floor - 1e-9
+
+    def test_fusion_target_also_floored(self):
+        with patch.object(config, "RADAR_TARGET_MIN_NET_PCT", 1.5), patch.object(config, "RADAR_TARGET_MODE", "measured"):
+            floor = nm.min_gross_target_pct()
+            target, _atr = unified_signals._fusion_target_pct("ABCTRY", 85.0, {"atr_pct": 0.1}, 15)
+            assert target >= floor - 1e-9
+
+
+class TestFreezeOnSend:
+    """Bekleyen (gönderilmiş) bildirim sonraki taramalarda GÜNCELLENMEZ: hedef, skor, beklenen fiyat sabit."""
+
+    @staticmethod
+    def _reset():
+        for key in ("history", "candidate_streak", "pending_targets", "notified_prices", "notified_scores", "notified_symbols"):
+            monitoring._monitoring_state[key] = [] if key == "history" else {}
+        monitoring._notify_last_sent_at.clear()
+        monitoring._notify_daily_count.clear()
+
+    def _run(self, existing, freeze):
+        self._reset()
+        settings = {"enabled": True, "min_score": 1.0, "min_target_pct": 0.0, "quiet_hours_start": None, "quiet_hours_end": None}
+        cands = [{"symbol": "FRZTRY", "velocity_score": 900.0, "target_pct": 0.7, "price": 3.1, "horizon_minutes": 15,
+                  "candidate_id": "cand-new", "mode": "trend_devam"}]
+        upd = mock.AsyncMock(return_value=True)
+        link = mock.AsyncMock(return_value=True)
+        with patch.object(monitoring.database, "get_pending_monitoring_notifications", new=mock.AsyncMock(return_value={"FRZTRY": existing})), \
+                patch.object(monitoring.database, "update_monitoring_notification", new=upd), \
+                patch.object(monitoring.database, "set_monitoring_notification_candidate", new=link), \
+                patch.object(monitoring, "_record_history", new=mock.AsyncMock()), \
+                patch.object(config, "RADAR_NOTIFY_FREEZE_ON_SEND", freeze), \
+                patch.object(config, "MONITORING_RR_ENABLED", False), \
+                patch.object(config, "MONITORING_DEBOUNCE_SCANS", 0):
+            out = asyncio.run(monitoring._notify(cands, settings))
+        return out, upd, link
+
+    def test_frozen_pending_is_not_updated_or_rebroadcast(self):
+        import time
+        existing = {"id": 7, "symbol": "FRZTRY", "price": 3.004, "detected_at": time.time() - 60, "horizon_minutes": 15,
+                    "score": 85.3, "target_pct": 1.151, "candidate_id": "cand-old"}
+        out, upd, link = self._run(existing, freeze=True)
+        upd.assert_not_awaited()                 # hedef/skor/beklenen fiyat yazılmaz
+        link.assert_not_awaited()                # bağ zaten var
+        assert out == []                         # güncelleme bildirimi (WS yeniden yayın / paper TP) üretilmez
+
+    def test_frozen_links_missing_candidate_id_only(self):
+        import time
+        existing = {"id": 8, "symbol": "FRZTRY", "price": 3.004, "detected_at": time.time() - 60, "horizon_minutes": 15,
+                    "score": 85.3, "target_pct": 1.151, "candidate_id": None}
+        out, upd, link = self._run(existing, freeze=True)
+        upd.assert_not_awaited()
+        link.assert_awaited_once_with(8, "cand-new")
+        assert out == []
+
+    def test_legacy_behaviour_when_flag_off(self):
+        import time
+        existing = {"id": 9, "symbol": "FRZTRY", "price": 3.004, "detected_at": time.time() - 60, "horizon_minutes": 15,
+                    "score": 85.3, "target_pct": 1.151, "candidate_id": "cand-old"}
+        out, upd, _link = self._run(existing, freeze=False)
+        upd.assert_awaited_once()
+        assert out and out[0].get("updated")

@@ -122,6 +122,31 @@ def breakeven_hit_prob(target_pct, sl_pct=None, cost_tp_pct=None, cost_stop_pct=
     return round(loss / (gain + loss), 4)
 
 
+def min_gross_target_pct(min_net_pct=None, cost_tp_pct=None) -> float:
+    """Brüt hedef tabanı = en az net hedef + kâr-al maliyeti (YÜZDE; 3 ondalığa YUKARI yuvarlanır → net ≥ min kalır).
+
+    `RADAR_TARGET_MIN_NET_PCT` (varsayılan 1,5) 0 ya da maliyet okunamazsa 0.0 (taban yok).
+    """
+    net = _finite(min_net_pct if min_net_pct is not None else _cfg("RADAR_TARGET_MIN_NET_PCT", 0.0))
+    if net is None or net <= 0:
+        return 0.0
+    cost = _finite(cost_tp_pct)
+    if cost is None:
+        cost = default_cost_tp_pct()
+    if cost is None:
+        return 0.0
+    return math.ceil((net + cost) * 1000.0 - 1e-9) / 1000.0
+
+
+def apply_net_floor(target_pct) -> float:
+    """Hedefi net tabana (min_gross_target_pct) çeker; üst sınır TARGET_MAX_PCT. Bozuk girdi → olduğu gibi döner."""
+    target = _finite(target_pct)
+    if target is None:
+        return target_pct
+    floor = min_gross_target_pct()
+    return round(min(TARGET_MAX_PCT, max(target, floor)), 3)
+
+
 def target_net_pct(target_pct, cost_tp_pct=None) -> float | None:
     """Net hedef = brüt hedef − kâr-al gidiş-dönüş maliyeti (YÜZDE; maliyetin altındaysa negatif olabilir)."""
     target = _finite(target_pct)

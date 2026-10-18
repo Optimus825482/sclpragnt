@@ -5825,6 +5825,19 @@ async def update_monitoring_notification(
     return await _run_db(op)
 
 
+async def set_monitoring_notification_candidate(notif_id: int, candidate_id) -> bool:
+    """2026-10-18 (gönderim sonrası donma): yalnız EKSİK ölçüm bağını (candidate_id) kurar; başka alana dokunmaz."""
+    if not notif_id or not candidate_id:
+        return False
+    def op(conn):
+        conn.execute(
+            "UPDATE monitoring_notifications SET candidate_id=COALESCE(candidate_id, %s) WHERE id=%s",
+            (str(candidate_id), notif_id))
+        conn.commit()
+        return True
+    return await _run_db(op)
+
+
 async def update_monitoring_notification_llm_verdict(notification_id, verdict,
                                                     confidence=None, reasons=None):
     """LLM ikinci-göz kararını İLGİLİ bildirim satırına yaz (2026-10-07).

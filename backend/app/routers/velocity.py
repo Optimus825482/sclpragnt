@@ -2676,9 +2676,10 @@ def dynamic_target_pct(score: float, base_target_pct: float,
     # şişirerek değil `target_net_pct` alanıyla taşınır. Yalnız PANEL skorlu çağrılarda (radar + füzyon);
     # `panel_score=False` (yükseliş sinyali: skor panel değil) eski zincirde kalır.
     if panel_score and _measured_target_mode():
-        return notify_metrics.measured_target_pct(
+        # 2026-10-18: NET hedef tabanı (RADAR_TARGET_MIN_NET_PCT): brüt ≥ min net + kâr-al maliyeti.
+        return notify_metrics.apply_net_floor(notify_metrics.measured_target_pct(
             atr_pct, horizon_minutes, score,
-            getattr(config, "RADAR_TARGET_MEASURED_COEFS", None))
+            getattr(config, "RADAR_TARGET_MEASURED_COEFS", None)))
 
     target = float(base_target_pct)
 
@@ -2729,8 +2730,8 @@ def dynamic_target_pct(score: float, base_target_pct: float,
     else:
         target = max(target, net_profit_floor)
 
-    return round(max(config.MONITORING_TARGET_PCT_MIN,
-                     min(config.MONITORING_TARGET_PCT_MAX, target)), 3)
+    return notify_metrics.apply_net_floor(round(max(config.MONITORING_TARGET_PCT_MIN,
+                                                    min(config.MONITORING_TARGET_PCT_MAX, target)), 3))
 
 
 def _rank_score(candidate: dict, touch_rates: dict[str, float]) -> float:

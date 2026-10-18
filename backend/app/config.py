@@ -448,6 +448,14 @@ class Config:
     # ulaşılabilirlik; nominal %30 isabet, katsayılar HEDEF_DENETIMI §6). Skor kademesi / öğrenilmiş sembol
     # hedefi / ML karışımı / hedef kalibrasyonu / net-kâr tabanı BU modda devre dışıdır; dürüstlük ayrı
     # `target_net_pct` alanıyla taşınır. "chain" = eski zincir (ESKİ davranış).
+    # 2026-10-18 (kullanıcı kararı): NET hedef (brüt − kâr-al maliyeti) en az bu yüzde olmalı. Brüt hedef tabanı =
+    # RADAR_TARGET_MIN_NET_PCT + round_trip_cost_tp (%0,205) = %1,705. Hem "measured" hem "chain" modunda uygulanır.
+    # 0 = taban yok.
+    RADAR_TARGET_MIN_NET_PCT = max(0.0, float(os.getenv("RADAR_TARGET_MIN_NET_PCT", "").strip() or "1.5"))
+    # 2026-10-18 (kullanıcı kararı): bildirim GÖNDERİLDİKTEN sonra hedef, skor, ufuk, beklenen fiyat ve kalibre
+    # isabet DEĞİŞMEZ. Eskiden bekleyen bildirim her taramada yeni hedefle güncelleniyordu (1,15 → 0,7 gibi).
+    # 0 = eski davranış (her taramada güncelle).
+    RADAR_NOTIFY_FREEZE_ON_SEND = os.getenv("RADAR_NOTIFY_FREEZE_ON_SEND", "1").strip().lower() not in {"0", "false", "no", "off"}
     RADAR_TARGET_MODE = (os.getenv("RADAR_TARGET_MODE", "measured").strip().lower() or "measured")
     # a,b,c,d (sırayla: sabit, ATR üssü, skor katsayısı, ufuk üssü); nominal %30 isabet.
     RADAR_TARGET_MEASURED_COEFS = os.getenv("RADAR_TARGET_MEASURED_COEFS", "0.27,0.71,0.06,0.51").strip()

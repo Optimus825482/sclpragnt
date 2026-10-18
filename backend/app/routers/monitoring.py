@@ -1979,6 +1979,14 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
             # giris fiyatindan yeniden hesaplanir — kullanici ilk giris + guncel
             # hedefi aynen takip edebilir (grafik cizgileri de bu iki seviyeyi
             # gosterir).
+            # 2026-10-18 (RADAR_NOTIFY_FREEZE_ON_SEND, varsayılan açık — kullanıcı kararı): bildirim gönderildikten
+            # sonra hedef/skor/ufuk/beklenen fiyat/kalibre isabet DEĞİŞMEZ. Güncelleme yok; kullanıcıya WS ile yeni
+            # değer yayınlanmaz ve otonom paper TP'si yeniden yazılmaz. Yalnız eksikse ölçüm bağı (candidate_id) kurulur.
+            if getattr(config, "RADAR_NOTIFY_FREEZE_ON_SEND", False):
+                if not existing_pending.get("candidate_id") and c.get("candidate_id"):
+                    await database.set_monitoring_notification_candidate(existing_pending["id"], c.get("candidate_id"))
+                _monitoring_state["candidate_streak"].pop(sym, None)
+                continue
             first_price = float(existing_pending.get("price") or 0) or float(c.get("price", 0) or 0)
             # Ufuk daralmasın: bildirim SON ufuk süresi dolana kadar takipte kalır;
             # 5dk taraması 15dk bildirimin penceresini kısaltamaz (2026-09-04).

@@ -24,6 +24,9 @@ def _confirm_rule_off_by_default(request, monkeypatch):
     # net-kâr tabanı, öğrenilmiş hedef, ML karışımı) ve eski kapıları sınar → paket varsayılanı eski davranış;
     # yeni davranış `test_notify_metrics.py` içinde bayraklar AÇIKÇA kurularak sınanır.
     monkeypatch.setattr(config, "RADAR_TARGET_MODE", "chain", raising=False)
+    # 2026-10-18: net hedef tabanı ve gönderim sonrası donma da eski testlerde KAPALI (kendi sınıflarında açık).
+    monkeypatch.setattr(config, "RADAR_TARGET_MIN_NET_PCT", 0.0, raising=False)
+    monkeypatch.setattr(config, "RADAR_NOTIFY_FREEZE_ON_SEND", False, raising=False)
     monkeypatch.setattr(config, "RADAR_TARGET_ML_BLEND_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "RADAR_NOTIFY_SHOW_ML_PROB", True, raising=False)
     monkeypatch.setattr(config, "RADAR_FUSION_TARGET_DYNAMIC", False, raising=False)
