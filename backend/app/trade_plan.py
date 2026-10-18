@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Any
 
 SL_PCT_MIN, SL_PCT_MAX = 0.5, 10.0
@@ -16,18 +17,26 @@ RATIONALE_MAX = 240
 _FALLBACK_SL_PCT = 2.0
 
 
-def round_down(value: float, step: float | None) -> float:
-    """Değeri adıma AŞAĞI yuvarlar (adım yoksa dokunmaz)."""
-    if not step or step <= 0:
+def floor_to_step(value: float, step: float | None) -> float:
+    """Değeri adıma AŞAĞI yuvarlar, Decimal ile (float kayması yok: 1.15/0.01 → 1.15, 0.3/0.1 → 0.3).
+
+    Lot/miktar yuvarlamasının TEK kaynağı; `math.floor(q / step) * step` yerine bunu çağırın.
+    """
+    if not step or float(step) <= 0:
         return float(value)
-    return math.floor(float(value) / float(step) + 1e-9) * float(step)
+    s = Decimal(str(step))
+    return float((Decimal(str(value)) / s).to_integral_value(ROUND_DOWN) * s)
+
+
+round_down = floor_to_step  # eski ad; çağıranlar için
 
 
 def round_to_tick(value: float, tick: float | None) -> float:
-    """Fiyatı en yakın tick'e yuvarlar (tick yoksa dokunmaz)."""
-    if not tick or tick <= 0:
+    """Fiyatı en yakın tick'e yuvarlar (tick yoksa dokunmaz), Decimal ile."""
+    if not tick or float(tick) <= 0:
         return float(value)
-    return round(float(value) / float(tick)) * float(tick)
+    t = Decimal(str(tick))
+    return float((Decimal(str(value)) / t).to_integral_value(ROUND_HALF_UP) * t)
 
 
 def compute_plan(price: float, amount_try: float, sl_pct: float, rr: float, filters: dict, fee_rate: float) -> dict:

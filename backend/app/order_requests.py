@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import re
 
+# binance_tr_private yalnız stdlib + trade_plan içe aktarır → döngüsel import yok.
+from app.binance_tr_private import sanitize_client_order_id
+
 IN_PROGRESS = "in_progress"
 DONE = "done"
 FAILED = "failed"       # kesin başarısız (borsa reddetti): AYNI id ile yeniden denenemez, yeni id gerekir
@@ -21,6 +24,19 @@ def validate_client_order_id(value) -> str:
     if not _CID_RE.match(text):
         raise ValueError("client_order_id 8-64 karakter olmalı (harf, rakam, _ ve -)")
     return text
+
+
+def normalize_client_order_id(value) -> str:
+    """Doğrula + borsaya GİDEN biçime indir (yalnız harf/rakam, ≤36; bkz. sanitize_client_order_id).
+
+    Kayıt (`order_requests`) borsaya gönderilen kimlikle AYNI olmalı: eskiden `web-…` saklanıp
+    `web…` gönderiliyordu → order-status/mutabakat kaydı borsadaki emirle eşleşmiyordu.
+    Temizlik sonrası boş kalırsa ValueError.
+    """
+    cid = sanitize_client_order_id(validate_client_order_id(value))
+    if not cid:
+        raise ValueError("client_order_id en az bir harf veya rakam içermeli")
+    return cid
 
 
 class Replay(Exception):
@@ -40,7 +56,7 @@ async def begin(user_id: int, client_order_id, symbol: str, summary: dict) -> st
     if client_order_id in (None, ""):
         return None
     from app import database  # tembel: döngüsel import yok, testlerde monkeypatch edilebilir
-    cid = validate_client_order_id(client_order_id)
+    cid = normalize_client_order_id(client_order_id)
     if await database.claim_order_request(user_id, cid, symbol, summary):
         return cid
     row = await database.get_order_request(user_id, cid) or {}

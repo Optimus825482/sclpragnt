@@ -13,7 +13,6 @@ import logging
 import random
 import time
 import uuid
-from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -27,8 +26,6 @@ WS_PING_INTERVAL_SEC = 20
 WS_PING_TIMEOUT_SEC = 20
 TOKEN_VALIDITY_MS = 24 * 60 * 60 * 1000
 TOKEN_RENEW_BEFORE_SEC = 5 * 60
-EVENT_QUEUE_MAXSIZE = 512
-SNAPSHOT_MAX_EVENTS = 100
 RECONNECT_MIN_SEC = 1.0
 RECONNECT_MAX_SEC = 60.0
 
@@ -68,34 +65,18 @@ class _UserStream:
     api_key: str
     api_secret: str
     callback: PublishCallback | None
-    queue_size: int = EVENT_QUEUE_MAXSIZE
     task: asyncio.Task | None = None
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
-    subscribers: set[asyncio.Queue] = field(default_factory=set)
-    events: deque = field(default_factory=lambda: deque(maxlen=SNAPSHOT_MAX_EVENTS))
-    latest_by_type: dict[str, dict[str, Any]] = field(default_factory=dict)
     state: str = "starting"
     last_error: str | None = None
     connected_at: float | None = None
     last_event_at: float | None = None
     reconnects: int = 0
-    dropped_events: int = 0
 
     async def emit(self, event: dict[str, Any]) -> None:
+        # Olaylar yalnız publish callback'ine (main.py → WS yayını) iletilir; bellek içi
+        # abone kuyruğu/anlık görüntü (subscribe_user_stream/stream_snapshot) kullanılmadığı için kaldırıldı.
         self.last_event_at = time.time()
-        self.events.append(event)
-        self.latest_by_type[event["event_type"]] = event
-        for queue in tuple(self.subscribers):
-            if queue.full():
-                try:
-                    queue.get_nowait()
-                    self.dropped_events += 1
-                except asyncio.QueueEmpty:
-                    pass
-            try:
-                queue.put_nowait(event)
-            except asyncio.QueueFull:
-                self.dropped_events += 1
         if self.callback is not None:
             try:
                 result = self.callback(event)
@@ -289,6 +270,9 @@ def _normalize_event(message: dict[str, Any]) -> dict[str, Any] | None:
             "transaction_time_ms": payload.get("T"),
             "trade_id": payload.get("t"),
             "is_maker": payload.get("m"),
+            # Price Range Execution Rule: taker emir EXPIRED + eR=EXECUTION_RULE_PRICE_RANGE_EXCEEDED.
+            "expiry_reason": payload.get("eR"),
+            "price_range_exceeded": payload.get("eR") == "EXECUTION_RULE_PRICE_RANGE_EXCEEDED",
         }
     else:
         fields = {
@@ -319,8 +303,7 @@ def _lock() -> asyncio.Lock:
 
 
 async def start_user_stream(user_id: str | int, api_key: str, api_secret: str,
-                            publish_callback: PublishCallback | None = None,
-                            *, queue_size: int = EVENT_QUEUE_MAXSIZE) -> dict[str, Any]:
+                            publish_callback: PublishCallback | None = None) -> dict[str, Any]:
     """Start or reuse this process's stream for one user; safe to call in lifespan."""
     uid = str(user_id)
     if not uid or not api_key or not api_secret:
@@ -333,8 +316,7 @@ async def start_user_stream(user_id: str | int, api_key: str, api_secret: str,
                 current.callback = publish_callback or current.callback
                 return stream_status(uid)
             await _stop_locked(uid, current)
-        stream = _UserStream(uid, api_key, api_secret, publish_callback,
-                             queue_size=max(1, int(queue_size)))
+        stream = _UserStream(uid, api_key, api_secret, publish_callback)
         stream.task = asyncio.create_task(stream.run(), name=f"binance-tr-user-stream-{uid}")
         _streams[uid] = stream
         return stream_status(uid)
@@ -349,8 +331,6 @@ async def _stop_locked(uid: str, stream: _UserStream) -> None:
     stream.api_key = ""
     stream.api_secret = ""
     stream.callback = None
-    for queue in tuple(stream.subscribers):
-        stream.subscribers.discard(queue)
     _streams.pop(uid, None)
 
 
@@ -365,35 +345,6 @@ async def stop_user_stream(user_id: str | int) -> bool:
         return True
 
 
-def subscribe_user_stream(user_id: str | int, *, maxsize: int = EVENT_QUEUE_MAXSIZE) -> asyncio.Queue:
-    """Create an async event queue; full queues drop oldest and count drops."""
-    stream = _streams.get(str(user_id))
-    if stream is None or stream.state == "stopped":
-        raise RuntimeError("Kullanıcı stream'i başlatılmamış")
-    queue: asyncio.Queue = asyncio.Queue(maxsize=max(1, int(maxsize)))
-    stream.subscribers.add(queue)
-    return queue
-
-
-def unsubscribe_user_stream(user_id: str | int, queue: asyncio.Queue) -> None:
-    stream = _streams.get(str(user_id))
-    if stream:
-        stream.subscribers.discard(queue)
-
-
-def stream_snapshot(user_id: str | int, *, limit: int = 20) -> dict[str, Any]:
-    """Return latest account/order events and lifecycle state for UI reconciliation."""
-    stream = _streams.get(str(user_id))
-    if stream is None:
-        return {"state": "stopped", "events": [], "latest_by_type": {}}
-    return {
-        **stream_status(user_id),
-        "events": (list(stream.events)[-min(int(limit), SNAPSHOT_MAX_EVENTS):]
-                   if int(limit) > 0 else []),
-        "latest_by_type": dict(stream.latest_by_type),
-    }
-
-
 def stream_status(user_id: str | int) -> dict[str, Any]:
     stream = _streams.get(str(user_id))
     if stream is None:
@@ -404,6 +355,6 @@ def stream_status(user_id: str | int) -> dict[str, Any]:
         "connected_at": stream.connected_at,
         "last_event_at": stream.last_event_at,
         "reconnects": stream.reconnects,
-        "dropped_events": stream.dropped_events,
+        "dropped_events": 0,  # geriye dönük durum şekli (abone kuyruğu kaldırıldı)
         "last_error": stream.last_error,
     }

@@ -43,7 +43,7 @@ def test_no_id_means_no_guard(db):
 
 
 def test_first_call_owns_second_replays(db):
-    assert run(orq.begin(1, "web-12345678", "ADA_TRY", {})) == "web-12345678"
+    assert run(orq.begin(1, "web-12345678", "ADA_TRY", {})) == "web12345678"
     with pytest.raises(orq.Replay) as e:
         run(orq.begin(1, "web-12345678", "ADA_TRY", {}))
     assert e.value.status == orq.IN_PROGRESS and e.value.stored is None
@@ -71,7 +71,7 @@ def test_failed_and_unknown_are_recorded_and_block_reuse(db):
 
 def test_users_are_isolated(db):
     run(orq.begin(1, "web-12345678", "X", {}))
-    assert run(orq.begin(2, "web-12345678", "X", {})) == "web-12345678"
+    assert run(orq.begin(2, "web-12345678", "X", {})) == "web12345678"
 
 
 def test_invalid_id_rejected(db):

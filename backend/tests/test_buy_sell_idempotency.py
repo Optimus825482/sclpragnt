@@ -81,7 +81,7 @@ def test_buy_duplicate_id_sends_one_order(env):
     calls, _ = env
     first = run(main.binance_buy(buy_payload(), request=MagicMock()))
     second = run(main.binance_buy(buy_payload(), request=MagicMock()))
-    assert calls["buy"] == ["web-12345678"]
+    assert calls["buy"] == ["web12345678"]
     assert first["ok"] and second["idempotent_replay"] is True
 
 
@@ -104,7 +104,7 @@ def test_ambiguous_buy_blocks_blind_retry(env):
     calls["buy_error"] = BinanceTrAmbiguousOrderError("belirsiz", client_order_id="web-12345678", symbol="ADA_TRY")
     with pytest.raises(HTTPException) as e:
         run(main.binance_buy(buy_payload(), request=MagicMock()))
-    assert e.value.status_code == 502 and fdb.rows[(7, "web-12345678")]["status"] == "unknown"
+    assert e.value.status_code == 502 and fdb.rows[(7, "web12345678")]["status"] == "unknown"
     calls["buy_error"] = None
     resp = run(main.binance_buy(buy_payload(), request=MagicMock()))
     assert resp.status_code == 202 and len(calls["buy"]) == 1
@@ -115,4 +115,4 @@ def test_sell_duplicate_id_sends_one_order(env):
     p = {"asset": "ADA", "quantity": 10, "confirmation": "REAL_SELL", "client_order_id": "web-87654321"}
     run(main.binance_sell(dict(p), request=MagicMock()))
     again = run(main.binance_sell(dict(p), request=MagicMock()))
-    assert calls["sell"] == ["web-87654321"] and again["idempotent_replay"] is True
+    assert calls["sell"] == ["web87654321"] and again["idempotent_replay"] is True

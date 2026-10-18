@@ -139,6 +139,9 @@ def sync_fetch_tr_symbols() -> Set[str] | None:
                 if "data" in data and isinstance(data["data"], dict) and "list" in data["data"]:
                     # www.binance.tr formatı
                     for item in data["data"]["list"]:
+                        # Doküman: `status` yok, işlem durumu `spotTradingEnable` (1/0); 0 → işleme kapalı.
+                        if item.get("spotTradingEnable") in (0, "0"):
+                            continue
                         b = str(item.get("baseAsset") or "").strip().upper()
                         if b:
                             new_bases.add(b)

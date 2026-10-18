@@ -19,9 +19,12 @@ import random
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from app.trade_plan import floor_to_step, round_to_tick
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +58,34 @@ _PRIVATE_SEMAPHORE = threading.Semaphore(PRIVATE_MAX_CONCURRENCY)
 ORDER_MAX_CONCURRENCY = 4
 _ORDER_SEMAPHORE = threading.Semaphore(ORDER_MAX_CONCURRENCY)
 _ORDER_PATHS = ("/open/v1/orders", "/open/v1/orders/oco")
+# İşlem geçmişi taraması (/open/v1/orders/trades, sembol başına sayfalı) ayrı ve dar yuvada
+# koşar; uzun geçmiş taramaları bakiye/emir okumalarını aç bırakmasın.
+HISTORY_MAX_CONCURRENCY = 2
+_HISTORY_SEMAPHORE = threading.Semaphore(HISTORY_MAX_CONCURRENCY)
+_HISTORY_PATHS = ("/open/v1/orders/trades",)
 
 
 def _semaphore_for(method: str, path: str) -> threading.Semaphore:
-    return _ORDER_SEMAPHORE if method.upper() == "POST" and path in _ORDER_PATHS else _PRIVATE_SEMAPHORE
+    if method.upper() == "POST" and path in _ORDER_PATHS:
+        return _ORDER_SEMAPHORE
+    if path in _HISTORY_PATHS:
+        return _HISTORY_SEMAPHORE
+    return _PRIVATE_SEMAPHORE
+
+
 _SERVER_TIME_TTL_SEC = 60.0
+# Sunucu saati ölçümü başarısızsa en fazla bu aralıkla yeniden denenir (her imzalı
+# istekte /common/time'a gidip zaman aşımı beklemesin).
+_SERVER_TIME_RETRY_SEC = 5.0
+
+# Emir detayı yoklaması — TEK KAYNAK (open_position da buradan içe aktarır).
+# Doküman: yeni emir cevabı yalnız orderId + createTime taşır; dolum detaydan okunur.
+DETAIL_TRIES = 3
+DETAIL_RETRY_SLEEP_SEC = 0.4
+# Doküman ENUM (status): 2 FILLED, 3 CANCELED, 5 REJECTED, 6 EXPIRED → nihai, yoklama biter.
+_FINAL_ORDER_STATUSES = frozenset({2, 3, 5, 6})
+_ORDER_STATUS_BY_NAME = {"SYSTEM_PROCESSING": -2, "NEW": 0, "PARTIALLY_FILLED": 1, "FILLED": 2,
+                         "CANCELED": 3, "PENDING_CANCEL": 4, "REJECTED": 5, "EXPIRED": 6}
 
 _used_weight_1m = 0
 _weight_reported_at = 0.0
@@ -71,7 +97,8 @@ _SYMBOLS_CACHE_TTL_SEC = 6 * 3600
 _OPEN_ORDERS_CACHE_TTL_SEC = 30
 # Sembol taraması akıllı ve sınırlı. Sadece kilitli veya ilgili varlıklar taranır.
 _OPEN_ORDERS_SWEEP_MAX = 20
-_OPEN_ORDERS_SWEEP_GAP_SEC = 0.10
+# Tarama küçük bir havuzla paralel koşar; asıl sınırı imzalı istek semaforu (3) koyar.
+_OPEN_ORDERS_SWEEP_WORKERS = 3
 # PERFORMANS (2026-09-27): 5→15 sn. Sayfa ilk yüklemesinde /account, /positions,
 # /open-orders, /trades-day AYNI ANDA gelir; 5 sn TTL'de her biri ayrı harici
 # çağrı yapıyordu. 15 sn = WS push döngüsü kadansı (binance_account_push_loop)
@@ -90,11 +117,20 @@ _open_orders_caches: dict[str, dict] = {}
 _open_orders_lock = threading.Lock()
 
 
+def _api_key_hash(api_key: str) -> str:
+    return hashlib.sha256(str(api_key or "").encode("utf-8")).hexdigest()[:16]
+
+
 def _open_orders_cache_for(api_key: str) -> dict:
     """Bu API anahtarına ait açık-emir önbellek kaydı (yoksa boş oluşturur). Güncellemeyi çağıran kilit altında yapar."""
-    key = hashlib.sha256(str(api_key or "").encode("utf-8")).hexdigest()[:16]
     with _open_orders_lock:
-        return _open_orders_caches.setdefault(key, {"orders": [], "expires": 0.0, "partial": False})
+        return _open_orders_caches.setdefault(_api_key_hash(api_key), {"orders": [], "expires": 0.0, "partial": False})
+
+
+def _open_orders_load_lock_for(api_key: str) -> threading.Lock:
+    """Kullanıcıya özel tek-uçuş kilidi: bir kullanıcının taraması diğerlerini bekletmez."""
+    with _open_orders_lock:
+        return _open_orders_load_locks.setdefault(_api_key_hash(api_key), threading.Lock())
 
 
 def _invalidate_open_orders(api_key: str) -> None:
@@ -102,10 +138,14 @@ def _invalidate_open_orders(api_key: str) -> None:
     cache = _open_orders_cache_for(api_key)
     with _open_orders_lock:
         cache["expires"] = 0.0
-_open_orders_load_lock = threading.Lock()
+
+
+_open_orders_load_locks: dict[str, threading.Lock] = {}
 
 _balance_cache: dict[str, dict] = {}
 _balance_lock = threading.Lock()
+# Bakiye yüklemesi anahtar başına TEK UÇUŞ (eşzamanlı /account,/positions,... tek istek atar).
+_balance_load_locks: dict[str, threading.Lock] = {}
 
 # İSTEMCİ İDEMPOTENCY (2026-10-15, denetim P0-2): UI her onay penceresi için
 # tek bir `client_order_id` üretir ve emir POST'unda gönderir. Zaman aşımı /
@@ -118,8 +158,10 @@ _RECENT_CLIENT_ORDERS_TTL_SEC = 10 * 60
 _recent_client_orders: dict[str, tuple[float, dict]] = {}
 _recent_client_orders_lock = threading.Lock()
 
-_server_time_cache: dict = {"at": 0.0, "offset": 0.0}
+_server_time_cache: dict = {"at": 0.0, "offset": 0.0, "failed_at": 0.0}
 _server_time_lock = threading.Lock()
+# Ölçüm tek uçuş: eşzamanlı imzalı istekler aynı anda /common/time'a gitmez.
+_server_time_fetch_lock = threading.Lock()
 
 
 class BinanceTrApiError(RuntimeError):
@@ -305,27 +347,42 @@ def _server_time_offset_ms() -> float:
     akışını `-1021 Timestamp outside recvWindow` ile tek noktadan kırıyordu.
     Artık **son bilinen ofset korunur**; TTL 60 sn'dir (pencere 10 sn olduğu
     için bu yeterli) ve kısa aralıklarla yeniden ölçülür.
+
+    Başarısız ölçüm anı da kaydedilir: ölçüm en fazla `_SERVER_TIME_RETRY_SEC`'te
+    bir yeniden denenir (her imzalı istek zaman aşımı beklemesin). Ölçüm tek
+    uçuştur; kilidi bekleyen çağrı tazelenmiş önbelleği okur.
     """
-    now = time.time()
+    def _fresh(c: dict, at_now: float) -> bool:
+        if c.get("at") and at_now - float(c["at"]) < _SERVER_TIME_TTL_SEC:
+            return True
+        return bool(c.get("failed_at")) and at_now - float(c["failed_at"]) < _SERVER_TIME_RETRY_SEC
+
     with _server_time_lock:
-        cached = dict(_server_time_cache)
-    if cached.get("at") and now - float(cached["at"]) < _SERVER_TIME_TTL_SEC:
-        return float(cached.get("offset") or 0.0)
-    measured: float | None = None
-    try:
-        payload = _http_get_json(f"{REST_BASE}/open/v1/common/time")
-        data = _unwrap(payload)
-        server_ms = int((data or {}).get("serverTime") or (data or {}).get("timestamp") or 0) if isinstance(data, dict) else 0
-        if server_ms:
-            measured = float(server_ms) - now * 1000
-    except Exception as exc:
-        logger.info("Binance TR sunucu saati alınamadı (%s); son bilinen ofset korunuyor", exc)
-    with _server_time_lock:
-        if measured is not None:
-            _server_time_cache.update({"at": now, "offset": measured})
-        # Ölçüm yoksa önceki (at, offset) ÇİZİLMEDEN bırakılır; eski ofset
-        # bir sonraki başarılı ölçüme kadar geçerli kalır.
-        return float(_server_time_cache.get("offset") or 0.0)
+        if _fresh(_server_time_cache, time.time()):
+            return float(_server_time_cache.get("offset") or 0.0)
+    with _server_time_fetch_lock:
+        with _server_time_lock:
+            # Kilidi beklerken başka bir çağrı ölçmüş olabilir.
+            if _fresh(_server_time_cache, time.time()):
+                return float(_server_time_cache.get("offset") or 0.0)
+        now = time.time()
+        measured: float | None = None
+        try:
+            payload = _http_get_json(f"{REST_BASE}/open/v1/common/time")
+            data = _unwrap(payload)
+            server_ms = int((data or {}).get("serverTime") or (data or {}).get("timestamp") or 0) if isinstance(data, dict) else 0
+            if server_ms:
+                measured = float(server_ms) - now * 1000
+        except Exception as exc:
+            logger.info("Binance TR sunucu saati alınamadı (%s); son bilinen ofset korunuyor", exc)
+        with _server_time_lock:
+            if measured is not None:
+                _server_time_cache.update({"at": now, "offset": measured, "failed_at": 0.0})
+            else:
+                # Ölçüm yoksa önceki (at, offset) ÇİZİLMEDEN bırakılır; eski ofset
+                # bir sonraki başarılı ölçüme kadar geçerli kalır.
+                _server_time_cache["failed_at"] = now
+            return float(_server_time_cache.get("offset") or 0.0)
 
 
 def _order_client_id(params: dict) -> str:
@@ -357,14 +414,21 @@ def _signed_request(method: str, path: str, params: dict | None,
     headers = {"X-MBX-APIKEY": api_key}
     last_error: Exception | None = None
     is_post = method.upper() == "POST"
+    is_order_post = is_post and path in _ORDER_PATHS
     # Geriye dönük parametre kabul edilir ama emir tekrarını açmaz.
     can_retry_post = False
     # #33: imzalı uçlara ortak eşzamanlılık sınırı. Sembol taraması gibi
     # yüzlerce çağrılık patlamalar bakiye/emir uçlarını tek anda doyuruyordu.
-    with _semaphore_for(method, path):
-        for attempt in range(1, REST_MAX_ATTEMPTS + 1):
-            if attempt == 1:
-                _throttle_private_request()
+    # 2026-10-18: yuva YALNIZ HTTP denemesi süresince tutulur; yeniden deneme /
+    # Retry-After / ban beklemeleri yuva DIŞINDA uyur (binance_tr_public ile aynı
+    # yaklaşım) — tek bir 429/418 isteği diğer imzalı çağrıları dakikalarca bekletmez.
+    semaphore = _semaphore_for(method, path)
+    for attempt in range(1, REST_MAX_ATTEMPTS + 1):
+        if attempt == 1:
+            _throttle_private_request()
+        sleep_for = 0.0
+        refresh_offset = False
+        with semaphore:
             attempt_params = dict(base_params)
             attempt_params["timestamp"] = int(time.time() * 1000 + offset_ms)
             query = urlencode(sorted(attempt_params.items()))
@@ -381,7 +445,7 @@ def _signed_request(method: str, path: str, params: dict | None,
                     # 1008 / -1008 (Server Busy / Request Throttled) / 1003 (Rate limit)
                     # Belirsiz emir POST sonucu hiçbir clientId ile tekrar edilmez.
                     if not idempotent and not can_retry_post:
-                        if is_post and path in ("/open/v1/orders", "/open/v1/orders/oco"):
+                        if is_order_post:
                             raise BinanceTrAmbiguousOrderError(
                                 f"Emir sonucu belirsiz (Binance TR {exc.code}); tekrar gönderilmedi",
                                 client_order_id=_order_client_id(base_params),
@@ -390,24 +454,19 @@ def _signed_request(method: str, path: str, params: dict | None,
                     if attempt == REST_MAX_ATTEMPTS:
                         break
                     is_429 = ("1003" in str(exc.code)) or ("too many requests" in str(exc.msg).lower())
-                    delay = _private_retry_delay(attempt, is_429=is_429)
+                    sleep_for = _private_retry_delay(attempt, is_429=is_429)
                     if is_429:
-                        _update_cooldown(delay)
+                        _update_cooldown(sleep_for)
                     logger.warning(
                         "Binance TR geçici sunucu/yoğunluk yanıtı (kod %s, %s) | path=%s | %.2f sn beklenip yeniden denenecek (%d/%d)",
-                        exc.code, exc.msg, path, delay, attempt, REST_MAX_ATTEMPTS
+                        exc.code, exc.msg, path, sleep_for, attempt, REST_MAX_ATTEMPTS
                     )
-                    time.sleep(delay)
-                    continue
-                if str(exc.code) in ("1021", "-1021"):
-                    # Timestamp outside recvWindow — saat ofsetini sıfırlayıp tazele
-                    with _server_time_lock:
-                        _server_time_cache["at"] = 0.0
-                    offset_ms = _server_time_offset_ms()
-                    if attempt < REST_MAX_ATTEMPTS:
-                        time.sleep(0.5)
-                        continue
-                raise exc
+                elif str(exc.code) in ("1021", "-1021") and attempt < REST_MAX_ATTEMPTS:
+                    # Timestamp outside recvWindow — saat ofsetini (yuva dışında) sıfırlayıp tazele
+                    refresh_offset = True
+                    sleep_for = 0.5
+                else:
+                    raise exc
             except HTTPError as exc:
                 # Başlıklardaki ağırlık bilgisini her durumda güncelle
                 _record_used_weight(exc.headers)
@@ -429,15 +488,13 @@ def _signed_request(method: str, path: str, params: dict | None,
                     # #32: Ban sinyali.
                     if attempt == REST_MAX_ATTEMPTS:
                         break
-                    delay = _private_ban_delay(attempt, exc.headers)
-                    _update_cooldown(delay)
-                    time.sleep(delay)
-                    continue
-                if exc.code == 429 or (500 <= exc.code < 600) or binance_err.is_transient:
+                    sleep_for = _private_ban_delay(attempt, exc.headers)
+                    _update_cooldown(sleep_for)
+                elif exc.code == 429 or (500 <= exc.code < 600) or binance_err.is_transient:
                     # 429 reddedilen istek olduğundan güvenle denenebilir.
                     # 5xx order POST sonucu belirsizdir ve yukarıda kesilir.
                     if exc.code != 429 and not idempotent and not can_retry_post:
-                        if is_post and path in ("/open/v1/orders", "/open/v1/orders/oco") and exc.code >= 500:
+                        if is_order_post and exc.code >= 500:
                             raise BinanceTrAmbiguousOrderError(
                                 f"Emir sonucu belirsiz (HTTP {exc.code}); tekrar gönderilmedi",
                                 client_order_id=_order_client_id(base_params),
@@ -446,24 +503,23 @@ def _signed_request(method: str, path: str, params: dict | None,
                     if attempt == REST_MAX_ATTEMPTS:
                         break
                     is_429 = (exc.code == 429) or ("429" in str(binance_err.code)) or ("too many requests" in str(binance_err.msg).lower())
-                    delay = _private_retry_delay(attempt, exc.headers, is_429=is_429)
+                    sleep_for = _private_retry_delay(attempt, exc.headers, is_429=is_429)
                     if is_429:
-                        _update_cooldown(delay)
+                        _update_cooldown(sleep_for)
                     logger.warning(
                         "Binance TR HTTP %s geçici hata (kod %s) | %.2f sn sonra yeniden denenecek (%d/%d)",
-                        exc.code, binance_err.code, delay, attempt, REST_MAX_ATTEMPTS
+                        exc.code, binance_err.code, sleep_for, attempt, REST_MAX_ATTEMPTS
                     )
-                    time.sleep(delay)
-                    continue
-                # 4xx hataları (400, 401, 403, vb.) — anlamlı hatayla raise
-                raise binance_err
+                else:
+                    # 4xx hataları (400, 401, 403, vb.) — anlamlı hatayla raise
+                    raise binance_err
             except (URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as exc:
                 # #30: bu kolon "istek borsaya ULAŞTI mı?" sorusunun cevabı
                 # OLMAYAN durumlardır. Okuma için yeniden denemek zararsızdır;
                 # POST (emir) için ASLA — çağıranın durum sorgulaması gerekir.
                 last_error = exc
                 if not idempotent:
-                    if is_post and path in ("/open/v1/orders", "/open/v1/orders/oco"):
+                    if is_order_post:
                         raise BinanceTrAmbiguousOrderError(
                             f"Emir sonucu belirsiz; tekrar gönderilmedi: {exc}",
                             client_order_id=_order_client_id(base_params),
@@ -473,7 +529,15 @@ def _signed_request(method: str, path: str, params: dict | None,
                     ) from exc
                 if attempt == REST_MAX_ATTEMPTS:
                     break
-                time.sleep(_private_retry_delay(attempt))
+                sleep_for = _private_retry_delay(attempt)
+        # Yuva bırakıldı: bekleme / ofset tazeleme burada yapılır.
+        if refresh_offset:
+            with _server_time_lock:
+                _server_time_cache["at"] = 0.0
+                _server_time_cache["failed_at"] = 0.0
+            offset_ms = _server_time_offset_ms()
+        if sleep_for > 0:
+            time.sleep(sleep_for)
     raise RuntimeError(
         f"Binance TR imzalı istek {REST_MAX_ATTEMPTS} denemede başarısız: {last_error}"
     ) from last_error
@@ -595,21 +659,17 @@ def reconcile_sell_fill(result: dict, symbol_underscore: str, requested_qty: flo
 
     remaining = float(out["remaining_qty"] or 0.0)
     if step_size and step_size > 0:
-        remaining = math.floor(remaining / float(step_size)) * float(step_size)
-        remaining = round(remaining, 12)
+        remaining = floor_to_step(remaining, step_size)
     out["remaining_qty"] = remaining
     if remaining <= 0:
         return out
 
-    min_notional = None
-    with _symbols_lock:
-        entry = _symbols_cache["filters"].get(symbol_underscore) or {}
-        if not step_size:
-            step_size = float(entry.get("step_size") or 0) or None
-        min_notional = float(entry.get("min_notional") or 0) or None
+    entry = _cached_filters(symbol_underscore)
+    if not step_size:
+        step_size = float(entry.get("step_size") or 0) or None
+    min_notional = float(entry.get("min_notional") or 0) or None
     if step_size and step_size > 0:
-        remaining = math.floor(remaining / float(step_size)) * float(step_size)
-        remaining = round(remaining, 12)
+        remaining = floor_to_step(remaining, step_size)
 
     # Toz koruması: kalan miktar tekrar satılamayacak kadar küçükse yeni emir
     # göndermeyiz — yoksa borsa 400/minNotional hatası verir ve kısmi sonuç
@@ -683,7 +743,9 @@ def _order_fill(data: dict, requested_qty: float | None) -> tuple[float, float |
     if not isinstance(data, dict):
         return (float(requested_qty or 0.0), None, None, None)
     executed = _qty_to_float(data.get("executedQty"))
-    quote = _qty_to_float(data.get("cummulativeQuoteQty") or data.get("cumulativeQuoteQty"))
+    # Doküman alanı `executedQuoteQty`; eski/proxy cevapları `cummulativeQuoteQty` taşıyabilir.
+    quote = (_qty_to_float(data.get("executedQuoteQty"))
+             or _qty_to_float(data.get("cummulativeQuoteQty") or data.get("cumulativeQuoteQty")))
     avg = None
     if executed > 0 and quote > 0:
         avg = quote / executed
@@ -694,6 +756,23 @@ def _order_fill(data: dict, requested_qty: float | None) -> tuple[float, float |
         # Dolum bilgisi yok → tam dolum varsay (eski davranış).
         return (float(requested_qty or 0.0), None, avg, quote or None)
     return (executed, remaining, avg, quote or None)
+
+
+def _cached_filters(symbol_underscore: str) -> dict:
+    """Sembol filtresi YALNIZ yüklü önbellekten (ağ çağrısı yok; emir yollarını yeni bağımlılığa sokmaz)."""
+    with _symbols_lock:
+        return dict(_symbols_cache["filters"].get(symbol_underscore) or {})
+
+
+def _after_order_mutation(api_key: str) -> None:
+    """Emir/iptal sonrası bu kullanıcının bakiye ve açık-emir önbelleklerini düşürür."""
+    invalidate_account_balance_cache(api_key)
+    _invalidate_open_orders(api_key)
+
+
+def _symbols_for_asset(asset: str, valid_symbols: set[str]) -> list[str]:
+    """Varlığın borsada geçerli TRY/USDT çiftleri (ör. BTC → BTC_TRY, BTC_USDT)."""
+    return [f"{asset}_{quote}" for quote in ("TRY", "USDT") if f"{asset}_{quote}" in valid_symbols]
 
 
 def _to_underscore_symbol(symbol: str) -> str:
@@ -745,11 +824,17 @@ def _load_symbol_list_locked(api_key: str, api_secret: str) -> None:
             sym = r.get("symbol")
             if not sym:
                 continue
+            # Doküman /open/v1/common/symbols `status` DEĞİL `spotTradingEnable` (1/0) verir;
+            # açık `status` gelirse o esas alınır, yoksa spotTradingEnable=0 → BREAK (işleme kapalı).
+            status = r.get("status")
+            if status in (None, ""):
+                spot_enable = r.get("spotTradingEnable")
+                status = "TRADING" if spot_enable is None or spot_enable in (1, "1", True) else "BREAK"
             entry = {
                 "quote_asset": str(r.get("quoteAsset") or "").upper(),
                 "oco_enable": bool(int(r.get("ocoEnable") if r.get("ocoEnable") is not None else 1)),
                 "order_types": r.get("orderTypes") or [],
-                "status": str(r.get("status") or "TRADING").upper(),
+                "status": str(status).upper(),
             }
             for f in r.get("filters", []) or []:
                 ft = f.get("filterType")
@@ -892,8 +977,7 @@ def place_spot_order(api_key: str, api_secret: str, symbol: str, side: str, orde
             raise BinanceTrAmbiguousOrderError(str(exc), client_order_id=params["clientId"],
                                                symbol=symbol_u) from exc
         raise
-    _invalidate_open_orders(api_key)
-    invalidate_account_balance_cache(api_key)
+    _after_order_mutation(api_key)
     result = {**(data if isinstance(data, dict) else {}), "symbol": symbol_u,
               "client_id": params["clientId"], "order_id": str(data.get("orderId")) if isinstance(data, dict) and data.get("orderId") else None}
     if client_order_id:
@@ -914,6 +998,40 @@ def get_order_detail(api_key: str, api_secret: str, symbol: str, *,
         raise ValueError("order_id veya client_id gerekli")
     data = _signed_request("GET", "/open/v1/orders/detail", params, api_key, api_secret)
     return data if isinstance(data, dict) else {}
+
+
+def _order_status_code(order: dict | None) -> int | None:
+    """Emir `status` alanı → doküman ENUM tamsayısı (isim gelirse eşlenir; yoksa None)."""
+    raw = order.get("status") if isinstance(order, dict) else None
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return _ORDER_STATUS_BY_NAME.get(str(raw).strip().upper())
+
+
+def _poll_fill(api_key: str, api_secret: str, symbol: str, order_id, client_id: str | None) -> dict:
+    """Emir detayını sınırlı sayıda yoklar (DETAIL_TRIES, aralarda DETAIL_RETRY_SLEEP_SEC).
+
+    Nihai durumda (FILLED/CANCELED/REJECTED/EXPIRED) erken durur. Okunamazsa {} döner;
+    yoklama hatası emri bozmamalı (çağıran eski "tam dolum" varsayımına düşer).
+    """
+    detail: dict = {}
+    for attempt in range(DETAIL_TRIES):
+        try:
+            got = get_order_detail(api_key, api_secret, symbol,
+                                   order_id=order_id if order_id not in (None, "") else None,
+                                   client_id=client_id)
+            if got:
+                detail = got
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Binance TR emir detayı okunamadı (%s orderId=%s): %s", symbol, order_id, exc)
+        if _order_status_code(detail) in _FINAL_ORDER_STATUSES:
+            break
+        if attempt < DETAIL_TRIES - 1 and DETAIL_RETRY_SLEEP_SEC > 0:
+            time.sleep(DETAIL_RETRY_SLEEP_SEC)
+    return detail
 
 
 def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, quantity: float,
@@ -945,10 +1063,8 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
     # B-14: lot adımı kütüphane düzeyinde uygulanır. Adım YALNIZCA zaten
     # yüklü filtre önbelleğinden okunur — burada ağ çağrısı tetiklenmez
     # (satış yolunu yeni bir ağ bağımlılığına sokmamak için).
-    entry: dict = {}
     if step_size is None or min_notional is None:
-        with _symbols_lock:
-            entry = _symbols_cache["filters"].get(symbol_underscore) or {}
+        entry = _cached_filters(symbol_underscore)
         if step_size is None:
             step_size = float(entry.get("step_size") or 0) or None
         if min_notional is None:
@@ -975,18 +1091,44 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
                 f"(min {min_notional}, tahmini {float(params['quantity']) * float(last_price):.2f})"
             )
     data, params = _post_order("/open/v1/orders", params, api_key, api_secret, fallback_prefix="sa")
+    _after_order_mutation(api_key)
     order_id = data.get("orderId") if isinstance(data, dict) else None
     requested = float(params["quantity"])
-    executed_qty, remaining_qty, avg_price, quote_qty = _order_fill(data, requested)
+    # 2026-10-18 (doküman): yeni emir cevabı yalnız orderId + createTime taşır → dolum
+    # emir detayından doğrulanır. Detay okunamazsa eski "tam dolum" varsayımı korunur
+    # ama `fill_verified=False` ile işaretlenir.
+    fill_data = dict(data) if isinstance(data, dict) else {}
+    detail: dict = {}
+    if _qty_to_float(fill_data.get("executedQty")) <= 0:
+        detail = _poll_fill(api_key, api_secret, symbol_underscore, order_id, params["clientId"])
+        for key in ("executedQty", "executedQuoteQty", "cummulativeQuoteQty"):
+            if detail.get(key) not in (None, ""):
+                fill_data[key] = detail[key]
+    order_status = _order_status_code(detail or fill_data)
+    if order_status in (3, 5, 6) and _qty_to_float(fill_data.get("executedQty")) <= 0:
+        # Hiç dolmadan nihai durum: satış YAPILMADI (tam dolum sanılmamalı).
+        # 6 EXPIRED çoğunlukla Price Range Execution Rule; 3 CANCELED / 5 REJECTED borsa tarafı.
+        logger.warning("Binance TR MARKET SELL dolmadan nihai durum=%s: %s orderId=%s clientId=%s",
+                       order_status, symbol_underscore, order_id, params["clientId"])
+        if order_status == 6:
+            raise BinanceTrApiError(
+                "EXPIRED",
+                "Emir borsa fiyat aralığı kuralıyla süresi doldu (Price Range); satış yapılmadı, tekrar deneyin",
+                raw=detail or None)
+        raise BinanceTrApiError(
+            "CANCELED" if order_status == 3 else "REJECTED",
+            "Satış emri borsada dolmadan " + ("iptal edildi" if order_status == 3 else "reddedildi")
+            + "; satış yapılmadı, tekrar deneyin",
+            raw=detail or None)
+    executed_qty, remaining_qty, avg_price, quote_qty = _order_fill(fill_data, requested)
     logger.info("Binance TR MARKET SELL gönderildi: %s qty=%s executed=%s orderId=%s clientId=%s",
                 symbol_underscore, params["quantity"], executed_qty, order_id,
                 params["clientId"])
-    invalidate_account_balance_cache(api_key)
-    _invalidate_open_orders(api_key)
     result = {"order_id": str(order_id) if order_id is not None else None,
               "symbol": symbol_underscore, "quantity": params["quantity"],
               "client_order_id": params["clientId"],
-              "requested_qty": requested, "executed_qty": executed_qty}
+              "requested_qty": requested, "executed_qty": executed_qty,
+              "fill_verified": bool(detail), "order_status": order_status}
     if avg_price is not None:
         result["avg_price"] = avg_price
     if quote_qty is not None:
@@ -1038,20 +1180,16 @@ def place_market_buy(api_key: str, api_secret: str, symbol_underscore: str, quot
     order_id = data.get("orderId") if isinstance(data, dict) else None
     logger.info("Binance TR MARKET BUY gönderildi: %s quote=%s orderId=%s clientId=%s",
                 symbol_underscore, params["quoteOrderQty"], order_id, params["clientId"])
-    invalidate_account_balance_cache(api_key)
-    _invalidate_open_orders(api_key)
+    _after_order_mutation(api_key)
     out = {"order_id": str(order_id) if order_id is not None else None,
            "symbol": symbol_underscore, "quote_qty": params["quoteOrderQty"],
            "client_order_id": params["clientId"]}
     # Full cevapta doldurma bilgisi varsa ortalamayı hesapla (confirm dialogu).
-    try:
-        executed = float(data.get("executedQty") or 0) if isinstance(data, dict) else 0.0
-        filled_quote = float(data.get("cummulativeQuoteQty") or data.get("cumulativeQuoteQty") or 0) if isinstance(data, dict) else 0.0
-        if executed > 0 and filled_quote > 0:
+    if isinstance(data, dict):
+        executed, _, avg_price, _ = _order_fill(data, None)
+        if executed > 0 and avg_price is not None:
             out["executed_qty"] = executed
-            out["avg_price"] = filled_quote / executed
-    except (TypeError, ValueError):
-        pass
+            out["avg_price"] = avg_price
     return out
 
 
@@ -1064,7 +1202,8 @@ def _fmt_quantity(q: float, step_size: float | None = None) -> str:
     çağıran yeni bir yol geçersiz miktar gönderebiliyordu.
     """
     if step_size and step_size > 0:
-        q = math.floor(float(q) / float(step_size)) * float(step_size)
+        # Decimal ile kesin: math.floor(1.15/0.01) float kaymasıyla 1.14 veriyordu.
+        q = floor_to_step(q, step_size)
     return f"{q:.8f}".rstrip("0").rstrip(".")
 
 
@@ -1072,7 +1211,7 @@ def _fmt_price(p: float, tick_size: float | None = None) -> str:
     """Fiyatı sembolün tick_size adımına göre yuvarlar ve string formatlar."""
     p_val = float(p)
     if tick_size and tick_size > 0:
-        p_val = round(p_val / tick_size) * tick_size
+        p_val = round_to_tick(p_val, tick_size)
         tick_str = f"{tick_size:.10f}".rstrip("0")
         decimals = len(tick_str.split(".")[1]) if "." in tick_str else 0
         return f"{p_val:.{decimals}f}"
@@ -1098,8 +1237,7 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
     da uygulanır (bakiye endpoint'i fiyat döndürmediği için tahmindir).
     """
     if step_size is None or tick_size is None or min_notional is None:
-        with _symbols_lock:
-            entry = _symbols_cache["filters"].get(symbol_underscore) or {}
+        entry = _cached_filters(symbol_underscore)
         step_size = step_size or float(entry.get("step_size") or 0) or None
         tick_size = tick_size or float(entry.get("tick_size") or 0) or None
         min_notional = min_notional or float(entry.get("min_notional") or 0) or None
@@ -1136,8 +1274,7 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
     orders = data.get("orders") if isinstance(data, dict) else []
     logger.info("Binance TR OCO SELL gönderildi: %s qty=%s tp=%s sl=%s orderListId=%s",
                 symbol_underscore, qty_str, price_str, stop_price_str, order_list_id)
-    invalidate_account_balance_cache(api_key)
-    _invalidate_open_orders(api_key)
+    _after_order_mutation(api_key)
     return {
         "order_list_id": str(order_list_id) if order_list_id is not None else None,
         "symbol": symbol_underscore,
@@ -1161,8 +1298,7 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
     clientId durum sorgusu içindir; Binance TR dedupe garantisi sunmaz.
     """
     if step_size is None or tick_size is None:
-        with _symbols_lock:
-            entry = _symbols_cache["filters"].get(symbol_underscore) or {}
+        entry = _cached_filters(symbol_underscore)
         step_size = step_size or float(entry.get("step_size") or 0) or None
         tick_size = tick_size or float(entry.get("tick_size") or 0) or None
 
@@ -1188,8 +1324,7 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
     order_id = data.get("orderId") if isinstance(data, dict) else None
     logger.info("Binance TR STOP_LOSS_LIMIT SELL gönderildi: %s qty=%s sl=%s orderId=%s",
                 symbol_underscore, qty_str, stop_price_str, order_id)
-    invalidate_account_balance_cache(api_key)
-    _invalidate_open_orders(api_key)
+    _after_order_mutation(api_key)
     return {
         "order_id": str(order_id) if order_id is not None else None,
         "symbol": symbol_underscore,
@@ -1208,8 +1343,7 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
     `client_order_id` durum sorgusu içindir; idempotency garantisi vermez.
     """
     if step_size is None or tick_size is None:
-        with _symbols_lock:
-            entry = _symbols_cache["filters"].get(symbol_underscore) or {}
+        entry = _cached_filters(symbol_underscore)
         step_size = step_size or float(entry.get("step_size") or 0) or None
         tick_size = tick_size or float(entry.get("tick_size") or 0) or None
 
@@ -1230,8 +1364,7 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
     order_id = data.get("orderId") if isinstance(data, dict) else None
     logger.info("Binance TR LIMIT SELL gönderildi: %s qty=%s price=%s orderId=%s",
                 symbol_underscore, qty_str, price_str, order_id)
-    invalidate_account_balance_cache(api_key)
-    _invalidate_open_orders(api_key)
+    _after_order_mutation(api_key)
     return {
         "order_id": str(order_id) if order_id is not None else None,
         "symbol": symbol_underscore,
@@ -1256,8 +1389,7 @@ def cancel_order(api_key: str, api_secret: str, order_id: int | str, symbol_unde
     if symbol_underscore:
         params["symbol"] = symbol_underscore
     data = _signed_request("POST", "/open/v1/orders/cancel", params, api_key, api_secret)
-    _invalidate_open_orders(api_key)
-    invalidate_account_balance_cache(api_key)
+    _after_order_mutation(api_key)
     logger.info("Binance TR emir iptal edildi: orderId=%s symbol=%s", order_id, symbol_underscore)
     return data if isinstance(data, dict) else {"order_id": str(order_id), "status": "CANCELED"}
 
@@ -1270,23 +1402,41 @@ def get_account_balance(api_key: str, api_secret: str, force_refresh: bool = Fal
     ve açık emir kontrolleri aynı anda çağrıldığında Binance TR API'sine tek istek atılır.
     """
     cache_key = (api_key or "")[:16]
-    now = time.monotonic()
+    requested_at = time.monotonic()
     if not force_refresh and cache_key:
         with _balance_lock:
             cached = _balance_cache.get(cache_key)
-            if cached and now < cached["expires"]:
+            if cached and requested_at < cached["expires"]:
                 return cached["data"]
+    if not cache_key:
+        return _fetch_account_balance(api_key, api_secret)
 
+    # TEK UÇUŞ (anahtar başına): kilidi bekleyen çağrı, bekleme sırasında tazelenen
+    # önbelleği okur (force_refresh dahil — çağrıdan SONRA alınmış veri yeterince taze).
+    with _balance_lock:
+        load_lock = _balance_load_locks.setdefault(cache_key, threading.Lock())
+    with load_lock:
+        now = time.monotonic()
+        with _balance_lock:
+            cached = _balance_cache.get(cache_key)
+            if cached and now < cached["expires"] and (
+                    not force_refresh or cached.get("fetched_at", 0.0) >= requested_at):
+                return cached["data"]
+        result = _fetch_account_balance(api_key, api_secret)
+        fetched_at = time.monotonic()
+        with _balance_lock:
+            _balance_cache[cache_key] = {"data": result, "fetched_at": fetched_at,
+                                         "expires": fetched_at + _BALANCE_CACHE_TTL_SEC}
+        return result
+
+
+def _fetch_account_balance(api_key: str, api_secret: str) -> list[dict]:
     data = _signed_request("GET", "/open/v1/account/spot", None, api_key, api_secret)
     assets = data.get("accountAssets", []) if isinstance(data, dict) else []
-    result = [
+    return [
         {"asset": a.get("asset", ""), "free": a.get("free", "0"), "locked": a.get("locked", "0")}
         for a in assets
     ]
-    if cache_key:
-        with _balance_lock:
-            _balance_cache[cache_key] = {"data": result, "expires": now + _BALANCE_CACHE_TTL_SEC}
-    return result
 
 
 def get_spot_account_raw(api_key: str, api_secret: str) -> dict:
@@ -1307,7 +1457,7 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
     Akıllı tarama mimarisi:
     1. Sembol verilmişse doğrudan o sembol sorgulanır.
     2. Sembol verilmemişse önce mevcut önbelleğe bakılır.
-    3. Önbellek yoksa tek uçuş kilidi (_open_orders_load_lock) altında bakiyedeki
+    3. Önbellek yoksa KULLANICIYA ÖZEL tek uçuş kilidi altında bakiyedeki
        kilitli (locked) varlıklara bakılır:
        - Hiçbir varlık kilitli değilse açık emir bulunması imkânsızdır -> 0 istek.
        - Kilitli varlıklar varsa yalnızca o varlıkların TRY/USDT çiftleri taranır.
@@ -1345,7 +1495,7 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
             api_key, api_secret)
         return _normalize(rows.get("list", []) if isinstance(rows, dict) else [])
 
-    with _open_orders_load_lock:
+    with _open_orders_load_lock_for(api_key):
         now = time.monotonic()
         with _open_orders_lock:
             if now < cache["expires"]:
@@ -1378,46 +1528,35 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
         if has_balance_info and len(locked_assets) == 0:
             with _open_orders_lock:
                 cache.update({"orders": [], "partial": False,
-                                           "expires": time.monotonic() + _OPEN_ORDERS_CACHE_TTL_SEC})
+                              "expires": time.monotonic() + _OPEN_ORDERS_CACHE_TTL_SEC})
             return []
 
-        # 2) Sembolsüz istek borsa tarafından kabul edilirse tek istekte tamamla
-        try:
-            rows = _signed_request("GET", "/open/v1/orders", {"type": 1, "limit": 100},
-                                   api_key, api_secret)
-            orders = _normalize(rows.get("list", []) if isinstance(rows, dict) else [])
-            with _open_orders_lock:
-                cache.update({"orders": orders, "partial": False,
-                                           "expires": time.monotonic() + _OPEN_ORDERS_CACHE_TTL_SEC})
-            return orders
-        except Exception as exc:
-            logger.debug("Sembolsüz açık emir isteği kabul edilmedi (%s); akıllı taramaya geçiliyor", exc)
-
+        # 2) Doküman: GET /open/v1/orders için `symbol` ZORUNLU → sembolsüz deneme
+        # yapılmaz (her seferinde reddedilip boşa ağırlık harcıyordu); doğrudan
+        # sembol başına taramaya geçilir.
         _load_symbol_list(api_key, api_secret)
         with _symbols_lock:
             valid_symbols = set(_symbols_cache.get("symbols", []))
 
         target_symbols: list[str] = []
+
+        def _add(cands) -> None:
+            for cand in cands:
+                if cand not in target_symbols:
+                    target_symbols.append(cand)
+
         if has_balance_info and locked_assets:
             # Kilitli coin'lerin satış çiftleri (örn. BTC kilitliyse BTC_TRY, BTC_USDT)
             for asset in (locked_assets - {"TRY", "USDT"}):
-                for quote in ("TRY", "USDT"):
-                    cand = f"{asset}_{quote}"
-                    if cand in valid_symbols and cand not in target_symbols:
-                        target_symbols.append(cand)
+                _add(_symbols_for_asset(asset, valid_symbols))
 
             # TRY veya USDT kilitliyse (alış emri var): kullanıcının aktif varlıkları ve adaylar
             if "TRY" in locked_assets or "USDT" in locked_assets:
                 for asset in (active_assets - {"TRY", "USDT"}):
-                    for quote in ("TRY", "USDT"):
-                        cand = f"{asset}_{quote}"
-                        if cand in valid_symbols and cand not in target_symbols:
-                            target_symbols.append(cand)
+                    _add(_symbols_for_asset(asset, valid_symbols))
                 if candidate_symbols:
-                    for s in candidate_symbols:
-                        u_s = _to_underscore_symbol(s)
-                        if u_s in valid_symbols and u_s not in target_symbols:
-                            target_symbols.append(u_s)
+                    _add(u_s for u_s in (_to_underscore_symbol(s) for s in candidate_symbols)
+                         if u_s in valid_symbols)
 
         # Bakiye bilgisi alınamadıysa veya hedef boş kaldıysa genel sembol listesinden sınırla
         if not target_symbols:
@@ -1427,21 +1566,32 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
 
         scanned = target_symbols[:_OPEN_ORDERS_SWEEP_MAX]
         skipped = len(target_symbols) - len(scanned)
-        orders = []
-        failures = []
-        for index, sym in enumerate(scanned):
+
+        def _fetch(sym: str):
             try:
-                rows = _signed_request(
+                return sym, _signed_request(
                     "GET", "/open/v1/orders",
                     {"symbol": sym, "type": 1, "limit": 50},
-                    api_key, api_secret)
-            except Exception as exc:
+                    api_key, api_secret), None
+            except Exception as exc:  # noqa: BLE001 — aşağıda raporlanır
+                return sym, None, exc
+
+        # Küçük havuzla paralel tarama (eskiden seri + 100 ms uyku); eşzamanlılığı
+        # imzalı istek semaforu sınırlar. map() sırayı korur → birleştirme sırası aynı.
+        if scanned:
+            with ThreadPoolExecutor(max_workers=min(_OPEN_ORDERS_SWEEP_WORKERS, len(scanned)),
+                                    thread_name_prefix="btr-open-orders") as pool:
+                fetched = list(pool.map(_fetch, scanned))
+        else:
+            fetched = []
+        orders = []
+        failures = []
+        for sym, rows, exc in fetched:
+            if exc is not None:
                 failures.append((sym, exc))
                 continue
             if isinstance(rows, dict) and rows.get("list"):
                 orders.extend(_normalize(rows["list"]))
-            if index < len(scanned) - 1:
-                time.sleep(_OPEN_ORDERS_SWEEP_GAP_SEC)
 
         partial = bool(failures) or skipped > 0
         if failures:
@@ -1453,7 +1603,7 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "",
                            len(scanned), len(target_symbols), _OPEN_ORDERS_SWEEP_MAX)
         with _open_orders_lock:
             cache.update({"orders": orders, "partial": partial,
-                                       "expires": time.monotonic() + _OPEN_ORDERS_CACHE_TTL_SEC})
+                          "expires": time.monotonic() + _OPEN_ORDERS_CACHE_TTL_SEC})
         return orders
 
 

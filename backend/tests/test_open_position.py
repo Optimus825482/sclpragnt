@@ -146,7 +146,7 @@ def test_happy_path_buys_then_places_oco(fdb):
     assert sym == "ADA_TRY" and qty == pytest.approx(3.99) and tp == pytest.approx(104.0) and sl == pytest.approx(98.0)
     assert body["protection"]["status"] == "placed"
     assert body["executed_qty"] == pytest.approx(3.99)
-    assert fdb.rows[(7, "cid-0000001")]["status"] == "done"
+    assert fdb.rows[(7, "cid0000001")]["status"] == "done"
 
 
 # ---------------------------------------------------------------- idempotency
@@ -191,7 +191,7 @@ def test_cap_exceeded_is_rejected_without_buying(fdb):
         run(execute_open_position(ex, 7, payload(amount_try=600.0), RISK))
     assert e.value.status_code == 422 and "limit" in e.value.detail.lower()
     assert ex.buy_calls == []
-    assert (7, "cid-0000001") not in fdb.rows          # reddedilen istek kayıt/emir üretmez
+    assert (7, "cid0000001") not in fdb.rows          # reddedilen istek kayıt/emir üretmez
 
 
 def test_insufficient_balance_rejected(fdb):
@@ -221,8 +221,8 @@ def test_ambiguous_buy_returns_202_and_marks_unknown(fdb):
     ex = FakeExchange()
     ex.buy_error = Ambiguous("zaman aşımı")
     status, body = run(execute_open_position(ex, 7, payload(), RISK))
-    assert status == 202 and body["status"] == "UNKNOWN" and body["client_order_id"] == "cid-0000001"
-    assert fdb.rows[(7, "cid-0000001")]["status"] == "unknown"
+    assert status == 202 and body["status"] == "UNKNOWN" and body["client_order_id"] == "cid0000001"
+    assert fdb.rows[(7, "cid0000001")]["status"] == "unknown"
     # aynı id ile yeniden deneme YENİ alım üretmez
     status2, _ = run(execute_open_position(ex, 7, payload(), RISK))
     assert len(ex.buy_calls) == 1 and status2 == 202
@@ -234,7 +234,7 @@ def test_definite_buy_failure_marks_failed_and_502(fdb):
     with pytest.raises(OrderError) as e:
         run(execute_open_position(ex, 7, payload(), RISK))
     assert e.value.status_code == 502
-    assert fdb.rows[(7, "cid-0000001")]["status"] == "failed"
+    assert fdb.rows[(7, "cid0000001")]["status"] == "failed"
 
 
 # ---------------------------------------------------------------- koruma (OCO)
@@ -280,3 +280,17 @@ def test_protect_requires_known_done_request(fdb):
     with pytest.raises(OrderError) as e:
         run(open_position.protect_position(FakeExchange(), 7, "cid-unknown1"))
     assert e.value.status_code == 404
+
+
+def test_stored_client_id_is_the_one_sent_to_exchange(fdb):
+    """2026-10-18: kayıt anahtarı borsaya giden (temizlenmiş: yalnız harf/rakam) kimlikle AYNI."""
+    ex = FakeExchange()
+    run(execute_open_position(ex, 7, payload(client_order_id="web-ab_12345"), RISK))
+    assert ex.buy_calls[0][2] == "webab12345"
+    assert (7, "webab12345") in fdb.rows and (7, "web-ab_12345") not in fdb.rows
+
+
+def test_detail_poll_constants_have_single_source():
+    from app import binance_tr_private as btp
+    assert open_position.DETAIL_TRIES == btp.DETAIL_TRIES
+    assert open_position.DETAIL_RETRY_SLEEP_SEC == btp.DETAIL_RETRY_SLEEP_SEC

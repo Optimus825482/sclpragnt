@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 SYMBOLS = {"list": [{
-    "symbol": "ADA_TRY", "quoteAsset": "TRY", "status": "TRADING", "ocoEnable": 1,
+    "symbol": "ADA_TRY", "quoteAsset": "TRY", "spotTradingEnable": 1, "ocoEnable": 1,   # belge: status yok
     "filters": [
         {"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.01"},
         {"filterType": "NOTIONAL", "minNotional": "10"},

@@ -8,12 +8,24 @@ import pytest
 from app import binance_tr_private as btp
 
 
+_REAL_POLL_FILL = btp._poll_fill
+
+
+@pytest.fixture(autouse=True)
+def _no_fill_poll(monkeypatch):
+    """Tek dönüş değerli `_signed_request` mock'ları POST ile detay GET'ini ayırmaz; dolum
+    yoklaması varsayılan olarak 'detay okunamadı' ({}) döner. Yoklamayı sınayan testler
+    `_REAL_POLL_FILL`'i geri takar."""
+    monkeypatch.setattr(btp, "_poll_fill", lambda *a, **k: {})
+    monkeypatch.setattr(btp, "DETAIL_RETRY_SLEEP_SEC", 0.0)
+
+
 @pytest.fixture(autouse=True)
 def _reset_caches():
     btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0,
                                "filters": {}})
     btp._open_orders_caches.clear()
-    btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
+    btp._server_time_cache.update({"at": 0.0, "offset": 0.0, "failed_at": 0.0})
     btp._balance_cache.clear()
     btp._cooldown_until = 0.0
     btp._used_weight_1m = 0
@@ -22,7 +34,7 @@ def _reset_caches():
     btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0,
                                "filters": {}})
     btp._open_orders_caches.clear()
-    btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
+    btp._server_time_cache.update({"at": 0.0, "offset": 0.0, "failed_at": 0.0})
     btp._balance_cache.clear()
     btp._cooldown_until = 0.0
     btp._used_weight_1m = 0
@@ -112,14 +124,23 @@ def test_trade_history_uses_underscore_symbol_and_direct():
     assert params["limit"] == 50
 
 
-def test_open_orders_no_symbol_accepted():
+def test_open_orders_never_sends_symbolless_request():
+    """Doküman: GET /open/v1/orders için symbol ZORUNLU → sembolsüz deneme yapılmaz."""
     payload = {"code": 0, "msg": "success",
                "data": {"list": [{"orderId": "21", "symbol": "ADA_USDT", "side": "BUY",
                                    "type": "LIMIT", "price": "0.1", "origQty": "10",
                                    "executedQty": "0", "status": "NEW",
                                    "createTime": "1572862581000"}]}}
-    with _mock_http(payload):
+    urls = []
+
+    def fake_http(url, headers=None):
+        urls.append(url)
+        return payload
+
+    with mock.patch.object(btp, "_http_get_json", side_effect=fake_http):
         orders = btp.get_open_orders("k", "s")
+    order_urls = [u for u in urls if "/open/v1/orders?" in u]
+    assert order_urls and all("symbol=" in u for u in order_urls)
     assert orders == [{
         "orderId": 21, "symbol": "ADA_USDT", "side": "BUY", "type": "LIMIT",
         "price": "0.1", "stopPrice": "0", "origQty": "10", "executedQty": "0",
@@ -811,3 +832,241 @@ def test_oco_retries_with_server_list_client_id_on_3703():
         res = btp.place_oco_sell("k", "s", "BTC_TRY", 0.5, 105.0, 95.0, client_order_id="wb0000000000000000000000000000000000")
     assert calls[1]["listClientId"].startswith("oc")
     assert res["client_order_id"] == calls[1]["listClientId"]
+
+
+# ---------------------------------------------------------------- 2026-10-18 doküman denetimi
+
+def test_step_rounding_is_exact_decimal():
+    # math.floor(1.15/0.01) float kaymasıyla 114 → "1.14" veriyordu.
+    assert btp._fmt_quantity(1.15, 0.01) == "1.15"
+    assert btp._fmt_quantity(0.3, 0.1) == "0.3"
+    assert btp._fmt_quantity(0.129, 0.01) == "0.12"          # aşağı yuvarlama korunur
+    assert btp._fmt_price(1.005, 0.01) == "1.01"              # tick: en yakına (Decimal, kayma yok)
+
+
+def test_reconcile_keeps_exact_remainder_on_step():
+    result = {"order_id": "42", "executed_qty": 0.7, "remaining_qty": 0.3, "partial": True}
+    with mock.patch.object(btp, "place_market_sell", return_value={"order_id": "9", "quantity": "0.3"}) as pms:
+        out = btp.reconcile_sell_fill(result, "X_TRY", 1.0, step_size=0.1)
+    assert out["remaining_qty"] == 0.3
+    assert pms.call_args[0][3] == 0.3
+
+
+def _post_then_detail(post_resp, *details):
+    """POST cevabı ile GET /orders/detail cevaplarını ayıran sahte _signed_request."""
+    seq = list(details)
+    calls = []
+
+    def fake(method, path, params, *a, **k):
+        calls.append((method, path, dict(params or {})))
+        if method == "POST":
+            return post_resp
+        assert path == "/open/v1/orders/detail"
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+    return fake, calls
+
+
+def test_market_sell_verifies_fill_via_order_detail(monkeypatch):
+    monkeypatch.setattr(btp, "_poll_fill", _REAL_POLL_FILL)
+    fake, calls = _post_then_detail({"orderId": 42, "createTime": 1},
+                                    {"orderId": 42, "status": 2, "executedQty": "0.16", "executedQuoteQty": "256"})
+    with mock.patch.object(btp, "_signed_request", side_effect=fake):
+        res = btp.place_market_sell("k", "s", "BTC_TRY", 0.16)
+    assert [c[0] for c in calls] == ["POST", "GET"]            # FILLED → tek detay çağrısı yeter
+    assert calls[1][2]["orderId"] == "42"
+    assert res["fill_verified"] is True and res["order_status"] == 2
+    assert res["executed_qty"] == pytest.approx(0.16) and res["avg_price"] == pytest.approx(1600.0)
+
+
+def test_market_sell_partial_fill_from_detail_raises(monkeypatch):
+    monkeypatch.setattr(btp, "_poll_fill", _REAL_POLL_FILL)
+    fake, _ = _post_then_detail({"orderId": 42}, {"status": 6, "executedQty": "0.10", "executedQuoteQty": "160"})
+    with mock.patch.object(btp, "_signed_request", side_effect=fake):
+        with pytest.raises(btp.BinanceTrPartialFillError) as ei:
+            btp.place_market_sell("k", "s", "BTC_TRY", 0.16)
+    assert ei.value.remaining_qty == pytest.approx(0.06)
+    assert ei.value.result["fill_verified"] is True
+
+
+def test_market_sell_expired_without_fill_raises_price_range_error(monkeypatch):
+    monkeypatch.setattr(btp, "_poll_fill", _REAL_POLL_FILL)
+    fake, _ = _post_then_detail({"orderId": 42}, {"status": 6, "executedQty": "0", "executedQuoteQty": "0"})
+    with mock.patch.object(btp, "_signed_request", side_effect=fake):
+        with pytest.raises(btp.BinanceTrApiError) as ei:
+            btp.place_market_sell("k", "s", "BTC_TRY", 0.16)
+    assert ei.value.code == "EXPIRED" and "Price Range" in ei.value.msg
+
+
+@pytest.mark.parametrize("status,code", [(3, "CANCELED"), (5, "REJECTED")])
+def test_market_sell_final_without_fill_is_not_reported_as_filled(monkeypatch, status, code):
+    monkeypatch.setattr(btp, "_poll_fill", _REAL_POLL_FILL)
+    fake, _ = _post_then_detail({"orderId": 42}, {"status": status, "executedQty": "0", "executedQuoteQty": "0"})
+    with mock.patch.object(btp, "_signed_request", side_effect=fake):
+        with pytest.raises(btp.BinanceTrApiError) as ei:
+            btp.place_market_sell("k", "s", "BTC_TRY", 0.16)
+    assert ei.value.code == code and "satış yapılmadı" in ei.value.msg
+
+
+def test_poll_fill_retries_until_final_status_then_stops(monkeypatch):
+    monkeypatch.setattr(btp, "_poll_fill", _REAL_POLL_FILL)
+    fake, calls = _post_then_detail({"orderId": 42}, {"status": 0, "executedQty": "0"},
+                                    {"status": 2, "executedQty": "0.16", "executedQuoteQty": "256"})
+    with mock.patch.object(btp, "_signed_request", side_effect=fake):
+        res = btp.place_market_sell("k", "s", "BTC_TRY", 0.16)
+    assert len([c for c in calls if c[0] == "GET"]) == 2
+    assert res["order_status"] == 2 and res["partial"] is False
+
+
+def test_poll_fill_is_bounded_and_unverified_when_detail_fails(monkeypatch):
+    monkeypatch.setattr(btp, "_poll_fill", _REAL_POLL_FILL)
+    gets = []
+
+    def fake(method, path, params, *a, **k):
+        if method == "POST":
+            return {"orderId": 42}
+        gets.append(path)
+        raise RuntimeError("detay yok")
+
+    with mock.patch.object(btp, "_signed_request", side_effect=fake):
+        res = btp.place_market_sell("k", "s", "BTC_TRY", 0.16)
+    assert len(gets) == btp.DETAIL_TRIES
+    assert res["fill_verified"] is False and res["executed_qty"] == pytest.approx(0.16)   # eski varsayım
+
+
+def test_market_sell_skips_poll_when_post_carries_fill():
+    with mock.patch.object(btp, "_poll_fill") as pf, \
+            mock.patch.object(btp, "_signed_request", return_value={"orderId": "1", "executedQty": "0.16"}):
+        res = btp.place_market_sell("k", "s", "BTC_TRY", 0.16)
+    assert not pf.called and res["fill_verified"] is False
+
+
+def test_order_fill_prefers_executed_quote_qty():
+    assert btp._order_fill({"executedQty": "2", "executedQuoteQty": "10", "cummulativeQuoteQty": "99"}, 2.0)[2] == 5.0
+    assert btp._order_fill({"executedQty": "2", "cummulativeQuoteQty": "12"}, 2.0)[2] == 6.0
+
+
+def test_market_buy_reads_documented_fill_fields():
+    with mock.patch.object(btp, "_signed_request",
+                           return_value={"orderId": "7", "executedQty": "4", "executedQuoteQty": "400"}):
+        out = btp.place_market_buy("k", "s", "ADA_TRY", 400.0)
+    assert out["executed_qty"] == 4.0 and out["avg_price"] == 100.0
+
+
+def _symbols_payload(**extra):
+    row = {"symbol": "ADA_TRY", "quoteAsset": "TRY", "orderTypes": ["MARKET"],
+           "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.01"}]}
+    row.update(extra)
+    return {"code": 0, "msg": "success", "data": {"list": [row]}}
+
+
+def test_symbol_status_derived_from_spot_trading_enable():
+    with _mock_http(_symbols_payload(spotTradingEnable=1)):
+        assert btp.get_symbol_filters("k", "s", "ADA_TRY")["status"] == "TRADING"
+    btp._symbols_cache["expires"] = 0.0
+    with _mock_http(_symbols_payload()):                          # alan yok → TRADING (geriye dönük)
+        assert btp.get_symbol_filters("k", "s", "ADA_TRY")["status"] == "TRADING"
+    btp._symbols_cache["expires"] = 0.0
+    with _mock_http(_symbols_payload(spotTradingEnable=0, status="TRADING")):   # açık status önceliklidir
+        assert btp.get_symbol_filters("k", "s", "ADA_TRY")["status"] == "TRADING"
+
+
+def test_spot_trading_disabled_blocks_place_spot_order():
+    with _mock_http(_symbols_payload(spotTradingEnable=0)), \
+            mock.patch.object(btp, "_signed_request") as sr:
+        with pytest.raises(ValueError, match="işlemlere kapalı"):
+            btp.place_spot_order("k", "s", "ADA_TRY", "SELL", "MARKET", quantity=1.0)
+    assert not sr.called
+
+
+def test_trade_history_uses_its_own_semaphore():
+    assert btp._semaphore_for("GET", "/open/v1/orders/trades") is btp._HISTORY_SEMAPHORE
+    assert btp._semaphore_for("GET", "/open/v1/account/spot") is btp._PRIVATE_SEMAPHORE
+    assert btp._semaphore_for("POST", "/open/v1/orders") is btp._ORDER_SEMAPHORE
+
+
+def test_retry_sleep_happens_outside_the_semaphore():
+    """Geri çekilme uykusu yuvayı tutmaz: uyku sırasında semafor tam kapasitede olmalı."""
+    sem = btp._PRIVATE_SEMAPHORE
+    seen = []
+    attempts = [0]
+
+    def fake_get(url, headers=None):
+        attempts[0] += 1
+        if attempts[0] == 1:
+            raise TimeoutError("yavaş")
+        return {"code": 0, "data": {"ok": True}}
+
+    def spy_sleep(_sec):
+        free = 0
+        while sem.acquire(blocking=False):
+            free += 1
+        for _ in range(free):
+            sem.release()
+        seen.append(free)
+
+    with mock.patch.object(btp, "_server_time_offset_ms", return_value=0.0), \
+            mock.patch.object(btp, "_http_get_json", side_effect=fake_get), \
+            mock.patch.object(btp.time, "sleep", side_effect=spy_sleep):
+        assert btp._signed_request("GET", "/open/v1/account/spot", None, "k", "s") == {"ok": True}
+    assert seen == [btp.PRIVATE_MAX_CONCURRENCY]
+
+
+def test_server_time_failure_is_retried_at_most_every_few_seconds():
+    btp._server_time_cache.update({"at": 0.0, "offset": 77.0, "failed_at": 0.0})
+    with mock.patch.object(btp, "_http_get_json", side_effect=TimeoutError("down")) as http:
+        assert btp._server_time_offset_ms() == 77.0
+        assert btp._server_time_offset_ms() == 77.0
+    assert http.call_count == 1
+    btp._server_time_cache["failed_at"] = time.time() - btp._SERVER_TIME_RETRY_SEC - 1
+    with mock.patch.object(btp, "_http_get_json", side_effect=TimeoutError("down")) as http:
+        btp._server_time_offset_ms()
+    assert http.call_count == 1
+
+
+def test_account_balance_concurrent_calls_single_flight():
+    import threading as _t
+    calls = [0]
+    gate = _t.Event()
+
+    def slow(*a, **k):
+        calls[0] += 1
+        gate.wait(2)
+        return {"accountAssets": [{"asset": "TRY", "free": "1", "locked": "0"}]}
+
+    out = []
+    with mock.patch.object(btp, "_signed_request", side_effect=slow):
+        threads = [_t.Thread(target=lambda: out.append(btp.get_account_balance("keyX", "s"))) for _ in range(4)]
+        for th in threads:
+            th.start()
+        time.sleep(0.2)
+        gate.set()
+        for th in threads:
+            th.join(3)
+    assert calls[0] == 1 and len(out) == 4
+
+
+def test_open_orders_load_lock_is_per_api_key():
+    assert btp._open_orders_load_lock_for("a") is btp._open_orders_load_lock_for("a")
+    assert btp._open_orders_load_lock_for("a") is not btp._open_orders_load_lock_for("b")
+
+
+def test_open_orders_parallel_sweep_preserves_order():
+    btp._symbols_cache.update({"symbols": ["A_TRY", "B_TRY", "C_TRY"], "underscore_by_concat": {},
+                               "expires": 1e12, "filters": {}})
+
+    def fake_signed(method, path, params, *a, **k):
+        if path == "/open/v1/account/spot":
+            raise RuntimeError("bakiye yok")
+        sym = params["symbol"]
+        if sym == "A_TRY":
+            time.sleep(0.05)                      # ilk sembol en geç dönse de sıra korunur
+        return {"list": [{"orderId": {"A_TRY": 1, "B_TRY": 2, "C_TRY": 3}[sym], "symbol": sym}]}
+
+    with mock.patch.object(btp, "_signed_request", side_effect=fake_signed):
+        orders = btp.get_open_orders("k", "s")
+    assert [o["orderId"] for o in orders] == [1, 2, 3]
+
+
+def test_symbols_for_asset_helper():
+    assert btp._symbols_for_asset("BTC", {"BTC_TRY", "ETH_TRY"}) == ["BTC_TRY"]
+    assert btp._symbols_for_asset("BTC", {"BTC_TRY", "BTC_USDT"}) == ["BTC_TRY", "BTC_USDT"]

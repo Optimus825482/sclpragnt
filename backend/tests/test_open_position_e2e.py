@@ -102,7 +102,7 @@ def test_oco_rejected_leaves_bought_but_flags_unprotected(fake):
     srv.oco_error = {"code": 3210, "msg": "oco reddedildi"}
     status, body = _run(_payload())
     assert status == 200 and body["protection"]["status"] == "failed"
-    assert db.rows[(7, "e2e-0000001")]["status"] == "done"
+    assert db.rows[(7, "e2e0000001")]["status"] == "done"
 
 
 def test_partial_fill_protects_only_filled_quantity(fake):
@@ -119,7 +119,7 @@ def test_exchange_rejection_is_502_and_no_oco(fake):
     with pytest.raises(open_position.OrderError) as e:
         _run(_payload())
     assert e.value.status_code == 502 and srv.calls("POST", "/open/v1/orders/oco") == []
-    assert db.rows[(7, "e2e-0000001")]["status"] == "failed"
+    assert db.rows[(7, "e2e0000001")]["status"] == "failed"
 
 
 def test_over_cap_never_reaches_exchange(fake):

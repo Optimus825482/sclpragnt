@@ -18,13 +18,13 @@ import os
 from typing import Any
 
 from app import database
-from app.order_requests import DONE, FAILED, IN_PROGRESS, UNKNOWN, validate_client_order_id
+# Yoklama sabitleri TEK KAYNAK: binance_tr_private (MARKET SELL dolum doğrulaması da aynısını kullanır).
+from app.binance_tr_private import DETAIL_RETRY_SLEEP_SEC, DETAIL_TRIES
+from app.order_requests import DONE, FAILED, IN_PROGRESS, UNKNOWN, normalize_client_order_id
 from app.trade_plan import RR_MAX, RR_MIN, SL_PCT_MAX, SL_PCT_MIN, compute_plan, round_down, round_to_tick
 
 logger = logging.getLogger("scalper.open_position")
 
-DETAIL_TRIES = 3
-DETAIL_RETRY_SLEEP_SEC = 0.4
 DEFAULT_TAKER_FEE_RATE = 0.001          # tahmini; Binance TR komisyon alanları doğrulanamadığı için sabit/ortam ayarı
 BLOCKING_WARNINGS = {
     "min_tutar_alti": "Tutar bu coin için en düşük emir tutarının altında",
@@ -165,7 +165,7 @@ async def execute_open_position(exchange, user_id: int, payload: dict, risk: dic
                                 fee_rate: float | None = None) -> tuple[int, dict]:
     """Piyasa alımı + OCO. Döner: (http_status, gövde). İş kuralı ihlali OrderError ile yükselir."""
     try:
-        cid = validate_client_order_id(payload.get("client_order_id"))
+        cid = normalize_client_order_id(payload.get("client_order_id"))
     except ValueError as exc:
         raise OrderError(422, str(exc)) from None
 
@@ -211,7 +211,7 @@ async def execute_open_position(exchange, user_id: int, payload: dict, risk: dic
 async def protect_position(exchange, user_id: int, client_order_id: str) -> tuple[int, dict]:
     """Koruma emri kurulamamış (veya atlanmış) pozisyon için OCO'yu yeniden dener. Başarıyla kurulmuşsa tekrar kurmaz."""
     try:
-        cid = validate_client_order_id(client_order_id)
+        cid = normalize_client_order_id(client_order_id)
     except ValueError as exc:
         raise OrderError(422, str(exc)) from None
     row = await database.get_order_request(user_id, cid)
