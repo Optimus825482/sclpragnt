@@ -8,6 +8,7 @@ import {
   UncertainOrderError, describeSellFill, floorQty, orderFailureText, postJsonGuarded, uncertainOrderText, type SellFillBody,
 } from "../../../binance-tr/orderSafety";
 import ConfirmDialog from "./ConfirmDialog";
+import ProtectDialog from "./ProtectDialog";
 import UncertainOrderNotice from "./UncertainOrderNotice";
 import {
   describeOrderLookup, holdingNetPnl, intentId, isDefinitiveReject, minNotionalError, priceAgeInfo, resetIntent, sellIntentKey,
@@ -52,6 +53,9 @@ export default function HoldingsCard({ holdings, loading = false, seeded = false
   const [chartAsset, setChartAsset] = useState<string | null>(null);
   // Modal, listedeki güncel satırı izler (fiyat/emir değişince eski kopya kalmaz).
   const chartHolding = chartAsset ? holdings.find((h) => h.asset === chartAsset) ?? null : null;
+  // Kalkan düğmesi: SL / TP / OCO penceresi; açıkken de güncel satırı (fiyat, bakiye) izler.
+  const [protectAsset, setProtectAsset] = useState<string | null>(null);
+  const protectHolding = protectAsset ? holdings.find((h) => h.asset === protectAsset) ?? null : null;
 
   const allCoins = holdings.filter((h) => h.asset !== "TRY" && h.total > 0);
   const coins = filterSmallBalances(allCoins, hideSmall);
@@ -225,6 +229,13 @@ export default function HoldingsCard({ holdings, loading = false, seeded = false
               >
                 📈
               </button>
+              <button
+                type="button" onClick={() => setProtectAsset(h.asset)} disabled={!liveEnabled || h.value_try == null}
+                aria-label={`${h.asset} için zarar durdur / kâr al ekle`} title="Zarar durdur, kâr al ya da ikisini (OCO) yüzdeyle ekle"
+                className="ui-button-secondary flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border text-lg disabled:opacity-40"
+              >
+                🛡
+              </button>
               <div className="min-w-0">
               <p className="font-semibold text-white">{h.asset} <span className="font-normal text-bunker-muted">· {fmtQty(h.total)} adet</span></p>
               <p className="text-sm text-white">
@@ -261,6 +272,9 @@ export default function HoldingsCard({ holdings, loading = false, seeded = false
       {seeded && coins.length > 0 && <p className="text-xs text-bunker-muted" aria-live="polite">Bakiye ayrıntıları yükleniyor; satış birazdan açılır.</p>}
       {!seeded && !liveEnabled && coins.length > 0 && <p className="text-xs text-bunker-muted">Satmak için canlı işlemi aç.</p>}
 
+      {protectHolding && (
+        <ProtectDialog holding={protectHolding} liveEnabled={liveEnabled} onClose={() => setProtectAsset(null)} onTraded={onTraded} showToast={showToast} />
+      )}
       {chartHolding && (
         <PositionChartModal
           holding={chartHolding}
