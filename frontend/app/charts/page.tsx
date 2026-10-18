@@ -69,6 +69,11 @@ const pnlTryText = (v?: number | null) => {
  * `ChartsPage` state'iydi: 1700 satırlık sayfa ağacının tamamı saniyede 4 kez
  * diff ediliyordu (mobilde jank + pil).
  */
+/** Dar (mobil) ekran mı? Fiyat çizgisi başlıkları ve ilk görünüm aralığı buna göre sadeleşir. */
+const isNarrowViewport = () => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
+/** Mobilde ilk açılışta gösterilen son mum sayısı. */
+const MOBILE_VISIBLE_BARS = 80;
+
 function CandleCountdown({ intervalMs }: { intervalMs: number }) {
     const [remaining, setRemaining] = useState(0);
     const ms = intervalMs > 0 ? intervalMs : 60_000;
@@ -474,7 +479,13 @@ export default function ChartsPage() {
             const viewKey = `${symbol}|${interval}`;
             if (fittedForRef.current !== viewKey) {
                 fittedForRef.current = viewKey;
-                chartRef.current?.timeScale().fitContent();
+                // 2026-10-18 (mobil): dar ekranda tüm geçmişi sığdırmak mumları ezip çizgileri okunmaz yapıyordu →
+                // son MOBILE_VISIBLE_BARS mum gösterilir (kullanıcı geriye kaydırabilir). Masaüstü eskisi gibi sığdırır.
+                if (isNarrowViewport() && candles.length > MOBILE_VISIBLE_BARS) {
+                    chartRef.current?.timeScale().setVisibleLogicalRange({ from: candles.length - MOBILE_VISIBLE_BARS, to: candles.length + 3 });
+                } else {
+                    chartRef.current?.timeScale().fitContent();
+                }
             }
         } catch (e) {
             console.error("kline hatası:", e);
@@ -1145,18 +1156,22 @@ export default function ChartsPage() {
         if (!pos) return;
 
         const lines: IPriceLine[] = [];
-        const addLine = (price: number | null | undefined, color: string, title: string, lineStyle: number = 2, lineWidth: number = 2) => {
+        const addLine = (price: number | null | undefined, color: string, title: string, lineStyle: number = 2, lineWidth: number = 2, axisLabel: boolean = true) => {
             if (price == null || !Number.isFinite(price) || price <= 0) return;
             try {
                 const pl = series.createPriceLine({
                     price, color, lineWidth: lineWidth as 1 | 2 | 3 | 4, lineStyle: lineStyle as any,
-                    axisLabelVisible: true, title
+                    axisLabelVisible: axisLabel, title
                 });
                 lines.push(pl);
             } catch { }
         };
 
         const isAuto = !!autoPos;
+        // 2026-10-18 (mobil): fiyat çizgisi başlıkları grafiğin sağ yarısını kaplıyordu (5 uzun etiket üst üste).
+        // Dar ekranda kısa başlık (fiyat zaten eksen etiketinde); bildirim/sinyal çizgisi başlıksız (üstteki
+        // açıklama satırı renkleriyle gösterir) — giriş çizgisiyle neredeyse aynı seviyede olup etiketi çakıştırıyordu.
+        const narrow = isNarrowViewport();
         const entryPrice = isAuto ? Number(autoPos.entry_price) : Number(standardPos?.entry);
         const stopPrice = isAuto ? autoPos.stop_loss : (standardPos?.llm_stop_price ?? standardPos?.stop);
         const tpPrice = isAuto ? autoPos.take_profit : (standardPos?.llm_take_profit_price ?? standardPos?.take_profit);
@@ -1168,27 +1183,27 @@ export default function ChartsPage() {
 
         // 1. Giriş Fiyatı Çizgisi (Yeşil #10b981)
         if (showPositions || isAuto) {
-            addLine(entryPrice, "#10b981", isAuto ? `OTONOM GİRİŞ ${formatPrice(entryPrice)}` : `GİRİŞ ${formatPrice(entryPrice)}`, 0, 2);
+            addLine(entryPrice, "#10b981", narrow ? (isAuto ? "OTONOM" : "GİRİŞ") : isAuto ? `OTONOM GİRİŞ ${formatPrice(entryPrice)}` : `GİRİŞ ${formatPrice(entryPrice)}`, 0, 2);
 
             // 2. Bildirimin Gönderildiği Nokta (Sarı #eab308)
             if (notifPrice > 0) {
-                addLine(notifPrice, "#eab308", `BİLDİRİM / SİNYAL ${formatPrice(notifPrice)}`, 1, 2);
+                addLine(notifPrice, "#eab308", narrow ? "" : `BİLDİRİM / SİNYAL ${formatPrice(notifPrice)}`, 1, 2, !narrow);
             }
 
             // 3. Bildirimde Belirtilen Hedef (Mor #a855f7)
             if (notifTarget > 0) {
                 const pctLabel = notifTargetPct > 0 ? ` (+%${notifTargetPct.toFixed(1)})` : "";
-                addLine(notifTarget, "#a855f7", `BİLDİRİM HEDEFİ ${formatPrice(notifTarget)}${pctLabel}`, 2, 2);
+                addLine(notifTarget, "#a855f7", narrow ? `HEDEF${pctLabel}` : `BİLDİRİM HEDEFİ ${formatPrice(notifTarget)}${pctLabel}`, 2, 2);
             }
         }
 
         // 4. Stop Loss ve Kâr Alma Çizgileri
         if (showStopTakeProfit || isAuto) {
             if (stopPrice != null && Number(stopPrice) > 0) {
-                addLine(Number(stopPrice), "#ef4444", `STOP LOSS ${formatPrice(Number(stopPrice))}`, 2, 2);
+                addLine(Number(stopPrice), "#ef4444", narrow ? "SL" : `STOP LOSS ${formatPrice(Number(stopPrice))}`, 2, 2);
             }
             if (tpPrice != null && Number(tpPrice) > 0) {
-                addLine(Number(tpPrice), "#3b82f6", `KÂR AL (TP) ${formatPrice(Number(tpPrice))}`, 2, 2);
+                addLine(Number(tpPrice), "#3b82f6", narrow ? "TP" : `KÂR AL (TP) ${formatPrice(Number(tpPrice))}`, 2, 2);
             }
         }
 
@@ -2033,7 +2048,7 @@ export default function ChartsPage() {
 
             <div className="chart-card card bg-bunker-950 p-0 overflow-hidden relative">
                 {currentAutoTrade && (
-                    <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-bunker-900/95 border-b border-bunker-800 text-xs font-mono">
+                    <div className="flex flex-wrap items-center justify-between gap-2 py-2 pl-3 pr-[9rem] sm:pr-[13rem] bg-bunker-900/95 border-b border-bunker-800 text-xs font-mono">
                         <div className="flex items-center gap-2">
                             <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-neon-green/10 border border-neon-green/30 text-neon-green font-bold text-[11px]">
                                 <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-pulse" />
