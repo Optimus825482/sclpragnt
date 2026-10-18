@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderServiceWorker } from "./swRender";
 
 const TEMPLATE = readFileSync(path.join(__dirname, "..", "sw.js", "sw.template.js"), "utf8");
@@ -196,5 +196,48 @@ describe("push bildirimi (sahte SW ortamı)", () => {
     expect(options.badge).toMatch(/\.png$/);
     expect(options).not.toHaveProperty("sound");
     expect(options.data.url).toBe("/charts?symbol=BTCTRY");
+  });
+});
+
+describe("sayfa görünürken push (iOS bildirimsiz push riski)", () => {
+  const IOS_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
+  const CHROME_UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36";
+  const visibleWindow = { url: "https://app.example/charts", visibilityState: "visible", focused: true };
+  const hiddenWindow = { url: "https://app.example/charts", visibilityState: "hidden", focused: false };
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("iOS + sayfa görünür: bildirim YİNE gösterilir (sessiz) ve kısa süre sonra kapatılır", async () => {
+    const sw = bootServiceWorker("b-1", "", undefined, { windows: [visibleWindow], userAgent: IOS_UA });
+    const ev = pushEvent({ title: "Radar", body: "BTCTRY", tag: "radar-BTCTRY" });
+    sw.handlers.push(ev);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await ev.done;
+    expect(sw.notifications).toHaveLength(1); // userVisibleOnly: her push bildirim gösterir
+    const { options } = sw.notifications[0];
+    expect(options.silent).toBe(true);
+    expect(options.vibrate).toBeUndefined();
+    expect(options.renotify).toBe(false);
+    expect(sw.closed).toEqual(["radar-BTCTRY"]);
+  });
+
+  it("Chrome/Android + sayfa görünür: eskisi gibi bildirim atlanır (çift duyuru yok)", async () => {
+    const sw = bootServiceWorker("b-1", "", undefined, { windows: [visibleWindow], userAgent: CHROME_UA });
+    const ev = pushEvent({ title: "Radar", body: "BTCTRY", tag: "radar-BTCTRY" });
+    sw.handlers.push(ev);
+    await ev.done;
+    expect(sw.notifications).toHaveLength(0);
+  });
+
+  it("iOS + sayfa görünür değil: normal (sesli) bildirim", async () => {
+    const sw = bootServiceWorker("b-1", "", undefined, { windows: [hiddenWindow], userAgent: IOS_UA });
+    const ev = pushEvent({ title: "Radar", body: "BTCTRY", tag: "radar-BTCTRY" });
+    sw.handlers.push(ev);
+    await ev.done;
+    expect(sw.notifications).toHaveLength(1);
+    expect(sw.notifications[0].options.silent).toBe(false);
+    expect(sw.notifications[0].options.vibrate).toBeDefined();
+    expect(sw.closed).toEqual([]);
   });
 });

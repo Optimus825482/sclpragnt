@@ -4,42 +4,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useLiveMessages, useLiveReconnect } from "../lib/liveSocket";
 import { API_BASE, apiRequest } from "../lib/api";
+import { installAlertAudioUnlock, playAlertSound, vibrateAlert } from "../lib/alertAudio";
 import { pickMissedAlerts, rowKey, symTimeKey, type NotificationHistoryRow } from "../lib/missedAlerts";
 import { fmtDateTime, formatPrice } from "../lib/format";
 import { SCORE_LABEL, SCORE_TOOLTIP, hitProbLabel, netTargetText } from "../lib/userUi";
 import SymbolLink from "./SymbolLink";
 
-/** Kısa, keskin "radar" sesi: iki vuruşlu yüksek ton + düşük vurgu. */
+/**
+ * Kısa, keskin "radar" sesi. Paylaşılan, kullanıcı jestiyle açılan AudioContext kullanır
+ * (bkz. lib/alertAudio.ts; iOS/Chrome autoplay politikası). Ses açılamazsa modal yine görünür.
+ */
 export function playRadarAlertSound() {
-  try {
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioContextClass) return;
-    const context = new AudioContextClass();
-    const now = context.currentTime;
-    const notes: Array<[number, number, number]> = [
-      [1046.5, now, 0.12],      // C6
-      [1318.5, now + 0.14, 0.12], // E6
-      [1568.0, now + 0.28, 0.22], // G6
-    ];
-    const last = notes[notes.length - 1];
-    for (const [freq, start, dur] of notes) {
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      oscillator.type = "sine";
-      oscillator.frequency.value = freq;
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.22, start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-      oscillator.start(start);
-      oscillator.stop(start + dur + 0.02);
-      // 2026-10-18 (denetim #12): bağlam yalnız SON nota bitince kapanır; önceki kapanış 2. ve 3. notayı susturuyordu.
-      if (start === last[1]) oscillator.addEventListener("ended", () => { context.close().catch(() => {}); });
-    }
-  } catch {
-    // Ses engellenmişse (otomatik oynatma politikası) modal yine de görünür.
-  }
+  vibrateAlert();
+  void playAlertSound();
 }
 
 export type RadarAlertItem = {
@@ -182,6 +159,10 @@ export default function RadarAlertModal() {
   }, [enqueue]);
 
   useLiveMessages(onLiveMessage, ["monitoring_alert", "alert", "rising_alert"]);
+
+  // Ses kilidi: ilk dokunuşta paylaşılan AudioContext açılır; aksi halde (özellikle iOS) WS ile
+  // gelen alarm modalı sessiz kalır (mobil denetimi P6).
+  useEffect(() => installAlertAudioUnlock(), []);
 
   // 2026-10-18 (mobil denetimi #9): soket kopukken (arka plan, ağ kesintisi) yayınlanan radar
   // bildirimleri kaçırılırdı. Yeniden bağlanınca son geçmiş REST'ten okunur; kesinti sırasında

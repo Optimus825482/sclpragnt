@@ -25,6 +25,16 @@ var BADGE_URL = "/icons/badge-96.png";
 
 function noop() {}
 
+// WebKit (iOS/iPadOS/macOS Safari) mi? Chromium/Firefox tabanlı iOS tarayıcıları (CriOS, FxiOS,
+// EdgiOS) iOS'ta da WebKit kullanır ama Web Push'u yalnız Safari'nin Ana Ekran uygulamaları alır;
+// yine de güvenli taraf "bildirim göster"dir. Android WebView/Chrome UA'sı "Chrome" içerir.
+function isWebKitPush() {
+  var ua = (self.navigator && self.navigator.userAgent) || "";
+  return /AppleWebKit/.test(ua) && !/Chrome\/|Chromium|Android|Edg\/|OPR\//.test(ua);
+}
+// Sessiz bildirim bu kadar ms görünür kalır, sonra kapatılır.
+var QUIET_CLOSE_MS = 6000;
+
 function offlineResponse() {
   return new Response("offline", { status: 503, statusText: "offline" });
 }
@@ -96,7 +106,8 @@ self.addEventListener("push", function (event) {
     });
   };
 
-  var show = function () {
+  // quiet=true: sayfa görünürken WebKit için "gösterilen ama sessiz" bildirim (aşağıya bak).
+  var show = function (quiet) {
     // PWA kapalı olsa bile titreşimli bildirim (iOS vibrate'i yok sayar). NOT: Notification
     // `sound` alanı hiçbir tarayıcıda yoktur; bildirim sesini işletim sistemi çalar.
     var notifOpts = {
@@ -112,6 +123,13 @@ self.addEventListener("push", function (event) {
       silent: false,
       data: { url: data.url || "/monitoring" }
     };
+    if (quiet) {
+      // Sayfa modal + sesi zaten veriyor: OS sesi/titreşimi çift duyuru yapmasın.
+      delete notifOpts.vibrate;
+      notifOpts.silent = true;
+      notifOpts.renotify = false;
+      notifOpts.requireInteraction = false;
+    }
     // ML olasılık varsa başlığa ekle
     if (data.ml_hit_probability != null) {
       var prob = Math.round(Number(data.ml_hit_probability) * 100);
@@ -122,8 +140,21 @@ self.addEventListener("push", function (event) {
 
   event.waitUntil(
     skipWhenPageVisible().then(function (pageVisible) {
-      if (pageVisible) return; // sayfa zaten modal ile duyurdu
-      return show();
+      if (!pageVisible) return show(false);
+      // Sayfa zaten modal ile duyurdu. Chrome/Android görünür pencere varken bildirimsiz push'a
+      // izin verir; WebKit (iOS/iPadOS/Safari) vermez: `userVisibleOnly` aboneliğinde her push
+      // bildirim göstermeli, aksi halde birkaç ihlalde ABONELİK İPTAL edilir ve uygulama
+      // kapalıyken bildirim gelmez olur. Bu yüzden WebKit'te SESSİZ bildirim gösterilip kısa
+      // süre sonra kapatılır (2026-10-18, mobil denetimi P2/#19).
+      if (!isWebKitPush()) return;
+      var tag = data.tag || "scalper-alert";
+      return show(true).then(function () {
+        return new Promise(function (resolve) { setTimeout(resolve, QUIET_CLOSE_MS); });
+      }).then(function () {
+        return self.registration.getNotifications({ tag: tag });
+      }).then(function (list) {
+        list.forEach(function (n) { try { n.close(); } catch (_) { /* yok say */ } });
+      }).catch(noop);
     })
   );
 });
