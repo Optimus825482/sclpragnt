@@ -202,7 +202,7 @@ async def open_position_endpoint(payload: dict, request: Request):
     await _require_live(user)
     if str(payload.get("confirmation") or "").strip().upper() != "REAL_OPEN":
         raise HTTPException(status_code=422, detail="Onay gerekli")
-    key, secret = await m._decrypt_binance_creds(request)
+    key, secret = await m._decrypt_binance_creds(request, user=user)
     ex = _exchange_for(key, secret)
     risk = await database.get_user_risk_settings(int(user["id"]))
     try:
@@ -229,7 +229,7 @@ async def protect_endpoint(payload: dict, request: Request):
     """Koruma (OCO) kurulamamış pozisyon için yeniden dener; kurulmuşsa tekrar kurmaz."""
     user = await _user(request)
     await _require_live(user)
-    key, secret = await _main()._decrypt_binance_creds(request)
+    key, secret = await _main()._decrypt_binance_creds(request, user=user)
     try:
         status, body = await protect_position(_exchange_for(key, secret), int(user["id"]), payload.get("client_order_id"))
     except OrderError as exc:
@@ -249,6 +249,13 @@ async def delete_keys(request: Request):
     except Exception as exc:  # noqa: BLE001
         logger.debug("kullanıcı akışı durdurulamadı: %s", type(exc).__name__)
     try:
+        # 2026-10-18: pozisyon cache'i / WS hesap görüntüsü anahtar çözmeden okunur → silinen anahtarla kalmasın.
+        m = _main()
+        m._invalidate_positions_cache(int(user["id"]))
+        m._account_snapshot.pop(int(user["id"]), None)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         m = _main()
         actor, role = m._session_identity(request)
         await m.log_user_action(actor, role, "binance", "BINANCE_KEYS_DELETED", target="binance_tr",
@@ -263,6 +270,6 @@ async def start_user_stream(request: Request):
     """Dolum/bakiye olay akışını başlatır (Pozisyonlar sayfasına bağımlılığı kaldırır)."""
     user = await _user(request)
     m = _main()
-    key, secret = await m._decrypt_binance_creds(request)
+    key, secret = await m._decrypt_binance_creds(request, user=user)
     state = await m._ensure_binance_user_stream(int(user["id"]), key, secret)
     return {"ok": True, "stream": state}

@@ -75,7 +75,7 @@ def env(monkeypatch):
     async def real_state(uid):
         return (st.live, "panel")
 
-    async def creds(request):
+    async def creds(request, user=None):
         return ("k", "s")
 
     async def log_user_action(*a, **k):

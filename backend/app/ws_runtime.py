@@ -233,6 +233,25 @@ class ConnectionManager:
             except Exception:
                 await self.disconnect(websocket)
 
+    async def send_to(self, websocket, message: dict) -> None:
+        """Mesajı YALNIZ bu bağlantıya kuyrukla (abonelik anlık görüntüsü için).
+
+        2026-10-18: `{"type":"subscribe","topic":"binance_account"}` karesine son
+        hesap görüntüsüyle yanıt verilir; diğer sekmeler aynı veriyi tekrar almaz.
+        """
+        prepared = _prepare(message)
+        outbox = self._outboxes.get(id(websocket))
+        if outbox is not None:
+            outbox.offer(prepared)
+            return
+        try:
+            if isinstance(prepared, _Prepared) and hasattr(websocket, "send_text"):
+                await asyncio.wait_for(websocket.send_text(prepared.text), timeout=CLIENT_SEND_TIMEOUT_SEC)
+            else:
+                await asyncio.wait_for(websocket.send_json(message), timeout=CLIENT_SEND_TIMEOUT_SEC)
+        except Exception:
+            await self.disconnect(websocket)
+
     def _target_outboxes(self, user_id: Any) -> list:
         """Bu yayının HEDEFLEDİĞİ kuyruklar (kapsam burada uygulanır)."""
         if user_id is None:

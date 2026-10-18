@@ -262,21 +262,43 @@ async def _paper_band() -> dict:
     return build_paper_band(snapshot, await _paper_daily_pnl())
 
 
+# 2026-10-18: pozisyonlar hazır olunca gün işlemleri için en çok bu kadar beklenir; bitmemişse
+# bant `daily_pnl_try=None` ile HEMEN döner, gün işlemleri arka planda kendi cache'ini doldurur
+# (sonraki bant turu cache'ten anında okur).
+_DAILY_GRACE_SEC = 0.25
+
+
+def _consume_day_result(task: asyncio.Task, username: str) -> None:
+    """Arka planda biten gün-işlemleri görevinin istisnasını tüket ("never retrieved" uyarısı olmasın)."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("Band: Binance günlük işlemler alınamadı (kullanıcı=%s): %s", username, exc)
+
+
 async def _binance_band(request: Request, username: str) -> dict:
     m = _main()
     today, _ = _today_tr()
-    pos_res, day_res = await asyncio.gather(
-        m.binance_positions(request),
-        m.binance_trades_day(request, date=today),
-        return_exceptions=True,
-    )
-    if isinstance(pos_res, BaseException):
-        raise pos_res
+    day_task = asyncio.ensure_future(m.binance_trades_day(request, date=today))
+    try:
+        pos_res = await m.binance_positions(request)
+    except BaseException:
+        day_task.add_done_callback(lambda t: _consume_day_result(t, username))
+        raise
+    if not day_task.done():
+        await asyncio.wait({day_task}, timeout=_DAILY_GRACE_SEC)
     daily = None
-    if isinstance(day_res, BaseException):
-        logger.warning("Band: Binance günlük işlemler alınamadı (kullanıcı=%s): %s", username, day_res)
+    if day_task.done():
+        if day_task.cancelled():
+            pass
+        elif day_task.exception() is not None:
+            logger.warning("Band: Binance günlük işlemler alınamadı (kullanıcı=%s): %s",
+                           username, day_task.exception())
+        else:
+            daily = day_task.result()
     else:
-        daily = day_res
+        day_task.add_done_callback(lambda t: _consume_day_result(t, username))
     return build_binance_band(pos_res, daily)
 
 
@@ -313,7 +335,9 @@ async def _refresh_binance_band(request: Request, username: str) -> dict:
             raise
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Binance TR portföy özeti alınamadı: {type(exc).__name__}")
-        _binance_cache[username] = (time.monotonic() + _BINANCE_TTL_SEC, payload)
+        # Günlük K/Z henüz yoksa (gün işlemleri arka planda) kısa TTL: sonraki tur cache'ten tamamlar.
+        ttl = _BINANCE_TTL_SEC if payload.get("daily_pnl_try") is not None else min(_BINANCE_TTL_SEC, 3.0)
+        _binance_cache[username] = (time.monotonic() + ttl, payload)
         return payload
 
 

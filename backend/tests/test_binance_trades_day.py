@@ -73,6 +73,9 @@ class BinanceTradesDayTests(unittest.IsolatedAsyncioTestCase):
                 self.assertAlmostEqual(saga_summary["realized_pnl_try"], 99.1, places=2)
                 self.assertAlmostEqual(saga_summary["sell_qty"], 10.0)
                 self.assertAlmostEqual(saga_summary["sell_revenue_try"], 500.0)
+                # 2026-10-18: yüzde GERÇEK TRY maliyet tabanından: 99.1 / (400 + 0.4) * 100
+                self.assertAlmostEqual(saga_summary["realized_pnl_pct"], 99.1 / 400.4 * 100, places=3)
+                self.assertAlmostEqual(result["trades"][0]["realized_pnl_pct"], 99.1 / 400.4 * 100, places=3)
 
     async def test_trades_day_usdt_pair_and_bnb_fee(self):
         day = "2026-09-21"
@@ -134,4 +137,6 @@ class BinanceTradesDayTests(unittest.IsolatedAsyncioTestCase):
                 sol_summary = [s for s in result["symbol_summary"] if "SOL" in s["symbol"]][0]
                 self.assertAlmostEqual(sol_summary["realized_pnl_try"], 680.0, places=1)
                 self.assertAlmostEqual(sol_summary["commission_try"], 20.0, places=1)
+                # USDT çifti: taban 100 USDT × 2 × 35 = 7000 TRY (quoteQty değil) → 680 / 7000
+                self.assertAlmostEqual(sol_summary["realized_pnl_pct"], 680.0 / 7000.0 * 100, places=2)
 

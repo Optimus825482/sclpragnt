@@ -51,6 +51,7 @@ from app.ma_buy_tracker import ma_buy_loop
 from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app import llm_analysis
+from app.trade_plan import floor_to_step  # 2026-10-18: lot yuvarlamasının tek kaynağı (Decimal)
 from app.binance_tr_private import (get_account_balance, get_trade_history, get_symbol_filters,
                                     place_market_sell, place_market_buy, place_oco_sell,
                                     place_stop_loss_sell, place_limit_sell, cancel_order, get_open_orders,
@@ -1406,6 +1407,29 @@ def _ws_subprotocol_token(websocket) -> str | None:
     return None
 
 
+async def _ws_principal_user(principal: dict | None) -> dict | None:
+    """WS el sıkışmasında principal → `users` satırı (bulunamazsa / DB yoksa `None`)."""
+    if not principal:
+        return None
+    try:
+        return await database.get_user_by_username(principal.get("username") or "")
+    except Exception as exc:
+        # DB erişilemiyorsa kimliksiz bağlantı: sızıntı yok, yalnız kişisel
+        # panel verisi eksik kalır. Sessiz yutma YOK — teşhis görünür olsun.
+        logger.warning("WS kimlik çözümü başarısız (%s): %s",
+                       principal.get("username"), exc)
+        return None
+
+
+def _ws_user_id_of(user: dict | None) -> int | None:
+    if not user:
+        return None
+    try:
+        return int(user["id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 async def _ws_principal_user_id(principal: dict | None) -> int | None:
     """WS el sıkışmasında principal → `users.id` çözümü.
 
@@ -1416,22 +1440,44 @@ async def _ws_principal_user_id(principal: dict | None) -> int | None:
     DB hazır değilse veya kullanıcı bulunamazsa `None` döner → bağlantı
     kimliksiz açılır, kişisel yayın almaz (fail-closed; sızıntı olmaz).
     """
-    if not principal:
-        return None
+    return _ws_user_id_of(await _ws_principal_user(principal))
+
+
+# 2026-10-18 (Binance TR canlı akış): istemci → sunucu kareleri. Tek desteklenen kare
+# `{"type":"subscribe","topic":"binance_account"}`: bağlantıya o kullanıcının SON
+# `binance_account_update` görüntüsü anında gönderilir (yoksa / bayatsa tek seferlik push
+# hesaplanır). Böylece sayfa açılışında 15 sn'lik push turunu beklemek gerekmez.
+_WS_CLIENT_FRAME_MAX = 4096
+_ACCOUNT_SNAPSHOT_FRESH_SEC = 15.0
+
+
+async def _handle_ws_client_frame(websocket, user_id: int | None, user: dict | None, raw: str) -> None:
+    if user_id is None or not raw or len(raw) > _WS_CLIENT_FRAME_MAX:
+        return
     try:
-        user = await database.get_user_by_username(principal.get("username") or "")
-    except Exception as exc:
-        # DB erişilemiyorsa kimliksiz bağlantı: sızıntı yok, yalnız kişisel
-        # panel verisi eksik kalır. Sessiz yutma YOK — teşhis görünür olsun.
-        logger.warning("WS kimlik çözümü başarısız (%s): %s",
-                       principal.get("username"), exc)
-        return None
-    if not user:
-        return None
+        msg = json.loads(raw)
+    except ValueError:
+        return
+    if not isinstance(msg, dict) or msg.get("type") != "subscribe":
+        return
+    if msg.get("topic") != "binance_account":
+        return
+    snap = _account_snapshot.get(user_id)
+    if snap is not None:
+        await ws_manager.send_to(websocket, snap)
+    fresh = snap is not None and (time.time() - float((snap.get("data") or {}).get("time") or 0)) < _ACCOUNT_SNAPSHOT_FRESH_SEC
+    if not fresh:
+        _schedule_account_push(user_id, delay=0.0, user=user)
+
+
+async def _warm_binance_user_stream(user: dict) -> None:
+    """WS kimliği doğrulanınca anahtarı kayıtlı kullanıcının özel akışını ısıt (dolum olayları hazır olsun)."""
     try:
-        return int(user["id"])
-    except (KeyError, TypeError, ValueError):
-        return None
+        creds = await _user_binance_creds_quiet(user)
+        if creds:
+            await _ensure_binance_user_stream(int(user["id"]), creds[0], creds[1])
+    except Exception as exc:  # noqa: BLE001 — ısıtma en iyi çaba; bağlantıyı bozmaz
+        logger.debug("Binance TR kullanıcı akışı ısıtılamadı (%s): %s", user.get("username"), type(exc).__name__)
 
 
 @app.websocket("/ws")
@@ -1460,9 +1506,18 @@ async def websocket_endpoint(websocket: WebSocket):
     # eşleşmeyle hedeflenir. `user_id` çözülemezse bağlantı KİMLİKSİZ
     # kalır (ws_manager fail-closed) → kişisel veri ALMAZ, yalnız herkese
     # açık piyasa akışını alır. Sızıntı olmaz, işlev de kaybolmaz.
-    await ws_manager.connect(websocket, user_id=await _ws_principal_user_id(principal))
+    ws_user = await _ws_principal_user(principal)
+    ws_user_id = _ws_user_id_of(ws_user)
+    await ws_manager.connect(websocket, user_id=ws_user_id)
+    if ws_user_id is not None:
+        _spawn_background(_warm_binance_user_stream(ws_user))
     try:
-        while True: await websocket.receive_text()
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                await _handle_ws_client_frame(websocket, ws_user_id, ws_user, raw)
+            except Exception as exc:  # noqa: BLE001 — bozuk kare bağlantıyı düşürmez
+                logger.debug("WS istemci karesi işlenemedi: %s", type(exc).__name__)
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
@@ -2860,6 +2915,223 @@ async def _binance_ticks_configured() -> bool:
     return ok
 
 
+# 2026-10-18 (Binance TR canlı akış): WS bellek fiyatları. `market.mini_tickers`
+# (`!miniTicker@arr`, tüm borsa) ve `market.tickers` (izlenen semboller) okunur; en
+# yeni damgalı satır kazanır. Bayat (> _LIVE_PRICE_MAX_AGE_SEC) ya da eksik semboller
+# için çağıran REST'e düşer. Sembol biçimi bitişik ("BTCTRY").
+_LIVE_PRICE_MAX_AGE_SEC = 5.0
+
+
+def _memory_price_rows() -> dict[str, dict]:
+    """{SYM: {"price", "quote_volume", "ts_ms"}} — bellekteki tüm WS fiyatları (yaş süzmesiz)."""
+    out: dict[str, dict] = {}
+    qv24 = getattr(market, "ticker_24h", None) or {}
+    sources = ((getattr(market, "mini_tickers", None) or {}, True),
+               (getattr(market, "tickers", None) or {}, False))
+    for rows, has_qv in sources:
+        for key, row in list(rows.items()):
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or key or "").upper().replace("_", "")
+            try:
+                price = float(row.get("last_price") or 0)
+                ts = float(row.get("timestamp") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not sym or price <= 0:
+                continue
+            prev = out.get(sym)
+            if prev is not None and prev["ts_ms"] >= ts:
+                continue
+            qv = row.get("quote_volume") if has_qv else qv24.get(sym)
+            try:
+                qv = float(qv) if qv is not None else None
+            except (TypeError, ValueError):
+                qv = None
+            if qv is None and prev is not None:
+                qv = prev.get("quote_volume")
+            out[sym] = {"price": price, "quote_volume": qv, "ts_ms": ts}
+    return out
+
+
+def _fresh_memory_prices(symbols, max_age_sec: float = _LIVE_PRICE_MAX_AGE_SEC,
+                         rows: dict | None = None) -> dict[str, float]:
+    """İstenen sembollerden bellekte TAZE fiyatı olanlar ({SYM: fiyat})."""
+    rows = _memory_price_rows() if rows is None else rows
+    now_ms = time.time() * 1000.0
+    out: dict[str, float] = {}
+    for sym in symbols:
+        s = str(sym).upper().replace("_", "")
+        row = rows.get(s)
+        if row and row["ts_ms"] > 0 and now_ms - row["ts_ms"] <= max_age_sec * 1000.0:
+            out[s] = row["price"]
+    return out
+
+
+async def _prices_for_symbols(candidates: list[str], *, warn: bool = False) -> dict[str, float]:
+    """Önce bellek (WS), eksik/bayat olanlar için REST ticker_price (≤50/istek)."""
+    price_by_symbol = _fresh_memory_prices(candidates)
+    missing = [c for c in candidates if c not in price_by_symbol]
+    for i in range(0, len(missing), 50):
+        try:
+            rows = await binance_tr_public.ticker_price(missing[i:i + 50])
+            for row in rows if isinstance(rows, list) else []:
+                try:
+                    price_by_symbol[str(row.get("symbol") or "").upper().replace("_", "")] = float(row.get("price") or 0)
+                except (TypeError, ValueError):
+                    continue
+        except Exception as exc:
+            if warn:
+                logger.warning("Binance TR fiyat listesi alınamadı (kısmi): %s", exc)
+    return price_by_symbol
+
+
+async def _user_binance_creds_quiet(user: dict) -> tuple[str, str] | None:
+    """Push/ısıtma yolları için anahtar çözümü: yoksa None (HTTP hatası yok).
+
+    Kullanıcı bazlı anahtarlar (`user_binance_keys`) → admin fallback (eski global
+    llm_settings). Aynı öncelik sırası `_decrypt_binance_creds` ile birebir hizalıdır;
+    ikisi ayrışırsa push bir kullanıcı için çalışıp diğeri için sessizce susar.
+    """
+    enc, enc_sec = "", ""
+    keys = await database.get_user_binance_keys(int(user["id"]))
+    if keys and keys.get("api_key_encrypted") and keys.get("api_secret_encrypted"):
+        enc = keys["api_key_encrypted"]
+        enc_sec = keys["api_secret_encrypted"]
+    elif user.get("role") == "admin":
+        enc = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
+        enc_sec = await database.get_llm_setting(BINANCE_SECRET_SETTING, "")
+    if not enc or not enc_sec:
+        return None
+    # Şifrelenmiş anahtarları çöz (gerçek yardımcı: llm_analysis).
+    api_key = llm_analysis.decrypt_key(enc, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+    api_secret = llm_analysis.decrypt_key(enc_sec, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+    if not api_key:
+        return None
+    return api_key, api_secret
+
+
+# Kullanıcı → son `binance_account_update` mesajı (WS abonelik karesine anında yanıt).
+_account_snapshot: dict[int, dict] = {}
+# Debounce'lu tekil push: bekleyen görev, uyku evresindekiler, koşarken gelen olaylar.
+_account_push_tasks: dict[int, asyncio.Task] = {}
+_account_push_sleeping: set[int] = set()
+_account_push_rerun: set[int] = set()
+_ACCOUNT_PUSH_CONCURRENCY = 4
+_ACCOUNT_PUSH_DEBOUNCE_SEC = 0.5
+
+
+async def _push_account_for_user(user: dict) -> None:
+    """Tek kullanıcının bakiye + holdings görüntüsünü hesaplayıp YALNIZ ona yayınlar."""
+    user_id = int(user["id"])
+    # O kullanıcının AÇIK sekmesi yoksa hiçbir şey göndermeyeceğiz; bakiye/pozisyon
+    # sorgusunu (şifre çözme + REST çağrısı) atla.
+    if not ws_manager.has_owner(user_id):
+        return
+    creds = await _user_binance_creds_quiet(user)
+    if not creds:
+        return
+    api_key, api_secret = creds
+    # Bakiye
+    balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+    non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
+    # Pozisyonlar — fiyat tablosu
+    held = []
+    for b in balances:
+        free = float(b.get("free", 0) or 0)
+        locked = float(b.get("locked", 0) or 0)
+        total = free + locked
+        if total <= 0:
+            continue
+        asset = str(b.get("asset") or "").upper()
+        if asset:
+            held.append({"asset": asset, "free": free, "locked": locked, "total": total})
+    candidates: list[str] = []
+    for h in held:
+        if h["asset"] != "TRY":
+            candidates.extend([f"{h['asset']}TRY", f"{h['asset']}USDT"])
+    if any(h["asset"] == "USDT" for h in held):
+        candidates.append("USDTTRY")
+    # 2026-10-18: kullanıcı başı REST ticker yerine önce WS bellek fiyatı; yalnız eksik/bayat REST.
+    price_by_symbol = await _prices_for_symbols(candidates)
+    usdt_try = price_by_symbol.get("USDTTRY", 0.0)
+    holdings_ws = []
+    for h in held:
+        asset = h["asset"]
+        if asset == "TRY":
+            holdings_ws.append({**h, "price_try": 1.0, "value_try": h["total"], "avg_cost_try": 1.0, "pnl_try": None, "pnl_pct": None})
+            continue
+        price = price_by_symbol.get(f"{asset}TRY") or (
+            (price_by_symbol.get(f"{asset}USDT", 0) * usdt_try) if usdt_try else 0)
+        value_try = round(price * h["total"], 4) if price else None
+        cached_cost = _binance_cost_cache.get((user_id, asset))
+        avg_cost = None
+        if cached_cost and cached_cost[1] and cached_cost[1].get("avg_price"):
+            avg_cost = cached_cost[1]["avg_price"]
+        pnl_try = round((price - avg_cost) * h["total"], 2) if (price and avg_cost) else None
+        pnl_pct = round((price - avg_cost) / avg_cost * 100, 2) if (price and avg_cost) else None
+        holdings_ws.append({**h, "price_try": price or None, "value_try": value_try, "avg_cost_try": avg_cost, "pnl_try": pnl_try, "pnl_pct": pnl_pct})
+    message = {
+        "type": "binance_account_update",
+        "data": {
+            "user_id": user_id,
+            "balances": non_zero,
+            "holdings": holdings_ws,
+            "time": time.time(),
+        }
+    }
+    _account_snapshot[user_id] = message
+    # WS broadcast — KULLANICI KAPSAMLI (güvenlik): mesaj yalnız bu kullanıcının
+    # bağlantılarına gider. `user_id` verilmezse ws_manager fail-closed olarak
+    # HİÇBİR yere göndermez.
+    await ws_manager.broadcast(message, user_id=user_id)
+
+
+def _schedule_account_push(user_id: int, delay: float = _ACCOUNT_PUSH_DEBOUNCE_SEC, user: dict | None = None) -> None:
+    """Tek kullanıcı için debounce'lu push (dolum olayı / abonelik karesi). Olay seli tek tura iner;
+    push koşarken gelen olay bir tur daha tetikler (son durum kaçmaz)."""
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return
+    task = _account_push_tasks.get(uid)
+    if task is not None and not task.done():
+        if uid not in _account_push_sleeping:
+            _account_push_rerun.add(uid)
+        return
+
+    async def _run():
+        row = user
+        try:
+            while True:
+                _account_push_sleeping.add(uid)
+                try:
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                finally:
+                    _account_push_sleeping.discard(uid)
+                if row is None:
+                    row = await database.get_user_by_id(uid)
+                if not row or not row.get("is_active", True):
+                    return
+                await _push_account_for_user(row)
+                if uid not in _account_push_rerun:
+                    return
+                _account_push_rerun.discard(uid)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — push hatası olay akışını bozmaz
+            logger.debug("binance_account_push (tekil) kullanıcı %s: %s", uid, exc)
+        finally:
+            if _account_push_tasks.get(uid) is asyncio.current_task():
+                _account_push_tasks.pop(uid, None)
+
+    try:
+        _account_push_tasks[uid] = asyncio.get_running_loop().create_task(_run())
+    except RuntimeError:
+        pass  # olay döngüsü yok (senkron bağlam)
+
+
 async def binance_account_push_loop():
     """Binance TR hesap + pozisyon verisini 15 sn'de bir WS ile ilgili kullanıcıya push eder.
 
@@ -2880,112 +3152,39 @@ async def binance_account_push_loop():
     anahtarların GERÇEK kaynağı `user_binance_keys` tablosudur ve gerçek çözücü
     `app.llm_analysis.decrypt_key`'dir — aşağıda artık o kullanılıyor.
     """
-    await asyncio.sleep(25)  # startup bitmeden bekleme
+    # 2026-10-18: 25 sn → 3 sn (sayfa açılışında ilk görüntü gecikmesin; abonelik
+    # karesi zaten anında tekil push tetikler).
+    await asyncio.sleep(3)
+    sem = asyncio.Semaphore(_ACCOUNT_PUSH_CONCURRENCY)
+
+    async def _one(user: dict) -> None:
+        async with sem:
+            try:
+                await _push_account_for_user(user)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("binance_account_push kullanıcı %s: %s", user.get("username"), exc)
+
     while True:
         try:
             if not ws_manager.active_connections:
                 await asyncio.sleep(15)
                 continue
             # Tüm aktif kullanıcıları al. DENETİM (2026-10-07): yalnız admin
-            # satırları okunuyordu; normal kullanıcının anahtarı eski global
-            # anahtar düzeninde hiç bulunmadığı için diğer kullanıcıların
-            # push'u sessizce ölüydü. Artık TÜM aktif kullanıcılar taranır —
-            # push zaten `has_owner(user_id)` ile yalnız AÇIK sekmesi olanlara
-            # gider, dolayısıyla ek maliyet yok.
-            users = [u for u in await database.list_users() if u.get("is_active")]
-            for user in users:
+            # satırları okunuyordu; artık TÜM aktif kullanıcılar taranır — push
+            # zaten `has_owner(user_id)` ile yalnız AÇIK sekmesi olanlara gider.
+            # 2026-10-18: kullanıcılar küçük bir semafor altında EŞZAMANLI işlenir
+            # (biri yavaşsa diğerleri beklemez).
+            users = []
+            for u in await database.list_users():
                 try:
-                    user_id = int(user["id"])
-                    username = str(user.get("username") or "")
-                    # O kullanıcının AÇIK sekmesi yoksa hiçbir şey
-                    # göndermeyeceğiz; bakiye/pozisyon sorgusunu (şifre çözme +
-                    # REST çağrısı) atla.
-                    if not ws_manager.has_owner(user_id):
-                        continue
-                    # Kullanıcı bazlı anahtarlar (`user_binance_keys`) → admin
-                    # fallback (eski global llm_settings). Aynı öncelik sırası
-                    # `_decrypt_binance_creds` ile birebir hizalıdır; ikisi
-                    # ayrışırsa push bir kullanıcı için çalışıp diğeri için
-                    # sessizce susar.
-                    enc, enc_sec = "", ""
-                    keys = await database.get_user_binance_keys(user_id)
-                    if keys and keys.get("api_key_encrypted") and keys.get("api_secret_encrypted"):
-                        enc = keys["api_key_encrypted"]
-                        enc_sec = keys["api_secret_encrypted"]
-                    elif user.get("role") == "admin":
-                        enc = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
-                        enc_sec = await database.get_llm_setting(BINANCE_SECRET_SETTING, "")
-                    if not enc or not enc_sec:
-                        continue
-                    # Şifrelenmiş anahtarları çöz (gerçek yardımcı: llm_analysis).
-                    api_key = llm_analysis.decrypt_key(enc, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
-                    api_secret = llm_analysis.decrypt_key(enc_sec, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
-                    if not api_key:
-                        continue
-                    # Bakiye
-                    balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
-                    non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
-                    # Pozisyonlar — fiyat tablosu
-                    held = []
-                    for b in balances:
-                        free = float(b.get("free", 0) or 0)
-                        locked = float(b.get("locked", 0) or 0)
-                        total = free + locked
-                        if total <= 0:
-                            continue
-                        asset = str(b.get("asset") or "").upper()
-                        if asset:
-                            held.append({"asset": asset, "free": free, "locked": locked, "total": total})
-                    candidates: list[str] = []
-                    for h in held:
-                        if h["asset"] != "TRY":
-                            candidates.extend([f"{h['asset']}TRY", f"{h['asset']}USDT"])
-                    if any(h["asset"] == "USDT" for h in held):
-                        candidates.append("USDTTRY")
-                    price_by_symbol: dict[str, float] = {}
-                    for i in range(0, len(candidates), 50):
-                        try:
-                            rows = await binance_tr_public.ticker_price(candidates[i:i + 50])
-                            for row in rows if isinstance(rows, list) else []:
-                                try:
-                                    price_by_symbol[str(row.get("symbol") or "").upper()] = float(row.get("price") or 0)
-                                except (TypeError, ValueError):
-                                    continue
-                        except Exception:
-                            pass
-                    usdt_try = price_by_symbol.get("USDTTRY", 0.0)
-                    holdings_ws = []
-                    for h in held:
-                        asset = h["asset"]
-                        if asset == "TRY":
-                            holdings_ws.append({**h, "price_try": 1.0, "value_try": h["total"], "avg_cost_try": 1.0, "pnl_try": None, "pnl_pct": None})
-                            continue
-                        price = price_by_symbol.get(f"{asset}TRY") or (
-                            (price_by_symbol.get(f"{asset}USDT", 0) * usdt_try) if usdt_try else 0)
-                        value_try = round(price * h["total"], 4) if price else None
-                        cached_cost = _binance_cost_cache.get((user_id, asset))
-                        avg_cost = None
-                        if cached_cost and cached_cost[1] and cached_cost[1].get("avg_price"):
-                            avg_cost = cached_cost[1]["avg_price"]
-                        pnl_try = round((price - avg_cost) * h["total"], 2) if (price and avg_cost) else None
-                        pnl_pct = round((price - avg_cost) / avg_cost * 100, 2) if (price and avg_cost) else None
-                        holdings_ws.append({**h, "price_try": price or None, "value_try": value_try, "avg_cost_try": avg_cost, "pnl_try": pnl_try, "pnl_pct": pnl_pct})
-                    # WS broadcast — KULLANICI KAPSAMLI (güvenlik): mesaj yalnız
-                    # bu kullanıcının bağlantılarına gider. `user_id` verilmezse
-                    # ws_manager fail-closed olarak HİÇBİR yere göndermez.
-                    await ws_manager.broadcast({
-                        "type": "binance_account_update",
-                        "data": {
-                            "user_id": user_id,
-                            "balances": non_zero,
-                            "holdings": holdings_ws,
-                            "time": time.time(),
-                        }
-                    }, user_id=user_id)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.debug("binance_account_push kullanıcı %s: %s", user.get("username"), exc)
+                    if u.get("is_active") and ws_manager.has_owner(int(u["id"])):
+                        users.append(u)
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if users:
+                await asyncio.gather(*(_one(u) for u in users))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -3019,46 +3218,98 @@ def _order_tick_assets(seen_assets: set, extra: list, cap: int = PRICE_TICK_MAX_
     return ordered
 
 
-async def binance_price_tick_loop():
-    """Canlı Hesap açık pozisyonları için WS fiyat + 24s hacim tick'leri (2 sn).
+# 2026-10-18: görülmüş varlık birleşimi 30 sn cache'lenir (eskiden 2 sn'de bir
+# list_users + kullanıcı başı llm_settings okuması = N+1 DB sorgusu).
+_TICK_ASSETS_TTL_SEC = 30.0
+_tick_assets_cache: tuple[float, frozenset] = (0.0, frozenset())
 
-    Kaynak: /api/v3/ticker/24hr (symbols parametreli — ağırlık SEMBOL BAŞINA 2,
-    TICKER_SYMBOL_BATCH=50 ile tek istekte kalır). Evren `_order_tick_assets`
-    ile PRICE_TICK_MAX_ASSETS varlığa kırpılır: 24×2+1=49 aday → tek istek,
-    15 sn önbellek dedupe ile ~4 fetch/dk. Öncelik ASSETTRY çifti; TRY çifti
-    yoksa ASSETUSDT fiyatı USDTTRY ile TRY'ye çevrilir. Hacim de aynı kurala
-    göre TRY'ye çevrilir (USDT çiftinin quoteVolume'u USDT cinsindendir).
-    Bağlı WS istemcisi yokken broadcast no-op'tur; ağ hatası döngüyü öldürmez.
+
+async def _tick_seen_assets() -> set[str]:
+    global _tick_assets_cache
+    now_mono = time.monotonic()
+    if _tick_assets_cache[0] > now_mono:
+        return set(_tick_assets_cache[1])
+    usernames = [str(u.get("username") or "") for u in await database.list_users() if u.get("is_active")]
+    seen: set[str] = set()
+    for uname in usernames:
+        if uname:
+            seen |= await _load_seen_binance_assets(uname)
+    _tick_assets_cache = (now_mono + _TICK_ASSETS_TTL_SEC, frozenset(seen))
+    return seen
+
+
+_valid_symbols_cache: tuple[float, frozenset | None] = (0.0, None)
+
+
+async def _valid_concat_symbols() -> set[str] | None:
+    """Borsada GERÇEKTEN var olan çiftler (bitişik biçim). Başarı 10 dk, hata 60 sn cache'lenir
+    (liste ucu çökükse 2 sn'de bir yeniden denenmesin). Hata → None (süzme yok)."""
+    global _valid_symbols_cache
+    now_mono = time.monotonic()
+    if _valid_symbols_cache[0] > now_mono:
+        return set(_valid_symbols_cache[1]) if _valid_symbols_cache[1] else None
+    try:
+        from app.binance_tr_private import get_all_valid_symbols
+        valid = await asyncio.to_thread(get_all_valid_symbols)
+        out = frozenset(str(s).upper().replace("_", "") for s in valid) or None
+    except Exception:
+        out = None
+    _valid_symbols_cache = (now_mono + (600.0 if out else 60.0), out)
+    return set(out) if out else None
+
+
+async def binance_price_tick_loop():
+    """Canlı fiyat + 24s hacim tick'leri (`binance_price`, 2 sn) — TEK üretici.
+
+    2026-10-18 (Binance TR canlı akış): eskiden iki üretici vardı (bu döngü REST'ten,
+    `runtime.ws_broadcast_loop` bellekten; zaman birimleri farklıydı: sn / ms). Artık:
+    1. Kaynak önce WS belleği (`market.mini_tickers` + `market.tickers`) — tüm pazar
+       (paper paneli de bu haritadan beslenir).
+    2. Kullanıcıların görülmüş/izlenen varlık çiftlerinden bellekte EKSİK ya da
+       BAYAT (> _LIVE_PRICE_MAX_AGE_SEC) olanlar için REST /api/v3/ticker/24hr
+       (ağırlık SEMBOL BAŞINA 2; evren `_order_tick_assets` ile kırpılır).
+    3. Bağlı WS istemcisi yoksa tur tamamen atlanır. `time` milisaniyedir.
+    Öncelik ASSETTRY çifti; TRY çifti yoksa ASSETUSDT fiyatı USDTTRY ile TRY'ye
+    çevrilir. Hacim de aynı kurala göre TRY'ye çevrilir. Ağ hatası döngüyü öldürmez.
     """
     await asyncio.sleep(2)  # Hızlı başlangıç
     while True:
         try:
-            if not await _binance_ticks_configured():
-                await asyncio.sleep(10)
+            if not ws_manager.active_connections:
+                await asyncio.sleep(2)
                 continue
-            # Çok kullanıcılı (2026-09-19): tüm kullanıcıların görülmüş
-            # varlık havuzları birleştirilir — tek global tick yayınını
-            # (WS broadcast) korumak için.
-            usernames = [str(u.get("username") or "") for u in await database.list_users() if u.get("is_active")]
-            seen_assets: set[str] = set()
-            for uname in usernames:
-                if not uname:
-                    continue
-                seen_assets |= await _load_seen_binance_assets(uname)
-            extra = _extra_watch_assets(time.monotonic())
-            assets = _order_tick_assets(seen_assets, extra)
-            if not assets:
-                await asyncio.sleep(5)
-                continue
-            candidates: list[str] = []
-            for asset in sorted(assets):
-                if asset == "TRY":
-                    continue
-                candidates.extend([f"{asset}TRY", f"{asset}USDT"])
-            candidates.append("USDTTRY")
-            rows = await binance_tr_public.ticker_24h(candidates)
+            memory = _memory_price_rows()
+            rows: list[dict] = [
+                {"symbol": sym, "lastPrice": v["price"], "quoteVolume": v.get("quote_volume") or 0}
+                for sym, v in memory.items()
+            ]
+            if await _binance_ticks_configured():
+                # Çok kullanıcılı (2026-09-19): tüm kullanıcıların görülmüş varlık
+                # havuzları birleştirilir — tek global tick yayını korunur.
+                seen_assets = await _tick_seen_assets()
+                extra = _extra_watch_assets(time.monotonic())
+                assets = _order_tick_assets(seen_assets, extra)
+                candidates: list[str] = []
+                for asset in sorted(assets):
+                    if asset == "TRY":
+                        continue
+                    candidates.extend([f"{asset}TRY", f"{asset}USDT"])
+                if candidates:
+                    candidates.append("USDTTRY")
+                fresh = _fresh_memory_prices(candidates, rows=memory)
+                missing = [c for c in candidates if c not in fresh]
+                if missing:
+                    valid = await _valid_concat_symbols()
+                    if valid is not None:
+                        missing = [c for c in missing if c in valid]
+                if missing:
+                    try:
+                        rest_rows = await binance_tr_public.ticker_24h(missing)
+                        rows.extend(rest_rows if isinstance(rest_rows, list) else [])
+                    except Exception as exc:
+                        logger.debug("Canlı tick REST yedeği atlandı: %s", type(exc).__name__)
             raw: dict[str, dict] = {}
-            for row in rows if isinstance(rows, list) else []:
+            for row in rows:
                 symbol_u = str(row.get("symbol") or "").upper().replace("_", "")
                 try:
                     price = float(row.get("lastPrice") or row.get("price") or 0)
@@ -3074,7 +3325,12 @@ async def binance_price_tick_loop():
                     raw["USDTTRY"] = {"price_try": price, "symbol": symbol_u, "qv": quote_volume}
                     continue
                 # TRY 3 karakter, USDT 4 karakter:
-                base = symbol_u[:-3] if symbol_u.endswith("TRY") else (symbol_u[:-4] if symbol_u.endswith("USDT") else symbol_u)
+                if symbol_u.endswith("TRY"):
+                    base = symbol_u[:-3]
+                elif symbol_u.endswith("USDT"):
+                    base = symbol_u[:-4]
+                else:
+                    continue
                 if not base:
                     continue
                 entry = raw.setdefault(base, {})
@@ -3113,10 +3369,12 @@ async def binance_price_tick_loop():
                 }
                 ticks["USDT"] = usdt_tick
                 ticks["USDTTRY"] = usdt_tick
-            ticks["TRY"] = {"price": 1.0, "symbol": "TRY", "quote_volume_try": None}
             if ticks:
+                ticks["TRY"] = {"price": 1.0, "symbol": "TRY", "quote_volume_try": None}
                 await ws_manager.broadcast({"type": "binance_price", "data": {
-                    "ticks": ticks, "time": time.time()}})
+                    "ticks": ticks, "time": int(time.time() * 1000)}})
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             logger.debug("Canlı Hesap fiyat tick'i atlandı: %s", type(exc).__name__)
         await asyncio.sleep(2)
@@ -3216,6 +3474,9 @@ async def save_binance_settings(payload: dict, request: Request):
         enc_key = llm_analysis.encrypt_key(api_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
         enc_secret = llm_analysis.encrypt_key(api_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
         await database.save_user_binance_keys(user_id, enc_key, enc_secret, real_val)
+        # 2026-10-18: pozisyon cache'i kullanıcı anahtarıyla (çözmeden) okunur → anahtar değişince düşür.
+        _invalidate_positions_cache(user_id)
+        _account_snapshot.pop(user_id, None)
         # Admin çift yazma: eski global anahtarlar da tazelenir (backcompat).
         if principal.get("role") == "admin":
             await database.set_llm_setting(BINANCE_API_KEY_SETTING, enc_key)
@@ -3250,16 +3511,36 @@ async def _verify_binance_keys(api_key: str, api_secret: str) -> None:
             detail="API anahtarı doğrulanamadı. Anahtarı, gizli anahtarı ve 'okuma' iznini kontrol edin") from None
 
 
-async def _decrypt_binance_creds(request) -> tuple[str, str]:
+async def _require_live_user(request, panel_msg: str, env_msg: str) -> tuple[dict, dict]:
+    """Oturum + kullanıcı satırı + gerçek emir kapısı (tek yerde).
+
+    2026-10-18: sell/buy/order/set-sl-tp/fee-mode uçlarındaki kopya blokların yerine.
+    Kapalıysa 403: kaynak panel ise `panel_msg`, env override ise `env_msg`.
+    Dönüş (principal, user) — user `_decrypt_binance_creds(request, user=user)`'a verilir
+    (ikinci kullanıcı sorgusu olmaz).
+    """
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    ok, source = await _real_sell_state_for(int(user["id"]))
+    if not ok:
+        raise HTTPException(status_code=403, detail=panel_msg if source == "panel" else env_msg)
+    return principal, user
+
+
+async def _decrypt_binance_creds(request, user: dict | None = None) -> tuple[str, str]:
     """Oturumdaki kullanıcının Binance key/secret'ını çöz (çok kullanıcılı).
 
     Öncelik: user_binance_keys(user_id) → yoksa admin fallback (eski global
     llm_settings anahtarları, admin'in mevcut kurulumu çalışmaya devam eder).
     Her kullanıcı yalnız KENDİ hesabına erişir; key/secret asla istemciye dönmez.
+    2026-10-18: çağıran kullanıcı satırını zaten yüklediyse `user` ile verir (ikinci sorgu yok).
     """
     principal = _require_user(request)
     username = str(principal.get("username") or "").strip()
-    user = await database.get_user_by_username(username)
+    if user is None:
+        user = await database.get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
 
@@ -3290,11 +3571,60 @@ async def _decrypt_binance_creds(request) -> tuple[str, str]:
     raise HTTPException(status_code=404, detail="Binance API anahtarları yapılandırılmamış — Ayarlar'dan kendi API anahtarlarınızı girin")
 
 
-async def _publish_binance_user_event(user_id: int, event: dict) -> None:
+_FILL_STATUSES = {"FILLED", "PARTIALLY_FILLED", "1", "2"}  # Binance TR sayısal: 1=kısmi, 2=dolu
+
+
+def _event_base_asset(symbol) -> str:
+    """"BTC_TRY" / "BTCTRY" / "BTCUSDT" → "BTC" (tanınmazsa boş)."""
+    sym = str(symbol or "").upper().strip()
+    if "_" in sym:
+        return sym.split("_", 1)[0]
+    for quote in ("USDT", "TRY"):
+        if sym.endswith(quote) and len(sym) > len(quote):
+            return sym[:-len(quote)]
+    return ""
+
+
+def _invalidate_after_user_event(user_id: int, event: dict, api_key: str = "") -> None:
+    """2026-10-18: olay başına TÜM maliyet cache'ini silmek yerine hedefli geçersiz kılma.
+
+    - Her olay: pozisyon yanıt cache'i (ucuz) + bakiye cache'i düşer.
+    - executionReport yalnız DOLUM (X = FILLED / PARTIALLY_FILLED) ise: olayın baz
+      varlığının FIFO maliyeti + bugünün gün-işlemleri cache'i düşer. NEW/CANCELED
+      emir olayları maliyeti değiştirmez.
+    - outboundAccountPosition maliyet cache'ine dokunmaz.
+    """
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return
+    _invalidate_positions_cache(uid, cost=False)
+    if api_key:
+        try:
+            from app.binance_tr_private import invalidate_account_balance_cache
+            invalidate_account_balance_cache(api_key)
+        except Exception:  # noqa: BLE001
+            pass
+    event = event if isinstance(event, dict) else {}
+    if event.get("event_type") != "executionReport":
+        return
+    fields = event.get("fields") if isinstance(event.get("fields"), dict) else {}
+    raw = event.get("raw") if isinstance(event.get("raw"), dict) else {}
+    status = str(fields.get("status") or raw.get("X") or "").upper()
+    if status not in _FILL_STATUSES:
+        return
+    base = _event_base_asset(fields.get("symbol") or raw.get("s"))
+    _invalidate_binance_cost_cache(uid, base or None)
+    today = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
+    _binance_day_trades_cache.pop((uid, today), None)
+
+
+async def _publish_binance_user_event(user_id: int, event: dict, api_key: str = "") -> None:
     """Özel borsa olayını yalnız ilgili kullanıcının doğrulanmış WS oturumlarına ilet."""
-    # 2026-10-17 (basit arayüz): dolum/bakiye olayı → pozisyon + maliyet cache'i düşer.
-    _invalidate_positions_cache(user_id)
+    _invalidate_after_user_event(user_id, event, api_key)
     await ws_manager.broadcast({"type": "binance_user_event", "data": event}, user_id=user_id)
+    # 2026-10-18: 15 sn'lik push turunu bekleme — debounce'lu (~0.5 sn) tekil push.
+    _schedule_account_push(user_id)
 
 
 async def _ensure_binance_user_stream(user_id: int, api_key: str, api_secret: str) -> dict:
@@ -3302,7 +3632,7 @@ async def _ensure_binance_user_stream(user_id: int, api_key: str, api_secret: st
     try:
         return await binance_tr_user_stream.start_user_stream(
             user_id, api_key, api_secret,
-            publish_callback=lambda event: _publish_binance_user_event(user_id, event),
+            publish_callback=lambda event: _publish_binance_user_event(user_id, event, api_key),
         )
     except Exception as exc:
         logger.warning("Binance TR özel kullanıcı akışı başlatılamadı user_id=%s (%s)",
@@ -3352,8 +3682,11 @@ def _balance_cache_token(api_key: str):
         return None
 
 
-def _invalidate_positions_cache(user_id: int) -> None:
-    """Kullanıcının pozisyon yanıtı + FIFO maliyet cache'ini düşürür (emir/dolum sonrası)."""
+def _invalidate_positions_cache(user_id: int, *, cost: bool = True) -> None:
+    """Kullanıcının pozisyon yanıtı + (cost=True ise) FIFO maliyet cache'ini düşürür (emir/dolum sonrası).
+
+    2026-10-18: kullanıcı akışı olayları `cost=False` ile çağırır; maliyet yalnız dolan
+    varlık için hedefli düşürülür (`_invalidate_after_user_event`)."""
     try:
         uid = int(user_id)
     except (TypeError, ValueError):
@@ -3361,7 +3694,17 @@ def _invalidate_positions_cache(user_id: int) -> None:
     _positions_gen[uid] = _positions_gen.get(uid, 0) + 1
     for key in [k for k in _positions_cache if k[0] == uid]:
         _positions_cache.pop(key, None)
-    _invalidate_binance_cost_cache(uid)
+    if cost:
+        _invalidate_binance_cost_cache(uid)
+
+
+def _positions_cache_entry_for_user(user_id: int):
+    """Anahtar çözmeden ÖNCE kullanıcının geçerli (bakiye kimliği tutan) cache kaydı: (cache_key, kayıt) | None.
+    Bakiye cache kimliği anahtar önekiyle (cache_key[1]) okunur; şifre çözmeye gerek yok."""
+    for key, entry in list(_positions_cache.items()):
+        if key[0] == user_id and entry[2] is _balance_cache_token(key[1]):
+            return key, entry
+    return None
 
 
 @app.get("/api/binance/positions")
@@ -3382,7 +3725,12 @@ async def binance_positions(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
     user_id = int(user["id"])
-    api_key, api_secret = await _decrypt_binance_creds(request)
+    # 2026-10-18: cache isabeti anahtar çözmeden (ikinci kullanıcı sorgusu + Fernet) döner.
+    hit = _positions_cache_entry_for_user(user_id)
+    if hit and hit[1][0] > time.monotonic():
+        logger.debug("binance_positions cache-hit user=%s %.1f ms", user_id, (time.perf_counter() - t0) * 1000)
+        return _copy.deepcopy(hit[1][1])
+    api_key, api_secret = await _decrypt_binance_creds(request, user=user)
     cache_key = (user_id, (api_key or "")[:16])
     cached = _positions_cache.get(cache_key)
     token_ok = bool(cached) and cached[2] is _balance_cache_token(api_key)
@@ -3432,12 +3780,32 @@ def _schedule_positions_refresh(principal: dict, user_id: int, api_key: str, api
     _positions_refresh_tasks[user_id] = asyncio.get_running_loop().create_task(_run())
 
 
-async def _binance_positions_uncached(principal: dict, user_id: int, api_key: str, api_secret: str) -> dict:
-    stream_status = await _ensure_binance_user_stream(user_id, api_key, api_secret)
+async def _remember_seen_assets(username: str, assets: set[str]) -> None:
+    """Görülen varlıkları kalıcı havuza ekler — YALNIZ küme değiştiyse yazar (arka plan)."""
+    if not username or not assets:
+        return
     try:
-        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
+        seen = await _load_seen_binance_assets(username)
+        if assets - seen:
+            await _save_seen_binance_assets(username, seen | assets)
+    except Exception as exc:  # noqa: BLE001 — havuz yazımı yanıtı bozmaz
+        logger.debug("görülmüş varlık havuzu güncellenemedi (%s): %s", username, type(exc).__name__)
+
+
+async def _binance_positions_uncached(principal: dict, user_id: int, api_key: str, api_secret: str) -> dict:
+    # 2026-10-18: kullanıcı akışı ısıtma ile bakiye okuması paralel.
+    stream_status, balances = await asyncio.gather(
+        _ensure_binance_user_stream(user_id, api_key, api_secret),
+        asyncio.to_thread(get_account_balance, api_key, api_secret),
+        return_exceptions=True,
+    )
+    if isinstance(balances, asyncio.CancelledError):
+        raise balances
+    if isinstance(balances, BaseException):
+        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {balances}")
+    if isinstance(stream_status, BaseException):
+        stream_status = {"state": "unavailable", "connected": False,
+                         "last_error": type(stream_status).__name__}
     holdings: list[dict] = []
     held = []
     for b in balances:
@@ -3450,58 +3818,27 @@ async def _binance_positions_uncached(principal: dict, user_id: int, api_key: st
         if not asset:
             continue
         held.append({"asset": asset, "free": free, "locked": locked, "total": total})
-    # Görülen varlıkları kalıcı havuza ekle (gün işlemleri sorgusu bunları tarar)
+    # Görülen varlıkları kalıcı havuza ekle (gün işlemleri sorgusu bunları tarar).
+    # 2026-10-18: kritik yoldan çıkarıldı (arka plan; yalnız küme değiştiyse yazar).
     if held:
-        seen = await _load_seen_binance_assets(str(principal.get("username") or ""))
-        new_assets = {h["asset"] for h in held} - seen
-        if new_assets:
-            await _save_seen_binance_assets(str(principal.get("username") or ""), seen | new_assets)
+        _spawn_background(_remember_seen_assets(str(principal.get("username") or ""),
+                                                {h["asset"] for h in held}))
 
-    # Fiyat tablosu: her varlık için önce TRY, sonra USDT çiftini sor (≤50/istek).
+    # Fiyat tablosu: her varlık için önce TRY, sonra USDT çifti (önce WS belleği, eksikler REST ≤50/istek).
     candidates: list[str] = []
     for h in held:
         if h["asset"] != "TRY":
             candidates.extend([f"{h['asset']}TRY", f"{h['asset']}USDT"])
     if any(h["asset"] == "USDT" for h in held):
         candidates.append("USDTTRY")
-    price_by_symbol: dict[str, float] = {}
-    for i in range(0, len(candidates), 50):
-        try:
-            rows = await binance_tr_public.ticker_price(candidates[i:i + 50])
-            for row in rows if isinstance(rows, list) else []:
-                try:
-                    price_by_symbol[str(row.get("symbol") or "").upper()] = float(row.get("price") or 0)
-                except (TypeError, ValueError):
-                    continue
-        except Exception as exc:
-            logger.warning("Binance TR fiyat listesi alınamadı (kısmi): %s", exc)
 
-    usdt_try = price_by_symbol.get("USDTTRY", 0.0)
     now_ts = time.time()
-    for h in held:
-        asset = h["asset"]
-        if asset == "TRY":
-            price_try = 1.0
-            symbol_concat = None
-        elif price_by_symbol.get(f"{asset}TRY"):
-            price_try = price_by_symbol[f"{asset}TRY"]
-            symbol_concat = f"{asset}TRY"
-        elif price_by_symbol.get(f"{asset}USDT") and usdt_try:
-            price_try = price_by_symbol[f"{asset}USDT"] * usdt_try
-            symbol_concat = f"{asset}USDT"
-        else:
-            price_try = None
-            symbol_concat = None
-        h["price_try"] = price_try
-        h["value_try"] = round(h["total"] * price_try, 2) if price_try is not None else None
-        h["_cost_symbol"] = symbol_concat
-        holdings.append(h)
-
     # Ağırlıklı ortalama alım maliyeti (FIFO, cache'li). TRY çifti yoksa USDT
     # maliyeti USDTTRY ile TRY'ye çevrilir.
     # PERFORMANS (2026-09-27): maliyet hesapları paralel dalgalar (sem 5) ile
     # hızlıca çözülür.
     _cost_sem = asyncio.Semaphore(5)
+    usdt_box = {"usdt_try": 0.0}
 
     async def _cost_for(h: dict):
         if h["asset"] == "TRY":
@@ -3510,7 +3847,8 @@ async def _binance_positions_uncached(principal: dict, user_id: int, api_key: st
         async with _cost_sem:
             try:
                 info = await asyncio.to_thread(
-                    _avg_buy_cost, user_id, api_key, api_secret, h["asset"], sym, now_ts, h["total"], usdt_try)
+                    _avg_buy_cost, user_id, api_key, api_secret, h["asset"], sym, now_ts, h["total"],
+                    usdt_box["usdt_try"])
                 # 2026-10-17 (basit arayüz): maliyet bulunamadıysa (geçici hata / geçmiş yok)
                 # 300 sn değil kısa süre cache'le → "Giriş: —" uzun süre takılı kalmaz.
                 if not (info and info.get("avg_price")):
@@ -3519,7 +3857,43 @@ async def _binance_positions_uncached(principal: dict, user_id: int, api_key: st
             except Exception:
                 return None
 
-    costs = await asyncio.gather(*[_cost_for(h) for h in held]) if held else []
+    async def _prices_then_costs():
+        # Maliyet, fiyat adımının seçtiği çifte (TRY/USDT) ve USDTTRY kuruna bağlı → zincir;
+        # açık emir sorgusu bu zincirle PARALEL koşar (2026-10-18).
+        price_by_symbol = await _prices_for_symbols(candidates, warn=True)
+        usdt_try = price_by_symbol.get("USDTTRY", 0.0)
+        usdt_box["usdt_try"] = usdt_try
+        for h in held:
+            asset = h["asset"]
+            if asset == "TRY":
+                price_try = 1.0
+                symbol_concat = None
+            elif price_by_symbol.get(f"{asset}TRY"):
+                price_try = price_by_symbol[f"{asset}TRY"]
+                symbol_concat = f"{asset}TRY"
+            elif price_by_symbol.get(f"{asset}USDT") and usdt_try:
+                price_try = price_by_symbol[f"{asset}USDT"] * usdt_try
+                symbol_concat = f"{asset}USDT"
+            else:
+                price_try = None
+                symbol_concat = None
+            h["price_try"] = price_try
+            h["value_try"] = round(h["total"] * price_try, 2) if price_try is not None else None
+            h["_cost_symbol"] = symbol_concat
+            holdings.append(h)
+        costs = await asyncio.gather(*[_cost_for(h) for h in held]) if held else []
+        return usdt_try, costs
+
+    async def _open_orders_for_held():
+        # Açık emirleri çekip varlıklara iliştir (SL / TP takibi ve koruma durumu)
+        try:
+            cand_syms = [f"{h['asset']}_TRY" for h in held] + [f"{h['asset']}_USDT" for h in held]
+            return await asyncio.to_thread(get_open_orders, api_key, api_secret, "", cand_syms)
+        except Exception as exc:
+            logger.info("Pozisyonlara açık emirler iliştirilemedi: %s", exc)
+            return []
+
+    (usdt_try, costs), open_orders = await asyncio.gather(_prices_then_costs(), _open_orders_for_held())
     for h, cost in zip(held, costs):
         price_try = h.get("price_try")
         avg_cost_try = None
@@ -3538,14 +3912,6 @@ async def _binance_positions_uncached(principal: dict, user_id: int, api_key: st
             h["pnl_try"] = None
             h["pnl_pct"] = None
         h.pop("_cost_symbol", None)
-
-    # Açık emirleri çekip varlıklara iliştir (SL / TP takibi ve koruma durumu)
-    try:
-        cand_syms = [f"{h['asset']}_TRY" for h in holdings] + [f"{h['asset']}_USDT" for h in holdings]
-        open_orders = await asyncio.to_thread(get_open_orders, api_key, api_secret, "", cand_syms)
-    except Exception as exc:
-        logger.info("Pozisyonlara açık emirler iliştirilemedi: %s", exc)
-        open_orders = []
 
     orders_by_asset: dict[str, list[dict]] = {}
     for o in open_orders:
@@ -3719,18 +4085,13 @@ async def binance_sell(payload: dict, request: Request):
     stepSize'ına aşağı yuvarlanır; min lot altı reddedilir. Sembol sırasıyla
     {ASSET}_TRY, {ASSET}_USDT çiftlerinden mevcut olanıdır.
     """
-    principal = _require_user(request)
-    user = await database.get_user_by_username(str(principal.get("username") or ""))
-    if not user:
-        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
-    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
-    if not sell_ok:
-        if sell_source == "panel":
-            raise HTTPException(status_code=403, detail="Gerçek satış kapalı — Ayarlar > Binance TR API > 'GERÇEK SATIŞ' anahtarını aç veya sunucuda ENABLE_REAL_BINANCE_SELL=1 tanımla")
-        raise HTTPException(status_code=403, detail="Gerçek Binance satışı sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış (env override)")
+    principal, user = await _require_live_user(
+        request,
+        "Gerçek satış kapalı — Ayarlar > Binance TR API > 'GERÇEK SATIŞ' anahtarını aç veya sunucuda ENABLE_REAL_BINANCE_SELL=1 tanımla",
+        "Gerçek Binance satışı sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış (env override)")
     if str(payload.get("confirmation") or "").strip().upper() != "REAL_SELL":
         raise HTTPException(status_code=422, detail="REAL_SELL onayı gerekli")
-    api_key, api_secret = await _decrypt_binance_creds(request)
+    api_key, api_secret = await _decrypt_binance_creds(request, user=user)
     asset = str(payload.get("asset") or "").upper().strip()
     if not asset or asset == "TRY":
         raise HTTPException(status_code=422, detail="Geçersiz varlık")
@@ -3765,7 +4126,7 @@ async def binance_sell(payload: dict, request: Request):
     step = float((filters or {}).get("step_size") or 0)
     min_qty = float((filters or {}).get("min_qty") or 0)
     if step > 0:
-        qty = math.floor(qty / step) * step
+        qty = floor_to_step(qty, step)  # 2026-10-18: Decimal-kesin (float kayması yok)
     qty = float(f"{qty:.8f}")
     if qty <= 0 or qty < min_qty:
         raise HTTPException(status_code=422, detail=f"Miktar minimum lotun altında (min {min_qty or 'bilinmiyor'})")
@@ -3852,18 +4213,13 @@ async def binance_buy(payload: dict, request: Request):
     "{kullanıcı} {SEMBOLOLUŞUR} sembolünde {fiyat} fiyatla pozisyon açtı"
     push'u gider (tutar/miktar YOK — yalnız sembol + fiyat).
     """
-    principal = _require_user(request)
-    user = await database.get_user_by_username(str(principal.get("username") or ""))
-    if not user:
-        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
-    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
-    if not sell_ok:
-        if sell_source == "panel":
-            raise HTTPException(status_code=403, detail="Gerçek işlem kapalı — Ayarlar > Binance TR API > 'GERÇEK SATIŞ' anahtarını aç veya sunucuda ENABLE_REAL_BINANCE_SELL=1 tanımla")
-        raise HTTPException(status_code=403, detail="Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış (env override)")
+    principal, user = await _require_live_user(
+        request,
+        "Gerçek işlem kapalı — Ayarlar > Binance TR API > 'GERÇEK SATIŞ' anahtarını aç veya sunucuda ENABLE_REAL_BINANCE_SELL=1 tanımla",
+        "Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış (env override)")
     if str(payload.get("confirmation") or "").strip().upper() != "REAL_BUY":
         raise HTTPException(status_code=422, detail="REAL_BUY onayı gerekli")
-    api_key, api_secret = await _decrypt_binance_creds(request)
+    api_key, api_secret = await _decrypt_binance_creds(request, user=user)
     asset = str(payload.get("asset") or "").upper().strip()
     if not asset or asset == "TRY":
         raise HTTPException(status_code=422, detail="Geçersiz varlık")
@@ -3988,18 +4344,13 @@ def _fmt_tr_price(value: float) -> str:
 @app.post("/api/binance/order")
 async def binance_order(payload: dict, request: Request):
     """Açık gerçek hesap onayıyla spot emir gönderir; belirsiz sonucu tekrar etmez."""
-    principal = _require_user(request)
-    user = await database.get_user_by_username(str(principal.get("username") or ""))
-    if not user:
-        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
-    enabled, source = await _real_sell_state_for(int(user["id"]))
-    if not enabled:
-        raise HTTPException(status_code=403, detail=(
-            "Gerçek Binance emirleri kapalı — Ayarlar > Binance TR API bölümünden açın"
-            if source == "panel" else "Gerçek Binance emirleri sunucu yapılandırmasında kapalı"))
+    principal, user = await _require_live_user(
+        request,
+        "Gerçek Binance emirleri kapalı — Ayarlar > Binance TR API bölümünden açın",
+        "Gerçek Binance emirleri sunucu yapılandırmasında kapalı")
     if str(payload.get("confirmation") or "") != "REAL_ORDER":
         raise HTTPException(status_code=422, detail="REAL_ORDER onayı gerekli")
-    api_key, api_secret = await _decrypt_binance_creds(request)
+    api_key, api_secret = await _decrypt_binance_creds(request, user=user)
     symbol = str(payload.get("symbol") or "").upper().strip().replace("/", "").replace(" ", "")
     side = str(payload.get("side") or "").upper().strip()
     order_type = str(payload.get("type") or "").upper().strip()
@@ -4138,7 +4489,7 @@ async def _restore_cancelled_stops(api_key: str, api_secret: str, symbol_u: str,
                 continue  # stop emri değil (saf limit TP) — geri kurmaya değmez
             re_qty = float(ex.get("origQty") or 0) or fallback_qty
             if step and step > 0:
-                re_qty = round(math.floor(re_qty / step) * step, 10)
+                re_qty = floor_to_step(re_qty, step)
             if re_qty <= 0:
                 continue
             limit_px = float(ex.get("price") or 0) or None
@@ -4154,17 +4505,12 @@ async def _restore_cancelled_stops(api_key: str, api_secret: str, symbol_u: str,
 @app.post("/api/binance/set-sl-tp")
 async def binance_set_sl_tp(payload: dict, request: Request):
     """Açık pozisyona SL/TP/OCO emri kurar (oturum açmış kullanıcı)."""
-    principal = _require_user(request)
-    user = await database.get_user_by_username(str(principal.get("username") or ""))
-    if not user:
-        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
-    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
-    if not sell_ok:
-        if sell_source == "panel":
-            raise HTTPException(status_code=403, detail="Gerçek emir gönderimi kapalı — Ayarlar > 'GERÇEK SATIŞ' anahtarını açın")
-        raise HTTPException(status_code=403, detail="Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış")
+    principal, user = await _require_live_user(
+        request,
+        "Gerçek emir gönderimi kapalı — Ayarlar > 'GERÇEK SATIŞ' anahtarını açın",
+        "Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış")
 
-    api_key, api_secret = await _decrypt_binance_creds(request)
+    api_key, api_secret = await _decrypt_binance_creds(request, user=user)
     asset = str(payload.get("asset") or "").upper().strip()
     if not asset or asset == "TRY":
         raise HTTPException(status_code=422, detail="Geçersiz varlık")
@@ -4267,8 +4613,7 @@ async def binance_set_sl_tp(payload: dict, request: Request):
 
         # Miktar step_size'a göre küçüğe yuvarlanmalı (ör. F_TRY stepSize=1 → 64972.395 → 64972)
         if step and step > 0:
-            qty = math.floor(qty / step) * step
-            qty = round(qty, 10)  # kayan nokta hatalarını temizle
+            qty = floor_to_step(qty, step)  # 2026-10-18: Decimal-kesin (eski math.floor float kayması)
 
         if qty <= 0:
             raise HTTPException(status_code=422, detail="Miktar step_size'a yuvarlandıktan sonra 0 oldu")
@@ -4382,17 +4727,12 @@ async def binance_fee_mode_set(payload: dict, request: Request):
         raise HTTPException(status_code=400, detail="Komisyon modu değişikliği için confirm=true gerekli")
     spot_bnb_burn = payload["spot_bnb_burn"]
 
-    principal = _require_user(request)
-    user = await database.get_user_by_username(str(principal.get("username") or ""))
-    if not user:
-        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
-    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
-    if not sell_ok:
-        if sell_source == "panel":
-            raise HTTPException(status_code=403, detail="Gerçek Binance işlemleri kapalı — Ayarlar > 'GERÇEK SATIŞ' anahtarını açın")
-        raise HTTPException(status_code=403, detail="Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış")
+    principal, user = await _require_live_user(
+        request,
+        "Gerçek Binance işlemleri kapalı — Ayarlar > 'GERÇEK SATIŞ' anahtarını açın",
+        "Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış")
 
-    api_key, api_secret = await _decrypt_binance_creds(request)
+    api_key, api_secret = await _decrypt_binance_creds(request, user=user)
     from app import binance_tr_private as _btr
     try:
         res = await asyncio.to_thread(_btr.set_fee_mode, api_key, api_secret, spot_bnb_burn)
@@ -4416,7 +4756,6 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
     {ASSET}_TRY / {ASSET}_USDT çiftleri paralel sorgulanır. Sonuç zamana
     göre sıralı döner; gün bazında 60 sn cache'lenir.
     """
-    api_key, api_secret = await _decrypt_binance_creds(request)
     try:
         day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone(timedelta(hours=3)))
     except ValueError:
@@ -4429,13 +4768,17 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
     principal = _require_user(request)
     username = str(principal.get("username") or "").strip()
     user = await database.get_user_by_username(username)
-    user_id = int(user["id"]) if user else 0
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    user_id = int(user["id"])
 
     now_ts = time.time()
     cache_key = (user_id, date)
     cache = _binance_day_trades_cache.get(cache_key)
     if cache and cache[0] > now_ts:
         return cache[1]
+    # 2026-10-18: anahtar çözümü cache kontrolünden SONRA (isabette Fernet + ikinci sorgu yok).
+    api_key, api_secret = await _decrypt_binance_creds(request, user=user)
 
     # In-flight coalescing: aynı anda gelen paralel istekleri tek bir görevde birleştir
     task = _binance_day_trades_inflight.get(cache_key)
@@ -4469,7 +4812,9 @@ async def _compute_binance_trades_day(
                       if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0)}
     known_assets = await _load_seen_binance_assets(username)
     assets = sorted(current_assets | known_assets | {"USDT"})
-    await _save_seen_binance_assets(username, current_assets | known_assets)
+    # 2026-10-18: havuz yalnız DEĞİŞTİYSE ve kritik yol dışında yazılır.
+    if current_assets - known_assets:
+        _spawn_background(_save_seen_binance_assets(username, current_assets | known_assets))
 
     # Varlık → mevcut sembol çiftleri (sıra: TRY önce)
     # Rate limit dostu eşzamanlılık (Semaphore: 3) ve nazik istek aralığı
@@ -4486,19 +4831,44 @@ async def _compute_binance_trades_day(
                 logger.debug("Binance TR gün işlemleri %s: %s", sym_concat, exc)
                 return []
 
-    tasks: list[asyncio.Task] = []
-    for asset in assets:
-        if asset == "TRY":
-            continue
-        for quote in ("TRY", "USDT"):
-            cand_u = f"{asset}_{quote}"
-            if await asyncio.to_thread(get_symbol_filters, api_key, api_secret, cand_u):
-                tasks.append(asyncio.create_task(fetch_symbol(cand_u)))
+    # 2026-10-18: aday başına ayrı to_thread(get_symbol_filters) yerine sembol kümesi TEK
+    # iş parçacığı turunda süzülür (liste 6 saat cache'li; döngü yalnız sözlük okur).
+    cand_list = [f"{asset}_{quote}" for asset in assets if asset != "TRY" for quote in ("TRY", "USDT")]
+
+    def _existing_symbols() -> list[str]:
+        return [c for c in cand_list if get_symbol_filters(api_key, api_secret, c)]
+
+    valid_syms = await asyncio.to_thread(_existing_symbols)
+
+    async def fetch_try_rates() -> tuple[float, float]:
+        usdt_try = 0.0
+        bnb_try = 0.0
+        try:
+            rates = await binance_tr_public.ticker_price(["USDTTRY", "BNBTRY"])
+            for row in rates if isinstance(rates, list) else []:
+                s = str(row.get("symbol") or "").upper().replace("_", "")
+                if s == "USDTTRY":
+                    usdt_try = float(row.get("price") or 0)
+                elif s == "BNBTRY":
+                    bnb_try = float(row.get("price") or 0)
+        except Exception:
+            pass
+        if bnb_try == 0.0 and usdt_try > 0:
+            try:
+                bnb_u = await binance_tr_public.ticker_price(["BNBUSDT"])
+                for row in bnb_u if isinstance(bnb_u, list) else []:
+                    if str(row.get("symbol") or "").upper().replace("_", "") == "BNBUSDT":
+                        bnb_try = float(row.get("price") or 0) * usdt_try
+            except Exception:
+                pass
+        return usdt_try, bnb_try
+
+    tasks: list = [fetch_symbol(c) for c in valid_syms]
+    # Kur (USDTTRY/BNBTRY) sorgusu gün işlemleriyle AYNI gather içinde.
+    *results, (usdt_try, bnb_try) = await asyncio.gather(*tasks, fetch_try_rates())
     rows: list[dict] = []
-    if tasks:
-        results = await asyncio.gather(*tasks)
-        for part in results:
-            rows.extend(part)
+    for part in results:
+        rows.extend(part)
     # GÜNLÜK GERÇEKLEŞEN K/Z (FIFO) — Erkan kararı (2026-09-18): günün işlemleri
     # tablosunda eşleşen ALIS->SATIS kar/zararı görünür; toplamı tablo üstündeki
     # özet kutusunda. Her sembolde SATIS fill'leri gün içi ve geçmiş ALIS lotlarıyla
@@ -4506,27 +4876,6 @@ async def _compute_binance_trades_day(
     # TRY → ×1, USDT → × USDTTRY, BNB → × BNBTRY).
     wins = losses = unmatched = 0
     daily_net = daily_gross = 0.0
-
-    usdt_try = 0.0
-    bnb_try = 0.0
-    try:
-        rates = await binance_tr_public.ticker_price(["USDTTRY", "BNBTRY"])
-        for row in rates if isinstance(rates, list) else []:
-            s = str(row.get("symbol") or "").upper().replace("_", "")
-            if s == "USDTTRY":
-                usdt_try = float(row.get("price") or 0)
-            elif s == "BNBTRY":
-                bnb_try = float(row.get("price") or 0)
-    except Exception:
-        pass
-    if bnb_try == 0.0 and usdt_try > 0:
-        try:
-            bnb_u = await binance_tr_public.ticker_price(["BNBUSDT"])
-            for row in bnb_u if isinstance(bnb_u, list) else []:
-                if str(row.get("symbol") or "").upper().replace("_", "") == "BNBUSDT":
-                    bnb_try = float(row.get("price") or 0) * usdt_try
-        except Exception:
-            pass
 
     by_symbol: dict[str, list[dict]] = {}
     for f in rows:
@@ -4585,6 +4934,9 @@ async def _compute_binance_trades_day(
             "commission_try": 0.0,
             "fills": len(fills),
         }
+        # 2026-10-18: sembol K/Z yüzdesi GERÇEK eşleşen TRY maliyet tabanından
+        # (alış tutarı + alış komisyonu); UI eskiden USDT çiftlerinde quoteQty'den yanlış hesaplıyordu.
+        sym_basis_try = 0.0
 
         # Geçmiş işlemler ile günün işlemlerini birleştir (id bazlı tekilleştirme)
         all_trade_dict: dict[int, dict] = {}
@@ -4670,6 +5022,10 @@ async def _compute_binance_trades_day(
                     net_try = gross_try - comm_try - basis_comm_try
                     f["basis_price"] = round(basis_vwap_orig, 8)
                     f["realized_pnl_try"] = round(net_try, 2)
+                    basis_total_try = basis_cost_try + basis_comm_try
+                    f["realized_pnl_pct"] = (round(net_try / basis_total_try * 100, 4)
+                                             if basis_total_try > 0 else None)
+                    sym_basis_try += basis_total_try
                     daily_net += net_try
                     daily_gross += gross_try
                     summary["realized_pnl_try"] += net_try
@@ -4678,8 +5034,11 @@ async def _compute_binance_trades_day(
                     else:
                         losses += 1
                 else:
+                    f["realized_pnl_pct"] = None
                     unmatched += 1
 
+        summary["realized_pnl_pct"] = (round(summary["realized_pnl_try"] / sym_basis_try * 100, 4)
+                                       if sym_basis_try > 0 else None)
         summary["buy_qty"] = round(summary["buy_qty"], 8)
         summary["buy_cost_try"] = round(summary["buy_cost_try"], 4)
         summary["sell_qty"] = round(summary["sell_qty"], 8)
