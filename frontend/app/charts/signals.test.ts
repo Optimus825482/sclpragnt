@@ -529,7 +529,7 @@ describe("maRibbonBuySignals", () => {
     const bars = mkBars(closes);
     const sig = maRibbonBuySignals(bars, { maFast: 7, maMid: 20, maSlow: 99 });
     expect(sig.length).toBeGreaterThanOrEqual(1);
-    expect(sig[sig.length - 1]).toMatchObject({ type: "buy", text: "BUY", shape: "arrowUp" });
+    expect(sig[sig.length - 1]).toMatchObject({ type: "buy", text: "▲ BUY", shape: "arrowUp", size: 3 });
     const idx = bars.findIndex((b) => b.time === sig[sig.length - 1].time);
     expect(idx).toBeGreaterThan(128);                 // kesişim sıçramadan sonra
     const fast = emaSeries(closes, 7), mid = emaSeries(closes, 20), slow = emaSeries(closes, 99);

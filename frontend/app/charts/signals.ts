@@ -492,9 +492,9 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
             const k0 = k[i - 1], d0 = d[i - 1], k1 = k[i], d1 = d[i];
             if (k0 == null || d0 == null || k1 == null || d1 == null) continue;
             if (crossUp(k0, d0, k1, d1) && k0 < low) {
-                out.push({ time: bars[i].time, type: "buy", text: "", shape: "arrowUp", color: "#10b981", size: 1 });
+                out.push({ time: bars[i].time, type: "buy", text: "", shape: "arrowUp", color: "#10b981", size: 0.8 });
             } else if (crossDown(k0, d0, k1, d1) && k0 > high) {
-                out.push({ time: bars[i].time, type: "sell", text: "", shape: "arrowDown", color: "#ef4444", size: 1 });
+                out.push({ time: bars[i].time, type: "sell", text: "", shape: "arrowDown", color: "#ef4444", size: 0.8 });
             }
         }
         return out;
@@ -514,7 +514,8 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
             const f0 = fast[i - 1], m0 = mid[i - 1], f1 = fast[i], m1 = mid[i], s1 = slow[i];
             if (f0 == null || m0 == null || f1 == null || m1 == null || s1 == null) continue;
             if (m1 > s1 && crossUp(f0, m0, f1, m1)) {
-                out.push({ time: bars[i].time, type: "buy", text: "BUY", shape: "arrowUp", color: "#f59e0b", size: 1.2 });
+                // 2026-10-18: belirgin olsun — büyük (3×) macenta ok + "BUY" etiketi (StochRSI okları 0,8×, ikincil kalır).
+                out.push({ time: bars[i].time, type: "buy", text: "▲ BUY", shape: "arrowUp", color: "#d946ef", size: 3 });
             }
         }
         return out;
