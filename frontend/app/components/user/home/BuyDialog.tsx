@@ -10,7 +10,9 @@ import { useModalA11y } from "../../../lib/useModalA11y";
 import { UncertainOrderError, orderFailureText, postJsonGuarded, uncertainOrderText } from "../../../binance-tr/orderSafety";
 import UncertainOrderNotice from "../binance/UncertainOrderNotice";
 import { buyIntentKey, describeOrderLookup, intentId, isDefinitiveReject, resetIntent, retryWhileGatewayUnavailable, type IntentRef } from "../binance/orderIntent";
-import { checkSlTp, pricesFromPlan, rrFromPrices, slPctFromPrice } from "./buyDialogMath";
+import {
+  SL_PCT_CHIPS, TP_PCT_CHIPS, checkSlTp, pctFromPrice, priceAtPct, pricesFromPlan, rrFromPrices, slPctFromPrice,
+} from "./buyDialogMath";
 
 type Props = {
   open: boolean;
@@ -24,7 +26,8 @@ type Props = {
 
 type Settings = { configured: boolean; sell_enabled: boolean };
 type AmountMode = { kind: "chip"; chip: number } | { kind: "custom"; text: string };
-type Step = "plan" | "confirm" | "done";
+// Onay ayrı adım DEĞİL (2026-10-18): "Alım yap" tek basışta piyasa alımı + OCO kurar; plan ekranı onay yüzeyidir.
+type Step = "plan" | "done";
 type Uncertain = { cid: string; key: string; symbol: string; text: string };
 
 const DEBOUNCE_MS = 400;
@@ -161,16 +164,17 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
   const onSl = (text: string) => { setSlText(text); setManual(true); latest.current = { ...latest.current, slText: text, manual: true }; schedulePlan(DEBOUNCE_MS); };
   const onTp = (text: string) => { setTpText(text); setManual(true); latest.current = { ...latest.current, tpText: text, manual: true }; schedulePlan(DEBOUNCE_MS); };
 
-  const goConfirm = () => {
-    if (!plan || !canConfirm) return;
-    intentId(intent.current, buyIntentKey(plan.symbol, plan.amount_try));
-    setResult(null);
-    setError("");
-    setStep("confirm");
-  };
+  // Tek dokunuş SL/TP: güncel fiyattan yüzde → fiyat metni; doğrulama ve plan yenileme elle yazımla aynı yoldan geçer.
+  const onSlChip = (pct: number) => { const p = priceAtPct(basePrice.current, -pct); if (p != null) onSl(toText(p)); };
+  const onTpChip = (pct: number) => { const p = priceAtPct(basePrice.current, pct); if (p != null) onTp(toText(p)); };
+  const slChipPct = pctFromPrice(basePrice.current, slNum);
+  const tpChipPct = pctFromPrice(basePrice.current, tpNum);
+  const chipCls = (on: boolean) =>
+    `min-h-[44px] flex-1 rounded-lg border px-2 text-sm font-semibold ${on ? "ui-button-primary" : "ui-button-secondary"}`;
 
   const confirmBuy = async () => {
-    if (!plan || sending || sendLock.current) return;
+    if (!plan || !canConfirm || sending || sendLock.current) return;
+    setResult(null);
     sendLock.current = true;
     setSending(true);
     setError("");
@@ -329,14 +333,28 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <label className="block text-sm text-white">
-                    Zarar durdur fiyatı (₺)
-                    <input type="text" inputMode="decimal" value={slText} onChange={(e) => onSl(e.target.value)} className={inputCls} />
-                  </label>
-                  <label className="block text-sm text-white">
-                    Kâr al fiyatı (₺)
-                    <input type="text" inputMode="decimal" value={tpText} onChange={(e) => onTp(e.target.value)} className={inputCls} />
-                  </label>
+                  <div>
+                    <label className="block text-sm text-white">
+                      Zarar durdur fiyatı (₺)
+                      <input type="text" inputMode="decimal" value={slText} onChange={(e) => onSl(e.target.value)} className={inputCls} />
+                    </label>
+                    <div className="mt-1 flex gap-1" role="group" aria-label="Zarar durdur mesafesi">
+                      {SL_PCT_CHIPS.map((c) => (
+                        <button key={c} type="button" aria-pressed={slChipPct === -c} onClick={() => onSlChip(c)} className={chipCls(slChipPct === -c)}>-%{c}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm text-white">
+                      Kâr al fiyatı (₺)
+                      <input type="text" inputMode="decimal" value={tpText} onChange={(e) => onTp(e.target.value)} className={inputCls} />
+                    </label>
+                    <div className="mt-1 flex gap-1" role="group" aria-label="Kâr al mesafesi">
+                      {TP_PCT_CHIPS.map((c) => (
+                        <button key={c} type="button" aria-pressed={tpChipPct === c} onClick={() => onTpChip(c)} className={chipCls(tpChipPct === c)}>+%{c}</button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
                 <p className="text-xs text-bunker-muted">
                   {derivedSlPct != null && derivedRr != null
@@ -369,30 +387,18 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
             )}
             {lockedByUncertain && <p className="text-sm text-yellow-300">Önceki alımın durumu belirsiz. Önce “Durumu sorgula” ile kontrol et ya da bildirimi kapat.</p>}
 
+            {plan && live && (
+              <p className="text-xs font-semibold text-yellow-300">
+                “Alım yap” gerçek paranla {fmtTry(plan.amount_try)} piyasa alımı yapar; dolunca zarar durdur {fmtPrice(plan.plan.sl_price)} ve kâr al {fmtPrice(plan.plan.tp_price)} OCO emri otomatik kurulur. Geri alınamaz.
+              </p>
+            )}
             <div className="flex gap-2">
-              <button type="button" onClick={close} className="ui-button-secondary min-h-[48px] flex-1 rounded-lg border px-4 text-sm font-medium">Vazgeç</button>
-              <button type="button" onClick={goConfirm} disabled={!canConfirm} className="ui-button-primary min-h-[48px] flex-1 rounded-lg px-4 text-sm font-bold disabled:opacity-50">
-                Devam et
+              <button type="button" onClick={close} disabled={sending} className="ui-button-secondary min-h-[48px] flex-1 rounded-lg border px-4 text-sm font-medium disabled:opacity-50">Vazgeç</button>
+              <button type="button" onClick={confirmBuy} disabled={!canConfirm || sending} className="ui-button-primary min-h-[48px] flex-[2] rounded-lg px-4 text-sm font-bold disabled:opacity-50">
+                {sending ? "Gönderiliyor…" : uncertain ? "Aynı emri tekrar gönder" : plan ? `Alım yap · ${fmtTry(plan.amount_try)}` : "Alım yap"}
               </button>
             </div>
           </>
-        )}
-
-        {settings?.configured && step === "confirm" && plan && (
-          <div className="space-y-3 text-sm text-white">
-            <h3 className="text-base font-bold">Alımı onayla</h3>
-            <p><strong>{plan.symbol}</strong> için <strong>{fmtTry(plan.amount_try)}</strong> tutarında piyasa alımı yapılacak.</p>
-            <p>Alım gerçekleşince otomatik emirler kurulur: yaklaşık {fmtPrice(plan.plan.sl_price)} altında zarar durdur, {fmtPrice(plan.plan.tp_price)} üstünde kâr al ({fmtPct(plan.plan.sl_pct)} mesafe · {rrLabel(plan.plan.rr).replace(/ /g, "")} oran).</p>
-            <p className="font-semibold text-yellow-300">Bu işlem gerçek paranla yapılır ve geri alınamaz.</p>
-            {error && <p role="alert" className="text-neon-red">{error}</p>}
-            {uncertain && <UncertainOrderNotice text={uncertain.text} lookup={lookup} lookupBusy={lookupBusy} onLookup={queryOrderStatus} />}
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setStep("plan")} disabled={sending} className="ui-button-secondary min-h-[48px] flex-1 rounded-lg border px-4 text-sm font-medium disabled:opacity-50">Geri dön</button>
-              <button type="button" onClick={confirmBuy} disabled={sending} className="ui-button-primary min-h-[48px] flex-1 rounded-lg px-4 text-sm font-bold disabled:opacity-50">
-                {sending ? "Gönderiliyor…" : uncertain ? "Aynı emri tekrar gönder" : "Evet, gerçek parayla al"}
-              </button>
-            </div>
-          </div>
         )}
 
         {step === "done" && result && (

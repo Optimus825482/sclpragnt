@@ -123,6 +123,20 @@ self.addEventListener("push", function (event) {
       silent: false,
       data: { url: data.url || "/monitoring" }
     };
+    // Sembollü (radar/sinyal) bildirimde tek dokunuş alım: "Alım yap" → `?buy=` ile alım penceresi
+    // (components/QuickBuyFromUrl.tsx). Aksiyon düğmeleri Chrome/Android/masaüstünde var; iOS göstermez,
+    // orada gövdeye dokunmak eskisi gibi grafiğe gider.
+    var sym = String(data.symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (sym && /TRY$/.test(sym)) {
+      var buyUrl = "/?buy=" + encodeURIComponent(sym);
+      var px = Number(data.price);
+      if (px > 0 && isFinite(px)) buyUrl += "&buy_price=" + encodeURIComponent(String(px));
+      notifOpts.data.buyUrl = buyUrl;
+      notifOpts.actions = [
+        { action: "buy", title: "Alım yap" },
+        { action: "open", title: "Grafik" }
+      ];
+    }
     if (quiet) {
       // Sayfa modal + sesi zaten veriyor: OS sesi/titreşimi çift duyuru yapmasın.
       delete notifOpts.vibrate;
@@ -161,7 +175,8 @@ self.addEventListener("push", function (event) {
 
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
-  var target = (event.notification.data && event.notification.data.url) || "/monitoring";
+  var nd = event.notification.data || {};
+  var target = (event.action === "buy" && nd.buyUrl) || nd.url || "/monitoring";
   // 2026-09-16: eskiden her tıklama `clients.openWindow` ile YENİ SEKME açıyordu.
   // Doğrusu: açık bir pencere varsa onu ODAKLA ve hedef URL'e yönlendir; yoksa aç.
   event.waitUntil(

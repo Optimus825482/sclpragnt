@@ -12,6 +12,10 @@ export const SL_PCT_MAX = 10;
 export const RR_MIN = 1;
 export const RR_MAX = 5;
 
+/** Tek dokunuş SL/TP düğmeleri: güncel fiyattan yüzde mesafe. Oran (TP%/SL%) API sınırı 1–5 içinde kalmalı. */
+export const SL_PCT_CHIPS: readonly number[] = [1, 2, 3, 5];
+export const TP_PCT_CHIPS: readonly number[] = [2, 3, 5, 8];
+
 const isPos = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
 const round = (n: number, digits: number) => {
   const f = 10 ** digits;
@@ -22,6 +26,18 @@ const round = (n: number, digits: number) => {
 export function slPctFromPrice(price: number, sl: number): number | null {
   if (!isPos(price) || !isPos(sl) || sl >= price) return null;
   return round(((price - sl) / price) * 100, 4);
+}
+
+/** Fiyatın `pct` yüzde uzağı (eksi = aşağı). Fiyat geçersizse null. */
+export function priceAtPct(price: number, pct: number): number | null {
+  if (!isPos(price) || !Number.isFinite(pct)) return null;
+  return price * (1 + pct / 100);
+}
+
+/** Fiyatın güncel fiyata göre yüzde farkı (düğmenin seçili görünmesi için). */
+export function pctFromPrice(price: number, target: number | null): number | null {
+  if (!isPos(price) || target == null || !isPos(target)) return null;
+  return round(((target - price) / price) * 100, 2);
 }
 
 /** SL ve TP fiyatından kazanç/risk oranı. SL fiyatın altında, TP fiyatın üstünde değilse null. */

@@ -7,6 +7,8 @@ import "./user-theme.manual.css";
 import AuthGate from "./components/AuthGate";
 import AppShell from "./components/AppShell";
 import AppUpdater from "./components/AppUpdater";
+import QuickBuyFromUrl from "./components/QuickBuyFromUrl";
+import { Suspense } from "react";
 
 export const BUILD_ID = process.env.NEXT_PUBLIC_BUILD_ID || "dev";
 
@@ -57,6 +59,8 @@ export default function RootLayout({
         <AppUpdater />
         <AuthGate>
         <AppShell>{children}</AppShell>
+        {/* Push "Alım yap" aksiyonu: ?buy=SEMBOL ile her sayfada alım penceresi (useSearchParams → Suspense). */}
+        <Suspense fallback={null}><QuickBuyFromUrl /></Suspense>
         </AuthGate>
       </body>
     </html>
