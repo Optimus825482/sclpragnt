@@ -466,7 +466,9 @@ class Config:
     MA_BUY_SYMBOL_SCOPE = os.getenv("MA_BUY_SYMBOL_SCOPE", "active").strip().lower() or "active"
     MA_BUY_TIMEFRAMES = os.getenv("MA_BUY_TIMEFRAMES", "1m,5m,15m").strip() or "5m"   # virgüllü: 1m,5m,15m
     MA_BUY_PERIODS = os.getenv("MA_BUY_PERIODS", "7,20,99").strip() or "7,20,99"    # hızlı, orta, yavaş (EMA)
-    MA_BUY_MA_TYPE = (os.getenv("MA_BUY_MA_TYPE", "ema").strip().lower() or "ema")   # ema | sma — grafikteki MA Ribbon türüyle aynı seçin
+    # 2026-10-18 (canlı hata: SENTTRY M5): grafikteki MA Ribbon varsayılanı SMA; EMA ile hesaplanan sinyal grafikte
+    # AŞAĞI kesişen mumda "yukarı kesti" bildirimi üretti. Varsayılan SMA (Ayarlar > MA BUY ile değiştirilebilir).
+    MA_BUY_MA_TYPE = (os.getenv("MA_BUY_MA_TYPE", "sma").strip().lower() or "sma")   # sma | ema — grafikteki MA Ribbon türüyle aynı olmalı
     MA_BUY_STOCH_MAX = float(os.getenv("MA_BUY_STOCH_MAX", "80") or 80)   # 2. kural: StochRSI K bunun üstündeyse sinyal yok; 100 = kapalı
     MA_BUY_STOCH_OFF_TIMEFRAMES = os.getenv("MA_BUY_STOCH_OFF_TIMEFRAMES", "1m").strip()   # bu zaman dilimlerinde StochRSI sınırı uygulanmaz
     MA_BUY_LOOKBACK_BARS = max(1, int(os.getenv("MA_BUY_LOOKBACK_BARS", "3") or 3))   # her turda son N kapanmış mum

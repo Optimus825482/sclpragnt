@@ -10,6 +10,8 @@ export type MaBuySettings = {
   ma_buy_notify_cooldown_min?: number;
   ma_buy_notify_max_age_sec?: number;
   ma_buy_target_pct?: string;
+  ma_buy_ma_type?: string;
+  ma_buy_periods?: string;
 };
 
 type Props = {
@@ -38,6 +40,11 @@ export default function MaBuySettingsCard({ draft, onChange }: Props) {
     onChange({ ma_buy_target_pct: formatTargetPct({ ...targets, [tf]: n }) });
   };
   const numVal = (v: number | undefined) => (typeof v === "number" && Number.isFinite(v) ? v : "");
+  const periods = String(draft.ma_buy_periods ?? "7,20,99").split(",").map((x) => x.trim());
+  const setPeriod = (idx: number, raw: string) => {
+    const next = [0, 1, 2].map((i) => (i === idx ? raw : periods[i] ?? ""));
+    onChange({ ma_buy_periods: next.join(",") });
+  };
 
   return (
     <div className="card bg-bunker-950 space-y-5">
@@ -47,6 +54,26 @@ export default function MaBuySettingsCard({ draft, onChange }: Props) {
           Grafikteki BUY rozetiyle aynı kural (EMA7/20/99 kesişimi). Seçili zaman dilimlerinde yeni kapanan mumda sinyal çıkınca
           “📈 SEMBOL · MA BUY (M1/M5)” push’u gider; push gittiyse otonom paper denenir. Genel bildirim anahtarı ve sessiz saat uygulanır.
         </p>
+      </div>
+
+      <div>
+        <p className="font-mono text-xs text-bunker-muted">Ortalamalar — grafikteki MA Ribbon ile AYNI olmalı (1./2./3. çizgi = turuncu/mavi/mor)</p>
+        <div className="grid sm:grid-cols-4 gap-3 mt-2">
+          <label className={box}>
+            <span className="font-mono text-xs text-bunker-muted">Tür</span>
+            <select value={String(draft.ma_buy_ma_type ?? "sma").toLowerCase()} onChange={(e) => onChange({ ma_buy_ma_type: e.target.value })} className={inputCls}>
+              <option value="sma">SMA</option>
+              <option value="ema">EMA</option>
+            </select>
+          </label>
+          {["Hızlı (turuncu)", "Orta (mavi)", "Yavaş (mor)"].map((label, i) => (
+            <label key={label} className={box}>
+              <span className="font-mono text-xs text-bunker-muted">{label}</span>
+              <input type="number" min={1} max={500} step={1} value={periods[i] ?? ""} onChange={(e) => setPeriod(i, e.target.value)} className={inputCls} />
+            </label>
+          ))}
+        </div>
+        <p className="text-xs text-bunker-muted mt-2">Tür ya da uzunluk grafikten farklıysa bildirim, grafikteki BUY rozetiyle çelişir (ör. grafikte aşağı kesişen mumda “yukarı kesti”).</p>
       </div>
 
       <div className="grid sm:grid-cols-3 gap-3">

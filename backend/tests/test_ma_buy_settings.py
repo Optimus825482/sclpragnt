@@ -71,3 +71,20 @@ class ConfigApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MaTypeAndPeriodsTests(unittest.TestCase):
+    def test_default_ma_type_matches_chart_ribbon(self):
+        # Grafikteki MA Ribbon varsayılanı SMA; EMA ile hesap SENTTRY M5'te ters (aşağı kesişimde) BUY üretti.
+        self.assertEqual(str(config.MA_BUY_MA_TYPE).lower(), "sma")
+
+    def test_ma_type_validation(self):
+        self.assertEqual(ma_buy_notify.normalize_setting("ma_buy_ma_type", "EMA"), "ema")
+        with self.assertRaises(ValueError):
+            ma_buy_notify.normalize_setting("ma_buy_ma_type", "wma")
+
+    def test_periods_validation(self):
+        self.assertEqual(ma_buy_notify.normalize_setting("ma_buy_periods", "7, 20, 99"), "7,20,99")
+        for bad in ("7,20", "20,7,99", "0,20,99", "a,b,c"):
+            with self.assertRaises(ValueError):
+                ma_buy_notify.normalize_setting("ma_buy_periods", bad)

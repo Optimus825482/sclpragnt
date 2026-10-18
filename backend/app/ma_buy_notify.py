@@ -190,9 +190,12 @@ SETTINGS_FIELDS = {
     "ma_buy_notify_cooldown_min": "MA_BUY_NOTIFY_COOLDOWN_MIN",
     "ma_buy_notify_max_age_sec": "MA_BUY_NOTIFY_MAX_AGE_SEC",
     "ma_buy_target_pct": "MA_BUY_TARGET_PCT",
+    # Grafikteki MA Ribbon ile AYNI olmalı (tür + hızlı/orta/yavaş uzunluk); aksi halde bildirim grafikteki BUY rozetiyle çelişir.
+    "ma_buy_ma_type": "MA_BUY_MA_TYPE",
+    "ma_buy_periods": "MA_BUY_PERIODS",
 }
 SETTINGS_BOOL = {"ma_buy_tracker_enabled", "ma_buy_notify_enabled", "ma_buy_auto_paper_enabled"}
-SETTINGS_STR = {"ma_buy_notify_timeframes", "ma_buy_target_pct"}
+SETTINGS_STR = {"ma_buy_notify_timeframes", "ma_buy_target_pct", "ma_buy_ma_type", "ma_buy_periods"}
 _FLOAT_BOUNDS = {"ma_buy_notify_cooldown_min": (0.0, 240.0, "bekleme süresi 0–240 dk"),
                  "ma_buy_notify_max_age_sec": (10.0, 600.0, "tazelik sınırı 10–600 sn")}
 _TFS = ("1m", "5m", "15m")
@@ -206,6 +209,19 @@ def normalize_setting(key: str, value):
         if bad:
             raise ValueError(f"MA BUY bildirim zaman dilimi geçersiz: {', '.join(bad)} (1m, 5m, 15m)")
         return ",".join(t for t in _TFS if t in items)
+    if key == "ma_buy_ma_type":
+        kind = str(value or "").strip().lower()
+        if kind not in ("sma", "ema"):
+            raise ValueError("MA BUY ortalama türü SMA ya da EMA olmalıdır")
+        return kind
+    if key == "ma_buy_periods":
+        try:
+            vals = [int(float(x)) for x in str(value or "").split(",") if x.strip()]
+        except ValueError:
+            vals = []
+        if len(vals) != 3 or not all(1 <= v <= 500 for v in vals) or not vals[0] < vals[1] < vals[2]:
+            raise ValueError("MA BUY periyotları 'hızlı,orta,yavaş' olmalı ve hızlı < orta < yavaş (1–500), örn. 7,20,99")
+        return ",".join(str(v) for v in vals)
     if key == "ma_buy_target_pct":
         out = []
         for part in str(value or "").split(","):
