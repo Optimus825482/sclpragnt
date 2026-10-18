@@ -1184,12 +1184,33 @@ def place_market_buy(api_key: str, api_secret: str, symbol_underscore: str, quot
     out = {"order_id": str(order_id) if order_id is not None else None,
            "symbol": symbol_underscore, "quote_qty": params["quoteOrderQty"],
            "client_order_id": params["clientId"]}
-    # Full cevapta doldurma bilgisi varsa ortalamayı hesapla (confirm dialogu).
-    if isinstance(data, dict):
-        executed, _, avg_price, _ = _order_fill(data, None)
+    # Doküman: yeni emir cevabı yalnız orderId taşır → dolum (onay penceresi) emir detayından okunur.
+    fill_data = dict(data) if isinstance(data, dict) else {}
+    detail: dict = {}
+    if _qty_to_float(fill_data.get("executedQty")) <= 0:
+        detail = _poll_fill(api_key, api_secret, symbol_underscore, order_id, params["clientId"])
+        for key in ("executedQty", "executedQuoteQty", "cummulativeQuoteQty"):
+            if detail.get(key) not in (None, ""):
+                fill_data[key] = detail[key]
+    order_status = _order_status_code(detail or fill_data)
+    out["fill_verified"] = bool(detail)
+    out["order_status"] = order_status
+    if order_status in (3, 5, 6) and _qty_to_float(fill_data.get("executedQty")) <= 0:
+        logger.warning("Binance TR MARKET BUY dolmadan nihai durum=%s: %s orderId=%s",
+                       order_status, symbol_underscore, order_id)
+        raise BinanceTrApiError(
+            {3: "CANCELED", 5: "REJECTED", 6: "EXPIRED"}[order_status],
+            "Alım emri borsada dolmadan " + ("süresi doldu (Price Range)" if order_status == 6 else
+                                             "iptal edildi" if order_status == 3 else "reddedildi")
+            + "; alım yapılmadı, tekrar deneyin",
+            raw=detail or None)
+    if fill_data:
+        executed, _, avg_price, quote = _order_fill(fill_data, None)
         if executed > 0 and avg_price is not None:
             out["executed_qty"] = executed
             out["avg_price"] = avg_price
+            if quote is not None:
+                out["executed_quote_qty"] = quote
     return out
 
 

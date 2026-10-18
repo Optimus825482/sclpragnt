@@ -1070,3 +1070,22 @@ def test_open_orders_parallel_sweep_preserves_order():
 def test_symbols_for_asset_helper():
     assert btp._symbols_for_asset("BTC", {"BTC_TRY", "ETH_TRY"}) == ["BTC_TRY"]
     assert btp._symbols_for_asset("BTC", {"BTC_TRY", "BTC_USDT"}) == ["BTC_TRY", "BTC_USDT"]
+
+
+def test_market_buy_reads_fill_from_detail_for_confirm_dialog(monkeypatch):
+    monkeypatch.setattr(btp, "_poll_fill", _REAL_POLL_FILL)
+    fake, calls = _post_then_detail({"orderId": 7}, {"status": 2, "executedQty": "0.5", "executedQuoteQty": "100"})
+    with mock.patch.object(btp, "_signed_request", side_effect=fake):
+        res = btp.place_market_buy("k", "s", "BTC_TRY", 100.0)
+    assert res["fill_verified"] is True and res["order_status"] == 2
+    assert res["executed_qty"] == pytest.approx(0.5) and res["avg_price"] == pytest.approx(200.0)
+    assert res["executed_quote_qty"] == pytest.approx(100.0)
+
+
+def test_market_buy_expired_without_fill_raises(monkeypatch):
+    monkeypatch.setattr(btp, "_poll_fill", _REAL_POLL_FILL)
+    fake, _ = _post_then_detail({"orderId": 7}, {"status": 6, "executedQty": "0"})
+    with mock.patch.object(btp, "_signed_request", side_effect=fake):
+        with pytest.raises(btp.BinanceTrApiError) as ei:
+            btp.place_market_buy("k", "s", "BTC_TRY", 100.0)
+    assert ei.value.code == "EXPIRED" and "alım yapılmadı" in ei.value.msg
