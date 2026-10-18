@@ -252,12 +252,17 @@ button, a { touch-action: manipulation; }
 .page-heading h1 { @apply font-mono text-2xl font-bold tracking-tight; }
 .page-heading p:not(.eyebrow) { max-width: 68ch; font-size: .9rem; color: rgb(148 163 184); }
 .panel { @apply bg-bunker-900/90 border border-bunker-800 rounded-xl; box-shadow: 0 10px 30px rgb(0 0 0 / .12); }
+/* 2026-10-18 (mobil denetim #6): bileşen sınıfları @layer components içinde — böylece Tailwind yardımcı
+   sınıfları (text-base, min-h-[48px], h-9 ...) bunları ezebilir. Eskiden katmansız ve utilities'ten sonra
+   olduğu için yardımcı sınıflar sessizce etkisizdi. */
+@layer components {
 .input { @apply min-h-10 rounded-lg border border-bunker-700 bg-bunker-950 px-3 py-2 text-sm text-white outline-none; min-width: 0; max-width: 100%; transition: border-color 160ms ease-out, box-shadow 160ms ease-out, background-color 160ms ease-out; }
 .input::placeholder { color: rgb(100 116 139); }
 .input:hover { border-color: rgb(71 85 105); }
 .input:focus { border-color: rgb(52 211 153 / .7); box-shadow: 0 0 0 3px rgb(16 185 129 / .12); }
 select.input { cursor: pointer; }
 textarea.input { min-height: 6rem; resize: vertical; }
+}
 input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .data-table { width: 100%; border-collapse: separate; border-spacing: 0; font: .78rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .data-table th { padding: .8rem .9rem; color: rgb(148 163 184); font-size: .68rem; font-weight: 600; letter-spacing: .08em; text-align: left; text-transform: uppercase; white-space: nowrap; background: rgb(5 8 13 / .45); border-bottom: 1px solid rgb(31 41 55); }
@@ -384,7 +389,6 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .portfolio-mobile-trades { display: none; }
 .portfolio-pagination { margin-top: 1rem; color: #64748b; font: .68rem/1.3 ui-monospace, monospace; }
 .portfolio-pagination > div { display: flex; gap: .5rem; }
-.ui-button-compact { min-height: 2rem; padding: .45rem .65rem; font-size: .63rem; }
 .portfolio-trade-card { padding: .85rem; border: 1px solid rgb(51 65 85 / .8); border-radius: .75rem; background: rgb(5 8 13 / .5); font-family: ui-monospace, monospace; }
 .portfolio-trade-card { cursor: pointer; transition: border-color 160ms ease-out, background-color 160ms ease-out; }
 .portfolio-trade-card:hover { border-color: rgb(52 211 153 / .45); background: rgb(16 185 129 / .06); }
@@ -432,6 +436,7 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .ui-badge-info { color: #93c5fd; background: rgb(59 130 246 / .12); border-color: rgb(96 165 250 / .3); }
 .ui-badge-orange { color: #fdba74; background: rgb(249 115 22 / .13); border-color: rgb(251 146 60 / .35); }
 .ui-badge-muted { color: #94a3b8; background: rgb(100 116 139 / .12); border-color: rgb(100 116 139 / .3); }
+@layer components {
 .ui-button { min-height: 2.5rem; padding: .65rem .9rem; border-radius: .65rem; border: 1px solid transparent; font: 600 .72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; transition: background-color 160ms ease-out, border-color 160ms ease-out, color 160ms ease-out, transform 160ms ease-out; }
 .ui-button:active { transform: scale(.97); }
 .ui-button:disabled { cursor: not-allowed; opacity: .5; }
@@ -443,6 +448,8 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .ui-button-danger:hover { background: rgb(127 29 29 / .3); }
 .ui-button-ghost { color: #94a3b8; background: transparent; }
 .ui-button-ghost:hover { color: white; background: rgb(30 41 59 / .6); }
+.ui-button-compact { min-height: 2rem; padding: .45rem .65rem; font-size: .63rem; }
+}
 .ui-stat-card { min-height: 7rem; }
 .ui-stat-value { @apply font-mono text-2xl text-white mt-2; }
 .ui-stat-detail { @apply font-mono text-xs text-bunker-muted mt-2; }
@@ -567,6 +574,15 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .chart-card { border-radius: .75rem; }
   .chart-card > .chart-canvas-host { min-height: 22rem; }
   .chart-card .absolute.top-3.right-3 { top: .5rem; right: .5rem; padding: .35rem .5rem; font-size: .58rem; }
+}
+
+/* Dokunmatik birincil işaretçi (denetim #6): iOS girdiye odaklanınca yazı 16px altındaysa sayfayı yakınlaştırır;
+   düğmeler WCAG 2.5.5 için en az 44px. Girdi yazı boyutu utilities'i ezmek için bilerek !important. */
+@media (pointer: coarse) {
+  .input, textarea, select,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="hidden"]) { font-size: 16px !important; }
+  .input, select.input { min-height: 44px; }
+  .ui-button { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
