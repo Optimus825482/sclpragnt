@@ -92,8 +92,8 @@ class TimeframeTests(unittest.TestCase):
         self.assertEqual(ma_buy_tracker.stoch_max("15m"), 80.0)
 
     def test_supported_timeframes_and_default(self):
-        self.assertEqual(set(ma_buy_tracker.SUPPORTED_TF_MS), {"1m", "5m", "15m"})
-        self.assertEqual(ma_buy_tracker.timeframes(), ["1m", "5m", "15m"])
+        self.assertEqual(set(ma_buy_tracker.SUPPORTED_TF_MS), {"1m", "5m", "15m", "30m", "1h"})   # 2026-10-20: M30/H1
+        self.assertEqual(ma_buy_tracker.timeframes(), ["5m", "15m", "30m", "1h"])   # M1 varsayilan disi (replay 2026-10-20)
 
     def test_outcome_on_one_minute_bars(self):
         bars = [{"high": 100.0 + i * 0.1, "low": 99.9, "close": 100.0 + i * 0.1} for i in range(1, 16)]

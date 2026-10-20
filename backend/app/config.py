@@ -464,7 +464,7 @@ class Config:
     MA_BUY_TRACKER_ENABLED = os.getenv("MA_BUY_TRACKER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
     # "active" = symbol_activity_status ACTIVE olanlar (yoksa izlenen semboller); "tracked" = yalnız izlenen semboller.
     MA_BUY_SYMBOL_SCOPE = os.getenv("MA_BUY_SYMBOL_SCOPE", "active").strip().lower() or "active"
-    MA_BUY_TIMEFRAMES = os.getenv("MA_BUY_TIMEFRAMES", "1m,5m,15m").strip() or "5m"   # virgüllü: 1m,5m,15m
+    MA_BUY_TIMEFRAMES = os.getenv("MA_BUY_TIMEFRAMES", "5m,15m,30m,1h").strip() or "5m"   # 2026-10-20 replay: M1 medyan %0,19 < komisyon, kapali; virgüllü: 1m,5m,15m,30m,1h (2026-10-20: M30/H1)
     MA_BUY_PERIODS = os.getenv("MA_BUY_PERIODS", "7,20,99").strip() or "7,20,99"    # hızlı, orta, yavaş (EMA)
     # 2026-10-18 (canlı hata: SENTTRY M5): grafikteki MA Ribbon varsayılanı SMA; EMA ile hesaplanan sinyal grafikte
     # AŞAĞI kesişen mumda "yukarı kesti" bildirimi üretti. Varsayılan SMA (Ayarlar > MA BUY ile değiştirilebilir).
@@ -476,11 +476,11 @@ class Config:
     MA_BUY_RETENTION_DAYS = max(0, int(os.getenv("MA_BUY_RETENTION_DAYS", "120") or 0))  # 0 = silme yok
     # 2026-10-18 (kullanıcı isteği): MA BUY sinyali → push (TF etiketli) + otonom paper (app/ma_buy_notify.py).
     MA_BUY_NOTIFY_ENABLED = os.getenv("MA_BUY_NOTIFY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-    MA_BUY_NOTIFY_TIMEFRAMES = os.getenv("MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m").strip()      # push + paper bu TF'lerde
+    MA_BUY_NOTIFY_TIMEFRAMES = os.getenv("MA_BUY_NOTIFY_TIMEFRAMES", "5m,15m,30m,1h").strip()      # M1 kapali (replay 2026-10-20); push + paper bu TF'lerde (2026-10-20: M30/H1 dahil)
     MA_BUY_NOTIFY_COOLDOWN_MIN = max(0.0, float(os.getenv("MA_BUY_NOTIFY_COOLDOWN_MIN", "15") or 0))  # sembol başına (TF'ler ortak)
     MA_BUY_NOTIFY_MAX_AGE_SEC = max(10.0, float(os.getenv("MA_BUY_NOTIFY_MAX_AGE_SEC", "90") or 90))  # mum kapanışından bu kadar sonra bayat
     MA_BUY_AUTO_PAPER_ENABLED = os.getenv("MA_BUY_AUTO_PAPER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-    MA_BUY_TARGET_PCT = os.getenv("MA_BUY_TARGET_PCT", "1m:1.0,5m:1.5,15m:2.0").strip()  # TF:hedef% (paper TP)
+    MA_BUY_TARGET_PCT = os.getenv("MA_BUY_TARGET_PCT", "1m:1.0,5m:1.5,15m:2.0,30m:2.5,1h:3.0").strip()  # TF:hedef% (paper TP); 30m/1h başlangıç değeri, replay raporuna göre ayarlanır
     RADAR_TARGET_MODE = (os.getenv("RADAR_TARGET_MODE", "measured").strip().lower() or "measured")
     # a,b,c,d (sırayla: sabit, ATR üssü, skor katsayısı, ufuk üssü); nominal %30 isabet.
     RADAR_TARGET_MEASURED_COEFS = os.getenv("RADAR_TARGET_MEASURED_COEFS", "0.27,0.71,0.06,0.51").strip()

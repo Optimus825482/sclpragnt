@@ -22,7 +22,8 @@ from app.config import config
 
 logger = logging.getLogger("scalper.ma_buy")
 
-SUPPORTED_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+# 2026-10-20: M30 ve H1 eklendi (sinyal + push + otonom paper); 7 günlük replay raporu docs/ altında.
+SUPPORTED_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000}
 HORIZON_MIN = 15
 FETCH_LIMIT = 250
 CLOSE_SKEW_MS = 1_500          # sunucu saati ileride olsa da kapanmamış mum alınmasın

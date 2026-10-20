@@ -53,11 +53,20 @@ def target_pct(tf: str) -> float:
 
 def _tf_minutes(tf) -> int:
     t = str(tf or "")
-    return int(t[:-1]) if t.endswith("m") and t[:-1].isdigit() else 0
+    if t.endswith("m") and t[:-1].isdigit():
+        return int(t[:-1])
+    if t.endswith("h") and t[:-1].isdigit():   # 2026-10-20: 1h
+        return int(t[:-1]) * 60
+    return 0
 
 
 def tf_label(tf: str) -> str:
-    return "M" + tf[:-1] if tf.endswith("m") else tf.upper()
+    """5m → M5, 30m → M30, 1h → H1 (grafik rozetleriyle aynı biçim)."""
+    if tf.endswith("m"):
+        return "M" + tf[:-1]
+    if tf.endswith("h"):
+        return "H" + tf[:-1]
+    return tf.upper()
 
 
 def rules_text(rules: str, periods: tuple) -> str:
@@ -198,7 +207,7 @@ SETTINGS_BOOL = {"ma_buy_tracker_enabled", "ma_buy_notify_enabled", "ma_buy_auto
 SETTINGS_STR = {"ma_buy_notify_timeframes", "ma_buy_target_pct", "ma_buy_ma_type", "ma_buy_periods"}
 _FLOAT_BOUNDS = {"ma_buy_notify_cooldown_min": (0.0, 240.0, "bekleme süresi 0–240 dk"),
                  "ma_buy_notify_max_age_sec": (10.0, 600.0, "tazelik sınırı 10–600 sn")}
-_TFS = ("1m", "5m", "15m")
+_TFS = ("1m", "5m", "15m", "30m", "1h")   # 2026-10-20: M30/H1
 
 
 def normalize_setting(key: str, value):
@@ -207,7 +216,7 @@ def normalize_setting(key: str, value):
         items = [t.strip() for t in str(value or "").split(",") if t.strip()]
         bad = [t for t in items if t not in _TFS]
         if bad:
-            raise ValueError(f"MA BUY bildirim zaman dilimi geçersiz: {', '.join(bad)} (1m, 5m, 15m)")
+            raise ValueError(f"MA BUY bildirim zaman dilimi geçersiz: {', '.join(bad)} (1m, 5m, 15m, 30m, 1h)")
         return ",".join(t for t in _TFS if t in items)
     if key == "ma_buy_ma_type":
         kind = str(value or "").strip().lower()

@@ -19,7 +19,7 @@ type Props = {
   onChange: (patch: MaBuySettings) => void;
 };
 
-const TF_LABEL: Record<string, string> = { "1m": "M1", "5m": "M5", "15m": "M15" };
+const TF_LABEL: Record<string, string> = { "1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1" };
 const box = "rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2";
 const inputCls = "mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white";
 

@@ -81,12 +81,14 @@ export const TIMEFRAME_OPTIONS: { value: string; label: string }[] = [
   { value: "1m", label: "M1" },
   { value: "5m", label: "M5" },
   { value: "15m", label: "M15" },
+  { value: "30m", label: "M30" },
+  { value: "1h", label: "H1" },
 ];
 
-/** `5m` -> `M5`, `1m` -> `M1`, `15m` -> `M15`; tanınmayan değer olduğu gibi büyük harfle. */
+/** `5m` -> `M5`, `30m` -> `M30`, `1h` -> `H1`; tanınmayan değer olduğu gibi büyük harfle. */
 export function timeframeLabel(tf: string | null | undefined): string {
-  const m = /^(\d+)m$/i.exec(String(tf ?? "").trim());
-  return m ? `M${m[1]}` : String(tf ?? "").toUpperCase() || "—";
+  const m = /^(\d+)([mh])$/i.exec(String(tf ?? "").trim());
+  return m ? `${m[2].toLowerCase() === "h" ? "H" : "M"}${m[1]}` : String(tf ?? "").toUpperCase() || "—";
 }
 
 export const STATUS_OPTIONS: { value: "" | MaBuyStatus; label: string }[] = [
@@ -163,10 +165,10 @@ export function fmtTrTime(ts: number | null | undefined): string {
   return `${get("day")}.${get("month")} ${get("hour")}:${get("minute")}`;
 }
 
-/** Mum süresi (sn): "5m" -> 300, "15m" -> 900; bilinmiyorsa 5 dk. */
+/** Mum süresi (sn): "5m" -> 300, "30m" -> 1800, "1h" -> 3600; bilinmiyorsa 5 dk. */
 function timeframeSec(tf: string | null | undefined): number {
-  const m = /^(\d+)m$/.exec(String(tf ?? ""));
-  return m ? Number(m[1]) * 60 : 300;
+  const m = /^(\d+)([mh])$/.exec(String(tf ?? ""));
+  return m ? Number(m[1]) * (m[2] === "h" ? 3600 : 60) : 300;
 }
 
 /**
@@ -389,7 +391,7 @@ export function errorMessage(status: number | null, detail?: string | null): str
 
 // ---------------------------------------------------------------- Ayarlar > MA BUY (push + otonom paper)
 /** Bildirim/paper zaman dilimleri (backend `ma_buy_notify._TFS` ile aynı sıra). */
-export const MA_BUY_NOTIFY_TFS = ["1m", "5m", "15m"] as const;
+export const MA_BUY_NOTIFY_TFS = ["1m", "5m", "15m", "30m", "1h"] as const;   // 2026-10-20: M30/H1
 
 /** "1m,5m" → seçili TF kümesi. */
 export function parseTfList(raw: string | null | undefined): Set<string> {

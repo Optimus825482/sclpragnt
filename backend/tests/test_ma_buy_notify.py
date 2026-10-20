@@ -10,7 +10,8 @@ from app.routers import auto_paper, monitoring
 PER = (7, 20, 99)
 
 
-def _row(symbol="ABCTRY", tf="1m", age_ms=5_000, rules="fast_cross_mid", now_ms=None, price=10.0):
+def _row(symbol="ABCTRY", tf="5m", age_ms=5_000, rules="fast_cross_mid", now_ms=None, price=10.0):
+    # 2026-10-20: varsayilan TF 5m (M1 bildirim listesinden cikti; mekanizma testleri TF'den bagimsiz).
     now_ms = now_ms or int(time.time() * 1000)
     tf_ms = {"1m": 60_000, "5m": 300_000, "15m": 900_000}[tf]
     close = now_ms - age_ms
@@ -73,18 +74,23 @@ class DeliverTests(unittest.TestCase):
             return asyncio.run(ma_buy_notify.deliver(rows, PER))
 
     def test_m1_and_m5_push_and_open_paper(self):
-        n = self._run([_row("AAATRY", "1m"), _row("BBBTRY", "5m", age_ms=20_000)])
+        # M1 varsayilan listede degil (2026-10-20); mekanizma acik listeyle sinanir.
+        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m", create=True):
+            n = self._run([_row("AAATRY", "1m"), _row("BBBTRY", "5m", age_ms=20_000)])
         self.assertEqual(n, 2)
         self.assertEqual({p["title"] for p in self.pushes}, {"📈 AAATRY · MA BUY (M1)", "📈 BBBTRY · MA BUY (M5)"})
         self.assertTrue(all(o["sent_via_push"] for o in self.opened))
         self.assertIn((1, {"paper_status": "acildi", "paper_trade_id": 55}), self.marks)
 
     def test_same_symbol_both_timeframes_single_push_bigger_tf_first(self):
-        self._run([_row("AAATRY", "1m"), _row("AAATRY", "5m", age_ms=20_000)])
+        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m", create=True):
+            self._run([_row("AAATRY", "1m"), _row("AAATRY", "5m", age_ms=20_000)])
         self.assertEqual([p["timeframe"] for p in self.pushes], ["5m"])
 
     def test_stale_or_untracked_timeframe_not_pushed(self):
-        self._run([_row(age_ms=30 * 60_000), _row(tf="15m", age_ms=5_000)])
+        # 2026-10-20: varsayilan liste artik 15m/30m/1h'yi de kapsiyor; "izlenmeyen TF" icin liste daraltilir.
+        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m", create=True):
+            self._run([_row(age_ms=30 * 60_000), _row(tf="15m", age_ms=5_000)])
         self.assertEqual(self.pushes, [])
 
     def test_already_notified_bar_is_skipped(self):

@@ -17,6 +17,8 @@ import {
   openCountdown,
   ruleLabel,
   signalTimeSec,
+  TIMEFRAME_OPTIONS,
+  MA_BUY_NOTIFY_TFS,
   sortSignals,
   statusChip,
   timeframeLabel,
@@ -315,3 +317,20 @@ describe("MA bildirimi → bildirim kartı satırı", () => {
   });
 });
 
+
+// 2026-10-20: M30 ve H1 zaman dilimleri (sinyal + bildirim + otonom paper)
+describe("30m / 1h zaman dilimleri", () => {
+  it("etiketler: 30m → M30, 1h → H1", () => {
+    expect(timeframeLabel("30m")).toBe("M30");
+    expect(timeframeLabel("1h")).toBe("H1");
+  });
+  it("filtre seçenekleri ve bildirim TF listesi 30m ile 1h'yi içerir", () => {
+    expect(TIMEFRAME_OPTIONS.map((o) => o.value)).toEqual(["", "1m", "5m", "15m", "30m", "1h"]);
+    expect([...MA_BUY_NOTIFY_TFS]).toEqual(["1m", "5m", "15m", "30m", "1h"]);
+  });
+  it("1h sinyalinin mum zamanı kapanıştan 3600 sn öncedir", () => {
+    const close = 1_700_000_000_000;
+    expect(signalTimeSec({ barCloseMs: close, detectedAt: null, timeframe: "1h" })).toBe(close / 1000 - 3600);
+    expect(signalTimeSec({ barCloseMs: close, detectedAt: null, timeframe: "30m" })).toBe(close / 1000 - 1800);
+  });
+});
