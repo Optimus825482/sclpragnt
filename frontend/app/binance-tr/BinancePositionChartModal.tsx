@@ -26,6 +26,7 @@ import IndicatorPicker, {
   CUSTOM_INDICATOR_ENTRIES,
   SUPERTREND_ENTRY,
 } from "../charts/IndicatorPicker";
+import { MA_COLORS, MA_LENGTHS, STOCH_LEVELS, maRibbonPoints, stochRsiPoints, withLiveBar } from "./positionIndicators";
 import IndicatorSettings from "../charts/IndicatorSettings";
 import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "../charts/types";
 
@@ -211,6 +212,61 @@ export default function BinancePositionChartModal({
   // Son Mum Takip Referansı (Anlık iğne / canlı tik güncellemeleri için)
   const lastCandleRef = useRef<CandleBar | null>(null);
 
+  // 2026-10-20: MA 7/20/99 (SMA, turuncu/mavi/mor) + alt panelde StochRSI 14/14/3/3; canlı tik ve kline ile anlık.
+  // Hesap saf modülde (positionIndicators.ts); burada yalnız seriler beslenir. candlesRef: canlı yeniden hesap için
+  // son yüklenen mum listesi (state'i tik başına değiştirmemek için ref).
+  const candlesRef = useRef<CandleBar[]>([]);
+  const maSeriesRef = useRef<{ fast: ISeriesApi<"Line">; mid: ISeriesApi<"Line">; slow: ISeriesApi<"Line"> } | null>(null);
+  const stochSeriesRef = useRef<{ k: ISeriesApi<"Line">; d: ISeriesApi<"Line"> } | null>(null);
+  const [showMa, setShowMa] = useState(true);
+  const [showStoch, setShowStoch] = useState(true);
+
+  /** Tüm mum listesinden MA ve StochRSI serilerini baştan doldurur (yükleme / TF değişimi / panel açılışı). */
+  const applyIndicatorData = useCallback((bars: CandleBar[]) => {
+    const ma = maSeriesRef.current;
+    if (ma && bars.length > 0) {
+      const r = maRibbonPoints(bars);
+      try {
+        ma.fast.setData(r.fast as any);
+        ma.mid.setData(r.mid as any);
+        ma.slow.setData(r.slow as any);
+      } catch (e) { console.debug("MA setData skip:", e); }
+    }
+    const st = stochSeriesRef.current;
+    if (st && bars.length > 0) {
+      const r = stochRsiPoints(bars);
+      try {
+        st.k.setData(r.k as any);
+        st.d.setData(r.d as any);
+      } catch (e) { console.debug("StochRSI setData skip:", e); }
+    }
+  }, []);
+
+  /** Canlı mum (tik/kline) sonrası yalnız SON noktayı günceller — her tikte tam setData yok. */
+  const refreshIndicatorsLive = useCallback((live: CandleBar) => {
+    const bars = withLiveBar(candlesRef.current, live);
+    const last = <T extends { time: number }>(arr: T[]) => (arr.length ? arr[arr.length - 1] : null);
+    const ma = maSeriesRef.current;
+    if (ma) {
+      const r = maRibbonPoints(bars);
+      try {
+        const f = last(r.fast), m = last(r.mid), sl = last(r.slow);
+        if (f) ma.fast.update(f as any);
+        if (m) ma.mid.update(m as any);
+        if (sl) ma.slow.update(sl as any);
+      } catch (e) { console.debug("MA update skip:", e); }
+    }
+    const st = stochSeriesRef.current;
+    if (st) {
+      const r = stochRsiPoints(bars);
+      try {
+        const k = last(r.k), d = last(r.d);
+        if (k) st.k.update(k as any);
+        if (d) st.d.update(d as any);
+      } catch (e) { console.debug("StochRSI update skip:", e); }
+    }
+  }, []);
+
   // Mum Kapanışına Kalan Süre
   const [countdown, setCountdown] = useState<number>(0);
   const lastCandleTimeRef = useRef<number>(0);
@@ -245,6 +301,7 @@ export default function BinancePositionChartModal({
           };
           lastCandleRef.current = updatedBar;
           try { candleSeriesRef.current.update(updatedBar as any); } catch {}
+          refreshIndicatorsLive(updatedBar);
         } else if (!last || bucket > Number(last.time)) {
           const freshBar: CandleBar = {
             time: bucket as UTCTimestamp,
@@ -255,10 +312,11 @@ export default function BinancePositionChartModal({
           };
           lastCandleRef.current = freshBar;
           try { candleSeriesRef.current.update(freshBar as any); } catch {}
+          refreshIndicatorsLive(freshBar);
         }
       }
     }
-  }, []);
+  }, [refreshIndicatorsLive]);
 
   useEffect(() => {
     if (livePrice != null && Number(livePrice) > 0) {
@@ -650,12 +708,23 @@ export default function BinancePositionChartModal({
       lastValueVisible: true,
     });
 
+    // MA 7 / 20 / 99 (SMA) — turuncu / mavi / mor (2026-10-20)
+    const maLine = (color: string, title: string) => chart.addSeries(LineSeries, {
+      color, lineWidth: 1, title, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    const maSeries = {
+      fast: maLine(MA_COLORS.fast, `MA ${MA_LENGTHS.fast}`),
+      mid: maLine(MA_COLORS.mid, `MA ${MA_LENGTHS.mid}`),
+      slow: maLine(MA_COLORS.slow, `MA ${MA_LENGTHS.slow}`),
+    };
+
     chartApiRef.current = chart;
     candleSeriesRef.current = candleSeries;
     upperBbRef.current = upperBb;
     middleBbRef.current = middleBb;
     lowerBbRef.current = lowerBb;
     supertrendSeriesRef.current = supertrendSeries;
+    maSeriesRef.current = maSeries;
 
     // ResizeObserver
     const ro = new ResizeObserver(() => {
@@ -675,12 +744,53 @@ export default function BinancePositionChartModal({
       chartApiRef.current = null;
       candleSeriesRef.current = null;
       supertrendSeriesRef.current = null;
+      maSeriesRef.current = null;
+      stochSeriesRef.current = null;
       entryLineRef.current = null;
       tpLineRef.current = null;
       slLineRef.current = null;
       indicatorSeriesMapRef.current.clear();
     };
   }, []);
+
+  // 2b. MA görünürlüğü
+  useEffect(() => {
+    const ma = maSeriesRef.current;
+    if (!ma) return;
+    [ma.fast, ma.mid, ma.slow].forEach((s) => { try { s.applyOptions({ visible: showMa }); } catch {} });
+  }, [showMa]);
+
+  // 2c. StochRSI paneli: açıkken ikinci pane'de K (mavi) / D (turuncu) + 20/50/80 çizgileri; kapatınca seriler
+  // kaldırılır (lightweight-charts boş kalan pane'i siler). Veri candlesRef'ten doldurulur, canlı tik günceller.
+  useEffect(() => {
+    const chart = chartApiRef.current;
+    if (!chart || !showStoch) return;
+    const k = chart.addSeries(LineSeries, {
+      color: "#3b82f6", lineWidth: 1, title: "StochRSI K", priceLineVisible: false, lastValueVisible: true,
+      priceFormat: { type: "price", precision: 1, minMove: 0.1 },
+      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
+    }, 1);
+    const d = chart.addSeries(LineSeries, {
+      color: "#f59e0b", lineWidth: 1, title: "D", priceLineVisible: false, lastValueVisible: true,
+      priceFormat: { type: "price", precision: 1, minMove: 0.1 },
+    }, 1);
+    STOCH_LEVELS.forEach((lvl) => {
+      try {
+        k.createPriceLine({ price: lvl, color: lvl === 50 ? "rgba(120,123,134,0.35)" : "rgba(120,123,134,0.7)",
+          lineWidth: 1, lineStyle: lvl === 50 ? LineStyle.Dotted : LineStyle.Dashed, axisLabelVisible: true, title: "" });
+      } catch {}
+    });
+    try { chart.panes()[1]?.setHeight(110); } catch {}
+    stochSeriesRef.current = { k, d };
+    if (candlesRef.current.length) {
+      const r = stochRsiPoints(candlesRef.current);
+      try { k.setData(r.k as any); d.setData(r.d as any); } catch {}
+    }
+    return () => {
+      stochSeriesRef.current = null;
+      try { chart.removeSeries(k); chart.removeSeries(d); } catch {}
+    };
+  }, [showStoch]);
 
   // 3a. Mum Verisi + Bollinger Bantları + Supertrend
   useEffect(() => {
@@ -700,6 +810,8 @@ export default function BinancePositionChartModal({
     } catch (e) {
       console.error("candleSeries.setData hatası:", e);
     }
+    candlesRef.current = candles;
+    applyIndicatorData(candles);
 
     if (showBB && upperBbRef.current && middleBbRef.current && lowerBbRef.current) {
       const { upper, middle, lower } = calculateBollingerBands(candles, 20, 2);
@@ -998,6 +1110,7 @@ export default function BinancePositionChartModal({
             };
             candleSeriesRef.current.update(formatted as any);
             lastCandleRef.current = formatted;
+            refreshIndicatorsLive(formatted);
             // Son mum zamanını güncelle
             if (timeSec > lastCandleTimeRef.current) {
               lastCandleTimeRef.current = timeSec;
@@ -1563,6 +1676,34 @@ export default function BinancePositionChartModal({
                   {supertrendTrend === "UP" ? "▲ BOĞA" : "▼ AYI"}
                 </span>
               )}
+            </button>
+
+            {/* MA 7/20/99 (SMA) Toggle — 2026-10-20 */}
+            <button
+              type="button"
+              onClick={() => setShowMa(!showMa)}
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-mono font-bold transition-colors ${
+                showMa
+                  ? "border-orange-400/50 bg-orange-400/10 text-orange-300"
+                  : "border-bunker-800 bg-bunker-900/60 text-bunker-muted hover:text-white"
+              }`}
+              title="Hareketli ortalamalar SMA 7 (turuncu) / 20 (mavi) / 99 (mor)"
+            >
+              <span>〰 MA 7·20·99</span>
+            </button>
+
+            {/* StochRSI paneli Toggle — 2026-10-20 */}
+            <button
+              type="button"
+              onClick={() => setShowStoch(!showStoch)}
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-mono font-bold transition-colors ${
+                showStoch
+                  ? "border-sky-400/50 bg-sky-400/10 text-sky-300"
+                  : "border-bunker-800 bg-bunker-900/60 text-bunker-muted hover:text-white"
+              }`}
+              title="Stokastik RSI (14, 14, 3, 3) alt paneli — K mavi, D turuncu"
+            >
+              <span>📉 StochRSI</span>
             </button>
 
             {/* İndikatör Ekleme Butonu */}
