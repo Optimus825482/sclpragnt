@@ -4500,6 +4500,14 @@ async def binance_cancel_order(payload: dict, request: Request):
         raise HTTPException(status_code=502, detail=f"Emir iptal edilemedi: {exc}")
 
 
+# 2026-10-20 (canlı WLD): /orders/cancel cevabı döndükten sonra /account/spot kilitli miktarı bir süre daha
+# KİLİTLİ gösterebiliyor (3481 WLD pozisyon, eski stop iptal edildi, ilk okuma 1790 boşta dedi → 422 +
+# stop geri kuruldu). İptal sonrası bakiye önbellek ATLANARAK kısa aralıklarla yoklanır; istenen miktar
+# boşa düşünce devam edilir, düşmezse eski 422 yolu (stop geri kurma) aynen çalışır.
+_SL_TP_SETTLE_TRIES = 6
+_SL_TP_SETTLE_SLEEP_SEC = 0.5
+
+
 async def _restore_cancelled_stops(api_key: str, api_secret: str, symbol_u: str, asset: str,
                                    cancelled: list[dict], fallback_qty: float, step: float, tick: float) -> list[dict]:
     """set-sl-tp: iptal edilen eski emirlerden ZARAR KES (stop) olanları aynı parametrelerle geri kurar (en iyi çaba)."""
@@ -4613,20 +4621,34 @@ async def binance_set_sl_tp(payload: dict, request: Request):
     if payload.get("cancel_existing"):
         try:
             existing = await asyncio.to_thread(get_open_orders, api_key, api_secret, symbol_u)
-            for ex in existing:
-                if str(ex.get("side")).upper() in ("SELL", "1") and ex.get("orderId"):
-                    _cancelled_sells.append(dict(ex))
-                    await asyncio.to_thread(cancel_order, api_key, api_secret, ex["orderId"], symbol_u)
         except Exception as exc:
-            logger.warning("Eski emirler temizlenirken uyarı: %s", exc)
+            existing = []
+            logger.warning("Eski emirler okunamadı: %s", exc)
+        for ex in existing:
+            if str(ex.get("side")).upper() not in ("SELL", "1") or not ex.get("orderId"):
+                continue
+            # 2026-10-20: emir başına deneme — biri iptal edilemezse "iptal edildi" SAYILMAZ (geri kurulup çift
+            # stop oluşmaz) ve kalan emirler yine iptal edilir (eskiden tek try tüm döngüyü kesiyordu).
+            try:
+                await asyncio.to_thread(cancel_order, api_key, api_secret, ex["orderId"], symbol_u)
+                _cancelled_sells.append(dict(ex))
+            except Exception as exc:
+                logger.warning("Eski emir iptal edilemedi (orderId=%s %s): %s", ex.get("orderId"), symbol_u, exc)
 
     qty = 0.0
     try:
         if _cancelled_sells:
             # İptal sonrası serbest kalan bakiyeyi yeniden oku (iptal öncesi değer kilitli miktarı içermez).
-            balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
-            row = next((b for b in balances if str(b.get("asset") or "").upper() == asset), None)
-            free = float(row.get("free", 0) or 0) if row else 0.0
+            # 2026-10-20: borsa serbest bırakmayı geç yansıtabiliyor → önbelleksiz kısa yoklama (bkz. _SL_TP_SETTLE_*).
+            need = qty_req if qty_req is not None else reachable
+            for attempt in range(_SL_TP_SETTLE_TRIES):
+                balances = await asyncio.to_thread(get_account_balance, api_key, api_secret, force_refresh=True)
+                row = next((b for b in balances if str(b.get("asset") or "").upper() == asset), None)
+                free = float(row.get("free", 0) or 0) if row else 0.0
+                if free + 1e-9 >= need:
+                    break
+                if attempt < _SL_TP_SETTLE_TRIES - 1 and _SL_TP_SETTLE_SLEEP_SEC > 0:
+                    await asyncio.sleep(_SL_TP_SETTLE_SLEEP_SEC)
         qty = free if qty_req is None else qty_req
         if qty <= 0:
             raise HTTPException(status_code=422, detail="Miktar 0'dan büyük olmalı")

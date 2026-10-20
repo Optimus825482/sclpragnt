@@ -32,6 +32,7 @@ def env():
         patch("app.main.place_stop_loss_sell", MagicMock(side_effect=lambda *a, **k: calls["stop"].append(a) or {"order_id": "3"})),
         patch("app.main.log_user_action", new=AsyncMock()),
         patch("app.main._session_identity", MagicMock(return_value=("ali", "user"))),
+        patch("app.main._SL_TP_SETTLE_SLEEP_SEC", 0.0),
     ]
     for p in patches:
         p.start()
@@ -87,10 +88,14 @@ def test_insufficient_qty_rejected_before_cancel_when_unreachable(env):
 
 def test_insufficient_free_after_cancel_restores_old_stop(env):
     """Ön kontrolü geçer (kilitli miktar dahil) ama iptal sonrası bakiye hâlâ yetersizse: eski stop GERİ KURULUR, 422 döner."""
-    balances = [
-        [{"asset": "ADA", "free": "0", "locked": "5"}],   # ön kontrol: locked iptalle serbest kalacak sanılır
-        [{"asset": "ADA", "free": "1", "locked": "0"}],   # iptal sonrası gerçek durum: yetersiz
-    ]
+    calls = []
+
+    def balances(*a, **k):
+        calls.append(k)
+        if len(calls) == 1:
+            return [{"asset": "ADA", "free": "0", "locked": "5"}]   # ön kontrol: locked iptalle serbest kalacak sanılır
+        return [{"asset": "ADA", "free": "1", "locked": "0"}]       # iptal sonrası gerçek durum: yetersiz (her okumada)
+
     with patch("app.main.get_account_balance", MagicMock(side_effect=balances)):
         with pytest.raises(HTTPException) as e:
             call({"mode": "OCO", "tp_price": 110, "sl_price": 95, "quantity": 5})
@@ -134,3 +139,42 @@ def test_success_path_cancel_then_place_unchanged(env):
     res = call({"mode": "SL_ONLY", "sl_price": 95})
     assert res["ok"] and res["mode"] == "SL_ONLY"
     assert len(env["cancel"]) == 1 and len(env["stop"]) == 1 and env["stop"][0][4] == 95.0
+
+
+# --- 2026-10-20 (canlı WLD): iptal cevabı döndükten sonra borsa kilitli bakiyeyi hemen serbest göstermeyebiliyor ----------
+
+def test_locked_balance_released_late_after_cancel_is_polled_not_rejected(env):
+    """İptalden sonra ilk bakiye okuması hâlâ kilitli görünüyor; kısa yoklamayla serbest kalınca emir TAM miktarla kurulur.
+    Canlıda: 3481 WLD'lik pozisyon, eski stop iptal edildi, ilk okuma 1790 boşta dedi → 422 + stop geri kuruldu."""
+    calls = []
+
+    def balances(*a, **k):
+        calls.append(k)
+        if len(calls) <= 2:   # 1: ön kontrol, 2: iptal sonrası ilk okuma (borsa henüz serbest bırakmadı)
+            return [{"asset": "ADA", "free": "1", "locked": "4"}]
+        return [{"asset": "ADA", "free": "5", "locked": "0"}]
+
+    with patch("app.main.get_account_balance", MagicMock(side_effect=balances)):
+        res = call({"mode": "OCO", "tp_price": 110, "sl_price": 95, "quantity": 5})
+    assert res["ok"] and len(env["cancel"]) == 1 and len(env["oco"]) == 1
+    assert env["oco"][0][3] == 5.0            # tam miktar
+    assert env["stop"] == []                   # eski stop geri kurulmadı (gerek yok)
+    assert all(c.get("force_refresh") for c in calls[2:])   # iptal sonrası okumalar önbelleği atlar
+
+
+def test_cancel_failure_of_one_order_does_not_count_it_as_cancelled(env):
+    """İlk iptal hata verirse o emir 'iptal edildi' sayılmaz (geri kurulup ÇİFT stop oluşmaz) ve sonraki emir yine iptal edilir."""
+    orders = [{"side": "SELL", "orderId": 5, "stopPrice": "90", "origQty": "5"},
+              {"side": "SELL", "orderId": 6, "stopPrice": "0", "price": "120", "origQty": "5"}]
+
+    def cancel(_k, _s, order_id, *_a):
+        if order_id == 5:
+            raise RuntimeError("borsa: iptal reddedildi")
+        env["cancel"].append(order_id)
+
+    with patch("app.main.get_open_orders", MagicMock(return_value=orders)),             patch("app.main.cancel_order", MagicMock(side_effect=cancel)),             patch("app.main.place_oco_sell", MagicMock(side_effect=RuntimeError("x"))):
+        with pytest.raises(HTTPException) as e:
+            call({"mode": "OCO", "tp_price": 110, "sl_price": 95})
+    assert env["cancel"] == [6]
+    assert env["stop"] == []                   # 5 iptal edilemedi → geri kurulmaz; 6 stop değil
+    assert "geri kurulamadı" in e.value.detail or "KORUMASIZ" in e.value.detail
