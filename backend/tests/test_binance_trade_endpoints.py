@@ -72,7 +72,7 @@ def env(monkeypatch):
             raise HTTPException(status_code=401, detail="Giriş gerekli")
         return {"username": "ali", "role": "user"}
 
-    async def real_state(uid):
+    async def real_state(uid, role=None):
         return (st.live, "panel")
 
     async def creds(request, user=None):

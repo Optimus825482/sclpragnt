@@ -2861,18 +2861,27 @@ async def _real_sell_state() -> tuple[bool, str]:
     return raw.strip().lower() in {"1", "true", "yes", "on"}, "panel"
 
 
-async def _real_sell_state_for(user_id: int) -> tuple[bool, str]:
+async def _real_sell_state_for(user_id: int, role: str | None = None) -> tuple[bool, str]:
     """Kullanıcı bazlı gerçek emir anahtarı (çok kullanıcılı, 2026-09-19).
 
     - env ENABLE_REAL_BINANCE_SELL tanımlıysa sunucu geneli ÜST KAPI olarak
       tüm kullanıcıları bağlar (mevcut davranış korunur).
     - Tanımlı değilse her kullanıcı user_binance_keys.real_sell_enabled
-      bayrağıyla kendi emir gönderimini açar/kapatır; satır yoksa kapalı.
+      bayrağıyla kendi emir gönderimini açar/kapatır.
+    - 2026-10-20: satır yoksa ve kullanıcı admin ise eski genel panel anahtarı
+      (`binance_real_sell_enabled`) geçerlidir — anahtarları eski genel ayarda duran
+      yönetici `_decrypt_binance_creds` ile emir gönderebiliyor ama kapı hep kapalı
+      kalıyordu ("Canlı işlemi aç" hiç tutmuyordu). Satır yoksa ve admin değilse kapalı.
     """
     env = os.getenv("ENABLE_REAL_BINANCE_SELL")
     if env is not None:
         return env.strip().lower() in {"1", "true", "yes", "on"}, "env"
-    return await database.get_user_binance_real_sell(user_id), "panel"
+    keys = await database.get_user_binance_keys(int(user_id))
+    if keys is not None:
+        return bool(keys.get("real_sell_enabled")), "panel"
+    if role == "admin":
+        return await _real_sell_state()
+    return False, "panel"
 
 
 # Canlı Hesap WS fiyat tick'leri — anahtar yapılandırma durumu 60 sn cache'lenir
@@ -3440,7 +3449,7 @@ async def get_binance_settings(request: Request):
         elif principal.get("role") == "admin":
             enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
             configured = bool(enc_key)
-    sell_ok, sell_source = (await _real_sell_state_for(int(user["id"]))
+    sell_ok, sell_source = (await _real_sell_state_for(int(user["id"]), principal.get("role"))
                             if user else (False, "panel"))
     return {"configured": configured, "sell_enabled": sell_ok, "sell_source": sell_source,
             "is_admin": principal.get("role") == "admin"}
@@ -3489,9 +3498,18 @@ async def save_binance_settings(payload: dict, request: Request):
                 await database.set_llm_setting(BINANCE_REAL_SELL_SETTING, "1" if real_val else "0")
     elif real_val is not None:
         # Yalnız işlem anahtarı güncelleniyor (anahtar alanları gönderilmedi).
-        await database.set_user_binance_real_sell(user_id, real_val)
+        updated = await database.set_user_binance_real_sell(user_id, real_val)
+        if not updated:
+            # 2026-10-20: user_binance_keys satırı yok → UPDATE 0 satır etkiliyor ve anahtar sessizce
+            # KAPALI kalıyordu (arayüz "AÇIK" diyordu). Admin'in anahtarları eski genel ayardaysa
+            # bayrak da oraya yazılır (_real_sell_state_for aynı yerden okur); diğer kullanıcı önce anahtar girmeli.
+            if principal.get("role") == "admin" and await database.get_llm_setting(BINANCE_API_KEY_SETTING, ""):
+                await database.set_llm_setting(BINANCE_REAL_SELL_SETTING, "1" if real_val else "0")
+            else:
+                raise HTTPException(status_code=404,
+                                    detail="Önce Binance TR API anahtarınızı kaydedin; canlı işlem anahtarı ondan sonra açılır")
 
-    sell_ok, sell_source = await _real_sell_state_for(user_id)
+    sell_ok, sell_source = await _real_sell_state_for(user_id, principal.get("role"))
     await log_user_action(
         principal.get("username"),
         principal.get("role"),
@@ -3527,7 +3545,7 @@ async def _require_live_user(request, panel_msg: str, env_msg: str) -> tuple[dic
     user = await database.get_user_by_username(str(principal.get("username") or ""))
     if not user:
         raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
-    ok, source = await _real_sell_state_for(int(user["id"]))
+    ok, source = await _real_sell_state_for(int(user["id"]), principal.get("role"))
     if not ok:
         raise HTTPException(status_code=403, detail=panel_msg if source == "panel" else env_msg)
     return principal, user

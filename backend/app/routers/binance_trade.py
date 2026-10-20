@@ -94,7 +94,7 @@ async def _user(request: Request) -> dict:
 
 
 async def _require_live(user: dict) -> None:
-    ok, source = await _main()._real_sell_state_for(int(user["id"]))
+    ok, source = await _main()._real_sell_state_for(int(user["id"]), user.get("role"))
     if not ok:
         if source == "panel":
             raise HTTPException(status_code=403, detail="Canlı işlem kapalı. Binance TR sayfasında 'Canlı işlem'i açın")
