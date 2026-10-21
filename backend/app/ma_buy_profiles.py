@@ -4,8 +4,8 @@ H4 sinyali (kullanıcı kararı, 2026-10-21 akşam, 18:30 güncellemesi): MA7 MA
 (orta > yavaş) ARANMAZ; orta×yavaş kuralı varsayılan listede yok (`MA_BUY_H4_RULES` ile eklenebilir); gövde ve StochRSI
 eleği yok; MA türü grafik şeridiyle aynı (`MA_BUY_MA_TYPE`, varsayılan SMA). Grafikteki BUY rozeti MA99 şartını
 koruduğu için H4'te rozetten DAHA ÇOK sinyal üretir — bilinçli. 19:15: sembolün 24 sa TL hacmi `MA_BUY_H4_MIN_QUOTE_VOLUME`
-(5M) altındaysa H4 sinyali yok (izleyici ve radar sekmesi aynı eşiği kullanır). Paper çıkışı 90 günlük aramadan kalan uzun vade profili: hedef %10, stop %8,
-en çok 3 gün, iz süren / başabaş stop YOK. Aramanın bulduğu SMA 8/34/89 orta×yavaş + gövde ≥ %1 ayarı
+(5M) altındaysa H4 sinyali yok (izleyici ve radar sekmesi aynı eşiği kullanır). Paper çıkışı (19:46, replay B tablosu): hedef %10, stop %8,
+en çok 1 gün, iz süren stop %3 tetik / %1,5 mesafe, başabaş stop YOK, dinamik tetik/mesafe YOK (replay simülasyonuyla birebir). Aramanın bulduğu SMA 8/34/89 orta×yavaş + gövde ≥ %1 ayarı
 (docs/MA_KESISIM_H4_ARAMA_90g_2026-10-21.md) `MA_BUY_H4_PERIODS/RULES/MIN_BODY_PCT` ile geri alınabilir.
 Diğer dilimler genel ayarlarla (MA_BUY_PERIODS, iki kural, StochRSI ≤ 80, otonom paper çıkış profili) çalışmaya devam eder.
 
@@ -53,10 +53,26 @@ def profile(tf: str) -> dict | None:
         "min_body_pct": max(0.0, float(getattr(config, "MA_BUY_H4_MIN_BODY_PCT", 0.0) or 0.0)),
         "stoch_max": None,                                   # H4'te StochRSI eleği yok (kullanıcı: saf kesişim)
         "stop_loss_pct": float(getattr(config, "MA_BUY_H4_STOP_PCT", 8.0) or 8.0),
-        "max_hold_minutes": float(getattr(config, "MA_BUY_H4_MAX_HOLD_MIN", 4320) or 4320),
-        "trailing": False,                                   # iz süren / başabaş stop yok (arama sonucu)
+        "max_hold_minutes": float(getattr(config, "MA_BUY_H4_MAX_HOLD_MIN", 1440) or 1440),
+        **trailing_params(),
         "horizon_minutes": 240,                              # bir H4 mumu: yeniden açma ufku
     }
+
+
+def trailing_params() -> dict:
+    """H4 iz süren stop ayarı (config): {trailing, trailing_trigger_pct, trailing_gap_pct}."""
+    return {"trailing": bool(getattr(config, "MA_BUY_H4_TRAILING", True)),
+            "trailing_trigger_pct": max(0.1, float(getattr(config, "MA_BUY_H4_TRAIL_TRIGGER_PCT", 3.0) or 3.0)),
+            "trailing_gap_pct": max(0.1, float(getattr(config, "MA_BUY_H4_TRAIL_GAP_PCT", 1.5) or 1.5))}
+
+
+def manage_params(exit_profile_name) -> dict | None:
+    """auto_paper pozisyon yönetimi: işlemin `exit_profile` adına göre iz süren stop kuralı; profil dışı işlemde None.
+    Profil kapatılmış olsa da eski açık işlemler aynı kuralla yönetilir (config'ten okunur). Başabaş stop ve dinamik
+    tetik/mesafe profilli işlemde uygulanmaz."""
+    if str(exit_profile_name or "") != H4_PROFILE_NAME:
+        return None
+    return {**trailing_params(), "breakeven": False, "dynamic": False}
 
 
 def exit_overrides(notification: dict) -> dict | None:
@@ -65,7 +81,7 @@ def exit_overrides(notification: dict) -> dict | None:
     if not isinstance(ep, dict) or not ep.get("name"):
         return None
     out = {"name": str(ep["name"]), "trailing": bool(ep.get("trailing", True))}
-    for key in ("stop_loss_pct", "max_hold_minutes"):
+    for key in ("stop_loss_pct", "max_hold_minutes", "trailing_trigger_pct", "trailing_gap_pct"):
         try:
             v = float(ep.get(key))
         except (TypeError, ValueError):

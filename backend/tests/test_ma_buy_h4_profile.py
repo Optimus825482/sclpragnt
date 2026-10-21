@@ -12,7 +12,8 @@ def test_h4_profile_values_and_other_timeframes_have_none():
     assert p["name"] == "ma_buy_h4" and p["periods"] == (7, 20, 99) and p["rules"] == (ma_buy_signals.RULE_FAST_CROSS_MID,)
     assert p["require_mid_above_slow"] is False          # 18:30 kararı: MA99 şartı yok
     assert p["min_quote_volume"] == 5_000_000.0           # 19:15 kararı: 24 sa hacim tabanı
-    assert p["min_body_pct"] == 0.0 and p["stop_loss_pct"] == 8.0 and p["max_hold_minutes"] == 4320 and p["trailing"] is False
+    assert p["min_body_pct"] == 0.0 and p["stop_loss_pct"] == 8.0 and p["max_hold_minutes"] == 1440   # 19:46: 1 gün
+    assert p["trailing"] is True and p["trailing_trigger_pct"] == 3.0 and p["trailing_gap_pct"] == 1.5
     assert p["stoch_max"] is None and p["ma_type"] == "sma"
     for tf in ("1m", "5m", "15m", "30m", "1h"):
         assert profiles.profile(tf) is None
@@ -111,10 +112,12 @@ def test_h4_notification_is_special_and_carries_exit_profile():
     n = notify.build_notification(row, (7, 20, 99), now=1_700_014_450.0)
     assert n["title"] == "🕓 WLDTRY · H4 MA KESİŞİMİ · uzun vade"
     assert "SMA20 ↗ SMA99" in n["message"] and "gövde" not in n["message"]   # gövde eleği yok → metinde de yok
-    assert "Hedef: +%10" in n["message"] and "Stop: −%8" in n["message"] and "En çok 3 gün" in n["message"]
+    assert "Hedef: +%10" in n["message"] and "Stop: −%8" in n["message"] and "En çok 1 gün" in n["message"]
+    assert "İz süren stop %3/%1.5" in n["message"]
     assert n["tag"] == "ma-buy-h4-WLDTRY" and n["url"] == "/charts?symbol=WLDTRY&timeframe=4h"
     assert n["target_pct"] == 10.0 and n["expected_price"] == pytest.approx(13.75)
-    assert n["exit_profile"] == {"name": "ma_buy_h4", "stop_loss_pct": 8.0, "max_hold_minutes": 4320.0, "trailing": False}
+    assert n["exit_profile"] == {"name": "ma_buy_h4", "stop_loss_pct": 8.0, "max_hold_minutes": 1440.0, "trailing": True,
+                                 "trailing_trigger_pct": 3.0, "trailing_gap_pct": 1.5}
     assert n["horizon_minutes"] == 240 and n["source"] == "ma_buy" and n["notification_key"] == "ma-4h-WLDTRY-1700000000000"
 
 
@@ -136,6 +139,17 @@ def test_other_timeframes_keep_generic_notification():
 def test_exit_overrides_reads_envelope_and_ignores_garbage():
     assert profiles.exit_overrides({"exit_profile": {"name": "ma_buy_h4", "stop_loss_pct": 8, "max_hold_minutes": 4320, "trailing": False}}) == \
         {"name": "ma_buy_h4", "trailing": False, "stop_loss_pct": 8.0, "max_hold_minutes": 4320.0}
+    assert profiles.exit_overrides({"exit_profile": {"name": "ma_buy_h4", "trailing_trigger_pct": 3, "trailing_gap_pct": 1.5}}) == \
+        {"name": "ma_buy_h4", "trailing": True, "trailing_trigger_pct": 3.0, "trailing_gap_pct": 1.5}
+
+
+def test_manage_params_only_for_h4_profile_and_follows_config(monkeypatch):
+    assert profiles.manage_params("ma_buy_h4") == {"trailing": True, "trailing_trigger_pct": 3.0, "trailing_gap_pct": 1.5,
+                                                   "breakeven": False, "dynamic": False}
+    assert profiles.manage_params(None) is None and profiles.manage_params("baska") is None
+    monkeypatch.setattr(config, "MA_BUY_H4_TRAILING", False, raising=False)
+    monkeypatch.setattr(config, "MA_BUY_H4_PROFILE_ENABLED", False, raising=False)   # profil kapalı → eski işlemler yine yönetilir
+    assert profiles.manage_params("ma_buy_h4")["trailing"] is False
     assert profiles.exit_overrides({"exit_profile": {"name": "x", "stop_loss_pct": "yok"}}) == {"name": "x", "trailing": True}
     assert profiles.exit_overrides({}) is None and profiles.exit_overrides({"exit_profile": "ma_buy_h4"}) is None
 
@@ -168,15 +182,16 @@ class AutoPaperH4ExitProfileTests(unittest.IsolatedAsyncioTestCase):
             await auto_paper._open_new_trade("WLDTRY", notification, 100.0, settings)
         return captured["trade_data"]
 
-    async def test_h4_envelope_sets_stop_8pct_hold_3_days_and_profile_name(self):
+    async def test_h4_envelope_sets_stop_8pct_hold_and_profile_name(self):
         settings = {"balance_pct": 10.0, "min_order_try": 10.0, "stop_loss_pct": 3.0, "default_target_pct": 2.0}
         notif = {"symbol": "WLDTRY", "source": "ma_buy", "target_pct": 10.0, "price": 100.0,
-                 "exit_profile": {"name": "ma_buy_h4", "stop_loss_pct": 8.0, "max_hold_minutes": 4320.0, "trailing": False}}
+                 "exit_profile": {"name": "ma_buy_h4", "stop_loss_pct": 8.0, "max_hold_minutes": 1440.0, "trailing": True,
+                                  "trailing_trigger_pct": 3.0, "trailing_gap_pct": 1.5}}
         td = await self._open(notif, settings)
         entry = td["entry_price"]
         self.assertAlmostEqual(td["stop_loss"], entry * (1 - 0.08), places=6)         # ayarlardaki %3 degil, profil %8
         self.assertEqual(td["exit_profile"], "ma_buy_h4")
-        self.assertEqual(td["max_hold_minutes"], 4320.0)
+        self.assertEqual(td["max_hold_minutes"], 1440.0)
         self.assertGreater(td["take_profit"], entry * 1.10)                            # hedef %10 (+maliyet payi)
 
     async def test_envelope_profile_ignored_for_non_rule_signals(self):
@@ -188,14 +203,7 @@ class AutoPaperH4ExitProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(td["stop_loss"], td["entry_price"] * (1 - 0.03), places=6)
         self.assertIsNone(td["exit_profile"]) and self.assertIsNone(td["max_hold_minutes"])
 
-    async def test_manage_skips_trailing_and_uses_trade_hold_for_profile_trade(self):
-        """Profilli islem: +%3 karda bile trailing/breakeven yazilmaz; tutma 3 gun dolmadan time_stop olmaz."""
-        now = time.time()
-        trade = {"id": 7, "symbol": "WLDTRY", "status": "open", "entry_price": 100.0, "quantity": 1.0,
-                 "stop_loss": 92.0, "take_profit": 110.5, "peak_price": 103.0, "entry_time": now - 10 * 3600,
-                 "exit_profile": "ma_buy_h4", "max_hold_minutes": 4320.0}
-        settings = {"trailing_enabled": True, "trailing_trigger_pct": 2.0, "trailing_gap_pct": 1.0,
-                    "breakeven_enabled": True, "max_hold_minutes": 120.0, "tp_primary_exit_enabled": False}
+    async def _manage(self, trade, settings, last_price, now):
         closed, trailing_updates, breakeven_updates = [], [], []
 
         async def fake_close(trade_id, symbol, price, when, reason):
@@ -205,11 +213,48 @@ class AutoPaperH4ExitProfileTests(unittest.IsolatedAsyncioTestCase):
              patch.object(auto_paper.database, "update_auto_paper_trailing", AsyncMock(side_effect=lambda *a: trailing_updates.append(a))), \
              patch.object(auto_paper.database, "update_auto_paper_breakeven", AsyncMock(side_effect=lambda *a: breakeven_updates.append(a))), \
              patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock(), create=True), \
-             patch.object(auto_paper.market, "get_ticker", lambda s: {"last_price": 103.0, "timestamp": now * 1000}):
+             patch.object(auto_paper.market, "get_ticker", lambda s: {"last_price": last_price, "timestamp": now * 1000}):
             await auto_paper._manage_single_trade(trade, now, 1.5, settings)
+        return closed, trailing_updates, breakeven_updates
+
+    def _trade(self, now, **over):
+        base = {"id": 7, "symbol": "WLDTRY", "status": "open", "entry_price": 100.0, "quantity": 1.0,
+                "stop_loss": 92.0, "take_profit": 110.5, "peak_price": 100.0, "entry_time": now - 10 * 3600,
+                "exit_profile": "ma_buy_h4", "max_hold_minutes": 1440.0}
+        base.update(over)
+        return base
+
+    async def test_profile_trade_uses_trade_hold_and_no_breakeven_below_trigger(self):
+        """Profilli islem: +%2 karda iz suren tetiklenmez (%3), breakeven yazilmaz; 10 saatte 120 dk ayariyla kapanmaz."""
+        now = time.time()
+        settings = {"trailing_enabled": False, "trailing_trigger_pct": 1.0, "trailing_gap_pct": 0.5,
+                    "breakeven_enabled": True, "max_hold_minutes": 120.0, "tp_primary_exit_enabled": False}
+        closed, trailing_updates, breakeven_updates = await self._manage(self._trade(now, peak_price=102.0), settings, 102.0, now)
         self.assertEqual(closed, [], "10 saatlik profilli islem 120 dk ayariyla kapatilmamali")
         self.assertEqual(trailing_updates, [])
         self.assertEqual(breakeven_updates, [])
+
+    async def test_profile_trade_trails_at_3pct_with_1_5pct_gap_regardless_of_settings(self):
+        """+%3 karda iz suren stop devreye girer: zirve × (1 − 0,015); ayarlardaki kapali/ farkli degerler yok sayilir."""
+        now = time.time()
+        settings = {"trailing_enabled": False, "trailing_trigger_pct": 1.0, "trailing_gap_pct": 0.5,
+                    "breakeven_enabled": True, "max_hold_minutes": 120.0, "tp_primary_exit_enabled": False,
+                    "dynamic_trailing_enabled": True}
+        closed, trailing_updates, breakeven_updates = await self._manage(self._trade(now, peak_price=104.0), settings, 103.5, now)
+        self.assertEqual(closed, [])
+        self.assertEqual(breakeven_updates, [])
+        self.assertEqual(len(trailing_updates), 1)
+        self.assertAlmostEqual(trailing_updates[0][2], 104.0 * (1 - 0.015), places=6)
+
+    async def test_profile_trade_closes_on_trailing_stop_and_on_1_day_hold(self):
+        now = time.time()
+        settings = {"trailing_enabled": True, "max_hold_minutes": 120.0, "tp_primary_exit_enabled": False}
+        t = self._trade(now, peak_price=106.0, trailing_activated=True, trailing_stop=106.0 * (1 - 0.015))
+        closed, _, _ = await self._manage(t, settings, 104.3, now)       # 104.3 < 104.41 → iz suren stop
+        self.assertEqual(closed, ["trailing_stop"])
+        t = self._trade(now, entry_time=now - 1441 * 60, peak_price=101.0)
+        closed, _, _ = await self._manage(t, settings, 101.0, now)
+        self.assertEqual(closed, ["max_duration"])          # 1441 dk > 1440 dk profil tutması
 
 
 # ---------------------------------------------------------------- 18:30 kararı: MA99 şartı olmadan 7↗20 kesişimi

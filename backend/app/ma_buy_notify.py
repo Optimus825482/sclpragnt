@@ -131,13 +131,15 @@ def _build_profile_notification(row: dict, prof: dict, sym: str, tf: str, price:
     stop = float(prof["stop_loss_pct"])
     hold_days = float(prof["max_hold_minutes"]) / 1440.0
     hold_txt = f"{hold_days:g} gün" if hold_days >= 1 else f"{float(prof['max_hold_minutes']):g} dk"
+    trail_txt = (f"İz süren stop %{float(prof['trailing_trigger_pct']):g}/%{float(prof['trailing_gap_pct']):g}"
+                 if prof.get("trailing") else "İz süren stop yok")
     return {
         "symbol": sym,
         "timeframe": tf,
         "rules": row.get("rules"),
         "title": f"🕓 {sym} · {label} MA KESİŞİMİ · uzun vade",
         "message": (f"{sym} | {label} grafikte {cross}{body_txt} | Giriş: {price:.6f} TRY | Hedef: +%{target:g} → {expected:.6f} | "
-                    f"Stop: −%{stop:g} | En çok {hold_txt} | İz süren stop yok | Otonom paper açılır"),
+                    f"Stop: −%{stop:g} | En çok {hold_txt} | {trail_txt} | Otonom paper açılır"),
         "url": f"/charts?symbol={sym}&timeframe={tf}",
         "tag": f"ma-buy-h4-{sym}",
         "detected_at": now,
@@ -149,7 +151,8 @@ def _build_profile_notification(row: dict, prof: dict, sym: str, tf: str, price:
         "source": SOURCE,
         "profile": prof["name"],
         "exit_profile": {"name": prof["name"], "stop_loss_pct": stop, "max_hold_minutes": float(prof["max_hold_minutes"]),
-                         "trailing": bool(prof["trailing"])},
+                         "trailing": bool(prof["trailing"]), "trailing_trigger_pct": float(prof["trailing_trigger_pct"]),
+                         "trailing_gap_pct": float(prof["trailing_gap_pct"])},
         "notification_key": f"ma-{tf}-{sym}-{int(row['bar_open_ms'])}",
         "updated": False,
         "sent_via_push": False,

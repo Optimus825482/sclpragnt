@@ -52,8 +52,8 @@ _REASON_NO_PUSH = "push_bildirimi_yok"
 _REASON_HEARTBEAT = "teyitsiz nabız bildirimi paper açmaz"
 # Skorsuz kural sinyali kaynakları: skor/mod kapısı yerine kendi anahtarı (bkz. `_try_open_impl`).
 _RULE_SIGNAL_SOURCES = frozenset({"ma_buy"})
-#: 2026-10-21: bu çıkış profilleriyle açılan işlemlerde iz süren ve başabaş stop uygulanmaz (H4 araması: sabit hedef/stop/tutma).
-_NO_TRAIL_PROFILES = frozenset({ma_buy_profiles.H4_PROFILE_NAME})
+#: 2026-10-21: çıkış profilli işlem (MA BUY H4) iz süren stop kuralını profilden alır (`ma_buy_profiles.manage_params`):
+#: 19:46 kararı — tetik %3 / mesafe %1,5, başabaş stop ve dinamik tetik/mesafe YOK (replay simülasyonuyla birebir).
 
 # 2026-10-15 (denetim düzeltmesi, madde 14): eskiden fonksiyon gövdelerine
 # gömülü sabitler (sl_cooldown 5.0, açılış bekleme 30 sn, breakeven gap
@@ -1369,11 +1369,14 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     entry_time = float(trade.get("entry_time") or trade.get("created_at") or 0)
     hold_minutes = (now - entry_time) / 60.0 if entry_time > 0 else 0.0
     max_hold_minutes = float((settings or {}).get("max_hold_minutes", getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 120.0)))
-    # 2026-10-21: çıkış profilli işlem (MA BUY H4) kendi tutma süresini taşır (3 gün); iz süren/başabaş stop kapalı.
+    # 2026-10-21: çıkış profilli işlem (MA BUY H4) kendi tutma süresini taşır; iz süren stop kuralı profilden gelir,
+    # başabaş stop profilli işlemde uygulanmaz.
     _trade_hold = trade.get("max_hold_minutes")
     if trade.get("exit_profile") and _trade_hold:
         max_hold_minutes = float(_trade_hold)
-    profile_no_trail = str(trade.get("exit_profile") or "") in _NO_TRAIL_PROFILES
+    _profile_manage = ma_buy_profiles.manage_params(trade.get("exit_profile"))
+    profile_no_trail = _profile_manage is not None and not _profile_manage["trailing"]
+    profile_no_breakeven = _profile_manage is not None and not _profile_manage.get("breakeven", False)
     if (not price_is_fresh and max_hold_minutes > 0
             and hold_minutes >= max_hold_minutes * _STALE_FORCE_CLOSE_FACTOR):
         logger.warning("auto_paper %s: taze fiyat alınamıyor ve süre %.1f dk >= max_hold %.0f dk × %.1f — "
@@ -1479,7 +1482,8 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
 
     # Breakeven kontrolü (isteğe bağlı — erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI, 2026-09-22 Erkan kararı).
-    breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False))) and not profile_no_trail
+    breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False))) \
+        and not profile_no_trail and not profile_no_breakeven
     BREAKEVEN_TRAIL_GAP_PCT = float(_exit_def["trailing_gap_pct"])  # 2026-10-16 (maliyet/çıkış): profil
     if breakeven_enabled:
         breakeven_activated = bool(trade.get("breakeven_activated", False))
@@ -1542,25 +1546,34 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # Trailing stop modülü (kullanıcı isteği 2026-09-08): %trailing_trigger_pct
     # kara geçince fiyatı %trailing_gap_pct geriden takip eder. Varsayılan AÇIK;
     # ayarlardan kapatılabilir (trailing_enabled=false).
-    trailing_enabled = bool((settings or {}).get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED)) and not profile_no_trail
+    # 2026-10-21 19:46: profilli işlemde (MA BUY H4) iz süren stop ayarlardan BAĞIMSIZ — profil açık diyorsa açık,
+    # tetik/mesafe profilden, dinamik tetik/mesafe ve breakeven kısıtı uygulanmaz (replay simülasyonuyla birebir).
+    if _profile_manage is not None:
+        trailing_enabled = bool(_profile_manage["trailing"])
+    else:
+        trailing_enabled = bool((settings or {}).get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED))
     if trailing_enabled:
-        # 2026-10-16 (maliyet/çıkış): varsayılanlar çıkış profilinden (DB ayarı önce).
-        trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", _exit_def["trailing_trigger_pct"]))
-        trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", _exit_def["trailing_gap_pct"]))
+        if _profile_manage is not None:
+            trailing_trigger_pct = float(_profile_manage["trailing_trigger_pct"])
+            trailing_gap_pct = float(_profile_manage["trailing_gap_pct"])
+        else:
+            # 2026-10-16 (maliyet/çıkış): varsayılanlar çıkış profilinden (DB ayarı önce).
+            trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", _exit_def["trailing_trigger_pct"]))
+            trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", _exit_def["trailing_gap_pct"]))
 
-        # B2: Dynamic trailing trigger tied to TP target (Tavan korumalı)
-        dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False)))
-        if tp_gain_pct is not None and dynamic_trailing_enabled:
-            trailing_trigger_pct = min(trailing_trigger_pct, max(1.2, tp_gain_pct * 0.6))
+            # B2: Dynamic trailing trigger tied to TP target (Tavan korumalı)
+            dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False)))
+            if tp_gain_pct is not None and dynamic_trailing_enabled:
+                trailing_trigger_pct = min(trailing_trigger_pct, max(1.2, tp_gain_pct * 0.6))
 
-        # B3: Dynamic trailing gap compatible with TP
-        if tp_gain_pct is not None and gross_pnl_pct >= tp_gain_pct * 0.9:
-            trailing_gap_pct = max(0.2, trailing_gap_pct * 0.5)
+            # B3: Dynamic trailing gap compatible with TP
+            if tp_gain_pct is not None and gross_pnl_pct >= tp_gain_pct * 0.9:
+                trailing_gap_pct = max(0.2, trailing_gap_pct * 0.5)
 
-        # Breakeven açıksa trailing gap'i kısıtla; breakeven kapalıysa kullanıcının
-        # belirlediği geniş trailing mesafesine izin ver.
-        if breakeven_enabled:
-            trailing_gap_pct = min(trailing_gap_pct, BREAKEVEN_TRAIL_GAP_PCT)
+            # Breakeven açıksa trailing gap'i kısıtla; breakeven kapalıysa kullanıcının
+            # belirlediği geniş trailing mesafesine izin ver.
+            if breakeven_enabled:
+                trailing_gap_pct = min(trailing_gap_pct, BREAKEVEN_TRAIL_GAP_PCT)
 
         trailing_activated = bool(trade.get("trailing_activated", False))
         current_trailing_stop = float(trade.get("trailing_stop") or 0)

@@ -474,8 +474,8 @@ class Config:
     # 2026-10-21: H4 ÖZEL PROFİLİ. Sinyal (kullanıcı kararı, 2026-10-21 18:30): MA7 MA20'yi yukarı keser → sinyal;
     # MA99 (orta > yavaş) şartı ARANMAZ, gövde/StochRSI eleği YOK, MA türü MA_BUY_MA_TYPE (grafik şeridi).
     # Önceki arama sonucu (SMA 8/34/89, orta×yavaş, gövde ≥ %1; docs/MA_KESISIM_H4_ARAMA_90g_2026-10-21.md) ortam
-    # değişkenleriyle geri alınabilir. Paper çıkışı değişmedi: hedef %10 (MA_BUY_TARGET_PCT 4h), stop %8, en çok 3 gün,
-    # iz süren/başabaş stop YOK. Kapatmak için MA_BUY_H4_PROFILE_ENABLED=0 (H4 genel kurala + genel paper çıkışına döner).
+    # değişkenleriyle geri alınabilir. Paper çıkışı: hedef %10 (MA_BUY_TARGET_PCT 4h), stop %8, en çok 1 gün, iz süren
+    # stop 3/1,5, başabaş stop YOK. Kapatmak için MA_BUY_H4_PROFILE_ENABLED=0 (H4 genel kurala + genel paper çıkışına döner).
     MA_BUY_H4_PROFILE_ENABLED = os.getenv("MA_BUY_H4_PROFILE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
     MA_BUY_H4_PERIODS = os.getenv("MA_BUY_H4_PERIODS", "7,20,99").strip() or "7,20,99"
     MA_BUY_H4_RULES = os.getenv("MA_BUY_H4_RULES", "fast_cross_mid").strip() or "fast_cross_mid"
@@ -487,7 +487,12 @@ class Config:
     MA_BUY_H4_MIN_QUOTE_VOLUME = float(os.getenv("MA_BUY_H4_MIN_QUOTE_VOLUME", os.getenv("MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME", "5000000")) or 5_000_000)
     MA_BUY_H4_SCAN_TTL_SEC = max(60.0, float(os.getenv("MA_BUY_H4_SCAN_TTL_SEC", "600") or 600))   # önbellek tazeliği
     MA_BUY_H4_STOP_PCT = float(os.getenv("MA_BUY_H4_STOP_PCT", "8.0") or 8.0)
-    MA_BUY_H4_MAX_HOLD_MIN = float(os.getenv("MA_BUY_H4_MAX_HOLD_MIN", "4320") or 4320)
+    # 2026-10-21 19:46 (kullanıcı kararı, docs/MA_BUY_H4_REPLAY_7_20_90g_2026-10-21.md B tablosu): tutma 1 gün, iz süren
+    # stop %3 tetik / %1,5 mesafe (eğitim +%0,28 / test +%0,33, kazanma %58–59; 3 günlük tutma son ayda −%0,92 idi).
+    MA_BUY_H4_MAX_HOLD_MIN = float(os.getenv("MA_BUY_H4_MAX_HOLD_MIN", "1440") or 1440)
+    MA_BUY_H4_TRAILING = os.getenv("MA_BUY_H4_TRAILING", "1").strip().lower() not in {"0", "false", "no", "off"}
+    MA_BUY_H4_TRAIL_TRIGGER_PCT = float(os.getenv("MA_BUY_H4_TRAIL_TRIGGER_PCT", "3.0") or 3.0)
+    MA_BUY_H4_TRAIL_GAP_PCT = float(os.getenv("MA_BUY_H4_TRAIL_GAP_PCT", "1.5") or 1.5)
     MA_BUY_LOOKBACK_BARS = max(1, int(os.getenv("MA_BUY_LOOKBACK_BARS", "3") or 3))   # her turda son N kapanmış mum
     MA_BUY_SCAN_INTERVAL_SEC = max(10.0, float(os.getenv("MA_BUY_SCAN_INTERVAL_SEC", "30") or 30))
     MA_BUY_RETENTION_DAYS = max(0, int(os.getenv("MA_BUY_RETENTION_DAYS", "120") or 0))  # 0 = silme yok
