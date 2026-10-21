@@ -1,5 +1,6 @@
-/* Fontlar next/font ile self-hosted yüklenir (layout.tsx: --font-sans/display/mono
-   CSS değişkenleri). Google Fonts @import kaldırıldı — render-blocking'di. */
+/* Fontlar npm paketinden (fontsource) self-hosted yüklenir — layout.tsx CSS'lerini içe aktarır; derleme Google
+   Fonts'a bağlı değildir (2026-10-21). Aile adları aşağıdaki --font-* değişkenlerinde; tailwind.config.ts fontFamily
+   bunları okur. Google Fonts @import yok — render-blocking'di. */
 
 @tailwind base;
 @tailwind components;
@@ -7,6 +8,10 @@
 
 :root {
   color-scheme: dark;
+  --font-plex: "IBM Plex Sans";
+  --font-sans: "Inter";
+  --font-display: "Poppins";
+  --font-mono: "JetBrains Mono Variable";
 }
 
 *, *::before, *::after { box-sizing: border-box; }

@@ -1,5 +1,19 @@
 import type { Metadata } from "next";
-import { Poppins, Inter, JetBrains_Mono, IBM_Plex_Sans } from "next/font/google";
+// 2026-10-21: fontlar npm paketinden (fontsource) — derleme Google Fonts'a bağlı DEĞİL. Coolify derlemesi
+// next/font/google ile fonts.gstatic.com'a ulaşamayınca Turbopack "next/font/google queries have exactly one entry"
+// hatasıyla düşüyordu (aralıklı ağ hatası; yerelde aynı ağaç geçiyor). Fontsource CSS'i her ağırlık için tüm alt
+// kümeleri (latin, latin-ext = Türkçe, …) unicode-range ile tanımlar; tarayıcı yalnız gerekeni indirir. Aile adları
+// globals.css'teki --font-* değişkenlerinde (tailwind.config.ts fontFamily bunları okur).
+import "@fontsource/poppins/600.css";
+import "@fontsource/poppins/700.css";
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/700.css";
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/500.css";
+import "@fontsource/ibm-plex-sans/600.css";
+import "@fontsource/ibm-plex-sans/700.css";
+import "@fontsource-variable/jetbrains-mono/index.css";
 import "./globals.css";
 import "./user-theme.generated.css";
 import "./user-palette.generated.css";
@@ -12,14 +26,9 @@ import { Suspense } from "react";
 
 export const BUILD_ID = process.env.NEXT_PUBLIC_BUILD_ID || "dev";
 
-// Google Fonts'u next/font ile yükle: render-blocking @import yerine
-// self-hosted, optimize edilmiş font (CLS + FCP iyileşir).
-const poppins = Poppins({ subsets: ["latin"], weight: ["600", "700"], variable: "--font-display", display: "swap" });
-const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "700"], variable: "--font-sans", display: "swap" });
 // 2026-10-17 (basit arayüz): uygulama genelinde IBM Plex Sans (Roboto beğenilmedi; Plex'in açık
 // harf aralığı ve belirgin rakamları yoğun sayı tablolarında daha okunaklı; latin-ext = Türkçe).
-const plex = IBM_Plex_Sans({ subsets: ["latin", "latin-ext"], weight: ["400", "500", "600", "700"], variable: "--font-plex", display: "swap" });
-const jetbrains = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", display: "swap" });
+// Ağırlıklar: Poppins 600/700 (başlık), Inter 400/500/700 (yedek), IBM Plex Sans 400–700, JetBrains Mono (değişken).
 
 export const metadata: Metadata = {
   title: "Scalper Agent V4 — Paper Trading",
@@ -55,7 +64,7 @@ export default function RootLayout({
     <html lang="tr" className="dark" suppressHydrationWarning data-build-id={BUILD_ID}>
       <head><meta name="mobile-web-app-capable" content="yes" /><meta name="build-id" content={BUILD_ID} /></head>
       {/* Extension noise lands on <body> too; same suppression, children unaffected. */}
-      <body suppressHydrationWarning className={`${plex.variable} ${poppins.variable} ${inter.variable} ${jetbrains.variable}`}>
+      <body suppressHydrationWarning>
         <AppUpdater />
         <AuthGate>
         <AppShell>{children}</AppShell>
