@@ -340,7 +340,7 @@ describe("30m / 1h zaman dilimleri", () => {
 });
 
 // 2026-10-21: Radar > "H4 kesişimleri" sekmesi (GET /api/ma-buy/h4-crosses)
-import { fmtVolumeTry, h4StatusChip, parseH4Crosses } from "./maBuyUi";
+import { fmtDuration, fmtVolumeTry, h4StatusChip, parseH4Crosses } from "./maBuyUi";
 
 describe("H4 kesişim taraması yanıtı", () => {
   it("satırları ayrıştırır, bozukları atar, kural etiketini kurar", () => {
@@ -350,13 +350,16 @@ describe("H4 kesişim taraması yanıtı", () => {
       items: [
         { symbol: "wldtry", rules: ["mid_cross_slow"], bar_open_ms: 1, bar_close_ms: 14_400_001, signal_price: "12.5", body_pct: 1.8,
           change_24h_pct: 4.2, quote_volume_24h: 12_300_000, target_pct: 10, stop_loss_pct: 8, max_hold_minutes: 4320,
-          tracked: true, notified: true, paper_status: "acildi" },
+          tracked: true, notified: true, paper_status: "acildi",
+          max_rise_pct: 6.25, max_rise_price: 13.28, max_rise_at_ms: 14_400_001 + 2_400_000, minutes_to_max: 40, max_drop_pct: -1.2,
+          now_pct: 2.1, last_close: 12.76, elapsed_minutes: 180, bars_after: 36 },
         { symbol: "", bar_open_ms: 1, bar_close_ms: 2 },
         { symbol: "XTRY", bar_open_ms: null, bar_close_ms: 2 },
       ],
     });
     expect(r.items).toHaveLength(1);
-    expect(r.items[0]).toMatchObject({ symbol: "WLDTRY", signalPrice: 12.5, change24hPct: 4.2, notified: true, paperStatus: "acildi" });
+    expect(r.items[0]).toMatchObject({ symbol: "WLDTRY", signalPrice: 12.5, change24hPct: 4.2, notified: true, paperStatus: "acildi",
+      maxRisePct: 6.25, maxRisePrice: 13.28, minutesToMax: 40, maxDropPct: -1.2, nowPct: 2.1, elapsedMinutes: 180, barsAfter: 36 });
     expect(r).toMatchObject({ scannedAt: 1_700_000_000, symbolsScanned: 287, errors: 2, refreshing: false, maLabel: "SMA 7/20/99" });
   });
   it("boş/ilk yanıt: tarama yok, tazeleniyor", () => {
@@ -375,5 +378,14 @@ describe("H4 kesişim taraması yanıtı", () => {
     expect(fmtVolumeTry(12_300_000)).toBe("₺12,3M");
     expect(fmtVolumeTry(850_000)).toBe("₺850K");
     expect(fmtVolumeTry(null)).toBe("—");
+  });
+  it("zirve alanları eksikse null, süre biçimi", () => {
+    const r = parseH4Crosses({ items: [{ symbol: "XTRY", bar_open_ms: 1, bar_close_ms: 2 }] });
+    expect(r.items[0]).toMatchObject({ maxRisePct: null, minutesToMax: null, nowPct: null, barsAfter: 0 });
+    expect(fmtDuration(40)).toBe("40 dk");
+    expect(fmtDuration(200)).toBe("3 sa 20 dk");
+    expect(fmtDuration(180)).toBe("3 sa");
+    expect(fmtDuration(1500)).toBe("1 gün 1 sa");
+    expect(fmtDuration(null)).toBe("—");
   });
 });

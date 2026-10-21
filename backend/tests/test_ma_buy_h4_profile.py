@@ -9,7 +9,8 @@ from app.config import config
 
 def test_h4_profile_values_and_other_timeframes_have_none():
     p = profiles.profile("4h")
-    assert p["name"] == "ma_buy_h4" and p["periods"] == (7, 20, 99) and p["rules"] == tuple(ma_buy_signals.ALL_RULES)
+    assert p["name"] == "ma_buy_h4" and p["periods"] == (7, 20, 99) and p["rules"] == (ma_buy_signals.RULE_FAST_CROSS_MID,)
+    assert p["require_mid_above_slow"] is False          # 18:30 kararı: MA99 şartı yok
     assert p["min_body_pct"] == 0.0 and p["stop_loss_pct"] == 8.0 and p["max_hold_minutes"] == 4320 and p["trailing"] is False
     assert p["stoch_max"] is None and p["ma_type"] == "sma"
     for tf in ("1m", "5m", "15m", "30m", "1h"):
@@ -32,9 +33,11 @@ def test_h4_profile_follows_chart_ma_type_and_env_overrides(monkeypatch):
     monkeypatch.setattr(config, "MA_BUY_H4_MIN_BODY_PCT", 1.0, raising=False)
     p = profiles.profile("4h")
     assert p["periods"] == (8, 34, 89) and p["rules"] == (ma_buy_signals.RULE_MID_CROSS_SLOW,) and p["min_body_pct"] == 1.0
-    # Geçersiz kural listesi → iki kural
+    # Geçersiz kural listesi → yalnız hızlı×orta
     monkeypatch.setattr(config, "MA_BUY_H4_RULES", "yok", raising=False)
-    assert profiles.profile("4h")["rules"] == tuple(ma_buy_signals.ALL_RULES)
+    assert profiles.profile("4h")["rules"] == (ma_buy_signals.RULE_FAST_CROSS_MID,)
+    monkeypatch.setattr(config, "MA_BUY_H4_REQUIRE_MID_ABOVE_SLOW", True, raising=False)
+    assert profiles.profile("4h")["require_mid_above_slow"] is True
 
 
 def test_tracker_scans_4h_with_profile_periods_and_chart_ma_type(monkeypatch):
@@ -54,8 +57,8 @@ def test_tracker_scans_4h_with_profile_periods_and_chart_ma_type(monkeypatch):
     monkeypatch.setattr(config, "MA_BUY_MA_TYPE", "ema", raising=False)
     tracker._state["seen"].pop(("XTRY", "4h"), None)
     asyncio.run(tracker._scan_symbol("XTRY", "4h", 120 * 14_400_000 + 10_000, asyncio.Semaphore(1)))
-    assert seen["per"] == (7, 20, 99) and seen["use_sma"] is False and seen["rules_allowed"] == tuple(ma_buy_signals.ALL_RULES)
-    assert seen["min_body_pct"] == 0.0 and seen["stoch_max"] is None
+    assert seen["per"] == (7, 20, 99) and seen["use_sma"] is False and seen["rules_allowed"] == (ma_buy_signals.RULE_FAST_CROSS_MID,)
+    assert seen["min_body_pct"] == 0.0 and seen["stoch_max"] is None and seen["require_mid_above_slow"] is False
 
 
 def test_h4_target_default_is_10_pct():
@@ -206,3 +209,43 @@ class AutoPaperH4ExitProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(closed, [], "10 saatlik profilli islem 120 dk ayariyla kapatilmamali")
         self.assertEqual(trailing_updates, [])
         self.assertEqual(breakeven_updates, [])
+
+
+# ---------------------------------------------------------------- 18:30 kararı: MA99 şartı olmadan 7↗20 kesişimi
+def _fast_mid_cross_below_slow():
+    """Fiyat uzun süre düşer (MA20 < MA99 kalır), kısa bir sıçrama MA7'yi MA20'nin üstüne çıkarır: MA99 şartıyla sinyal YOK."""
+    closes = [200.0 - i * 0.5 for i in range(120)] + [140.0 + i * 1.5 for i in range(8)]
+    return closes
+
+
+def test_fast_cross_mid_without_ma99_gate_fires_only_when_gate_is_off():
+    closes = _fast_mid_cross_below_slow()
+    gated = ma_buy_signals.detect_ma_buy(closes, (7, 20, 99), use_sma=True, stoch_max=None)
+    free = ma_buy_signals.detect_ma_buy(closes, (7, 20, 99), use_sma=True, stoch_max=None, require_mid_above_slow=False)
+    assert not any(ma_buy_signals.RULE_FAST_CROSS_MID in h["rules"] for h in gated)
+    hits = [h for h in free if ma_buy_signals.RULE_FAST_CROSS_MID in h["rules"]]
+    assert hits and hits[-1]["mid"] < hits[-1]["slow"]          # kesişim MA99'un ALTINDA sayıldı
+
+
+def test_signals_from_bars_h4_default_profile_fires_below_ma99():
+    closes = _fast_mid_cross_below_slow()
+    bars = _bars(closes)
+    rows = tracker.signals_from_bars("AAATRY", "4h", bars, now_ms=10 ** 13, lookback=len(bars), per=(7, 20, 99), use_sma=True,
+                                     stoch_max=None, rules_allowed=(ma_buy_signals.RULE_FAST_CROSS_MID,), require_mid_above_slow=False)
+    assert rows and all(r["rules"] == ma_buy_signals.RULE_FAST_CROSS_MID for r in rows)
+    assert tracker.signals_from_bars("AAATRY", "4h", bars, now_ms=10 ** 13, lookback=len(bars), per=(7, 20, 99), use_sma=True,
+                                     stoch_max=None, rules_allowed=(ma_buy_signals.RULE_FAST_CROSS_MID,)) == []
+
+
+def test_without_gate_short_series_still_detects_before_slow_ma_exists():
+    """Yavaş MA (99) henüz yokken bile 7↗20 kesişimi sayılır; slow alanı None."""
+    closes = [50.0 - i * 0.2 for i in range(30)] + [44.0 + i * 1.0 for i in range(10)]
+    hits = ma_buy_signals.detect_ma_buy(closes, (7, 20, 99), use_sma=True, stoch_max=None, require_mid_above_slow=False)
+    assert hits and hits[0]["slow"] is None and hits[0]["rules"] == [ma_buy_signals.RULE_FAST_CROSS_MID]
+    assert ma_buy_signals.detect_ma_buy(closes, (7, 20, 99), use_sma=True, stoch_max=None) == []
+
+
+def test_h4_notification_text_for_fast_mid_cross():
+    row = {"symbol": "BTCTRY", "timeframe": "4h", "rules": "fast_cross_mid", "signal_price": 100.0, "bar_open_ms": 0, "bar_close_ms": 14_400_000}
+    n = notify.build_notification(row, (7, 20, 99), now=14_450.0)
+    assert "SMA7 ↗ SMA20" in n["message"] and "Otonom paper açılır" in n["message"]

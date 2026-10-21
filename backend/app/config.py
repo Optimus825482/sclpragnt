@@ -471,14 +471,15 @@ class Config:
     MA_BUY_MA_TYPE = (os.getenv("MA_BUY_MA_TYPE", "sma").strip().lower() or "sma")   # sma | ema — grafikteki MA Ribbon türüyle aynı olmalı
     MA_BUY_STOCH_MAX = float(os.getenv("MA_BUY_STOCH_MAX", "80") or 80)   # 2. kural: StochRSI K bunun üstündeyse sinyal yok; 100 = kapalı
     MA_BUY_STOCH_OFF_TIMEFRAMES = os.getenv("MA_BUY_STOCH_OFF_TIMEFRAMES", "1m").strip()   # bu zaman dilimlerinde StochRSI sınırı uygulanmaz
-    # 2026-10-21: H4 ÖZEL PROFİLİ. Sinyal (kullanıcı kararı, 2026-10-21 akşam): MA 7/20/99 kesişimleri — grafikteki BUY
-    # rozetiyle aynı iki kural (hızlı×orta ve orta×yavaş), gövde/StochRSI eleği YOK, MA türü MA_BUY_MA_TYPE (grafik şeridi).
+    # 2026-10-21: H4 ÖZEL PROFİLİ. Sinyal (kullanıcı kararı, 2026-10-21 18:30): MA7 MA20'yi yukarı keser → sinyal;
+    # MA99 (orta > yavaş) şartı ARANMAZ, gövde/StochRSI eleği YOK, MA türü MA_BUY_MA_TYPE (grafik şeridi).
     # Önceki arama sonucu (SMA 8/34/89, orta×yavaş, gövde ≥ %1; docs/MA_KESISIM_H4_ARAMA_90g_2026-10-21.md) ortam
     # değişkenleriyle geri alınabilir. Paper çıkışı değişmedi: hedef %10 (MA_BUY_TARGET_PCT 4h), stop %8, en çok 3 gün,
     # iz süren/başabaş stop YOK. Kapatmak için MA_BUY_H4_PROFILE_ENABLED=0 (H4 genel kurala + genel paper çıkışına döner).
     MA_BUY_H4_PROFILE_ENABLED = os.getenv("MA_BUY_H4_PROFILE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
     MA_BUY_H4_PERIODS = os.getenv("MA_BUY_H4_PERIODS", "7,20,99").strip() or "7,20,99"
-    MA_BUY_H4_RULES = os.getenv("MA_BUY_H4_RULES", "fast_cross_mid,mid_cross_slow").strip() or "fast_cross_mid,mid_cross_slow"
+    MA_BUY_H4_RULES = os.getenv("MA_BUY_H4_RULES", "fast_cross_mid").strip() or "fast_cross_mid"
+    MA_BUY_H4_REQUIRE_MID_ABOVE_SLOW = os.getenv("MA_BUY_H4_REQUIRE_MID_ABOVE_SLOW", "0").strip().lower() in {"1", "true", "yes", "on"}
     MA_BUY_H4_MIN_BODY_PCT = float(os.getenv("MA_BUY_H4_MIN_BODY_PCT", "0") or 0.0)
     # Radar > "H4 kesişimleri" sekmesi (app/ma_buy_h4_scan.py): son 24 saatte H4 kesişimi olan likit TRY çiftleri.
     MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME = float(os.getenv("MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME", "1000000") or 1_000_000)  # 24 sa hacim (TL)

@@ -96,17 +96,19 @@ def closed_bars(rows, tf_ms: int, now_ms: int) -> list[dict]:
 
 def signals_from_bars(symbol: str, tf: str, bars: list[dict], now_ms: int, *, lookback: int, per: tuple,
                       use_sma: bool = False, slow_cross: bool = True, stoch_max: float | None = None,
-                      rules_allowed: tuple | None = None, min_body_pct: float = 0.0) -> list[dict]:
+                      rules_allowed: tuple | None = None, min_body_pct: float = 0.0,
+                      require_mid_above_slow: bool = True) -> list[dict]:
     """Son `lookback` kapanmış mumda tetiklenen sinyaller → DB satırları (saf).
     `rules_allowed` verilirse yalnız o kurallar sayılır (H4 profili: orta×yavaş); `min_body_pct` > 0 ise sinyal mumunun
     gövdesi (kapanış−açılış)/açılış en az o kadar olmalı. Satıra `body_pct` eklenir (DB'ye yazılmaz, bildirim metni için)."""
-    if len(bars) < max(per) + 2:
+    need = max(per) if require_mid_above_slow else max(per[0], per[1])
+    if len(bars) < need + 2:
         return []
     closes = [b["close"] for b in bars]
     first_index = len(bars) - max(1, int(lookback))
     rows = []
     for hit in ma_buy_signals.detect_ma_buy(closes, per, use_sma=use_sma, slow_cross=slow_cross,
-                                               stoch_max=stoch_max):
+                                               stoch_max=stoch_max, require_mid_above_slow=require_mid_above_slow):
         if hit["index"] < first_index:
             continue
         if rules_allowed is not None:
@@ -208,7 +210,8 @@ async def _scan_symbol(symbol: str, tf: str, now_ms: int, sem: asyncio.Semaphore
     if prof:
         found = signals_from_bars(symbol, tf, bars, now_ms, lookback=int(getattr(config, "MA_BUY_LOOKBACK_BARS", 3) or 3),
                                   per=prof["periods"], use_sma=prof["ma_type"] == "sma", stoch_max=prof["stoch_max"],
-                                  rules_allowed=prof["rules"], min_body_pct=prof["min_body_pct"])
+                                  rules_allowed=prof["rules"], min_body_pct=prof["min_body_pct"],
+                                  require_mid_above_slow=prof["require_mid_above_slow"])
     else:
         found = signals_from_bars(symbol, tf, bars, now_ms, lookback=int(getattr(config, "MA_BUY_LOOKBACK_BARS", 3) or 3),
                                   per=periods(), use_sma=use_sma, stoch_max=stoch_max(tf))

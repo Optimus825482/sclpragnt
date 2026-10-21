@@ -36,12 +36,13 @@ def signal_settings() -> dict:
     prof = ma_buy_profiles.profile(TF)
     if prof:
         return {"periods": tuple(prof["periods"]), "rules": tuple(prof["rules"]), "ma_type": prof["ma_type"],
+                "require_mid_above_slow": bool(prof["require_mid_above_slow"]),
                 "min_body_pct": float(prof["min_body_pct"]), "stoch_max": prof["stoch_max"],
                 "profile": prof["name"], "stop_loss_pct": float(prof["stop_loss_pct"]),
                 "max_hold_minutes": float(prof["max_hold_minutes"])}
     use_sma = str(getattr(config, "MA_BUY_MA_TYPE", "sma")).strip().lower() == "sma"
     return {"periods": tuple(ma_buy_tracker.periods()), "rules": None, "ma_type": "sma" if use_sma else "ema",
-            "min_body_pct": 0.0, "stoch_max": ma_buy_tracker.stoch_max(TF), "profile": None,
+            "require_mid_above_slow": True, "min_body_pct": 0.0, "stoch_max": ma_buy_tracker.stoch_max(TF), "profile": None,
             "stop_loss_pct": None, "max_hold_minutes": None}
 
 
@@ -55,8 +56,65 @@ def crosses_from_bars(symbol: str, bars: list[dict], now_ms: int, hours: int = D
         return []
     rows = ma_buy_tracker.signals_from_bars(symbol, TF, bars, now_ms, lookback=lookback, per=st["periods"],
                                             use_sma=st["ma_type"] == "sma", stoch_max=st["stoch_max"],
-                                            rules_allowed=st["rules"], min_body_pct=st["min_body_pct"])
+                                            rules_allowed=st["rules"], min_body_pct=st["min_body_pct"],
+                                            require_mid_above_slow=bool(st.get("require_mid_above_slow", True)))
     return [r for r in rows if r["bar_close_ms"] >= since_close]
+
+
+PEAK_TF = "5m"
+PEAK_TF_MS = 300_000
+PEAK_FETCH_LIMIT = 400            # 24 sa = 288 mum; 72 sa penceresi için son kısım yeter
+
+
+def peak_metrics(signal_price: float, signal_close_ms: int, bars_after: list[dict], now_ms: int) -> dict:
+    """Sinyal mumu kapanışından bu yana (5 dk mumlarla) zirve / dip / şu an (saf).
+
+    Dönüş: max_rise_pct, max_rise_price, max_rise_at_ms (zirve mumunun kapanışı), minutes_to_max (kapanıştan zirveye),
+    max_drop_pct, max_drop_at_ms, last_close, now_pct, elapsed_minutes, bars_after. Mum yoksa alanlar None (sinyal yeni)."""
+    price = float(signal_price)
+    use = [b for b in bars_after or [] if int(b["open_ms"]) >= int(signal_close_ms)]
+    out = {"max_rise_pct": None, "max_rise_price": None, "max_rise_at_ms": None, "minutes_to_max": None,
+           "max_drop_pct": None, "max_drop_price": None, "max_drop_at_ms": None, "last_close": None, "now_pct": None,
+           "elapsed_minutes": round(max(0, int(now_ms) - int(signal_close_ms)) / 60_000.0, 1), "bars_after": len(use)}
+    if price <= 0 or not use:
+        return out
+
+    def pct(x: float) -> float:
+        return round((float(x) / price - 1.0) * 100.0, 4)
+
+    highs = [float(b["high"]) for b in use]
+    lows = [float(b["low"]) for b in use]
+    hi = max(range(len(use)), key=lambda k: (highs[k], -k))     # eşitte İLK zirve
+    lo = min(range(len(use)), key=lambda k: (lows[k], k))
+    hi_close_ms = int(use[hi]["open_ms"]) + PEAK_TF_MS
+    out.update({
+        "max_rise_pct": pct(highs[hi]), "max_rise_price": highs[hi], "max_rise_at_ms": hi_close_ms,
+        "minutes_to_max": round((hi_close_ms - int(signal_close_ms)) / 60_000.0, 1),
+        "max_drop_pct": pct(lows[lo]), "max_drop_price": lows[lo], "max_drop_at_ms": int(use[lo]["open_ms"]) + PEAK_TF_MS,
+        "last_close": float(use[-1]["close"]), "now_pct": pct(use[-1]["close"]),
+    })
+    return out
+
+
+async def _peak_for(item: dict, now_ms: int, sem: asyncio.Semaphore) -> dict:
+    async with sem:
+        raw = await fetch_klines(item["symbol"], PEAK_TF, limit=PEAK_FETCH_LIMIT, start_time_ms=int(item["bar_close_ms"]))
+    bars = ma_buy_tracker.closed_bars(raw, PEAK_TF_MS, now_ms)
+    return peak_metrics(item["signal_price"], item["bar_close_ms"], bars, now_ms)
+
+
+async def attach_peaks(items: list[dict], now_ms: int) -> int:
+    """Her kesişime zirve/dip/şu an ölçümünü ekler (sembol başına bir 5 dk klines isteği). Dönüş: hata sayısı."""
+    sem = asyncio.Semaphore(_FETCH_CONCURRENCY)
+    results = await asyncio.gather(*(_peak_for(it, now_ms, sem) for it in items), return_exceptions=True)
+    errors = 0
+    for it, res in zip(items, results):
+        if isinstance(res, BaseException):
+            errors += 1
+            res = peak_metrics(it["signal_price"], it["bar_close_ms"], [], now_ms)
+            res["peak_error"] = True
+        it.update(res)
+    return errors
 
 
 def merge_tracker_rows(items: list[dict], tracked: list[dict]) -> list[dict]:
@@ -140,6 +198,7 @@ async def scan(now_ms: int | None = None, hours: int = DEFAULT_HOURS) -> dict:
             errors += 1
             continue
         items.extend(_public(r, by_sym.get(s["symbol"]), st) for r in res)
+    errors += await attach_peaks(items, now_ms)      # zirve / zirveye süre / şu an (kullanıcı isteği 18:30)
     try:
         tracked = await database.list_ma_buy_signals(now_ms - hours * 3_600_000 - TF_MS, limit=5000)
     except Exception as exc:  # noqa: BLE001 — izleyici kaydı okunamazsa liste yine gösterilir
@@ -151,8 +210,8 @@ async def scan(now_ms: int | None = None, hours: int = DEFAULT_HOURS) -> dict:
     return {
         "scanned_at": now_ms / 1000.0, "hours": int(hours), "symbols_scanned": len(syms), "errors": errors,
         "min_quote_volume": float(getattr(config, "MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME", 1_000_000) or 0),
-        "rule": {"ma_type": st["ma_type"], "periods": [fast, mid, slow],
-                 "rules": list(st["rules"] or ()), "profile": st["profile"]},
+        "rule": {"ma_type": st["ma_type"], "periods": [fast, mid, slow], "rules": list(st["rules"] or ()),
+                 "require_mid_above_slow": bool(st.get("require_mid_above_slow", True)), "profile": st["profile"]},
         "items": items,
     }
 

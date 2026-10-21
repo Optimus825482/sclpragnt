@@ -25,7 +25,8 @@ CROSS_CLOSE_MS = (CROSS_INDEX + 1) * H4     # sinyal mumunun kapanışı (satır
 
 def _settings(**over):
     base = {"periods": (7, 20, 99), "rules": tuple(ma_buy_signals.ALL_RULES), "ma_type": "sma", "min_body_pct": 0.0,
-            "stoch_max": None, "profile": "ma_buy_h4", "stop_loss_pct": 8.0, "max_hold_minutes": 4320.0}
+            "stoch_max": None, "profile": "ma_buy_h4", "stop_loss_pct": 8.0, "max_hold_minutes": 4320.0,
+            "require_mid_above_slow": True}
     base.update(over)
     return base
 
@@ -49,7 +50,8 @@ class CrossesFromBarsTests(unittest.TestCase):
     def test_default_settings_follow_h4_profile(self):
         st = scan_mod.signal_settings()
         self.assertEqual(st["periods"], (7, 20, 99))
-        self.assertEqual(st["rules"], tuple(ma_buy_signals.ALL_RULES))
+        self.assertEqual(st["rules"], (ma_buy_signals.RULE_FAST_CROSS_MID,))
+        self.assertFalse(st["require_mid_above_slow"])
         self.assertEqual(st["profile"], "ma_buy_h4")
 
     def test_merge_tracker_rows_marks_notified_and_paper(self):
@@ -69,11 +71,17 @@ class ScanTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_scan_joins_ticker_and_tracker_rows_and_sorts_newest_first(self):
         closes = _cross_series()
-        last_close = CROSS_CLOSE_MS + 5_000              # "şimdi" = kesişim mumu kapanalı birkaç sn (CLOSE_SKEW sonrası); sonraki mumlar henüz yok
+        last_close = CROSS_CLOSE_MS + 10 * 300_000 + 5_000   # "şimdi" = kesişimden 50 dk sonra (10 adet 5 dk mum kapandı)
         raw = [[i * H4, c, c, c, c, "1", (i + 1) * H4 - 1] for i, c in enumerate(closes)]
         flat = [[i * H4, 1, 1, 1, 1, "1", (i + 1) * H4 - 1] for i in range(len(closes))]
 
-        async def fake_klines(symbol, tf, limit):
+        m5 = [[CROSS_CLOSE_MS + i * 300_000, 100, 100 + (12 if i == 7 else 2), 99, 100 + (6 if i == 7 else 1), "1",
+               CROSS_CLOSE_MS + (i + 1) * 300_000 - 1] for i in range(10)]   # zirve 8. mumda (high 112), son kapanış 101
+
+        async def fake_klines(symbol, tf, limit, start_time_ms=None):
+            if tf == "5m":
+                self.assertEqual(start_time_ms, CROSS_CLOSE_MS)
+                return m5
             self.assertEqual((tf, limit), ("4h", scan_mod.FETCH_LIMIT))
             if symbol == "ERRTRY":
                 raise RuntimeError("ağ")
@@ -85,6 +93,7 @@ class ScanTests(unittest.IsolatedAsyncioTestCase):
         tracked = [{"symbol": "ATRY", "timeframe": "4h", "bar_open_ms": CROSS_INDEX * H4, "push_ok": True, "paper_status": "acildi"}]
         with patch.object(scan_mod, "universe", AsyncMock(return_value=uni)), \
              patch.object(scan_mod, "fetch_klines", fake_klines), \
+             patch.object(scan_mod, "signal_settings", lambda: _settings(require_mid_above_slow=False)), \
              patch.object(scan_mod.database, "list_ma_buy_signals", AsyncMock(return_value=tracked)) as q:
             snap = await scan_mod.scan(now_ms=last_close + 1, hours=24)
         self.assertEqual(snap["symbols_scanned"], 3)
@@ -99,6 +108,16 @@ class ScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(it["stop_loss_pct"], 8.0)
         self.assertEqual(it["ma_label"], "SMA 7/20/99")
         self.assertTrue(it["tracked"] and it["notified"] and it["paper_status"] == "acildi")
+        # Zirve ölçümü (5 dk mumlar): sinyal fiyatına göre
+        sp = it["signal_price"]
+        self.assertAlmostEqual(it["max_rise_pct"], (112 / sp - 1) * 100, places=3)
+        self.assertEqual(it["max_rise_price"], 112)
+        self.assertEqual(it["minutes_to_max"], 40.0)                         # 8. mumun kapanışı = 40 dk
+        self.assertEqual(it["max_rise_at_ms"], CROSS_CLOSE_MS + 8 * 300_000)
+        self.assertAlmostEqual(it["max_drop_pct"], (99 / sp - 1) * 100, places=3)
+        self.assertAlmostEqual(it["now_pct"], (101 / sp - 1) * 100, places=3)
+        self.assertEqual(it["bars_after"], 10)
+        self.assertFalse(snap["rule"]["require_mid_above_slow"])
         # İzleyici kaydı 24 sa + bir H4 mumu geriden okunur
         self.assertLessEqual(q.await_args.args[0], last_close + 1 - 24 * 3_600_000 - H4)
 
@@ -182,3 +201,36 @@ class WarmupTests(unittest.TestCase):
         from app import main
         src = inspect.getsource(main)
         self.assertIn("_start_background(h4_scan_warmup_loop", src)
+
+
+class PeakMetricsTests(unittest.TestCase):
+    def test_peak_metrics_empty_and_basic(self):
+        empty = scan_mod.peak_metrics(10.0, 1_000_000, [], now_ms=1_000_000 + 120_000)
+        self.assertIsNone(empty["max_rise_pct"]) and self.assertEqual(empty["bars_after"], 0)
+        self.assertEqual(empty["elapsed_minutes"], 2.0)
+        bars = [{"open_ms": 1_000_000 + i * 300_000, "high": h, "low": l, "close": c}
+                for i, (h, l, c) in enumerate([(10.5, 9.9, 10.2), (11.0, 10.0, 10.8), (11.0, 10.5, 10.6), (10.7, 9.5, 9.6)])]
+        m = scan_mod.peak_metrics(10.0, 1_000_000, bars, now_ms=1_000_000 + 4 * 300_000)
+        self.assertEqual(m["max_rise_pct"], 10.0)
+        self.assertEqual(m["max_rise_at_ms"], 1_000_000 + 2 * 300_000)       # eşit zirvede İLK mum (2.)
+        self.assertEqual(m["minutes_to_max"], 10.0)
+        self.assertEqual(m["max_drop_pct"], -5.0)
+        self.assertEqual(m["now_pct"], -4.0)
+        self.assertEqual(m["bars_after"], 4)
+
+    def test_peak_metrics_ignores_bars_before_signal_close(self):
+        bars = [{"open_ms": 500_000, "high": 99.0, "low": 1.0, "close": 50.0}, {"open_ms": 1_000_000, "high": 11.0, "low": 10.0, "close": 10.5}]
+        m = scan_mod.peak_metrics(10.0, 1_000_000, bars, now_ms=2_000_000)
+        self.assertEqual(m["max_rise_pct"], 10.0) and self.assertEqual(m["bars_after"], 1)
+
+    def test_attach_peaks_survives_fetch_error(self):
+        async def run():
+            async def boom(*a, **k):
+                raise RuntimeError("ağ")
+            items = [{"symbol": "ATRY", "signal_price": 10.0, "bar_close_ms": 1_000_000}]
+            with patch.object(scan_mod, "fetch_klines", boom):
+                errors = await scan_mod.attach_peaks(items, now_ms=2_000_000)
+            return errors, items[0]
+        errors, it = asyncio.run(run())
+        self.assertEqual(errors, 1)
+        self.assertTrue(it["peak_error"]) and self.assertIsNone(it["max_rise_pct"])

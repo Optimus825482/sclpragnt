@@ -116,10 +116,13 @@ def stoch_rsi_k(values: Sequence[float], rsi_len: int = 14, stoch_len: int = 14,
 
 
 def detect_ma_buy(closes: Sequence[float], periods: Sequence = DEFAULT_PERIODS, use_sma: bool = False,
-                  slow_cross: bool = True, stoch_max: float | None = 80.0, stoch_params: Sequence = (14, 14, 3)) -> list:
+                  slow_cross: bool = True, stoch_max: float | None = 80.0, stoch_params: Sequence = (14, 14, 3),
+                  require_mid_above_slow: bool = True) -> list:
     """Kapanış serisinde tüm BUY sinyalleri: [{index, rules, fast, mid, slow}] (indeks artan).
 
     `slow_cross=False` → yalnız `fast_cross_mid` (grafikteki "showMaSlowCross" kapalı hâli).
+    `require_mid_above_slow=False` (2026-10-21, H4 kullanıcı kararı) → `fast_cross_mid` için orta > yavaş (MA99) şartı
+    aranmaz; yavaş MA henüz tanımsızken bile hızlı×orta kesişimi sayılır (`slow` o zaman None).
     """
     fast_len, mid_len, slow_len = (periods[0], periods[1], periods[2])
     stoch_k = (stoch_rsi_k(closes, *stoch_params)
@@ -130,10 +133,10 @@ def detect_ma_buy(closes: Sequence[float], periods: Sequence = DEFAULT_PERIODS, 
     for i in range(1, len(closes)):
         f0, m0, s0 = fast[i - 1], mid[i - 1], slow[i - 1]
         f1, m1, s1 = fast[i], mid[i], slow[i]
-        if f0 is None or m0 is None or f1 is None or m1 is None or s1 is None:
+        if f0 is None or m0 is None or f1 is None or m1 is None or (s1 is None and require_mid_above_slow):
             continue
-        cond1 = m1 > s1 and _cross_up(f0, m0, f1, m1)
-        cond2 = bool(slow_cross) and s0 is not None and f1 > m1 and _cross_up(m0, s0, m1, s1)
+        cond1 = (s1 is not None and m1 > s1 or not require_mid_above_slow) and _cross_up(f0, m0, f1, m1)
+        cond2 = bool(slow_cross) and s0 is not None and s1 is not None and f1 > m1 and _cross_up(m0, s0, m1, s1)
         # 2026-10-18 (kullanıcı kuralı): 2. kural StochRSI K > stoch_max (80) iken tetiklenmez; K tanımsızsa engellemez.
         if cond2 and stoch_k is not None and stoch_k[i] is not None and stoch_k[i] > stoch_max:
             cond2 = False

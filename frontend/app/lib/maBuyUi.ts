@@ -511,6 +511,16 @@ export type H4CrossItem = {
   tracked: boolean;
   notified: boolean;
   paperStatus: string | null;
+  // 2026-10-21 18:30: sinyalden bu yana zirve / dip / şu an (5 dk mumlar; sinyal mumu kapanışına göre, %).
+  maxRisePct: number | null;
+  maxRisePrice: number | null;
+  maxRiseAtMs: number | null;
+  minutesToMax: number | null;
+  maxDropPct: number | null;
+  nowPct: number | null;
+  lastClose: number | null;
+  elapsedMinutes: number | null;
+  barsAfter: number;
 };
 
 export type H4CrossResponse = {
@@ -552,6 +562,15 @@ export function parseH4Crosses(raw: unknown): H4CrossResponse {
       tracked: v.tracked === true,
       notified: v.notified === true,
       paperStatus: v.paper_status == null ? null : String(v.paper_status),
+      maxRisePct: num(v.max_rise_pct),
+      maxRisePrice: num(v.max_rise_price),
+      maxRiseAtMs: num(v.max_rise_at_ms),
+      minutesToMax: num(v.minutes_to_max),
+      maxDropPct: num(v.max_drop_pct),
+      nowPct: num(v.now_pct),
+      lastClose: num(v.last_close),
+      elapsedMinutes: num(v.elapsed_minutes),
+      barsAfter: num(v.bars_after) ?? 0,
     }];
   });
   return {
@@ -572,6 +591,20 @@ export function h4StatusChip(it: Pick<H4CrossItem, "tracked" | "notified" | "pap
   if (it.notified) return { text: "Bildirildi", tone: "info" };
   if (it.tracked) return { text: "Kaydedildi, push gitmedi", tone: "muted" };
   return { text: "İzleme dışı (bildirilmedi)", tone: "muted" };
+}
+
+/** Dakika → "40 dk" / "3 sa 20 dk" / "2 gün 4 sa"; veri yoksa "—". */
+export function fmtDuration(minutes: number | null | undefined): string {
+  const n = num(minutes);
+  if (n === null || n < 0) return "—";
+  const m = Math.round(n);
+  if (m < 60) return `${m} dk`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  if (h < 24) return rem ? `${h} sa ${rem} dk` : `${h} sa`;
+  const d = Math.floor(h / 24);
+  const hr = h % 24;
+  return hr ? `${d} gün ${hr} sa` : `${d} gün`;
 }
 
 /** 24 sa hacmi: `₺12,3M` / `₺850K`; veri yoksa "—". */

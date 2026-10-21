@@ -6,7 +6,7 @@ import { fmtDateTime, formatPrice } from "../lib/format";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { useWatchPrices } from "../lib/useWatchPrices";
 import {
-  changeSinceSignal, fmtVolumeTry, h4StatusChip, parseH4Crosses, ruleLabel,
+  changeSinceSignal, fmtDuration, fmtVolumeTry, h4StatusChip, parseH4Crosses, ruleLabel,
   type H4CrossItem, type H4CrossResponse,
 } from "../lib/maBuyUi";
 import SymbolLink from "./SymbolLink";
@@ -34,8 +34,10 @@ const chipClass: Record<"good" | "info" | "muted", string> = {
 };
 
 function CrossRow({ it, live, nowSec, onBuy }: { it: H4CrossItem; live: number | undefined; nowSec: number; onBuy: () => void }) {
-  const change = changeSinceSignal(it.signalPrice, live ?? null);
+  // Şu an: canlı fiyat varsa ondan; yoksa tarama anındaki 5 dk kapanışından (now_pct).
+  const change = changeSinceSignal(it.signalPrice, live ?? null) ?? it.nowPct;
   const chip = h4StatusChip(it);
+  const peakTitle = it.maxRiseAtMs != null ? `Zirve: ${fmtDateTime(it.maxRiseAtMs)}` : undefined;
   const rules = it.rules.map(ruleLabel).filter(Boolean).join(" · ") || "MA kesişimi";
   const holdDays = it.maxHoldMinutes != null ? Math.round((it.maxHoldMinutes / 1440) * 10) / 10 : null;
   return (
@@ -61,6 +63,15 @@ function CrossRow({ it, live, nowSec, onBuy }: { it: H4CrossItem; live: number |
         <span className="flex flex-wrap gap-x-4 gap-y-1">
           <span className="text-bunker-muted">Sinyal <b className="text-white">{it.signalPrice != null ? formatPrice(it.signalPrice) : "—"}</b></span>
           <span className="text-bunker-muted">Şu an <b className={pctClass(change)}>{pct(change)}</b></span>
+          <span className="text-bunker-muted" title={peakTitle} data-testid="h4-peak">
+            En yüksek <b className={pctClass(it.maxRisePct)}>{pct(it.maxRisePct)}</b>
+            {it.maxRisePrice != null && <> ({formatPrice(it.maxRisePrice)})</>}
+            {it.minutesToMax != null && <> · <b className="text-white">{fmtDuration(it.minutesToMax)}</b> sonra</>}
+            {it.maxRisePct == null && it.barsAfter === 0 && <span className="text-xs"> (mum henüz kapanmadı)</span>}
+          </span>
+          {it.maxDropPct != null && (
+            <span className="text-bunker-muted">En düşük <b className={pctClass(it.maxDropPct)}>{pct(it.maxDropPct)}</b></span>
+          )}
           {it.targetPct != null && (
             <span className="text-bunker-muted">
               Hedef <b className="text-neon-green">+%{it.targetPct.toFixed(0)}</b>
