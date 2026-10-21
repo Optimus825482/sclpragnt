@@ -11,6 +11,7 @@ def test_h4_profile_values_and_other_timeframes_have_none():
     p = profiles.profile("4h")
     assert p["name"] == "ma_buy_h4" and p["periods"] == (7, 20, 99) and p["rules"] == (ma_buy_signals.RULE_FAST_CROSS_MID,)
     assert p["require_mid_above_slow"] is False          # 18:30 kararı: MA99 şartı yok
+    assert p["min_quote_volume"] == 5_000_000.0           # 19:15 kararı: 24 sa hacim tabanı
     assert p["min_body_pct"] == 0.0 and p["stop_loss_pct"] == 8.0 and p["max_hold_minutes"] == 4320 and p["trailing"] is False
     assert p["stoch_max"] is None and p["ma_type"] == "sma"
     for tf in ("1m", "5m", "15m", "30m", "1h"):
@@ -249,3 +250,35 @@ def test_h4_notification_text_for_fast_mid_cross():
     row = {"symbol": "BTCTRY", "timeframe": "4h", "rules": "fast_cross_mid", "signal_price": 100.0, "bar_open_ms": 0, "bar_close_ms": 14_400_000}
     n = notify.build_notification(row, (7, 20, 99), now=14_450.0)
     assert "SMA7 ↗ SMA20" in n["message"] and "Otonom paper açılır" in n["message"]
+
+
+# ---------------------------------------------------------------- 19:15 kararı: H4 sembol hacim tabanı (24 sa ≥ 5M TL)
+class H4VolumeFloorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_filter_by_quote_volume_drops_thin_symbols_and_keeps_order(self):
+        rows = [{"symbol": "ATRY", "quoteVolume": "6000000"}, {"symbol": "btry", "quoteVolume": "100"}, {"symbol": "CTRY", "quoteVolume": "bozuk"}]
+        with patch.object(tracker, "ticker_24h", AsyncMock(return_value=rows)) as t:
+            out = await tracker.filter_by_quote_volume(["ATRY", "BTRY", "CTRY", "DTRY"], 5_000_000.0)
+        self.assertEqual(out, ["ATRY"])                     # BTRY ince, CTRY bozuk, DTRY ticker'da yok
+        self.assertEqual(t.await_args.args[0], ["ATRY", "BTRY", "CTRY", "DTRY"])
+
+    async def test_filter_by_quote_volume_keeps_all_when_ticker_fails_or_floor_zero(self):
+        with patch.object(tracker, "ticker_24h", AsyncMock(side_effect=RuntimeError("ağ"))):
+            self.assertEqual(await tracker.filter_by_quote_volume(["ATRY", "BTRY"], 5e6), ["ATRY", "BTRY"])
+        with patch.object(tracker, "ticker_24h", AsyncMock()) as t:
+            self.assertEqual(await tracker.filter_by_quote_volume(["ATRY"], 0), ["ATRY"])
+            t.assert_not_awaited()
+
+    async def test_scan_once_applies_floor_only_to_h4(self):
+        scanned: list = []
+
+        async def fake_scan_symbol(symbol, tf, now_ms, sem):
+            scanned.append((symbol, tf))
+            return 0, []
+
+        rows = [{"symbol": "ATRY", "quoteVolume": "9000000"}, {"symbol": "BTRY", "quoteVolume": "10"}]
+        with patch.object(tracker, "active_symbols", AsyncMock(return_value=["ATRY", "BTRY"])), \
+             patch.object(tracker, "timeframes", lambda: ["1h", "4h"]), \
+             patch.object(tracker, "_scan_symbol", fake_scan_symbol), \
+             patch.object(tracker, "ticker_24h", AsyncMock(return_value=rows)):
+            await tracker.scan_once(now_ms=10 ** 13)
+        self.assertEqual(sorted(scanned), [("ATRY", "1h"), ("ATRY", "4h"), ("BTRY", "1h")])

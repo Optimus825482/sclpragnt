@@ -481,8 +481,10 @@ class Config:
     MA_BUY_H4_RULES = os.getenv("MA_BUY_H4_RULES", "fast_cross_mid").strip() or "fast_cross_mid"
     MA_BUY_H4_REQUIRE_MID_ABOVE_SLOW = os.getenv("MA_BUY_H4_REQUIRE_MID_ABOVE_SLOW", "0").strip().lower() in {"1", "true", "yes", "on"}
     MA_BUY_H4_MIN_BODY_PCT = float(os.getenv("MA_BUY_H4_MIN_BODY_PCT", "0") or 0.0)
-    # Radar > "H4 kesişimleri" sekmesi (app/ma_buy_h4_scan.py): son 24 saatte H4 kesişimi olan likit TRY çiftleri.
-    MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME = float(os.getenv("MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME", "1000000") or 1_000_000)  # 24 sa hacim (TL)
+    # 2026-10-21 19:15 (kullanıcı kararı): H4 sinyali için SEMBOL HACİM TABANI — 24 sa TL hacmi bunun altındaki çiftte H4
+    # sinyali üretilmez (izleyici: push/paper yok; radar sekmesi: listede yok). Bugünkü 155 kesişimde 1–5M grubu en zayıf
+    # zirveyi verdi (ort +%2,75, %5+ payı %9) → taban 5M. Eski MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME adı yedek olarak okunur.
+    MA_BUY_H4_MIN_QUOTE_VOLUME = float(os.getenv("MA_BUY_H4_MIN_QUOTE_VOLUME", os.getenv("MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME", "5000000")) or 5_000_000)
     MA_BUY_H4_SCAN_TTL_SEC = max(60.0, float(os.getenv("MA_BUY_H4_SCAN_TTL_SEC", "600") or 600))   # önbellek tazeliği
     MA_BUY_H4_STOP_PCT = float(os.getenv("MA_BUY_H4_STOP_PCT", "8.0") or 8.0)
     MA_BUY_H4_MAX_HOLD_MIN = float(os.getenv("MA_BUY_H4_MAX_HOLD_MIN", "4320") or 4320)

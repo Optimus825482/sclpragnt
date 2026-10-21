@@ -2,8 +2,8 @@
 
 Kural H4 izleyicisiyle BİREBİR aynıdır (`ma_buy_profiles.profile("4h")`: MA 7/20/99, iki kural, `signals_from_bars`);
 fark yalnız evrendedir: izleyici AKTİF sembolleri izleyip bildirir, bu tarama ise 24 sa hacmi
-`MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME` (1M TL) üstündeki TÜM işlem gören çiftlere bakar — kullanıcı piyasanın tamamını
-görmek istiyor. Her satıra izleyicinin kaydı eklenir (`notified`, `paper_status`): bildirilen / bildirilmeyen ayrımı görünür.
+`MA_BUY_H4_MIN_QUOTE_VOLUME` (5M TL; izleyicinin H4 hacim tabanıyla AYNI) üstündeki TÜM işlem gören çiftlere bakar —
+kullanıcı piyasanın tamamını görmek istiyor. Her satıra izleyicinin kaydı eklenir (`notified`, `paper_status`): bildirilen / bildirilmeyen ayrımı görünür.
 
 Maliyet: ~300 sembol × 1 klines isteği (130 mum). Sonuç bellekte önbelleklenir (`MA_BUY_H4_SCAN_TTL_SEC`, 10 dk; H4 mumu
 4 saatte bir kapanır) ve tazeleme ARKA PLANDA tek uçuştur: istek önbelleği hemen döndürür, bayatsa tazelemeyi başlatır
@@ -152,9 +152,17 @@ def _public(row: dict, ticker: dict | None, st: dict) -> dict:
 
 
 # ------------------------------------------------------------------------------------------------------- evren + tarama
+def min_quote_volume() -> float:
+    """24 sa TL hacim tabanı: profil varsa oradan (izleyiciyle aynı), yoksa config."""
+    prof = ma_buy_profiles.profile(TF)
+    if prof and prof.get("min_quote_volume") is not None:
+        return float(prof["min_quote_volume"])
+    return max(0.0, float(getattr(config, "MA_BUY_H4_MIN_QUOTE_VOLUME", 5_000_000) or 0.0))
+
+
 async def universe(quote_asset: str = "TRY") -> list[dict]:
     """24 sa hacmi eşiğin üstündeki işlem gören TRY çiftleri (ticker satırıyla)."""
-    floor = float(getattr(config, "MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME", 1_000_000) or 0)
+    floor = min_quote_volume()
     rows = await ticker_24h()
     trading = set(await trading_symbols(quote_asset))
     out = []
@@ -209,7 +217,7 @@ async def scan(now_ms: int | None = None, hours: int = DEFAULT_HOURS) -> dict:
     fast, mid, slow = st["periods"]
     return {
         "scanned_at": now_ms / 1000.0, "hours": int(hours), "symbols_scanned": len(syms), "errors": errors,
-        "min_quote_volume": float(getattr(config, "MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME", 1_000_000) or 0),
+        "min_quote_volume": min_quote_volume(),
         "rule": {"ma_type": st["ma_type"], "periods": [fast, mid, slow], "rules": list(st["rules"] or ()),
                  "require_mid_above_slow": bool(st.get("require_mid_above_slow", True)), "profile": st["profile"]},
         "items": items,
@@ -248,7 +256,7 @@ async def snapshot(hours: int = DEFAULT_HOURS, force: bool = False) -> dict:
     if (force or is_stale(snap) or (snap and int(snap.get("hours") or 0) != int(hours))) and not _refreshing():
         _cache["task"] = asyncio.create_task(_refresh(int(hours)))
     out = dict(snap) if snap else {"scanned_at": None, "hours": int(hours), "symbols_scanned": 0, "errors": 0,
-                                   "min_quote_volume": float(getattr(config, "MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME", 0) or 0),
+                                   "min_quote_volume": min_quote_volume(),
                                    "rule": None, "items": []}
     out["refreshing"] = _refreshing()
     out["last_error"] = _cache.get("last_error")

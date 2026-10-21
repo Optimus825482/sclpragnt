@@ -3,7 +3,8 @@
 H4 sinyali (kullanıcı kararı, 2026-10-21 akşam, 18:30 güncellemesi): MA7 MA20'yi YUKARI keser → sinyal. MA99 şartı
 (orta > yavaş) ARANMAZ; orta×yavaş kuralı varsayılan listede yok (`MA_BUY_H4_RULES` ile eklenebilir); gövde ve StochRSI
 eleği yok; MA türü grafik şeridiyle aynı (`MA_BUY_MA_TYPE`, varsayılan SMA). Grafikteki BUY rozeti MA99 şartını
-koruduğu için H4'te rozetten DAHA ÇOK sinyal üretir — bilinçli. Paper çıkışı 90 günlük aramadan kalan uzun vade profili: hedef %10, stop %8,
+koruduğu için H4'te rozetten DAHA ÇOK sinyal üretir — bilinçli. 19:15: sembolün 24 sa TL hacmi `MA_BUY_H4_MIN_QUOTE_VOLUME`
+(5M) altındaysa H4 sinyali yok (izleyici ve radar sekmesi aynı eşiği kullanır). Paper çıkışı 90 günlük aramadan kalan uzun vade profili: hedef %10, stop %8,
 en çok 3 gün, iz süren / başabaş stop YOK. Aramanın bulduğu SMA 8/34/89 orta×yavaş + gövde ≥ %1 ayarı
 (docs/MA_KESISIM_H4_ARAMA_90g_2026-10-21.md) `MA_BUY_H4_PERIODS/RULES/MIN_BODY_PCT` ile geri alınabilir.
 Diğer dilimler genel ayarlarla (MA_BUY_PERIODS, iki kural, StochRSI ≤ 80, otonom paper çıkış profili) çalışmaya devam eder.
@@ -47,6 +48,7 @@ def profile(tf: str) -> dict | None:
         "periods": _periods(getattr(config, "MA_BUY_H4_PERIODS", "7,20,99"), DEFAULT_H4_PERIODS),
         "rules": rules or (ma_buy_signals.RULE_FAST_CROSS_MID,),
         "require_mid_above_slow": bool(getattr(config, "MA_BUY_H4_REQUIRE_MID_ABOVE_SLOW", False)),
+        "min_quote_volume": max(0.0, float(getattr(config, "MA_BUY_H4_MIN_QUOTE_VOLUME", 5_000_000) or 0.0)),  # 24 sa TL hacim tabanı
         "ma_type": ma_type(),
         "min_body_pct": max(0.0, float(getattr(config, "MA_BUY_H4_MIN_BODY_PCT", 0.0) or 0.0)),
         "stoch_max": None,                                   # H4'te StochRSI eleği yok (kullanıcı: saf kesişim)

@@ -17,7 +17,7 @@ import statistics
 import time
 
 from app import database, ma_buy_notify, ma_buy_profiles, ma_buy_signals, notify_metrics
-from app.binance_tr_public import klines as fetch_klines
+from app.binance_tr_public import klines as fetch_klines, ticker_24h
 from app.config import config
 
 logger = logging.getLogger("scalper.ma_buy")
@@ -193,6 +193,25 @@ async def active_symbols() -> list[str]:
     return active or tracked
 
 
+async def filter_by_quote_volume(symbols: list[str], floor: float) -> list[str]:
+    """24 sa TL hacmi `floor` altındaki sembolleri çıkarır (2026-10-21 19:15, H4 hacim tabanı). Ticker alınamazsa liste
+    AYNEN döner (hacim bilgisi yok diye sinyal kaçırılmaz; hata loglanır). Ticker tablosu modül önbelleğinden gelir."""
+    if floor <= 0 or not symbols:
+        return list(symbols)
+    try:
+        rows = await ticker_24h(list(symbols))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MA BUY hacim tabanı: 24 sa ticker alınamadı, taban uygulanmadı: %s", exc)
+        return list(symbols)
+    vol: dict = {}
+    for row in rows or []:
+        try:
+            vol[str(row.get("symbol") or "").replace("_", "").upper()] = float(row.get("quoteVolume") or 0)
+        except (TypeError, ValueError):
+            continue
+    return [s for s in symbols if vol.get(str(s).replace("_", "").upper(), 0.0) >= floor]
+
+
 async def _scan_symbol(symbol: str, tf: str, now_ms: int, sem: asyncio.Semaphore) -> tuple[int, list[dict]]:
     """Dönüş: (yeni kaydedilen sinyal sayısı, son kapanan mumun sinyalleri — bildirim adayı)."""
     tf_ms = SUPPORTED_TF_MS[tf]
@@ -233,8 +252,12 @@ async def scan_once(now_ms: int | None = None) -> dict:
     errors: list[str] = []
     fresh: list[dict] = []
     for tf in timeframes():
-        results = await asyncio.gather(*(_scan_symbol(s, tf, now_ms, sem) for s in symbols), return_exceptions=True)
-        for sym, res in zip(symbols, results):
+        prof = ma_buy_profiles.profile(tf)
+        tf_symbols = symbols
+        if prof and float(prof.get("min_quote_volume") or 0) > 0:
+            tf_symbols = await filter_by_quote_volume(symbols, float(prof["min_quote_volume"]))   # H4: 24 sa hacim ≥ 5M TL
+        results = await asyncio.gather(*(_scan_symbol(s, tf, now_ms, sem) for s in tf_symbols), return_exceptions=True)
+        for sym, res in zip(tf_symbols, results):
             if isinstance(res, BaseException):
                 errors.append(f"{sym}/{tf}: {type(res).__name__}")
             else:

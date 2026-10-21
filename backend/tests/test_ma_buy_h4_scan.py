@@ -177,9 +177,18 @@ class ScanTests(unittest.IsolatedAsyncioTestCase):
                 {"symbol": "BTCUSDT", "quoteVolume": "9000000", "priceChangePercent": "1", "lastPrice": "2"}]
         with patch.object(scan_mod, "ticker_24h", AsyncMock(return_value=rows)), \
              patch.object(scan_mod, "trading_symbols", AsyncMock(return_value=["ATRY", "LOWTRY"])), \
-             patch.object(config, "MA_BUY_H4_SCAN_MIN_QUOTE_VOLUME", 1_000_000.0, create=True):
+             patch.object(config, "MA_BUY_H4_MIN_QUOTE_VOLUME", 1_000_000.0, create=True):
             uni = await scan_mod.universe()
         self.assertEqual([u["symbol"] for u in uni], ["ATRY"])
+
+    async def test_universe_default_floor_is_5m_and_matches_profile(self):
+        self.assertEqual(scan_mod.min_quote_volume(), 5_000_000.0)
+        rows = [{"symbol": "ATRY", "quoteVolume": "4999999", "priceChangePercent": "1", "lastPrice": "2"},
+                {"symbol": "BTRY", "quoteVolume": "5000000", "priceChangePercent": "1", "lastPrice": "2"}]
+        with patch.object(scan_mod, "ticker_24h", AsyncMock(return_value=rows)), \
+             patch.object(scan_mod, "trading_symbols", AsyncMock(return_value=["ATRY", "BTRY"])):
+            uni = await scan_mod.universe()
+        self.assertEqual([u["symbol"] for u in uni], ["BTRY"])
 
     def test_route_registered(self):
         from app.main import app
