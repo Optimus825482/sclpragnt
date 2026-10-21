@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="560" viewBox="0 0 820 560" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#111b2e"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect width="820" height="560" fill="url(#bg)"/>
+  <text x="40" y="44" fill="#9fb0c8" font-size="15">Örnek push bildirimi · Android / Chrome (H4 MA kesişimi, özel profil)</text>
+
+  <!-- bildirim kartı -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="70" width="740" height="330" rx="22" fill="#1f2937"/>
+  </g>
+  <!-- uygulama satırı -->
+  <rect x="68" y="96" width="28" height="28" rx="7" fill="#f59e0b"/>
+  <text x="82" y="116" text-anchor="middle" fill="#111827" font-size="16" font-weight="700">S</text>
+  <text x="108" y="116" fill="#d1d5db" font-size="14">Scalper Agent</text>
+  <text x="752" y="116" text-anchor="end" fill="#9ca3af" font-size="13">şimdi</text>
+
+  <!-- başlık -->
+  <text x="68" y="158" fill="#f9fafb" font-size="21" font-weight="700">🕓 WLDTRY · H4 MA KESİŞİMİ · uzun vade</text>
+
+  <!-- gövde -->
+  <g fill="#e5e7eb" font-size="15">
+    <text x="68" y="192">WLDTRY | H4 grafikte SMA34 ↗ SMA89 · gövde +%1.8</text>
+    <text x="68" y="218">Giriş: 12.500000 TRY   |   Hedef: +%10 → 13.750000</text>
+    <text x="68" y="244">Stop: −%8   |   En çok 3 gün   |   İz süren stop yok</text>
+    <text x="68" y="270">Otonom paper açılır</text>
+  </g>
+
+  <!-- büyük ikon -->
+  <rect x="664" y="150" width="88" height="88" rx="18" fill="#0f172a" stroke="#334155"/>
+  <polyline points="680,218 700,196 714,206 736,170" fill="none" stroke="#f59e0b" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="736" cy="170" r="5" fill="#f59e0b"/>
+
+  <!-- aksiyon düğmeleri -->
+  <line x1="68" y1="300" x2="752" y2="300" stroke="#374151"/>
+  <rect x="68" y="318" width="150" height="46" rx="10" fill="#111827" stroke="#f59e0b"/>
+  <text x="143" y="347" text-anchor="middle" fill="#f59e0b" font-size="15" font-weight="600">Alım yap</text>
+  <rect x="234" y="318" width="150" height="46" rx="10" fill="#111827" stroke="#4b5563"/>
+  <text x="309" y="347" text-anchor="middle" fill="#d1d5db" font-size="15">Grafiği aç</text>
+
+  <!-- açıklama -->
+  <g fill="#9fb0c8" font-size="13">
+    <text x="40" y="440">Gönderen: backend/app/ma_buy_notify.py → _build_profile_notification (H4 için ayrı başlık, etiket ma-buy-h4-SEMBOL)</text>
+    <text x="40" y="462">Dokunma: /charts?symbol=WLDTRY&amp;timeframe=4h · "Alım yap": /?buy=WLDTRY&amp;buy_price=12.5</text>
+    <text x="40" y="484">Paper: zarftaki exit_profile ile açılır — stop %8, tutma 3 gün, iz süren/başabaş stop kapalı, hedef %10.</text>
+    <text x="40" y="520">Başlıktaki emoji ve "Alım yap" düğmesi Chrome/Android/masaüstünde görünür; iOS düğmeleri göstermez, gövdeye dokunma grafiğe gider.</text>
+  </g>
+</svg>

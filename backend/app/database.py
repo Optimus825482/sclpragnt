@@ -481,6 +481,9 @@ async def init_db():
         # "onarılmaz" (bkz. `_portfolio_reconcile_figures`).
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS entry_commission_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS exit_commission_pct DOUBLE PRECISION")
+        # 2026-10-21: kural sinyali çıkış profili (MA BUY H4): ad + işlem başına tutma süresi (dk). NULL = genel ayarlar.
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS exit_profile TEXT")
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS max_hold_minutes DOUBLE PRECISION")
         conn.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_commission_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_commission_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_commission_pct DOUBLE PRECISION")
@@ -7245,15 +7248,15 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
                (symbol, side, status, notification_id, notification_key, entry_price, quantity, order_value_try,
                 stop_loss, take_profit, peak_price, entry_time,
                 notification_score, notification_target_pct, notification_expected_price,
-                created_at, updated_at, entry_commission_pct)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+                created_at, updated_at, entry_commission_pct, exit_profile, max_hold_minutes)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
             (symbol, trade.get("side", "LONG"), "open",
              notification_id, notification_key, trade["entry_price"], trade["quantity"], order_value,
              trade.get("stop_loss"), trade.get("take_profit"),
              trade.get("peak_price", trade["entry_price"]), trade["entry_time"],
              trade.get("notification_score"), trade.get("notification_target_pct"),
              trade.get("notification_expected_price"), trade["created_at"], trade["updated_at"],
-             commission_pct)
+             commission_pct, trade.get("exit_profile"), trade.get("max_hold_minutes"))
         ).fetchone()
         if signal:
             trade_id_val = row["id"] if row else None

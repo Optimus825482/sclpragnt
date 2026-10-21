@@ -1108,6 +1108,10 @@ async def startup_services():
             persisted, _clamped = sanitize_persisted(persisted)
             for _key, _old, _new in _clamped:
                 logger.warning("[Config] kalici ayar sinir disiydi, duzeltildi: %s %s -> %s", _key, _old, _new)
+            # 2026-10-21: H4 MA kesişimi (sinyal + push + otonom paper) — kayıtlı TF listesine bir kez eklenir.
+            if ma_buy_notify.enable_timeframe_once(persisted):
+                await database.set_llm_setting("runtime_config", json.dumps(persisted, ensure_ascii=False))
+                logger.info("[MA BUY] H4 kayıtlı bildirim/paper ayarlarına eklendi: %s", persisted.get("ma_buy_notify_timeframes"))
             for key, attr in CONFIG_FIELDS.items():
                 if key in persisted: setattr(config, attr, persisted[key])
             if persisted.get("symbols"):

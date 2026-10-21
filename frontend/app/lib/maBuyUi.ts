@@ -83,6 +83,7 @@ export const TIMEFRAME_OPTIONS: { value: string; label: string }[] = [
   { value: "15m", label: "M15" },
   { value: "30m", label: "M30" },
   { value: "1h", label: "H1" },
+  { value: "4h", label: "H4" },
 ];
 
 /** `5m` -> `M5`, `30m` -> `M30`, `1h` -> `H1`; tanınmayan değer olduğu gibi büyük harfle. */
@@ -391,7 +392,7 @@ export function errorMessage(status: number | null, detail?: string | null): str
 
 // ---------------------------------------------------------------- Ayarlar > MA BUY (push + otonom paper)
 /** Bildirim/paper zaman dilimleri (backend `ma_buy_notify._TFS` ile aynı sıra). */
-export const MA_BUY_NOTIFY_TFS = ["1m", "5m", "15m", "30m", "1h"] as const;   // 2026-10-20: M30/H1
+export const MA_BUY_NOTIFY_TFS = ["1m", "5m", "15m", "30m", "1h", "4h"] as const;   // 2026-10-20: M30/H1; 2026-10-21: H4
 
 /** "1m,5m" → seçili TF kümesi. */
 export function parseTfList(raw: string | null | undefined): Set<string> {

@@ -269,7 +269,7 @@ import { formatTargetPct, formatTfList, parseTargetPct, parseTfList } from "./ma
 
 describe("Ayarlar > MA BUY yardımcıları", () => {
   it("TF listesi geçersizleri atar ve sabit sırayla yazar", () => {
-    const s = parseTfList("5m, 4h,1m");
+    const s = parseTfList("5m, 8h,1m");
     expect([...s].sort()).toEqual(["1m", "5m"]);
     expect(formatTfList(new Set(["5m", "1m"]))).toBe("1m,5m");
     expect(formatTfList(new Set())).toBe("");
@@ -325,8 +325,12 @@ describe("30m / 1h zaman dilimleri", () => {
     expect(timeframeLabel("1h")).toBe("H1");
   });
   it("filtre seçenekleri ve bildirim TF listesi 30m ile 1h'yi içerir", () => {
-    expect(TIMEFRAME_OPTIONS.map((o) => o.value)).toEqual(["", "1m", "5m", "15m", "30m", "1h"]);
-    expect([...MA_BUY_NOTIFY_TFS]).toEqual(["1m", "5m", "15m", "30m", "1h"]);
+    expect(TIMEFRAME_OPTIONS.map((o) => o.value)).toEqual(["", "1m", "5m", "15m", "30m", "1h", "4h"]);
+    expect([...MA_BUY_NOTIFY_TFS]).toEqual(["1m", "5m", "15m", "30m", "1h", "4h"]);
+  });
+  it("4h etiketi H4, mum süresi 14400 sn", () => {
+    expect(timeframeLabel("4h")).toBe("H4");
+    expect(signalTimeSec({ barCloseMs: 1_700_000_000_000, detectedAt: null, timeframe: "4h" })).toBe(1_700_000_000 - 14_400);
   });
   it("1h sinyalinin mum zamanı kapanıştan 3600 sn öncedir", () => {
     const close = 1_700_000_000_000;

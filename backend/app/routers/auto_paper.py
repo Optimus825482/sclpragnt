@@ -25,7 +25,7 @@ import math
 from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
-from app import database, paper_ledger, price_service, security
+from app import database, ma_buy_profiles, paper_ledger, price_service, security
 from app.api_common import log_user_action, _background_tasks, _start_background, _fresh_public_price
 # R3-06: likidite + korelasyon küme kapıları (velocity-auto ile aynı kaynak)
 # için analyzer örneği kullanılır (state'ten; market ile aynı yaşam döngüsü).
@@ -52,6 +52,8 @@ _REASON_NO_PUSH = "push_bildirimi_yok"
 _REASON_HEARTBEAT = "teyitsiz nabız bildirimi paper açmaz"
 # Skorsuz kural sinyali kaynakları: skor/mod kapısı yerine kendi anahtarı (bkz. `_try_open_impl`).
 _RULE_SIGNAL_SOURCES = frozenset({"ma_buy"})
+#: 2026-10-21: bu çıkış profilleriyle açılan işlemlerde iz süren ve başabaş stop uygulanmaz (H4 araması: sabit hedef/stop/tutma).
+_NO_TRAIL_PROFILES = frozenset({ma_buy_profiles.H4_PROFILE_NAME})
 
 # 2026-10-15 (denetim düzeltmesi, madde 14): eskiden fonksiyon gövdelerine
 # gömülü sabitler (sl_cooldown 5.0, açılış bekleme 30 sn, breakeven gap
@@ -961,6 +963,11 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
 
         # 2026-10-16 (maliyet/çıkış): varsayılan SL çıkış profilinden (DB ayarı önce).
         sl_pct = float(settings.get("stop_loss_pct", _exit_defaults()["stop_loss_pct"])) / 100.0
+        # 2026-10-21: kural sinyalinin ÇIKIŞ PROFİLİ (MA BUY H4): zarftaki stop/tutma/iz süren ayarı ayarların önüne geçer.
+        _is_rule_signal = str(notification.get("source") or "") in _RULE_SIGNAL_SOURCES   # _open_new_trade ayrı fonksiyon: kapsamda rule_signal yok
+        exit_profile = ma_buy_profiles.exit_overrides(notification) if _is_rule_signal else None
+        if exit_profile and exit_profile.get("stop_loss_pct"):
+            sl_pct = float(exit_profile["stop_loss_pct"]) / 100.0
         target_pct = _effective_target_pct(notification)
         if target_pct <= 0:
             target_pct = float(settings.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT))
@@ -1016,7 +1023,7 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         # Volatiliteye duyarlı Stop Loss (ATR koruması):
         # 5m gürültüsü içinde normal -%1.6-1.8 geri çekilmelerde erken stop olmamak için
         # ATR'ye göre nefes alma payı (maksimum %2.8 ile sınırlı).
-        volatility_sl_enabled = bool(settings.get("volatility_sl_enabled", True))
+        volatility_sl_enabled = bool(settings.get("volatility_sl_enabled", True)) and not exit_profile
         effective_sl_pct = sl_pct
         if volatility_sl_enabled:
             try:
@@ -1080,6 +1087,9 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             "tp2_runner_pct": float(tp2_runner_val) if tp2_runner_val is not None else None,
             "confluence_4way": bool(notification.get("confluence_4way")),
             "trailing_gap_pct": float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40)) if notification.get("confluence_4way") else None,
+            # 2026-10-21: çıkış profili satıra yazılır; yönetim döngüsü tutma süresini ve iz süren/başabaş kapalılığını buradan okur.
+            "exit_profile": exit_profile["name"] if exit_profile else None,
+            "max_hold_minutes": float(exit_profile["max_hold_minutes"]) if exit_profile and exit_profile.get("max_hold_minutes") else None,
             "created_at": now,
             "updated_at": now,
         }
@@ -1359,6 +1369,11 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     entry_time = float(trade.get("entry_time") or trade.get("created_at") or 0)
     hold_minutes = (now - entry_time) / 60.0 if entry_time > 0 else 0.0
     max_hold_minutes = float((settings or {}).get("max_hold_minutes", getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 120.0)))
+    # 2026-10-21: çıkış profilli işlem (MA BUY H4) kendi tutma süresini taşır (3 gün); iz süren/başabaş stop kapalı.
+    _trade_hold = trade.get("max_hold_minutes")
+    if trade.get("exit_profile") and _trade_hold:
+        max_hold_minutes = float(_trade_hold)
+    profile_no_trail = str(trade.get("exit_profile") or "") in _NO_TRAIL_PROFILES
     if (not price_is_fresh and max_hold_minutes > 0
             and hold_minutes >= max_hold_minutes * _STALE_FORCE_CLOSE_FACTOR):
         logger.warning("auto_paper %s: taze fiyat alınamıyor ve süre %.1f dk >= max_hold %.0f dk × %.1f — "
@@ -1464,7 +1479,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
 
     # Breakeven kontrolü (isteğe bağlı — erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI, 2026-09-22 Erkan kararı).
-    breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False)))
+    breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False))) and not profile_no_trail
     BREAKEVEN_TRAIL_GAP_PCT = float(_exit_def["trailing_gap_pct"])  # 2026-10-16 (maliyet/çıkış): profil
     if breakeven_enabled:
         breakeven_activated = bool(trade.get("breakeven_activated", False))
@@ -1527,7 +1542,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # Trailing stop modülü (kullanıcı isteği 2026-09-08): %trailing_trigger_pct
     # kara geçince fiyatı %trailing_gap_pct geriden takip eder. Varsayılan AÇIK;
     # ayarlardan kapatılabilir (trailing_enabled=false).
-    trailing_enabled = bool((settings or {}).get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED))
+    trailing_enabled = bool((settings or {}).get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED)) and not profile_no_trail
     if trailing_enabled:
         # 2026-10-16 (maliyet/çıkış): varsayılanlar çıkış profilinden (DB ayarı önce).
         trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", _exit_def["trailing_trigger_pct"]))

@@ -12,11 +12,11 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(ma_buy_notify.normalize_setting("ma_buy_notify_timeframes", "5m, 1m"), "1m,5m")
         self.assertEqual(ma_buy_notify.normalize_setting("ma_buy_notify_timeframes", ""), "")
         with self.assertRaises(ValueError):
-            ma_buy_notify.normalize_setting("ma_buy_notify_timeframes", "1m,4h")
+            ma_buy_notify.normalize_setting("ma_buy_notify_timeframes", "1m,8h")
 
     def test_target_pct_format(self):
         self.assertEqual(ma_buy_notify.normalize_setting("ma_buy_target_pct", "1m:1.0, 5m:1.50"), "1m:1,5m:1.5")
-        for bad in ("1m:0", "1m:x", "4h:1", "1m:25"):
+        for bad in ("1m:0", "1m:x", "8h:1", "1m:25"):
             with self.assertRaises(ValueError):
                 ma_buy_notify.normalize_setting("ma_buy_target_pct", bad)
 

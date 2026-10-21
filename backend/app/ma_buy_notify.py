@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import time
 
-from app import database, ma_buy_signals
+from app import database, ma_buy_profiles, ma_buy_signals
 from app.config import config
 
 logger = logging.getLogger("scalper.ma_buy")
@@ -61,7 +61,7 @@ def _tf_minutes(tf) -> int:
 
 
 def tf_label(tf: str) -> str:
-    """5m → M5, 30m → M30, 1h → H1 (grafik rozetleriyle aynı biçim)."""
+    """5m → M5, 30m → M30, 1h → H1, 4h → H4 (grafik rozetleriyle aynı biçim)."""
     if tf.endswith("m"):
         return "M" + tf[:-1]
     if tf.endswith("h"):
@@ -94,6 +94,9 @@ def build_notification(row: dict, periods: tuple, now: float | None = None) -> d
     price = float(row["signal_price"])
     target = target_pct(tf)
     expected = price * (1 + target / 100)
+    prof = ma_buy_profiles.profile(tf)
+    if prof:
+        return _build_profile_notification(row, prof, sym, tf, price, target, expected, now)
     cross = rules_text(row.get("rules") or "", periods)
     return {
         "symbol": sym,
@@ -111,6 +114,41 @@ def build_notification(row: dict, periods: tuple, now: float | None = None) -> d
         "mode": SOURCE,
         "source": SOURCE,
         # Otonom paper churn koruması: aynı sinyal mumu için TEK giriş.
+        "notification_key": f"ma-{tf}-{sym}-{int(row['bar_open_ms'])}",
+        "updated": False,
+        "sent_via_push": False,
+    }
+
+
+def _build_profile_notification(row: dict, prof: dict, sym: str, tf: str, price: float, target: float,
+                                expected: float, now: float) -> dict:
+    """2026-10-21: H4 özel bildirimi — uzun vade profili (hedef/stop/tutma zarfta; paper bunları uygular)."""
+    label = tf_label(tf)
+    cross = ma_buy_profiles.rules_text(row.get("rules") or "", prof["periods"], "SMA")
+    body = row.get("body_pct")
+    body_txt = f" · gövde +%{float(body):.1f}" if body is not None else ""
+    stop = float(prof["stop_loss_pct"])
+    hold_days = float(prof["max_hold_minutes"]) / 1440.0
+    hold_txt = f"{hold_days:g} gün" if hold_days >= 1 else f"{float(prof['max_hold_minutes']):g} dk"
+    return {
+        "symbol": sym,
+        "timeframe": tf,
+        "rules": row.get("rules"),
+        "title": f"🕓 {sym} · {label} MA KESİŞİMİ · uzun vade",
+        "message": (f"{sym} | {label} grafikte {cross}{body_txt} | Giriş: {price:.6f} TRY | Hedef: +%{target:g} → {expected:.6f} | "
+                    f"Stop: −%{stop:g} | En çok {hold_txt} | İz süren stop yok | Otonom paper açılır"),
+        "url": f"/charts?symbol={sym}&timeframe={tf}",
+        "tag": f"ma-buy-h4-{sym}",
+        "detected_at": now,
+        "price": price,
+        "target_pct": target,
+        "expected_price": expected,
+        "horizon_minutes": int(prof["horizon_minutes"]),
+        "mode": SOURCE,
+        "source": SOURCE,
+        "profile": prof["name"],
+        "exit_profile": {"name": prof["name"], "stop_loss_pct": stop, "max_hold_minutes": float(prof["max_hold_minutes"]),
+                         "trailing": bool(prof["trailing"])},
         "notification_key": f"ma-{tf}-{sym}-{int(row['bar_open_ms'])}",
         "updated": False,
         "sent_via_push": False,
@@ -207,7 +245,31 @@ SETTINGS_BOOL = {"ma_buy_tracker_enabled", "ma_buy_notify_enabled", "ma_buy_auto
 SETTINGS_STR = {"ma_buy_notify_timeframes", "ma_buy_target_pct", "ma_buy_ma_type", "ma_buy_periods"}
 _FLOAT_BOUNDS = {"ma_buy_notify_cooldown_min": (0.0, 240.0, "bekleme süresi 0–240 dk"),
                  "ma_buy_notify_max_age_sec": (10.0, 600.0, "tazelik sınırı 10–600 sn")}
-_TFS = ("1m", "5m", "15m", "30m", "1h")   # 2026-10-20: M30/H1
+_TFS = ("1m", "5m", "15m", "30m", "1h", "4h")   # 2026-10-20: M30/H1; 2026-10-21: H4
+H4_MIGRATION_MARK = "ma_buy_h4_enabled_2026_10_21"
+
+
+def enable_timeframe_once(persisted: dict, tf: str = "4h", target_pct_default: float = 10.0, mark: str = H4_MIGRATION_MARK) -> bool:
+    """Kayıtlı runtime_config'e yeni zaman dilimini BİR KEZ ekler (2026-10-21: H4 sinyal + push + paper).
+    Kullanıcı daha önce bildirim TF listesini kaydettiyse yeni varsayılan devreye girmez; bu göç listeye `tf`yi ve hedef
+    tablosuna `tf:hedef`i ekler, işareti yazar. İşaret varsa (kullanıcı sonra bilerek kaldırmış olabilir) dokunmaz.
+    Dönen: değişiklik yapıldı mı (çağıran kaydeder)."""
+    if not isinstance(persisted, dict) or persisted.get(mark):
+        return False
+    changed = False
+    raw = persisted.get("ma_buy_notify_timeframes")
+    if isinstance(raw, str):
+        items = [t.strip() for t in raw.split(",") if t.strip()]
+        if tf not in items:
+            items.append(tf)
+            persisted["ma_buy_notify_timeframes"] = ",".join(t for t in _TFS if t in items)
+            changed = True
+    raw_t = persisted.get("ma_buy_target_pct")
+    if isinstance(raw_t, str) and raw_t.strip() and not any(p.partition(":")[0].strip() == tf for p in raw_t.split(",")):
+        persisted["ma_buy_target_pct"] = f"{raw_t.rstrip(',')},{tf}:{target_pct_default:g}"
+        changed = True
+    persisted[mark] = True
+    return True            # işaret yazıldı → çağıran kaydeder
 
 
 def normalize_setting(key: str, value):
@@ -216,7 +278,7 @@ def normalize_setting(key: str, value):
         items = [t.strip() for t in str(value or "").split(",") if t.strip()]
         bad = [t for t in items if t not in _TFS]
         if bad:
-            raise ValueError(f"MA BUY bildirim zaman dilimi geçersiz: {', '.join(bad)} (1m, 5m, 15m, 30m, 1h)")
+            raise ValueError(f"MA BUY bildirim zaman dilimi geçersiz: {', '.join(bad)} (1m, 5m, 15m, 30m, 1h, 4h)")
         return ",".join(t for t in _TFS if t in items)
     if key == "ma_buy_ma_type":
         kind = str(value or "").strip().lower()

@@ -16,14 +16,15 @@ import logging
 import statistics
 import time
 
-from app import database, ma_buy_notify, ma_buy_signals, notify_metrics
+from app import database, ma_buy_notify, ma_buy_profiles, ma_buy_signals, notify_metrics
 from app.binance_tr_public import klines as fetch_klines
 from app.config import config
 
 logger = logging.getLogger("scalper.ma_buy")
 
 # 2026-10-20: M30 ve H1 eklendi (sinyal + push + otonom paper); 7 günlük replay raporu docs/ altında.
-SUPPORTED_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000}
+# 2026-10-21: H4 eklendi; FETCH_LIMIT=250 mum H4'te ~42 gün (yavaş MA 99 + lookback için yeterli).
+SUPPORTED_TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000}
 HORIZON_MIN = 15
 FETCH_LIMIT = 250
 CLOSE_SKEW_MS = 1_500          # sunucu saati ileride olsa da kapanmamış mum alınmasın
@@ -94,8 +95,11 @@ def closed_bars(rows, tf_ms: int, now_ms: int) -> list[dict]:
 
 
 def signals_from_bars(symbol: str, tf: str, bars: list[dict], now_ms: int, *, lookback: int, per: tuple,
-                      use_sma: bool = False, slow_cross: bool = True, stoch_max: float | None = None) -> list[dict]:
-    """Son `lookback` kapanmış mumda tetiklenen sinyaller → DB satırları (saf)."""
+                      use_sma: bool = False, slow_cross: bool = True, stoch_max: float | None = None,
+                      rules_allowed: tuple | None = None, min_body_pct: float = 0.0) -> list[dict]:
+    """Son `lookback` kapanmış mumda tetiklenen sinyaller → DB satırları (saf).
+    `rules_allowed` verilirse yalnız o kurallar sayılır (H4 profili: orta×yavaş); `min_body_pct` > 0 ise sinyal mumunun
+    gövdesi (kapanış−açılış)/açılış en az o kadar olmalı. Satıra `body_pct` eklenir (DB'ye yazılmaz, bildirim metni için)."""
     if len(bars) < max(per) + 2:
         return []
     closes = [b["close"] for b in bars]
@@ -105,8 +109,17 @@ def signals_from_bars(symbol: str, tf: str, bars: list[dict], now_ms: int, *, lo
                                                stoch_max=stoch_max):
         if hit["index"] < first_index:
             continue
+        if rules_allowed is not None:
+            hit["rules"] = [r for r in hit["rules"] if r in rules_allowed]
+            if not hit["rules"]:
+                continue
         bar = bars[hit["index"]]
+        open_px = float(bar.get("open") or 0.0)
+        body_pct = (float(bar["close"]) - open_px) / open_px * 100.0 if open_px > 0 else 0.0
+        if min_body_pct > 0 and body_pct < min_body_pct:
+            continue
         rows.append({
+            "body_pct": round(body_pct, 4),
             "symbol": symbol.upper(), "timeframe": tf, "bar_open_ms": bar["open_ms"],
             "bar_close_ms": bar["open_ms"] + SUPPORTED_TF_MS[tf],
             "detected_at": now_ms / 1000.0, "rules": ",".join(hit["rules"]), "signal_price": bar["close"],
@@ -191,8 +204,14 @@ async def _scan_symbol(symbol: str, tf: str, now_ms: int, sem: asyncio.Semaphore
     if not bars:
         return 0, []
     use_sma = str(getattr(config, "MA_BUY_MA_TYPE", "ema")).strip().lower() == "sma"
-    found = signals_from_bars(symbol, tf, bars, now_ms, lookback=int(getattr(config, "MA_BUY_LOOKBACK_BARS", 3) or 3),
-                              per=periods(), use_sma=use_sma, stoch_max=stoch_max(tf))
+    prof = ma_buy_profiles.profile(tf)        # 2026-10-21: H4 özel profili (SMA 8/34/89, orta×yavaş, gövde ≥ %1)
+    if prof:
+        found = signals_from_bars(symbol, tf, bars, now_ms, lookback=int(getattr(config, "MA_BUY_LOOKBACK_BARS", 3) or 3),
+                                  per=prof["periods"], use_sma=True, stoch_max=prof["stoch_max"],
+                                  rules_allowed=prof["rules"], min_body_pct=prof["min_body_pct"])
+    else:
+        found = signals_from_bars(symbol, tf, bars, now_ms, lookback=int(getattr(config, "MA_BUY_LOOKBACK_BARS", 3) or 3),
+                                  per=periods(), use_sma=use_sma, stoch_max=stoch_max(tf))
     inserted = await database.insert_ma_buy_signals(found) if found else 0
     _state["seen"][key] = bars[-1]["open_ms"]
     if inserted:
