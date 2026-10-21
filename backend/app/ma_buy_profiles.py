@@ -1,7 +1,10 @@
 """MA BUY — zaman dilimine özel sinyal/çıkış profilleri (2026-10-21: H4).
 
-90 günlük arama (docs/MA_KESISIM_H4_ARAMA_90g_2026-10-21.md): H4'te SMA 8/34/89, ORTA×YAVAŞ yukarı kesişim, sinyal mumu
-gövdesi ≥ %1; hedef %10, stop %8, en çok 3 gün, iz süren / başabaş stop YOK → eğitim +%3,1 (n 41), test +%3,0 (n 14).
+H4 sinyali (kullanıcı kararı, 2026-10-21 akşam): MA 7/20/99 kesişimleri — grafikteki BUY rozetiyle aynı iki kural
+(hızlı 7 ortayı 20 yukarı keser / orta 20 yavaşı 99 yukarı keser), gövde ve StochRSI eleği yok, MA türü grafik şeridiyle
+aynı (`MA_BUY_MA_TYPE`, varsayılan SMA). Paper çıkışı 90 günlük aramadan kalan uzun vade profili: hedef %10, stop %8,
+en çok 3 gün, iz süren / başabaş stop YOK. Aramanın bulduğu SMA 8/34/89 orta×yavaş + gövde ≥ %1 ayarı
+(docs/MA_KESISIM_H4_ARAMA_90g_2026-10-21.md) `MA_BUY_H4_PERIODS/RULES/MIN_BODY_PCT` ile geri alınabilir.
 Diğer dilimler genel ayarlarla (MA_BUY_PERIODS, iki kural, StochRSI ≤ 80, otonom paper çıkış profili) çalışmaya devam eder.
 
 Saf modül: config okur, DB/ağ yok. `profile(tf)` None dönerse o dilimde özel profil yoktur.
@@ -13,6 +16,8 @@ from app.config import config
 
 H4 = "4h"
 H4_PROFILE_NAME = "ma_buy_h4"
+DEFAULT_H4_PERIODS = (7, 20, 99)
+DEFAULT_H4_RULES = ",".join(ma_buy_signals.ALL_RULES)
 
 
 def _periods(raw: str, default: tuple) -> tuple:
@@ -23,20 +28,26 @@ def _periods(raw: str, default: tuple) -> tuple:
     return vals if len(vals) == 3 and vals[0] < vals[1] < vals[2] and vals[0] >= 1 else default
 
 
+def ma_type() -> str:
+    """Grafikteki MA şeridiyle aynı tür: "sma" | "ema" (`MA_BUY_MA_TYPE`)."""
+    kind = str(getattr(config, "MA_BUY_MA_TYPE", "sma") or "sma").strip().lower()
+    return kind if kind in ("sma", "ema") else "sma"
+
+
 def profile(tf: str) -> dict | None:
     """H4 için özel profil; kapalıysa (`MA_BUY_H4_PROFILE_ENABLED=0`) veya başka dilimse None."""
     if str(tf or "") != H4 or not bool(getattr(config, "MA_BUY_H4_PROFILE_ENABLED", True)):
         return None
-    rules_raw = str(getattr(config, "MA_BUY_H4_RULES", ma_buy_signals.RULE_MID_CROSS_SLOW) or "")
-    rules = tuple(r.strip() for r in rules_raw.split(",") if r.strip() in (ma_buy_signals.RULE_FAST_CROSS_MID,
-                                                                             ma_buy_signals.RULE_MID_CROSS_SLOW))
+    rules_raw = str(getattr(config, "MA_BUY_H4_RULES", DEFAULT_H4_RULES) or "")
+    rules = tuple(r.strip() for r in rules_raw.split(",") if r.strip() in ma_buy_signals.ALL_RULES)
     return {
         "name": H4_PROFILE_NAME,
         "label": "H4 uzun vade",
-        "periods": _periods(getattr(config, "MA_BUY_H4_PERIODS", "8,34,89"), (8, 34, 89)),
-        "rules": rules or (ma_buy_signals.RULE_MID_CROSS_SLOW,),
-        "min_body_pct": max(0.0, float(getattr(config, "MA_BUY_H4_MIN_BODY_PCT", 1.0) or 0.0)),
-        "stoch_max": None,                                   # aramada StochRSI eleği kullanılmadı
+        "periods": _periods(getattr(config, "MA_BUY_H4_PERIODS", "7,20,99"), DEFAULT_H4_PERIODS),
+        "rules": rules or tuple(ma_buy_signals.ALL_RULES),
+        "ma_type": ma_type(),
+        "min_body_pct": max(0.0, float(getattr(config, "MA_BUY_H4_MIN_BODY_PCT", 0.0) or 0.0)),
+        "stoch_max": None,                                   # H4'te StochRSI eleği yok (kullanıcı: saf kesişim)
         "stop_loss_pct": float(getattr(config, "MA_BUY_H4_STOP_PCT", 8.0) or 8.0),
         "max_hold_minutes": float(getattr(config, "MA_BUY_H4_MAX_HOLD_MIN", 4320) or 4320),
         "trailing": False,                                   # iz süren / başabaş stop yok (arama sonucu)
@@ -62,7 +73,8 @@ def exit_overrides(notification: dict) -> dict | None:
 
 def rules_text(rules: str, periods: tuple, ma_type: str = "SMA") -> str:
     fast, mid, slow = periods
-    names = {ma_buy_signals.RULE_FAST_CROSS_MID: f"{ma_type}{fast} ↗ {ma_type}{mid}",
-             ma_buy_signals.RULE_MID_CROSS_SLOW: f"{ma_type}{mid} ↗ {ma_type}{slow}"}
+    kind = str(ma_type or "SMA").upper()
+    names = {ma_buy_signals.RULE_FAST_CROSS_MID: f"{kind}{fast} ↗ {kind}{mid}",
+             ma_buy_signals.RULE_MID_CROSS_SLOW: f"{kind}{mid} ↗ {kind}{slow}"}
     parts = [names.get(r.strip(), r.strip()) for r in str(rules or "").split(",") if r.strip()]
     return " + ".join(parts) or "MA kesişimi"

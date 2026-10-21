@@ -492,3 +492,94 @@ export function toCardRow(it: MaBuyRecentItem): {
     sent_via_push: true,
   };
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// 2026-10-21: Radar > "H4 kesişimleri" sekmesi — GET /api/ma-buy/h4-crosses (son 24 saatte H4'te MA 7/20/99 kesişimi
+// olan likit TRY çiftleri; izleyici kaydıyla birleşik: bildirildi mi, paper açıldı mı).
+export type H4CrossItem = {
+  symbol: string;
+  rules: string[];
+  barOpenMs: number;
+  barCloseMs: number;
+  signalPrice: number | null;
+  bodyPct: number | null;
+  change24hPct: number | null;
+  quoteVolume24h: number | null;
+  targetPct: number | null;
+  stopLossPct: number | null;
+  maxHoldMinutes: number | null;
+  tracked: boolean;
+  notified: boolean;
+  paperStatus: string | null;
+};
+
+export type H4CrossResponse = {
+  items: H4CrossItem[];
+  scannedAt: number | null;      // epoch saniye; henüz tarama yoksa null
+  hours: number;
+  symbolsScanned: number;
+  errors: number;
+  refreshing: boolean;
+  lastError: string | null;
+  maLabel: string;               // "SMA 7/20/99"
+};
+
+/** Ham yanıt → güvenli yapı (bozuk satırlar atılır; sayı alanları null olabilir). */
+export function parseH4Crosses(raw: unknown): H4CrossResponse {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const rule = (r.rule ?? {}) as Record<string, unknown>;
+  const periods = Array.isArray(rule.periods) ? rule.periods.map(String).join("/") : "7/20/99";
+  const maType = String(rule.ma_type ?? "sma").toUpperCase();
+  const items = Array.isArray(r.items) ? r.items : [];
+  const out: H4CrossItem[] = items.flatMap((it) => {
+    const v = (it ?? {}) as Record<string, unknown>;
+    const symbol = String(v.symbol ?? "").toUpperCase();
+    const barOpenMs = num(v.bar_open_ms);
+    const barCloseMs = num(v.bar_close_ms);
+    if (!symbol || barOpenMs === null || barCloseMs === null) return [];
+    return [{
+      symbol,
+      rules: Array.isArray(v.rules) ? v.rules.map(String) : String(v.rules ?? "").split(",").filter(Boolean),
+      barOpenMs,
+      barCloseMs,
+      signalPrice: num(v.signal_price),
+      bodyPct: num(v.body_pct),
+      change24hPct: num(v.change_24h_pct),
+      quoteVolume24h: num(v.quote_volume_24h),
+      targetPct: num(v.target_pct),
+      stopLossPct: num(v.stop_loss_pct),
+      maxHoldMinutes: num(v.max_hold_minutes),
+      tracked: v.tracked === true,
+      notified: v.notified === true,
+      paperStatus: v.paper_status == null ? null : String(v.paper_status),
+    }];
+  });
+  return {
+    items: out,
+    scannedAt: num(r.scanned_at),
+    hours: num(r.hours) ?? 24,
+    symbolsScanned: num(r.symbols_scanned) ?? 0,
+    errors: num(r.errors) ?? 0,
+    refreshing: r.refreshing === true,
+    lastError: r.last_error == null ? null : String(r.last_error),
+    maLabel: `${maType} ${periods}`,
+  };
+}
+
+/** Satırın izleyici durumu: bildirildi + paper / yalnız bildirildi / izlenmedi (aktif küme dışı). */
+export function h4StatusChip(it: Pick<H4CrossItem, "tracked" | "notified" | "paperStatus">): { text: string; tone: "good" | "info" | "muted" } {
+  if (it.paperStatus === "acildi") return { text: "Bildirildi · paper açıldı", tone: "good" };
+  if (it.notified) return { text: "Bildirildi", tone: "info" };
+  if (it.tracked) return { text: "Kaydedildi, push gitmedi", tone: "muted" };
+  return { text: "İzleme dışı (bildirilmedi)", tone: "muted" };
+}
+
+/** 24 sa hacmi: `₺12,3M` / `₺850K`; veri yoksa "—". */
+export function fmtVolumeTry(v: number | null | undefined): string {
+  const n = num(v);
+  if (n === null) return "—";
+  if (n >= 1e9) return `₺${trNum(n / 1e9, 1)}Mr`;
+  if (n >= 1e6) return `₺${trNum(n / 1e6, 1)}M`;
+  if (n >= 1e3) return `₺${trNum(n / 1e3, 0)}K`;
+  return `₺${trNum(n, 0)}`;
+}

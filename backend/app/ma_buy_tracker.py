@@ -204,10 +204,10 @@ async def _scan_symbol(symbol: str, tf: str, now_ms: int, sem: asyncio.Semaphore
     if not bars:
         return 0, []
     use_sma = str(getattr(config, "MA_BUY_MA_TYPE", "ema")).strip().lower() == "sma"
-    prof = ma_buy_profiles.profile(tf)        # 2026-10-21: H4 özel profili (SMA 8/34/89, orta×yavaş, gövde ≥ %1)
+    prof = ma_buy_profiles.profile(tf)        # 2026-10-21: H4 özel profili (MA 7/20/99 iki kural; paper çıkışı uzun vade)
     if prof:
         found = signals_from_bars(symbol, tf, bars, now_ms, lookback=int(getattr(config, "MA_BUY_LOOKBACK_BARS", 3) or 3),
-                                  per=prof["periods"], use_sma=True, stoch_max=prof["stoch_max"],
+                                  per=prof["periods"], use_sma=prof["ma_type"] == "sma", stoch_max=prof["stoch_max"],
                                   rules_allowed=prof["rules"], min_body_pct=prof["min_body_pct"])
     else:
         found = signals_from_bars(symbol, tf, bars, now_ms, lookback=int(getattr(config, "MA_BUY_LOOKBACK_BARS", 3) or 3),

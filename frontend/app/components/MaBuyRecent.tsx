@@ -66,7 +66,7 @@ export default function MaBuyRecent({ hours = 12, limit = 20 }: { hours?: number
     <section aria-label="MA kesişim BUY bildirimleri">
       <div className="mb-2 flex items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">MA kesişim bildirimleri</h2>
-        <span className="text-xs text-bunker-muted">son {hours} saat · M1 / M5</span>
+        <span className="text-xs text-bunker-muted">son {hours} saat · tüm zaman dilimleri</span>
       </div>
       {prefError && <p role="alert" className="mb-2 rounded-lg bg-neon-red/10 p-3 text-sm text-neon-red">{prefError}</p>}
       {!loaded ? (

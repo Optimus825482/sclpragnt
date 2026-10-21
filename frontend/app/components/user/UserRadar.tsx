@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import MaBuyRecent from "../MaBuyRecent";
+import H4CrossList from "../H4CrossList";
 import Link from "next/link";
 import { API_BASE, apiRequest } from "../../lib/api";
 import { formatPrice, toMs } from "../../lib/format";
@@ -15,7 +16,8 @@ import { RadarScanLogButton } from "../admin/RadarScanLogModal";
 
 // 2026-10-17 (basit arayüz): "Isınanlar" sekmesi kaldırıldı — kullanıcıyı karıştırıyordu;
 // yalnız izlemedekiler ve gönderilen bildirimler gösterilir.
-type TabId = "watch" | "history";
+// 2026-10-21: "H4 kesişimleri" sekmesi — son 24 saatte H4'te MA 7/20/99 kesişimi olan likit çiftler (H4CrossList).
+type TabId = "watch" | "history" | "h4";
 
 type RadarItem = {
   key: string;
@@ -36,6 +38,7 @@ const TAB_KEY = "scalper:user-radar-tab";
 const TABS: { id: TabId; label: string; empty: string }[] = [
   { id: "watch", label: "İzlemedekiler", empty: "Şu an izlemede coin yok. Güçlü bir hareket olduğunda burada görünür." },
   { id: "history", label: "Gönderilen bildirimler", empty: "Henüz gönderilmiş bir bildirim yok." },
+  { id: "h4", label: "H4 kesişimleri", empty: "Son 24 saatte H4'te kesişim yok." },
 ];
 
 const DEFAULT_REASON = "Sistem bu coinde güçlü bir yükseliş sinyali buldu";
@@ -249,7 +252,7 @@ export default function UserRadar() {
     mounted.current = true;
     try {
       const saved = window.localStorage.getItem(TAB_KEY);
-      if (saved === "watch" || saved === "history") setTab(saved);
+      if (saved === "watch" || saved === "history" || saved === "h4") setTab(saved);
     } catch {
       /* localStorage yok */
     }
@@ -315,8 +318,8 @@ export default function UserRadar() {
   );
   useLiveMessages(onLive, ["monitoring_alert"]);
 
-  const lists: Record<TabId, RadarItem[] | null> = { watch, history };
-  const items = lists[tab];
+  const lists: Record<TabId, RadarItem[] | null> = { watch, history, h4: [] };
+  const items = tab === "h4" ? null : lists[tab];
   const symbols = (items ?? []).map((i) => i.symbol);
   const prices = useWatchPrices(symbols);
   const current = TABS.find((t) => t.id === tab)!;
@@ -349,7 +352,9 @@ export default function UserRadar() {
         ))}
       </div>
       <div role="tabpanel" id="radar-panel" aria-labelledby={`radar-tab-${tab}`} className="mt-3">
-        {items == null ? (
+        {tab === "h4" ? (
+          <H4CrossList />
+        ) : items == null ? (
           <p className="py-8 text-center text-sm text-bunker-muted">
             {error ? "Veriler şu an alınamıyor. Biraz sonra tekrar denenecek." : "Yükleniyor…"}
           </p>

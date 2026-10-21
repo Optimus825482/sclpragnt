@@ -1,5 +1,6 @@
-"""2026-10-21: H4 MA kesişimi ÖZEL PROFİLİ (app/ma_buy_profiles.py): SMA 8/34/89, yalnız orta×yavaş kesişim, gövde ≥ %1;
-paper çıkışı hedef %10 / stop %8 / 3 gün / iz süren stop yok; bildirim metni özel. Kaynak: docs/MA_KESISIM_H4_ARAMA_90g_2026-10-21.md"""
+"""2026-10-21: H4 MA kesişimi ÖZEL PROFİLİ (app/ma_buy_profiles.py). Sinyal (kullanıcı kararı): MA 7/20/99, iki kural,
+gövde/StochRSI eleği yok, MA türü grafik şeridi (MA_BUY_MA_TYPE); paper çıkışı hedef %10 / stop %8 / 3 gün / iz süren stop
+yok; bildirim metni özel. Eski arama ayarı (SMA 8/34/89, orta×yavaş, gövde ≥ %1) ortam değişkeniyle geri alınabilir."""
 import pytest
 
 from app import ma_buy_notify as notify, ma_buy_profiles as profiles, ma_buy_signals, ma_buy_tracker as tracker
@@ -8,9 +9,9 @@ from app.config import config
 
 def test_h4_profile_values_and_other_timeframes_have_none():
     p = profiles.profile("4h")
-    assert p["name"] == "ma_buy_h4" and p["periods"] == (8, 34, 89) and p["rules"] == (ma_buy_signals.RULE_MID_CROSS_SLOW,)
-    assert p["min_body_pct"] == 1.0 and p["stop_loss_pct"] == 8.0 and p["max_hold_minutes"] == 4320 and p["trailing"] is False
-    assert p["stoch_max"] is None
+    assert p["name"] == "ma_buy_h4" and p["periods"] == (7, 20, 99) and p["rules"] == tuple(ma_buy_signals.ALL_RULES)
+    assert p["min_body_pct"] == 0.0 and p["stop_loss_pct"] == 8.0 and p["max_hold_minutes"] == 4320 and p["trailing"] is False
+    assert p["stoch_max"] is None and p["ma_type"] == "sma"
     for tf in ("1m", "5m", "15m", "30m", "1h"):
         assert profiles.profile(tf) is None
 
@@ -18,6 +19,43 @@ def test_h4_profile_values_and_other_timeframes_have_none():
 def test_h4_profile_can_be_disabled(monkeypatch):
     monkeypatch.setattr(config, "MA_BUY_H4_PROFILE_ENABLED", False, raising=False)
     assert profiles.profile("4h") is None
+
+
+def test_h4_profile_follows_chart_ma_type_and_env_overrides(monkeypatch):
+    monkeypatch.setattr(config, "MA_BUY_MA_TYPE", "ema", raising=False)
+    assert profiles.profile("4h")["ma_type"] == "ema"
+    monkeypatch.setattr(config, "MA_BUY_MA_TYPE", "bozuk", raising=False)
+    assert profiles.profile("4h")["ma_type"] == "sma"
+    # Eski arama ayarı geri alınabilir
+    monkeypatch.setattr(config, "MA_BUY_H4_PERIODS", "8,34,89", raising=False)
+    monkeypatch.setattr(config, "MA_BUY_H4_RULES", "mid_cross_slow", raising=False)
+    monkeypatch.setattr(config, "MA_BUY_H4_MIN_BODY_PCT", 1.0, raising=False)
+    p = profiles.profile("4h")
+    assert p["periods"] == (8, 34, 89) and p["rules"] == (ma_buy_signals.RULE_MID_CROSS_SLOW,) and p["min_body_pct"] == 1.0
+    # Geçersiz kural listesi → iki kural
+    monkeypatch.setattr(config, "MA_BUY_H4_RULES", "yok", raising=False)
+    assert profiles.profile("4h")["rules"] == tuple(ma_buy_signals.ALL_RULES)
+
+
+def test_tracker_scans_4h_with_profile_periods_and_chart_ma_type(monkeypatch):
+    """İzleyici H4'te profil periyotlarını (7/20/99) ve MA türünü (SMA/EMA) kullanır."""
+    import asyncio
+    seen = {}
+
+    def fake_signals(symbol, tf, bars, now_ms, **kw):
+        seen.update(kw)
+        return []
+
+    async def fake_klines(symbol, tf, limit):
+        return [[i * 14_400_000, "1", "1", "1", "1", "0", (i + 1) * 14_400_000 - 1] for i in range(120)]
+
+    monkeypatch.setattr(tracker, "fetch_klines", fake_klines)
+    monkeypatch.setattr(tracker, "signals_from_bars", fake_signals)
+    monkeypatch.setattr(config, "MA_BUY_MA_TYPE", "ema", raising=False)
+    tracker._state["seen"].pop(("XTRY", "4h"), None)
+    asyncio.run(tracker._scan_symbol("XTRY", "4h", 120 * 14_400_000 + 10_000, asyncio.Semaphore(1)))
+    assert seen["per"] == (7, 20, 99) and seen["use_sma"] is False and seen["rules_allowed"] == tuple(ma_buy_signals.ALL_RULES)
+    assert seen["min_body_pct"] == 0.0 and seen["stoch_max"] is None
 
 
 def test_h4_target_default_is_10_pct():
@@ -68,12 +106,20 @@ def test_h4_notification_is_special_and_carries_exit_profile():
            "bar_open_ms": 1_700_000_000_000, "bar_close_ms": 1_700_014_400_000, "body_pct": 1.8}
     n = notify.build_notification(row, (7, 20, 99), now=1_700_014_450.0)
     assert n["title"] == "🕓 WLDTRY · H4 MA KESİŞİMİ · uzun vade"
-    assert "SMA34 ↗ SMA89" in n["message"] and "gövde +%1.8" in n["message"]
+    assert "SMA20 ↗ SMA99" in n["message"] and "gövde" not in n["message"]   # gövde eleği yok → metinde de yok
     assert "Hedef: +%10" in n["message"] and "Stop: −%8" in n["message"] and "En çok 3 gün" in n["message"]
     assert n["tag"] == "ma-buy-h4-WLDTRY" and n["url"] == "/charts?symbol=WLDTRY&timeframe=4h"
     assert n["target_pct"] == 10.0 and n["expected_price"] == pytest.approx(13.75)
     assert n["exit_profile"] == {"name": "ma_buy_h4", "stop_loss_pct": 8.0, "max_hold_minutes": 4320.0, "trailing": False}
     assert n["horizon_minutes"] == 240 and n["source"] == "ma_buy" and n["notification_key"] == "ma-4h-WLDTRY-1700000000000"
+
+
+def test_h4_notification_lists_both_rules_with_chart_ma_type(monkeypatch):
+    monkeypatch.setattr(config, "MA_BUY_MA_TYPE", "ema", raising=False)
+    row = {"symbol": "BTCTRY", "timeframe": "4h", "rules": "fast_cross_mid,mid_cross_slow", "signal_price": 100.0,
+           "bar_open_ms": 0, "bar_close_ms": 14_400_000}
+    n = notify.build_notification(row, (7, 20, 99), now=14_450.0)
+    assert "EMA7 ↗ EMA20 + EMA20 ↗ EMA99" in n["message"] and n["exit_profile"]["name"] == "ma_buy_h4"
 
 
 def test_other_timeframes_keep_generic_notification():

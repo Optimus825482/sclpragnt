@@ -9,7 +9,7 @@ import time
 
 from fastapi import APIRouter, Query, Request
 
-from app import database, ma_buy_notify, ma_buy_signals, ma_buy_tracker
+from app import database, ma_buy_h4_scan, ma_buy_notify, ma_buy_signals, ma_buy_tracker
 from app.api_common import require_admin, require_user
 
 router = APIRouter()
@@ -48,3 +48,14 @@ async def recent_ma_buy_notifications(request: Request, hours: int = Query(12, g
         item["horizon_minutes"] = ma_buy_notify.HORIZON_MIN
         items.append(item)
     return {"ok": True, "hours": hours, "items": items}
+
+
+@router.get("/api/ma-buy/h4-crosses")
+async def h4_crosses(request: Request, hours: int = Query(24, ge=4, le=72), refresh: int = Query(0, ge=0, le=1)):
+    """Radar > "H4 kesişimleri": son `hours` saatte H4'te MA 7/20/99 kesişimi olan likit TRY çiftleri (2026-10-21).
+
+    Önbellekten döner; bayatsa (ya da `refresh=1`) tazeleme arka planda başlar ve `refreshing: true` işaretlenir —
+    istemci kısa aralıkla yeniden sorar. Kural `ma_buy_profiles.profile("4h")` ile izleyiciyle aynıdır."""
+    require_user(request)
+    snap = await ma_buy_h4_scan.snapshot(hours=hours, force=bool(refresh))
+    return {"ok": True, **snap}

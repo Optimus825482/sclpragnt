@@ -20,9 +20,10 @@ type Props = {
 };
 
 const TF_LABEL: Record<string, string> = { "1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "4h": "H4" };
-/** 2026-10-21: H4 ayrı profille çalışır (backend `ma_buy_profiles`); periyot/kural/hedef ayarları H4'ü etkilemez. */
+/** 2026-10-21: H4 ayrı profille çalışır (backend `ma_buy_profiles`): sinyal MA 7/20/99 iki kural (buradaki periyot alanı
+ *  H4'ü etkilemez; MA türü ortak), paper çıkışı uzun vade. */
 export const H4_PROFILE_NOTE =
-  "H4 özel profil: SMA 8/34/89, yalnız orta×yavaş kesişim, sinyal mumu gövdesi ≥ %1 · paper: hedef %10, stop %8, en çok 3 gün, iz süren stop yok (90 gün: eğitim +%3,1 / test +%3,0).";
+  "H4 özel profil: MA 7/20/99 kesişimleri (hızlı×orta + orta×yavaş, gövde/StochRSI eleği yok; MA türü yukarıdaki seçim) · paper: hedef %10, stop %8, en çok 3 gün, iz süren stop yok. Radar > H4 kesişimleri sekmesi aynı kuralla tüm likit çiftleri tarar.";
 const box = "rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2";
 const inputCls = "mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white";
 

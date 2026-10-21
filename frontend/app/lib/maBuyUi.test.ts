@@ -338,3 +338,42 @@ describe("30m / 1h zaman dilimleri", () => {
     expect(signalTimeSec({ barCloseMs: close, detectedAt: null, timeframe: "30m" })).toBe(close / 1000 - 1800);
   });
 });
+
+// 2026-10-21: Radar > "H4 kesişimleri" sekmesi (GET /api/ma-buy/h4-crosses)
+import { fmtVolumeTry, h4StatusChip, parseH4Crosses } from "./maBuyUi";
+
+describe("H4 kesişim taraması yanıtı", () => {
+  it("satırları ayrıştırır, bozukları atar, kural etiketini kurar", () => {
+    const r = parseH4Crosses({
+      ok: true, scanned_at: 1_700_000_000, hours: 24, symbols_scanned: 287, errors: 2, refreshing: false, last_error: null,
+      rule: { ma_type: "sma", periods: [7, 20, 99], rules: ["fast_cross_mid", "mid_cross_slow"] },
+      items: [
+        { symbol: "wldtry", rules: ["mid_cross_slow"], bar_open_ms: 1, bar_close_ms: 14_400_001, signal_price: "12.5", body_pct: 1.8,
+          change_24h_pct: 4.2, quote_volume_24h: 12_300_000, target_pct: 10, stop_loss_pct: 8, max_hold_minutes: 4320,
+          tracked: true, notified: true, paper_status: "acildi" },
+        { symbol: "", bar_open_ms: 1, bar_close_ms: 2 },
+        { symbol: "XTRY", bar_open_ms: null, bar_close_ms: 2 },
+      ],
+    });
+    expect(r.items).toHaveLength(1);
+    expect(r.items[0]).toMatchObject({ symbol: "WLDTRY", signalPrice: 12.5, change24hPct: 4.2, notified: true, paperStatus: "acildi" });
+    expect(r).toMatchObject({ scannedAt: 1_700_000_000, symbolsScanned: 287, errors: 2, refreshing: false, maLabel: "SMA 7/20/99" });
+  });
+  it("boş/ilk yanıt: tarama yok, tazeleniyor", () => {
+    const r = parseH4Crosses({ ok: true, scanned_at: null, items: [], refreshing: true, rule: null });
+    expect(r.items).toEqual([]);
+    expect(r.scannedAt).toBeNull();
+    expect(r.refreshing).toBe(true);
+    expect(r.maLabel).toBe("SMA 7/20/99");
+    expect(parseH4Crosses(null).items).toEqual([]);
+  });
+  it("durum rozeti ve hacim biçimi", () => {
+    expect(h4StatusChip({ tracked: true, notified: true, paperStatus: "acildi" })).toEqual({ text: "Bildirildi · paper açıldı", tone: "good" });
+    expect(h4StatusChip({ tracked: true, notified: true, paperStatus: "symbol_dedup" }).tone).toBe("info");
+    expect(h4StatusChip({ tracked: true, notified: false, paperStatus: null }).text).toBe("Kaydedildi, push gitmedi");
+    expect(h4StatusChip({ tracked: false, notified: false, paperStatus: null }).tone).toBe("muted");
+    expect(fmtVolumeTry(12_300_000)).toBe("₺12,3M");
+    expect(fmtVolumeTry(850_000)).toBe("₺850K");
+    expect(fmtVolumeTry(null)).toBe("—");
+  });
+});

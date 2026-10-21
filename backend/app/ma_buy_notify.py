@@ -122,11 +122,12 @@ def build_notification(row: dict, periods: tuple, now: float | None = None) -> d
 
 def _build_profile_notification(row: dict, prof: dict, sym: str, tf: str, price: float, target: float,
                                 expected: float, now: float) -> dict:
-    """2026-10-21: H4 özel bildirimi — uzun vade profili (hedef/stop/tutma zarfta; paper bunları uygular)."""
+    """2026-10-21: H4 özel bildirimi — MA 7/20/99 kesişimi, uzun vade çıkışı (hedef/stop/tutma zarfta; paper uygular)."""
     label = tf_label(tf)
-    cross = ma_buy_profiles.rules_text(row.get("rules") or "", prof["periods"], "SMA")
+    cross = ma_buy_profiles.rules_text(row.get("rules") or "", prof["periods"], prof.get("ma_type", "sma"))
     body = row.get("body_pct")
-    body_txt = f" · gövde +%{float(body):.1f}" if body is not None else ""
+    # Gövde yalnız eleğe takılacak bir şartken (min_body_pct > 0) metne girer; saf kesişimde gürültü olmasın.
+    body_txt = f" · gövde +%{float(body):.1f}" if body is not None and float(prof.get("min_body_pct") or 0) > 0 else ""
     stop = float(prof["stop_loss_pct"])
     hold_days = float(prof["max_hold_minutes"]) / 1440.0
     hold_txt = f"{hold_days:g} gün" if hold_days >= 1 else f"{float(prof['max_hold_minutes']):g} dk"

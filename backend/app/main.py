@@ -48,6 +48,7 @@ from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import ml_forecast
 from app import ma_buy_notify
+from app.ma_buy_h4_scan import h4_scan_warmup_loop
 from app.ma_buy_tracker import ma_buy_loop
 from app import chat_prediction_learning
 from app import chat_prediction_replay
@@ -1244,6 +1245,9 @@ async def startup_services():
     await asyncio.sleep(_yield)
     # 2026-10-18: MA şerit BUY sinyal izleyici (yalnız yönetici sayfası; emir/bildirim yok). MA_BUY_TRACKER_ENABLED=0 → döngü boşta.
     _start_background(ma_buy_loop, "ma-buy-tracker")
+    await asyncio.sleep(_yield)
+    # 2026-10-21: Radar > H4 kesişimleri — açılışta ve her H4 kapanışında tüm likit çiftleri tarar (önbellek ısıtma).
+    _start_background(h4_scan_warmup_loop, "ma-buy-h4-scan")
     await asyncio.sleep(_yield)
     _start_background(calibration_refresh_loop, "calibration-refresh")
     await asyncio.sleep(_yield)

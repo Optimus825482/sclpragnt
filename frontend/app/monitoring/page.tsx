@@ -13,6 +13,7 @@ import { scoreToneClass, scoreToneText } from "../lib/scoreTone";
 import AppLoader from "../components/AppLoader";
 import UserRadar from "../components/user/UserRadar";
 import MaBuyRecent from "../components/MaBuyRecent";
+import H4CrossList from "../components/H4CrossList";
 import { RadarScanLogButton } from "../components/admin/RadarScanLogModal";
 import { useIsUserView } from "../lib/adminView";
 
@@ -639,8 +640,9 @@ function AdminMonitoringPage() {
     }
   }, []);
   const savedTab = savedUi.activeTab;
-  const [activeTab, setActiveTab] = useState<"candidates" | "watchlist" | "notifications" | "overview">(
-    savedTab === "watchlist" || savedTab === "notifications" || savedTab === "overview" ? savedTab : "candidates");
+  // 2026-10-21: "h4" — H4 kesişimleri sekmesi (H4CrossList).
+  const [activeTab, setActiveTab] = useState<"candidates" | "watchlist" | "notifications" | "h4" | "overview">(
+    savedTab === "watchlist" || savedTab === "notifications" || savedTab === "h4" || savedTab === "overview" ? savedTab : "candidates");
 
   // Filtreleme / sıralama
   const savedMode = savedUi.filterMode;
@@ -1202,6 +1204,19 @@ function AdminMonitoringPage() {
 
           <button
             type="button"
+            onClick={() => setActiveTab("h4")}
+            data-testid="radar-tab-h4"
+            className={`rounded-xl px-4 py-2 font-mono text-xs sm:text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap ${
+              activeTab === "h4"
+                ? "bg-amber-400/15 text-amber-300 border border-amber-400/40 shadow-sm"
+                : "text-bunker-muted hover:text-white hover:bg-bunker-900"
+            }`}
+          >
+            <span>🕓</span> H4 Kesişimleri
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("overview")}
             className={`rounded-xl px-4 py-2 font-mono text-xs sm:text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap ${
               activeTab === "overview"
@@ -1695,6 +1710,13 @@ function AdminMonitoringPage() {
               })}
             </div>
           )}
+        </section>
+      )}
+
+      {/* BÖLÜM 2b: 🕓 H4 KESİŞİMLERİ (2026-10-21) — son 24 saatte H4'te MA 7/20/99 kesişimi olan likit çiftler */}
+      {(activeTab === "h4" || activeTab === "overview") && (
+        <section className="card p-5 rounded-2xl border border-bunker-800 bg-bunker-950/60 shadow-xl space-y-4">
+          <H4CrossList />
         </section>
       )}
 

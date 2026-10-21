@@ -2,7 +2,7 @@
 
 **Soru:** MA kesişimleri, bekleme süresi kısaltılıp en az %2 hedefle, hangi kombinasyonda kârlı olur? İşlem başına ortalama +%2 net veren bir kombinasyon var mı?
 
-**Cevap:** Hayır. 90 günlük arşivde, 60 gün eğitim / 30 gün test ayrımıyla **yaklaşık 10,9 milyon kombinasyon** denendi (7 koşu). Hem eğitimde hem testte artı kalan en iyi kombinasyonlar işlem başına **+%0,3 ile +%0,9** arasında. Tek bir satır testte +%1,78 gösteriyor ama eğitimi +%0,70 ve n test 39; seçim gürültüsü sınırında. Hiçbir sağlam küme +%2'ye yaklaşmıyor.
+**Cevap:** Hayır. 90 günlük arşivde, 60 gün eğitim / 30 gün test ayrımıyla **yaklaşık 11,2 milyon kombinasyon** denendi (7 koşu). Hem eğitimde hem testte artı kalan en iyi kombinasyonlar işlem başına **+%0,3 ile +%0,9** arasında. Tek bir satır testte +%1,78 gösteriyor ama eğitimi +%0,70 ve n test 39; seçim gürültüsü sınırında. Hiçbir sağlam küme +%2'ye yaklaşmıyor.
 
 ## Koşular
 
@@ -16,7 +16,7 @@ Ortak: evren canlı sistem mantığı (aksi yazılmadıysa), giriş sinyal mumun
 | 4 | limit giriş kapanışın %1 altı (15 dk) | 531 072 | −0,23% | −0,37% / 20 | M15 9/21/55 kurdele, hedef 5, stop 3, 60 dk, RSI<70 + gövde≥1%: +0,61% → +0,78% (n 77/41) |
 | 5 | tutma 480 dk'ya, hedef 8'e, stop 6'ya kadar | 1 493 856 | −0,21% | −0,52% / 9 | M5 7/20/99 orta×yavaş, hedef 8, stop 4, 480 dk, gövde≥0,3% + yavaşa uzaklık≤1%: +0,84% → +0,86% (n 60/25) |
 | 6 | evren: likitler içinde en çok düşen 50 | 2 751 960 | −0,27% | −0,33% / 2 | H1 10/30/100 kurdele, hedef 2,5, stop 4, 240 dk, ATR≥0,6% + saat 09–23: +0,39% → +0,41% (n 120/50) |
-| 7 | evren: 24 sa hacmi ≥ 1M TL olan tüm çiftler (daraltılmış ızgara) | (koşu sürüyor) | | | |
+| 7 | evren: 24 sa hacmi ≥ 1M TL olan tüm çiftler (ızgara: hedef 2/3/5, stop 2/3/4, tutma 60/120/240) | 1 061 280 | −0,28% | −0,28% / 4 | H1 9/21/55 orta×yavaş, hedef 5, stop 3, 240 dk, iz süren 2/1, StochRSI≤50 + saat 09–23: +0,08% → +0,12% (n 832/523) |
 
 Ayrıntılı tablolar: `MA_KESISIM_KOMBINASYON_ARAMA_90g_*.md` (aynı klasör).
 
@@ -26,7 +26,7 @@ Ayrıntılı tablolar: `MA_KESISIM_KOMBINASYON_ARAMA_90g_*.md` (aynı klasör).
 - **Kısa tutma ile %2 hedef uyuşmuyor.** Tutma ≤ 60 dk ve hedef %2 ile eğitimde en iyi görünen kombinasyonların hepsi testte eksi (−%0,02 … −%0,55; koşu 1). Kısa sürede %2 hareketi yakalayan sinyal azınlıkta, geri kalanı süre dolumunda küçük zararla kapanıyor.
 - **Daha uzun tutma ve büyük hedef ortalamayı +%0,9'a kadar çıkarıyor, daha ileri değil.** 480 dk ve %8 hedefle kazanma oranı %48–54; ortalamayı az sayıda büyük kazanç taşıyor, medyan işlem eksi. Bu, kullanıcının "süreyi kısaltma" isteğinin de tersi.
 - **Limit giriş yardımcı ama sınırlı.** Kapanışın %0,5–1 altından dolum, dolan işlemlerde ortalamayı +%0,2 kadar iyileştiriyor; ama sinyallerin bir kısmı dolmuyor (en iyi uçuş sinyalleri geri çekilmediği için) ve sağlam en iyi yine +%0,6…+%0,8.
-- **Evren değiştirmek yardımcı değil.** Düşenler evreninde en iyi sağlam +%0,4; eğitimin en iyi 100'ünden yalnız 2'si testte artı.
+- **Evren değiştirmek yardımcı değil.** Düşenler evreninde en iyi sağlam +%0,4; eğitimin en iyi 100'ünden yalnız 2'si testte artı. Tüm likit çiftlerde (310 sembol, sinyal başına yüzlerce işlem) en iyi sağlam +%0,1: büyük örneklemde MA kesişiminin kendi başına beklentisi sıfır. Canlı seçimdeki (24 sa yükselenler + aktivite) küçük artı, kesişimden değil sembol seçiminden geliyor.
 - **Tutarlı sinyal:** sağlam kümelerin çoğu hızlı×orta değil, **orta×yavaş** (ya da kurdele) kesişimi ve H1/M15 dilimi; yani daha geç, daha seçici giriş. Kazanma oranı yüksek (%55–85) olan kümelerde bile ortalama net küçük, çünkü hedef nadiren tam görülüyor ve iz süren stop kârın büyük kısmını geri veriyor.
 
 ## Kullanılabilir tek aday
