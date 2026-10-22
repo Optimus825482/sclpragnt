@@ -3645,8 +3645,10 @@ def _invalidate_after_user_event(user_id: int, event: dict, api_key: str = "") -
         return
     base = _event_base_asset(fields.get("symbol") or raw.get("s"))
     _invalidate_binance_cost_cache(uid, base or None)
-    today = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
-    _binance_day_trades_cache.pop((uid, today), None)
+    # 2026-10-22: satış son alımının gününde listelendiğinden bugünkü fill geçmiş bir günün
+    # tablosunu da değiştirebilir → kullanıcının TÜM gün cache'leri düşer.
+    for key in [k for k in _binance_day_trades_cache if k[0] == uid]:
+        _binance_day_trades_cache.pop(key, None)
 
 
 async def _publish_binance_user_event(user_id: int, event: dict, api_key: str = "") -> None:
@@ -4933,12 +4935,12 @@ async def _compute_binance_trades_day(
     for f in rows:
         by_symbol.setdefault(str(f.get("symbol") or ""), []).append(f)
 
-    # Eğer sembolde gün içi satış (isBuyer == False) varsa, maliyet tabanını (cost basis)
-    # doğru kurabilmek için o sembolün geçmiş işlemlerini de çekip FIFO kuyruğuna alıyoruz.
-    sym_need_hist = [
-        sym for sym, fills in by_symbol.items()
-        if any(not f.get("isBuyer") for f in fills)
-    ]
+    # SATIŞ GÜNÜ KURALI — Erkan kararı (2026-10-22): bir satış, satıldığı günde değil, o sembolün
+    # satıştan önceki SON ALIMININ gününde listelenir (alış ile satış aynı satırda görünsün).
+    # Bu yüzden günde fill'i olan HER sembolün geçmişi (sonu açık: sonraki günlerin satışları da)
+    # çekilir: gün içi satışın son alımı önceki günde ise satış bu günden çıkar; gün içi alımın
+    # satışı sonraki günde ise satış bu güne gelir. Alımı hiç bulunmayan satış kendi gününde kalır.
+    sym_need_hist = list(by_symbol.keys())
     hist_map: dict[str, list[dict]] = {}
     if sym_need_hist:
         async def fetch_hist(s: str):
@@ -4946,7 +4948,7 @@ async def _compute_binance_trades_day(
                 await asyncio.sleep(0.06)
                 try:
                     return s, await asyncio.to_thread(
-                        get_trade_history, api_key, api_secret, s, None, end_ms, 1000, 0
+                        get_trade_history, api_key, api_secret, s, None, None, 1000, 0
                     )
                 except Exception as exc:
                     logger.debug("Binance TR geçmiş işlem çekme hatası %s: %s", s, exc)
@@ -4957,6 +4959,8 @@ async def _compute_binance_trades_day(
 
     # Sembol bazlı özet: alış/satış miktar ve VWAP'ları + K/Z + komisyon (tek satır)
     symbol_summary: list[dict] = []
+    # Güne AİT fill'ler (gün içi alımlar + son alımı bu günde olan satışlar); yanıtın "trades" listesi.
+    day_rows: list[dict] = []
     for symbol, fills in by_symbol.items():
         clean_sym = symbol.replace("_", "").upper()
         if clean_sym.endswith("TRY"):
@@ -4984,7 +4988,7 @@ async def _compute_binance_trades_day(
             "sell_revenue_try": 0.0,
             "realized_pnl_try": 0.0,
             "commission_try": 0.0,
-            "fills": len(fills),
+            "fills": 0,
         }
         # 2026-10-18: sembol K/Z yüzdesi GERÇEK eşleşen TRY maliyet tabanından
         # (alış tutarı + alış komisyonu); UI eskiden USDT çiftlerinde quoteQty'den yanlış hesaplıyordu.
@@ -5007,6 +5011,7 @@ async def _compute_binance_trades_day(
         all_symbol_trades.sort(key=lambda f: (float(f.get("time") or 0), int(f.get("id") or 0)))
 
         lots: list[dict] = []
+        last_buy_ms: float | None = None  # satıştan önceki son alımın zamanı (sıralı gezildiği için)
         for f in all_symbol_trades:
             try:
                 qty = float(f.get("qty") or 0)
@@ -5016,7 +5021,16 @@ async def _compute_binance_trades_day(
             except (TypeError, ValueError):
                 continue
 
-            is_today = (start_ms <= t_time < end_ms)
+            # Güne aitlik: alım kendi gününe; satış son alımının gününe (alımı yoksa kendi gününe).
+            if f.get("isBuyer"):
+                anchor_ms = t_time
+                last_buy_ms = t_time
+            else:
+                anchor_ms = last_buy_ms if last_buy_ms is not None else t_time
+            is_today = (start_ms <= anchor_ms < end_ms)
+            if is_today:
+                summary["fills"] += 1
+                day_rows.append(f)
 
             comm_asset = str(f.get("commissionAsset") or "").upper()
             if comm_asset == "TRY":
@@ -5097,11 +5111,13 @@ async def _compute_binance_trades_day(
         summary["sell_revenue_try"] = round(summary["sell_revenue_try"], 4)
         summary["realized_pnl_try"] = round(summary["realized_pnl_try"], 2)
         summary["commission_try"] = round(summary["commission_try"], 4)
-        symbol_summary.append(summary)
+        if summary["fills"] > 0:  # günün tüm fill'leri başka güne (son alım gününe) gittiyse satır yok
+            symbol_summary.append(summary)
 
     # Özet tablo: yüksek K/Z önce (azalan)
     symbol_summary.sort(key=lambda s: abs(s["realized_pnl_try"]), reverse=True)
     # En yeni işlemler en üstte (azalan: önce en son alım/satım).
+    rows = day_rows
     rows.sort(key=lambda t: (float(t.get("time") or 0), str(t.get("symbol") or "")), reverse=True)
     payload = {"trades": rows, "count": len(rows),
                "symbols_scanned": len(tasks), "assets": len(assets),

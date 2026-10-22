@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>N6 Takip 22.10 00:00</title>
+<meta name="description" content="N6 kuralı ile 22.10.2026 00:00 kesitinde seçilen semboller; iz süren 3/1,5 + %10 stop + 24 saat kuralının canlı izlemesi.">
+<style>
+  :root { --bg:#0f1131; --panel:#171a3f; --line:#2a2e5c; --text:#e8eaf6; --muted:#8f95bf; --green:#22c55e; --red:#ef4444; --amber:#f59e0b; --blue:#60a5fa; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --bg:#f5f6fb; --panel:#fff; --line:#d9dcec; --text:#161a3a; --muted:#5d6390; } }
+  :root[data-theme="light"] { --bg:#f5f6fb; --panel:#fff; --line:#d9dcec; --text:#161a3a; --muted:#5d6390; }
+  * { box-sizing:border-box; } body { margin:0; padding:16px; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; } .sub { color:var(--muted); font-size:12px; margin-bottom:10px; max-width:1100px; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; font-size:12px; color:var(--muted); margin-bottom:10px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--red); margin-right:6px; vertical-align:middle; } .dot.on { background:var(--green); }
+  .kpi { display:flex; flex-wrap:wrap; gap:10px; margin:8px 0 12px; } .kpi div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; min-width:140px; }
+  .kpi b { display:block; font-size:17px; } .kpi span { color:var(--muted); font-size:12px; }
+  .wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+  table { border-collapse:collapse; width:100%; min-width:1100px; font-variant-numeric:tabular-nums; }
+  th,td { padding:8px 10px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; } th { color:var(--muted); font-weight:600; font-size:12px; position:sticky; top:0; background:var(--panel); }
+  td:first-child,th:first-child { text-align:left; } tr:last-child td { border-bottom:0; } .sym { font-weight:700; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flat { color:var(--muted); }
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:11px; font-weight:700; margin-left:6px; }
+  .b-open { background:rgba(96,165,250,.18); color:var(--blue); } .b-trail { background:rgba(245,158,11,.18); color:var(--amber); }
+  .b-win { background:rgba(34,197,94,.18); color:var(--green); } .b-loss { background:rgba(239,68,68,.18); color:var(--red); } .b-time { background:rgba(143,149,191,.18); color:var(--muted); }
+  @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:.35; } } .blink { animation:blink .9s ease-in-out infinite; }
+  .note { color:var(--muted); font-size:12px; margin-top:12px; } button { background:transparent; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:3px 9px; font-size:12px; cursor:pointer; }
+  @media (max-width:640px) { body { padding:12px 16px; } }
+</style>
+</head>
+<body>
+<h1>N6 takip — kesit 22.10.2026 00:00</h1>
+<div class="sub">Kural: ADX 4h ≥ 25, +DI − −DI ≥ 10, 4h MACD histogramı artıyor, hacim ≥ 1,5×, RSI 1h < 72, günlük RSI < 60, 4/4 MA üstü + 4h yüksek dip hariç; 24 sa hacim ≥ 5M TL; piyasa genişliği 76% (tam liste). Evren 205 sembol, kurala uyan 17, seçilen 17. Giriş: kesitten önceki son 15 dk kapanışı. Çıkış: +%3'ten sonra zirvenin %1,5 altına iz süren stop, −%10 stop, en çok 24 saat (kesit + 24 sa); aynı mumda stop ve iz süren → stop. 10.000 TL/sembol, komisyon %0,1125/bacak. Sayfa açılınca kesitten bu yana 15 dk mumlar borsadan çekilir, sonra canlı fiyatla sürer. Yatırım tavsiyesi değildir.</div>
+<div class="bar">
+  <span><span id="dot" class="dot"></span><span id="ws">WS bağlanıyor…</span></span>
+  <span>Şu an: <b id="now">—</b></span><span>Geçen: <b id="elapsed">—</b></span><span>Süre dolumu: <b id="expiry">—</b></span>
+  <span>Mum yolu: <b id="path">—</b></span>
+  <button id="theme" type="button">Tema</button>
+</div>
+<div class="kpi">
+  <div><b id="k-total">—</b><span>toplam net K/Z</span></div>
+  <div><b id="k-open">—</b><span>açık pozisyon</span></div>
+  <div><b id="k-closed">—</b><span>kapanan (iz süren / stop / süre)</span></div>
+  <div><b id="k-mfe">—</b><span>ort. MFE</span></div>
+  <div><b id="k-win">—</b><span>artıda olan</span></div>
+</div>
+<div class="wrap"><table id="t"><thead><tr>
+  <th>Sembol</th><th>Giriş</th><th>Canlı</th><th>Değişim</th><th>Net K/Z</th><th>MFE</th><th>MFE zamanı</th><th>MAE</th><th>İz süren stop</th><th>Stop</th><th>Durum</th><th>Çıkış</th><th>ADX / DI</th><th>Hacim×</th><th>RSI 1h / gün</th><th>24 sa</th>
+</tr></thead><tbody></tbody></table></div>
+<p class="note">Durum: <span class="badge b-open">AÇIK</span> kural içinde · <span class="badge b-trail">İZ SÜREN AKTİF</span> +%3 görüldü, stop zirveyi takip ediyor · <span class="badge b-win">KAPANDI +</span> / <span class="badge b-loss">KAPANDI −</span> iz süren veya stop ile · <span class="badge b-time">SÜRE DOLDU</span> 24 saat sonunda kapanıştan. Kapanış fiyatı 15 dk mum içindeyse stop seviyesinden, canlı akışta ise o anki fiyattan alınır.</p>
+<script>
+(function () {
+  "use strict";
+  var DATA = {"cutoff_ms": 1792616400000, "breadth": 0.7560975609756098, "universe": 205, "candidates": 17, "rows": [{"sym": "WTRY", "entry": 0.7334, "adx": 25.32248353057774, "di": 19.498202275958832, "vol": 7.569544930833553, "rsi1": 57.565812101469504, "drsi": 46.52790143471411, "above4": 3, "chg24": 10.885999395222257, "qv": 394219148.19308, "score": 4}, {"sym": "LATRY", "entry": 2.98, "adx": 37.59854766508803, "di": 19.432919801059096, "vol": 5.255930131949199, "rsi1": 66.08313464983416, "drsi": 35.0820797152726, "above4": 3, "chg24": 11.610486891385774, "qv": 62610987.281, "score": 3}, {"sym": "TREETRY", "entry": 1.95, "adx": 32.487707734786845, "di": 11.421176218645215, "vol": 4.697822571362065, "rsi1": 59.4157160265959, "drsi": 36.93893488055952, "above4": 3, "chg24": 5.405405405405395, "qv": 10065416.485, "score": 1}, {"sym": "ATTRY", "entry": 6.871, "adx": 30.535589419575906, "di": 20.793078920237463, "vol": 4.5241656330564455, "rsi1": 51.042402041161914, "drsi": 46.344166345264256, "above4": 4, "chg24": 2.0799286881592716, "qv": 23156967.2583, "score": 2}, {"sym": "OPNTRY", "entry": 2.66, "adx": 48.77771208345772, "di": 17.313722844082978, "vol": 4.053820308759497, "rsi1": 63.974412307620916, "drsi": 36.97556054665956, "above4": 2, "chg24": 10.373443983402497, "qv": 88108555.85, "score": 3}, {"sym": "YBTRY", "entry": 3.26, "adx": 45.75694641167082, "di": 42.38846536583831, "vol": 3.7536128765117733, "rsi1": 69.37279309931856, "drsi": 26.562292053554117, "above4": 2, "chg24": 6.5359477124183, "qv": 9149187.177000001, "score": 3}, {"sym": "RESOLVTRY", "entry": 0.8676, "adx": 26.287807040487003, "di": 20.103693279513344, "vol": 3.3731228272052105, "rsi1": 71.79615633176607, "drsi": 40.38554938303484, "above4": 3, "chg24": 7.1111111111111125, "qv": 7854265.73464, "score": 3}, {"sym": "TNSRTRY", "entry": 1.65, "adx": 31.782345920423523, "di": 23.428307311634292, "vol": 3.2160535618135295, "rsi1": 60.02502807950214, "drsi": 35.522784240393264, "above4": 3, "chg24": 4.430379746835422, "qv": 26840047.343, "score": 4}, {"sym": "ORCATRY", "entry": 94.3, "adx": 27.954223133212526, "di": 15.399870762799338, "vol": 2.4119522499562125, "rsi1": 67.25133363557165, "drsi": 45.34579744342652, "above4": 3, "chg24": 9.523809523809534, "qv": 11188615.935, "score": 4}, {"sym": "AIGENSYNTRY", "entry": 0.901, "adx": 41.598131666888044, "di": 15.86015819640021, "vol": 2.235722962501649, "rsi1": 67.77804907889754, "drsi": 32.62259127086813, "above4": 3, "chg24": 8.29326923076923, "qv": 7172388.234, "score": 4}, {"sym": "XRPTRY", "entry": 68.3, "adx": 33.716090544368136, "di": 22.498603833657164, "vol": 2.1850689560881733, "rsi1": 70.4047354964532, "drsi": 43.32605115218954, "above4": 4, "chg24": 3.579011222323314, "qv": 250479917.149, "score": 2}, {"sym": "STRKTRY", "entry": 3.03, "adx": 28.548173207083757, "di": 11.393297567466345, "vol": 2.1360224715218425, "rsi1": 58.917236797606165, "drsi": 47.59859408264051, "above4": 2, "chg24": 5.907025515553999, "qv": 308559897.2351, "score": 2}, {"sym": "2ZTRY", "entry": 1.603, "adx": 31.512478832291, "di": 16.079919497414974, "vol": 1.987718937806624, "rsi1": 68.49111587197187, "drsi": 27.754363582967926, "above4": 3, "chg24": 7.65614506380119, "qv": 22490151.382, "score": 4}, {"sym": "SAGATRY", "entry": 1.003, "adx": 25.563445626977124, "di": 11.756897853503114, "vol": 1.8252493327550234, "rsi1": 67.53274035363765, "drsi": 43.66407779087524, "above4": 3, "chg24": 2.977412731006157, "qv": 59552024.773, "score": 4}, {"sym": "SUPERTRY", "entry": 10.32, "adx": 33.34819893014681, "di": 35.19778568792498, "vol": 1.718193313070286, "rsi1": 65.14717350879864, "drsi": 47.756317432075825, "above4": 3, "chg24": 9.206349206349218, "qv": 34591109.415, "score": 2}, {"sym": "XECTRY", "entry": 0.0003386, "adx": 47.24827196138546, "di": 54.97380956679064, "vol": 1.6639042123930747, "rsi1": 71.08426216114319, "drsi": 35.803071828213774, "above4": 3, "chg24": 4.184615384615387, "qv": 6130953.663272, "score": 4}, {"sym": "PIXELTRY", "entry": 0.272, "adx": 26.552937876723036, "di": 12.033104938808266, "vol": 1.5158395311314483, "rsi1": 66.32242590432858, "drsi": 43.46321069163481, "above4": 3, "chg24": 4.615384615384621, "qv": 16564585.4279, "score": 2}]};
+  var FEE = 0.001125, STAKE = 10000, TRIG = 3, GAP = 1.5, STOP = 10, HOLD_MS = 24 * 3600 * 1000, M15 = 900000;
+  var CUT = DATA.cutoff_ms, EXP = CUT + HOLD_MS;
+  var WS_BASES = ["wss://stream-cloud.binance.tr", "wss://stream.binance.me", "wss://stream.binance.com:9443"];
+  var REST_BASES = ["https://api.binance.me", "https://api.binance.tr"];
+  var pos = {};   // sym -> state
+  DATA.rows.forEach(function (r) {
+    pos[r.sym] = { r: r, entry: r.entry, peak: r.entry, trough: r.entry, mfe_at: null, stop: r.entry * (1 - STOP / 100), trail: false, trail_stop: null,
+                   live: null, live_at: 0, exit: null, exit_px: null, exit_at: null, path_bars: 0, path_ok: false };
+  });
+  function digits(x) { return x >= 1000 ? 1 : x >= 100 ? 2 : x >= 10 ? 3 : x >= 1 ? 4 : x >= 0.1 ? 4 : x >= 0.01 ? 5 : 7; }
+  function fp(x) { return x == null || !isFinite(x) ? "—" : x.toLocaleString("tr-TR", { minimumFractionDigits: digits(x), maximumFractionDigits: digits(x) }); }
+  function fpct(x) { return x == null || !isFinite(x) ? "—" : (x > 0 ? "+" : "") + x.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%"; }
+  function ftl(x) { return x == null || !isFinite(x) ? "—" : (x > 0 ? "+" : "") + Math.round(x).toLocaleString("tr-TR") + " TL"; }
+  function cls(x) { return x == null ? "flat" : x > 1e-9 ? "pos" : x < -1e-9 ? "neg" : "flat"; }
+  function dur(ms) { if (ms < 0) ms = 0; var m = Math.floor(ms / 60000), h = Math.floor(m / 60); return h ? h + " sa " + String(m % 60).padStart(2, "0") + " dk" : m + " dk"; }
+  function tstr(ms) { return new Date(ms).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }); }
+  function net(p, px) { return STAKE * (1 - FEE) / p.entry * px * (1 - FEE) - STAKE; }
+
+  // Bir fiyat adımı uygula (high/low/close + zaman). Sıra kötümser: stop → iz süren → zirve güncelle.
+  function step(p, hi, lo, cl, t) {
+    if (p.exit) return;
+    if (t >= EXP) { p.exit = "time"; p.exit_px = cl; p.exit_at = t; return; }
+    if (lo <= p.stop) { p.exit = "stop"; p.exit_px = p.stop; p.exit_at = t; return; }
+    if (p.trail && lo <= p.trail_stop) { p.exit = "trail"; p.exit_px = p.trail_stop; p.exit_at = t; return; }
+    if (hi > p.peak) { p.peak = hi; p.mfe_at = t; }
+    if (lo < p.trough) p.trough = lo;
+    if (p.peak >= p.entry * (1 + TRIG / 100)) { p.trail = true; p.trail_stop = Math.max(p.trail_stop || 0, p.peak * (1 - GAP / 100)); }
+  }
+  function replay(p, bars) {
+    // baştan oynat (tazeleme için durumu sıfırla)
+    p.peak = p.entry; p.trough = p.entry; p.mfe_at = null; p.stop = p.entry * (1 - STOP / 100); p.trail = false; p.trail_stop = null; p.exit = null; p.exit_px = null; p.exit_at = null;
+    bars.forEach(function (b) { step(p, b.h, b.l, b.c, b.t + M15); });
+    p.path_bars = bars.length; p.path_ok = true;
+  }
+  function fetchPath(sym, idx) {
+    idx = idx || 0; if (idx >= REST_BASES.length) return;
+    var url = REST_BASES[idx] + "/api/v3/klines?symbol=" + sym + "&interval=15m&startTime=" + CUT + "&limit=120";
+    fetch(url).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }).then(function (rows) {
+      var now = Date.now();
+      var bars = (rows || []).filter(function (k) { return k[0] + M15 <= now; }).map(function (k) { return { t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4] }; });
+      replay(pos[sym], bars); render();
+    }).catch(function () { fetchPath(sym, idx + 1); });
+  }
+  function fetchAllPaths() { Object.keys(pos).forEach(function (s) { fetchPath(s); }); }
+
+  function render() {
+    var now = Date.now(), html = "", total = 0, open = 0, closed = { trail: 0, stop: 0, time: 0 }, mfes = [], winners = 0;
+    DATA.rows.forEach(function (r) {
+      var p = pos[r.sym], px = p.exit ? p.exit_px : p.live, ch = px ? (px / p.entry - 1) * 100 : null, n = px ? net(p, px) : null;
+      var mfe = (p.peak / p.entry - 1) * 100, mae = (p.trough / p.entry - 1) * 100;
+      if (n != null) { total += n; if (n > 0) winners++; }
+      mfes.push(mfe);
+      var st, badge;
+      if (p.exit === "stop") { st = '<span class="badge b-loss">KAPANDI −</span>'; closed.stop++; }
+      else if (p.exit === "trail") { st = '<span class="badge ' + (n > 0 ? "b-win" : "b-loss") + '">KAPANDI ' + (n > 0 ? "+" : "−") + '</span>'; closed.trail++; }
+      else if (p.exit === "time") { st = '<span class="badge b-time">SÜRE DOLDU</span>'; closed.time++; }
+      else { st = p.trail ? '<span class="badge b-trail blink">İZ SÜREN AKTİF</span>' : '<span class="badge b-open">AÇIK</span>'; open++; }
+      html += "<tr>" +
+        '<td><span class="sym">' + r.sym.replace(/TRY$/, "") + '</span><span class="flat"> / TRY</span></td>' +
+        "<td>" + fp(p.entry) + "</td><td>" + (p.live ? fp(p.live) : "…") + '</td><td class="' + cls(ch) + '">' + fpct(ch) + "</td>" +
+        '<td class="' + cls(n) + '"><b>' + ftl(n) + "</b></td>" +
+        '<td class="' + cls(mfe) + '">' + fpct(mfe) + " <span class='flat'>(" + fp(p.peak) + ")</span></td><td>" + (p.mfe_at ? tstr(p.mfe_at) + " · " + dur(p.mfe_at - CUT) : "—") + "</td>" +
+        '<td class="' + cls(mae) + '">' + fpct(mae) + "</td>" +
+        "<td>" + (p.trail ? fp(p.trail_stop) + " <span class='flat'>(" + fpct((p.trail_stop / p.entry - 1) * 100) + ")</span>" : "<span class='flat'>+%3'te</span>") + "</td>" +
+        "<td>" + fp(p.stop) + "</td><td>" + st + "</td>" +
+        "<td>" + (p.exit ? fp(p.exit_px) + " · " + tstr(p.exit_at) : "—") + "</td>" +
+        "<td>" + (r.adx != null ? r.adx.toFixed(0) : "—") + " / " + (r.di != null ? r.di.toFixed(0) : "—") + "</td>" +
+        "<td>" + (r.vol != null ? r.vol.toFixed(1) + "×" : "—") + "</td>" +
+        "<td>" + (r.rsi1 != null ? r.rsi1.toFixed(0) : "—") + " / " + (r.drsi != null ? r.drsi.toFixed(0) : "—") + "</td>" +
+        '<td class="' + cls(r.chg24) + '">' + fpct(r.chg24) + "</td></tr>";
+    });
+    document.querySelector("#t tbody").innerHTML = html || '<tr><td colspan="16" class="flat">Bu kesitte kurala uyan sembol yok.</td></tr>';
+    var el = document.getElementById("k-total"); el.textContent = ftl(total) + " (" + fpct(total / (STAKE * DATA.rows.length) * 100) + ")"; el.className = cls(total);
+    document.getElementById("k-open").textContent = open + " / " + DATA.rows.length;
+    document.getElementById("k-closed").textContent = closed.trail + " / " + closed.stop + " / " + closed.time;
+    document.getElementById("k-mfe").textContent = mfes.length ? fpct(mfes.reduce(function (a, b) { return a + b; }, 0) / mfes.length) : "—";
+    document.getElementById("k-win").textContent = winners + " / " + DATA.rows.length;
+    document.getElementById("now").textContent = tstr(now);
+    document.getElementById("elapsed").textContent = dur(now - CUT);
+    document.getElementById("expiry").textContent = new Date(EXP).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) + (now >= EXP ? " (doldu)" : " (" + dur(EXP - now) + " kaldı)");
+    var ok = Object.values(pos).filter(function (p) { return p.path_ok; }).length;
+    document.getElementById("path").textContent = ok + "/" + DATA.rows.length + " sembol yüklendi";
+  }
+
+  // ---- WS
+  var syms = DATA.rows.map(function (r) { return r.sym; });
+  var baseIdx = 0, ws = null, retryMs = 2000, lastMsg = 0;
+  function setStatus(on, text) { document.getElementById("dot").className = "dot" + (on ? " on" : ""); document.getElementById("ws").textContent = text; }
+  function connect() {
+    if (!syms.length) { setStatus(false, "sembol yok"); return; }
+    var base = WS_BASES[baseIdx % WS_BASES.length];
+    var url = base + "/stream?streams=" + syms.map(function (s) { return s.toLowerCase() + "@miniTicker"; }).join("/");
+    setStatus(false, "Bağlanıyor: " + base.replace("wss://", ""));
+    try { ws = new WebSocket(url); } catch (e) { baseIdx++; setTimeout(connect, retryMs); return; }
+    ws.onopen = function () { retryMs = 2000; setStatus(true, "Canlı: " + base.replace("wss://", "")); };
+    ws.onmessage = function (ev) {
+      var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      var d = msg && msg.data ? msg.data : msg; if (!d || !d.s || d.c == null) return;
+      var sym = String(d.s).toUpperCase(), px = parseFloat(d.c); if (!isFinite(px) || !pos[sym]) return;
+      var p = pos[sym]; p.live = px; p.live_at = Date.now(); lastMsg = p.live_at;
+      if (p.path_ok && !p.exit) step(p, px, px, px, p.live_at);   // canlı: tek fiyat adımı
+    };
+    ws.onclose = function () { setStatus(false, "Bağlantı koptu, yeniden deneniyor…"); baseIdx++; retryMs = Math.min(30000, retryMs * 1.5); setTimeout(connect, retryMs); };
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+  connect();
+  // REST tohumlama: miniTicker yalnız işlem olunca gelir; açılışta ve 30 sn'de bir tüm fiyat tablosu çekilip süzülür.
+  function seed(idx) {
+    idx = idx || 0; if (idx >= REST_BASES.length) return;
+    fetch(REST_BASES[idx] + "/api/v3/ticker/price").then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }).then(function (rows) {
+      var t = Date.now();
+      (rows || []).forEach(function (row) {
+        var sym = String(row.symbol || "").toUpperCase(), px = parseFloat(row.price), p = pos[sym];
+        if (!p || !isFinite(px)) return;
+        if (!p.live || p.live_at < t - 5000) { p.live = px; p.live_at = t; if (p.path_ok && !p.exit) step(p, px, px, px, t); }
+      });
+      render();
+    }).catch(function () { seed(idx + 1); });
+  }
+  seed(); setInterval(seed, 30000);
+  fetchAllPaths();
+  setInterval(fetchAllPaths, 5 * 60 * 1000);     // yol 5 dk'da bir mumlarla tazelenir (canlı adımlar mum yoluyla uyumlanır)
+  setInterval(render, 1000);
+  render();
+  document.getElementById("theme").addEventListener("click", function () {
+    var cur = document.documentElement.getAttribute("data-theme"); var next = cur === "light" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", next); try { localStorage.setItem("takip:theme", next); } catch (e) {}
+  });
+  try { var th = localStorage.getItem("takip:theme"); if (th) document.documentElement.setAttribute("data-theme", th); } catch (e) {}
+})();
+</script>
+</body>
+</html>

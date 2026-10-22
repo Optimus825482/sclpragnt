@@ -100,7 +100,10 @@ export default function HistoryCard({ enabled, refreshKey }: { enabled: boolean;
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-bunker-muted">Ortalama fiyat, toplam tutarın toplam adede bölünmesiyle (ağırlıklı ortalama) hesaplanır.</p>
+          <p className="text-xs text-bunker-muted">
+            Ortalama fiyat, toplam tutarın toplam adede bölünmesiyle (ağırlıklı ortalama) hesaplanır. Satışlar, satıldığı günde değil
+            coinin son alım tarihinde listelenir.
+          </p>
         </>
       )}
     </section>

@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fiyat Takibi</title>
+<meta name="description" content="21.10.2026 teknik analizinde verilen fiyatlar ile Binance TR canlı fiyatının karşılaştırması: değişim, geçen süre, hedefe kalan.">
+<style>
+  :root {
+    --bg: #0f1131; --panel: #171a3f; --line: #2a2e5c; --text: #e8eaf6; --muted: #8f95bf;
+    --green: #22c55e; --red: #ef4444; --amber: #f59e0b; --blue: #60a5fa;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f5f6fb; --panel: #ffffff; --line: #d9dcec; --text: #161a3a; --muted: #5d6390; }
+  }
+  :root[data-theme="light"] { --bg: #f5f6fb; --panel: #ffffff; --line: #d9dcec; --text: #161a3a; --muted: #5d6390; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 22px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--red); margin-right: 6px; vertical-align: middle; }
+  .dot.on { background: var(--green); }
+  .wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; min-width: 900px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; background: var(--panel); }
+  td:first-child, th:first-child { text-align: left; }
+  tr:last-child td { border-bottom: 0; }
+  .sym { font-weight: 700; }
+  .pos { color: var(--green); } .neg { color: var(--red); } .flat { color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; margin-left: 6px; }
+  .b-t1 { background: rgba(96,165,250,.18); color: var(--blue); }
+  .b-t2 { background: rgba(34,197,94,.18); color: var(--green); }
+  .b-inv { background: rgba(239,68,68,.18); color: var(--red); }
+  /* Zirve (T2) görüldüğünde rozet yanıp söner */
+  @keyframes blink { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34,197,94,.0); } 50% { opacity: .35; box-shadow: 0 0 10px 2px rgba(34,197,94,.55); } }
+  .blink { animation: blink 0.9s ease-in-out infinite; }
+  tr.hit td { background: rgba(34,197,94,.08); }
+  .prog { display: inline-block; width: 90px; height: 6px; background: var(--line); border-radius: 3px; vertical-align: middle; margin-left: 6px; overflow: hidden; }
+  .prog i { display: block; height: 100%; background: var(--blue); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 14px; }
+  button { background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; font-size: 12px; cursor: pointer; }
+  button:hover { color: var(--text); }
+  @media (max-width: 640px) { body { padding: 12px 16px; } table { min-width: 760px; } }
+</style>
+</head>
+<body>
+<h1>Fiyat takibi — 21.10.2026 analizi</h1>
+<div class="sub">Referans fiyatlar, teknik analizin verildiği andaki fiyatlardır; hedefler o analizin T1 / T2 seviyeleri. Canlı fiyat Binance TR miniTicker akışından gelir (saniyede bir). "Zirve" bu sayfa açıkken görülen en yüksek fiyattır (tarayıcıda saklanır). Yatırım tavsiyesi değildir.</div>
+<div class="bar">
+  <span><span id="dot" class="dot"></span><span id="ws">WS bağlanıyor…</span></span>
+  <span>Şu an: <b id="now">—</b></span>
+  <span>Son veri: <b id="last">—</b></span>
+  <button id="reset" type="button">Zirve kayıtlarını sıfırla</button>
+  <button id="theme" type="button">Tema</button>
+</div>
+
+<h2>Tarama adayları (23:55) — T2'de net ≥ %2 olanlar</h2>
+<div class="wrap"><table id="t-cand"><thead><tr>
+  <th>Sembol</th><th>Referans</th><th>Canlı</th><th>Değişim</th><th>Net K/Z</th><th>Geçen süre</th><th>Zirve (sayfa)</th><th>T1</th><th>T2</th><th>T2'de net</th><th>T2'ye kalan</th><th>Görme / medyan</th>
+</tr></thead><tbody></tbody></table></div>
+<p class="note" id="elenen"></p>
+
+<h2>Kasa simülasyonu — adaylara 23:55'te 10.000 TL'lik alım, T2'de satış</h2>
+<div class="bar">
+  <span>Başlangıç: <b id="k-start">—</b></span>
+  <span>Komisyon: <b>%0,1125 / bacak</b> (BNB indirimli, sistemle aynı)</span>
+  <span>Açık değer: <b id="k-open">—</b></span>
+  <span>Gerçekleşen: <b id="k-real">—</b></span>
+  <span>Toplam K/Z: <b id="k-total">—</b></span>
+  <span>Hepsi T2'de satılsa: <b id="k-proj">—</b></span>
+  <button id="k-reset" type="button">Kasayı sıfırla</button>
+</div>
+<div class="wrap"><table id="t-kasa"><thead><tr>
+  <th>Sembol</th><th>Alım</th><th>Adet</th><th>Canlı</th><th>Değer (net)</th><th>K/Z</th><th>K/Z %</th><th>T2 (satış)</th><th>T2'de net</th><th>Durum</th><th>Süre</th><th></th>
+</tr></thead><tbody></tbody></table></div>
+<p class="note">Alım: 10.000 TL'den komisyon düşülür, kalanla referans fiyattan adet alınır. Değer (net) = adet × canlı × (1 − komisyon). Canlı fiyat T2'ye değdiği ilk anda pozisyon T2'den "satıldı" sayılır ve kâr gerçekleşir; sayfa kapalıyken olan dokunuşlar yakalanamaz. "Şimdi sat" canlı fiyattan kapatır. Satışlar tarayıcıda saklanır.</p>
+
+<h2>Açık pozisyonlar (giriş fiyatına göre; referans 22:35)</h2>
+<div class="wrap"><table id="t-pos"><thead><tr>
+  <th>Sembol</th><th>Giriş</th><th>Canlı</th><th>Değişim</th><th>Net K/Z (10.000 TL)</th><th>Geçen süre</th><th>Zirve (sayfa)</th><th>Gerçekçi tavan</th><th>Tavanda net</th><th>Tavana kalan</th><th>Geçersizlik</th>
+</tr></thead><tbody></tbody></table></div>
+
+<p class="note">Rozetler: <span class="badge b-t1">T1</span> canlı fiyat T1'i geçti · <span class="badge b-t2 blink">ZİRVE</span> hesaplanan zirveyi (T2 / gerçekçi tavan) gördü, yanıp söner · <span class="badge b-inv">GEÇERSİZ</span> geçersizlik seviyesinin altında. Bağlantı koparsa yedek sunuculara (stream.binance.me, stream.binance.com) sırayla geçilir.</p>
+
+<script>
+(function () {
+  "use strict";
+  // ---- Referans verisi (21.10.2026 analizleri) -------------------------------------------------------------
+  var REF_CAND = Date.parse("2026-10-21T23:55:00+03:00");
+  var REF_POS = Date.parse("2026-10-21T22:35:00+03:00");
+  var MIN_NET_PCT = 2;           // T2'de net kazanç bunun altındaysa aday elenir (10.000 TL riskine değmez)
+  var CAND_ALL = [
+    // sym, referans, T1, T2, görme oranı (%), medyan süre (sa)
+    ["SENTTRY", 1.1237, 1.1296, 1.15, 100, 5.5],
+    ["CKBTRY", 0.079, 0.0796, 0.081, 97, 7.5],
+    ["METISTRY", 208, 210, 212.27, 97, 4.5],
+    ["STRAXTRY", 0.525, 0.528, 0.534, 98, 3.2],
+    ["ATRY", 4.97, 4.99, 5.063, 82, 2.8],
+    ["PUMPTRY", 0.2546, 0.2575, 0.2769, 39, 11.1],
+    ["ETCTRY", 402.8, 404, 465, 29, 15.9],
+    ["BEAMXTRY", 0.1565, 0.1584, 0.165, 75, 18.5],
+    ["ENATRY", 10.78, 11.03, 11.173, 55, 18.8],
+    ["CHIPTRY", 2.425, 2.432, 2.505, 56, 10.4]
+  ];
+  var FEE = 0.001125;            // bacak başı komisyon (config.effective_commission_pct ile aynı)
+  function netPct(ref, target) { return ((target / ref) * (1 - FEE) * (1 - FEE) - 1) * 100; }   // iki bacak komisyon sonrası
+  var CAND = CAND_ALL.filter(function (r) { return netPct(r[1], r[3]) >= MIN_NET_PCT; });
+  var ELENEN = CAND_ALL.filter(function (r) { return netPct(r[1], r[3]) < MIN_NET_PCT; });
+  var POS = [
+    // sym, giriş (Binance TR maliyet, 22.10 00:43 listesi), referans fiyat (analiz anı), gerçekçi tavan (T2), geçersizlik
+    ["MUBARAKTRY", 2.729, 2.778, 2.9067, 2.745],
+    ["ACETRY", 7.785, 7.888, 8.125, 7.868],
+    ["ETCTRY", 403.8, 402.9, 465.0, 398.6],        // 00:45 analizi: T2 465 (7 gün tepesi, görme %29 / 15,5 sa), geçersizlik 398,6
+    ["MINATRY", 3.73, 3.75, 3.80, 3.70],
+    ["EIGENTRY", 12.29, 12.21, 12.59, 12.10],
+    ["PUMPTRY", 0.2575, 0.2556, 0.2791, 0.2459],   // 00:45 analizi: T2 0,2791 (görme %39 / 10,8 sa), geçersizlik 0,2459
+    ["DYMTRY", 1.0491, 1.0098, 1.10, 0.9465],      // 00:15 analizi: T1 1,10 (24 sa tepesi), geçersizlik 0,9465
+    ["BERATRY", 9.3939, 9.067, 9.456, 8.957],
+    ["STRKTRY", 3.087, 3.098, 3.31, 2.887],
+    ["ZROTRY", 104.76, 100.3, 104.4, 99.6],
+    ["WTRY", 0.7819, 0.75, 0.7656, 0.74],
+    ["MAGICTRY", 5.1278, 4.84, 5.03, 4.79]
+  ];
+  var WS_BASES = ["wss://stream-cloud.binance.tr", "wss://stream.binance.me", "wss://stream.binance.com:9443"];
+
+  // ---- Durum ------------------------------------------------------------------------------------------------
+  var live = {};      // sym -> {price, at}
+  var peak = {};      // sym -> en yüksek (sayfa açıkken; localStorage)
+  try { peak = JSON.parse(localStorage.getItem("takip:peak") || "{}") || {}; } catch (e) { peak = {}; }
+  function savePeak() { try { localStorage.setItem("takip:peak", JSON.stringify(peak)); } catch (e) { /* yok sayılır */ } }
+
+  // ---- Biçim ------------------------------------------------------------------------------------------------
+  function digits(x) { return x >= 1000 ? 1 : x >= 100 ? 2 : x >= 10 ? 3 : x >= 1 ? 4 : x >= 0.1 ? 4 : x >= 0.01 ? 5 : 7; }
+  function fp(x) { return x == null || !isFinite(x) ? "—" : x.toLocaleString("tr-TR", { minimumFractionDigits: digits(x), maximumFractionDigits: digits(x) }); }
+  function fpct(x) { return x == null || !isFinite(x) ? "—" : (x > 0 ? "+" : "") + x.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%"; }
+  function cls(x) { return x == null ? "flat" : x > 0.0001 ? "pos" : x < -0.0001 ? "neg" : "flat"; }
+  function dur(ms) {
+    if (ms < 0) ms = 0;
+    var m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+    if (d) return d + " g " + (h % 24) + " sa";
+    if (h) return h + " sa " + String(m % 60).padStart(2, "0") + " dk";
+    return m + " dk";
+  }
+  function ftl(x) { return x == null || !isFinite(x) ? "—" : (x > 0 ? "+" : "") + Math.round(x).toLocaleString("tr-TR") + " TL"; }
+  function pctTo(target, px) { return px ? (target / px - 1) * 100 : null; }
+  function progress(ref, target, px) {
+    if (!px || target <= ref) return 0;
+    return Math.max(0, Math.min(1, (px - ref) / (target - ref)));
+  }
+
+  // ---- Kasa simülasyonu -----------------------------------------------------------------------------------
+  var STAKE = 10000;             // sembol başına TL
+  var kasa = {};                 // sym -> {sold: true, price, at, how: "t2" | "manuel"}
+  try { kasa = JSON.parse(localStorage.getItem("takip:kasa") || "{}") || {}; } catch (e) { kasa = {}; }
+  function saveKasa() { try { localStorage.setItem("takip:kasa", JSON.stringify(kasa)); } catch (e) { /* yok sayılır */ } }
+  function qty(ref) { return STAKE * (1 - FEE) / ref; }                 // alım komisyonu TL'den düşülür
+  function netValue(ref, px) { return qty(ref) * px * (1 - FEE); }      // satış komisyonu düşülmüş değer
+  function sell(sym, price, how) {
+    if (kasa[sym] && kasa[sym].sold) return;
+    kasa[sym] = { sold: true, price: price, at: Date.now(), how: how };
+    saveKasa();
+  }
+  function checkAutoSell() {
+    CAND.forEach(function (r) {
+      var sym = r[0], t2 = r[3], L = live[sym];
+      if (L && L.price >= t2) sell(sym, t2, "t2");
+    });
+  }
+  function renderKasa() {
+    var now = Date.now(), html = "", openVal = 0, realized = 0, proj = 0;
+    CAND.forEach(function (r) {
+      var sym = r[0], ref = r[1], t2 = r[3];
+      var L = live[sym], px = L ? L.price : null;
+      var k = kasa[sym], q = qty(ref);
+      var t2net = netValue(ref, t2);
+      var val, pnl, status, how = "";
+      if (k && k.sold) {
+        val = netValue(ref, k.price); pnl = val - STAKE; realized += pnl; proj += pnl;
+        status = (k.how === "t2" ? '<span class="badge b-t2 blink">T2\'DE SATILDI</span>' : '<span class="badge b-t1">SATILDI</span>')
+          + ' <span class="flat">' + fp(k.price) + " · " + new Date(k.at).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }) + "</span>";
+        how = "";
+      } else {
+        val = px ? netValue(ref, px) : null; pnl = val == null ? null : val - STAKE;
+        if (val != null) openVal += val; proj += t2net - STAKE;
+        status = px ? "Açık" : "Fiyat bekleniyor";
+        how = '<button type="button" data-sell="' + sym + '">Şimdi sat</button>';
+      }
+      var dura = k && k.sold ? dur(k.at - REF_CAND) : dur(now - REF_CAND);
+      html += "<tr>" + td('<span class="sym">' + sym.replace(/TRY$/, "") + "</span>") + td(fp(ref)) + td(q.toLocaleString("tr-TR", { maximumFractionDigits: 4 }))
+        + td(px ? fp(px) : "…") + td(val == null ? "—" : Math.round(val).toLocaleString("tr-TR") + " TL")
+        + td(ftl(pnl), cls(pnl)) + td(fpct(pnl == null ? null : pnl / STAKE * 100), cls(pnl))
+        + td(fp(t2) + ' <span class="flat">(' + fpct((t2 / ref - 1) * 100) + ")</span>")
+        + td(ftl(t2net - STAKE), "pos") + td(status) + td(dura) + td(how) + "</tr>";
+    });
+    document.querySelector("#t-kasa tbody").innerHTML = html;
+    document.getElementById("k-start").textContent = (CAND.length * STAKE).toLocaleString("tr-TR") + " TL (" + CAND.length + " aday)";
+    var openCount = CAND.filter(function (r) { return !(kasa[r[0]] && kasa[r[0]].sold); }).length;
+    var openCost = openCount * STAKE;
+    var unreal = openVal - openCost;
+    document.getElementById("k-open").textContent = Math.round(openVal).toLocaleString("tr-TR") + " TL (" + openCount + " açık, " + ftl(unreal) + ")";
+    document.getElementById("k-open").className = cls(unreal);
+    document.getElementById("k-real").textContent = ftl(realized) + " (" + (CAND.length - openCount) + " satış)";
+    document.getElementById("k-real").className = cls(realized);
+    var total = realized + unreal;
+    document.getElementById("k-total").textContent = ftl(total) + " (" + fpct(total / (CAND.length * STAKE) * 100) + ")";
+    document.getElementById("k-total").className = cls(total);
+    document.getElementById("k-proj").textContent = ftl(proj) + " (" + fpct(proj / (CAND.length * STAKE) * 100) + ")";
+    document.getElementById("k-proj").className = cls(proj);
+  }
+  document.getElementById("t-kasa").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-sell]");
+    if (!b) return;
+    var sym = b.getAttribute("data-sell"), L = live[sym];
+    if (L && window.confirm(sym + " şimdi " + fp(L.price) + " fiyattan satılsın mı (simülasyon)?")) { sell(sym, L.price, "manuel"); render(); }
+  });
+  document.getElementById("k-reset").addEventListener("click", function () {
+    if (window.confirm("Kasa sıfırlansın mı? Tüm satış kayıtları silinir.")) { kasa = {}; saveKasa(); render(); }
+  });
+
+  // ---- Çizim ------------------------------------------------------------------------------------------------
+  function td(html, c) { return "<td" + (c ? ' class="' + c + '"' : "") + ">" + html + "</td>"; }
+  function badges(px, t1, t2, inv) {
+    var out = "";
+    if (px != null && inv != null && px < inv) out += '<span class="badge b-inv">GEÇERSİZ</span>';
+    if (px != null && t2 != null && px >= t2) out += '<span class="badge b-t2 blink">ZİRVE</span>';
+    else if (px != null && t1 != null && px >= t1) out += '<span class="badge b-t1">T1</span>';
+    return out;
+  }
+  function hitCls(px, t2) { return px != null && t2 != null && px >= t2 ? ' class="hit"' : ""; }
+  function render() {
+    var now = Date.now();
+    checkAutoSell();
+    renderKasa();
+    var cb = "";
+    CAND.forEach(function (r) {
+      var sym = r[0], ref = r[1], t1 = r[2], t2 = r[3];
+      var L = live[sym], px = L ? L.price : null;
+      var ch = px ? (px / ref - 1) * 100 : null;
+      var netNow = px ? netPct(ref, px) : null;
+      var pk = peak[sym];
+      cb += "<tr" + hitCls(px, t2) + ">" + td('<span class="sym">' + sym.replace(/TRY$/, "") + '</span><span class="flat"> / TRY</span>' + badges(px, t1, t2, null))
+        + td(fp(ref)) + td(px ? fp(px) : "…") + td(fpct(ch), cls(ch))
+        + td(netNow == null ? "—" : ftl(netNow * 100) + ' <span class="flat">(' + fpct(netNow) + ")</span>", cls(netNow))
+        + td(dur(now - REF_CAND))
+        + td(pk ? fp(pk) + ' <span class="' + cls((pk / ref - 1) * 100) + '">' + fpct((pk / ref - 1) * 100) + "</span>" : "—")
+        + td(fp(t1) + ' <span class="flat">(' + fpct((t1 / ref - 1) * 100) + ")</span>")
+        + td(fp(t2) + ' <span class="flat">(' + fpct((t2 / ref - 1) * 100) + ")</span>")
+        + td(fpct(netPct(ref, t2)) + ' <span class="flat">' + ftl(netPct(ref, t2) * 100) + "</span>", "pos")
+        + td(fpct(pctTo(t2, px)) + '<span class="prog"><i style="width:' + (progress(ref, t2, px) * 100).toFixed(0) + '%"></i></span>')
+        + td("%" + r[4] + " / " + r[5].toLocaleString("tr-TR") + " sa") + "</tr>";
+    });
+    document.querySelector("#t-cand tbody").innerHTML = cb;
+    document.getElementById("elenen").textContent = ELENEN.length
+      ? "Elenenler (T2'de net < %" + MIN_NET_PCT + "): " + ELENEN.map(function (r) { return r[0].replace(/TRY$/, "") + " (" + fpct(netPct(r[1], r[3])) + ")"; }).join(", ") + "."
+      : "";
+    var pb = "", total = 0;
+    POS.forEach(function (r) {
+      var sym = r[0], entry = r[1], ref = r[2], t2 = r[3], inv = r[4];
+      var L = live[sym], px = L ? L.price : null;
+      var ch = px ? (px / entry - 1) * 100 : null;
+      var netNow = px ? netPct(entry, px) : null;
+      var tl = netNow == null ? null : STAKE * netNow / 100;
+      if (tl != null) total += tl;
+      var netT2 = netPct(entry, t2);
+      var worth = netT2 >= MIN_NET_PCT ? "" : ' <span class="badge b-inv" title="Tavanda net kazanç %' + MIN_NET_PCT + ' altında">DEĞMEZ</span>';
+      var pk = peak[sym];
+      pb += "<tr" + hitCls(px, t2) + ">" + td('<span class="sym">' + sym.replace(/TRY$/, "") + '</span><span class="flat"> / TRY</span>' + badges(px, null, t2, inv))
+        + td(fp(entry)) + td(px ? fp(px) : "…") + td(fpct(ch), cls(ch))
+        + td(ftl(tl) + ' <span class="flat">(' + fpct(netNow) + ")</span>", cls(tl)) + td(dur(now - REF_POS))
+        + td(pk ? fp(pk) + ' <span class="' + cls((pk / entry - 1) * 100) + '">' + fpct((pk / entry - 1) * 100) + "</span>" : "—")
+        + td(fp(t2) + ' <span class="flat">(' + fpct((t2 / entry - 1) * 100) + ")</span>")
+        + td(fpct(netT2) + ' <span class="flat">' + ftl(netT2 * 100) + "</span>" + worth, cls(netT2))
+        + td(fpct(pctTo(t2, px)) + '<span class="prog"><i style="width:' + (progress(ref, t2, px) * 100).toFixed(0) + '%"></i></span>')
+        + td(fp(inv) + ' <span class="flat">(' + fpct((inv / entry - 1) * 100) + ")</span>") + "</tr>";
+    });
+    pb += '<tr><td colspan="4" class="flat">Toplam net (' + POS.length + ' × 10.000 TL, komisyonlar düşülmüş)</td>' + td(ftl(total), cls(total)) + '<td colspan="6"></td></tr>';
+    document.querySelector("#t-pos tbody").innerHTML = pb;
+    document.getElementById("now").textContent = new Date(now).toLocaleTimeString("tr-TR");
+  }
+
+  // ---- WebSocket --------------------------------------------------------------------------------------------
+  var syms = CAND.map(function (r) { return r[0]; }).concat(POS.map(function (r) { return r[0]; }));
+  var baseIdx = 0, ws = null, retryMs = 2000, lastMsg = 0;
+  function setStatus(on, text) {
+    document.getElementById("dot").className = "dot" + (on ? " on" : "");
+    document.getElementById("ws").textContent = text;
+  }
+  function connect() {
+    var base = WS_BASES[baseIdx % WS_BASES.length];
+    var url = base + "/stream?streams=" + syms.map(function (s) { return s.toLowerCase() + "@miniTicker"; }).join("/");
+    setStatus(false, "Bağlanıyor: " + base.replace("wss://", ""));
+    try { ws = new WebSocket(url); } catch (e) { baseIdx++; setTimeout(connect, retryMs); return; }
+    ws.onopen = function () { retryMs = 2000; setStatus(true, "Canlı: " + base.replace("wss://", "")); };
+    ws.onmessage = function (ev) {
+      var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      var d = msg && msg.data ? msg.data : msg;
+      if (!d || !d.s || d.c == null) return;
+      var sym = String(d.s).toUpperCase(), px = parseFloat(d.c);
+      if (!isFinite(px)) return;
+      live[sym] = { price: px, at: Date.now() };
+      if (!peak[sym] || px > peak[sym]) { peak[sym] = px; savePeak(); }
+      lastMsg = Date.now();
+    };
+    ws.onclose = function () {
+      setStatus(false, "Bağlantı koptu, yeniden deneniyor…");
+      baseIdx++; retryMs = Math.min(30000, retryMs * 1.5);
+      setTimeout(connect, retryMs);
+    };
+    ws.onerror = function () { try { ws.close(); } catch (e) { /* yok sayılır */ } };
+  }
+  connect();
+  // REST tohumlama: miniTicker yalnız işlem olunca gelir; az işlem gören sembol dakikalarca boş kalmasın.
+  var REST_BASES = ["https://api.binance.me", "https://api.binance.tr", "https://api.binance.com"];
+  function seed(idx) {
+    idx = idx || 0;
+    if (idx >= REST_BASES.length) return;
+    // Tüm tablo (symbols parametresi bazı sunucularda 400 veriyor); istemcide süzülür.
+    var url = REST_BASES[idx] + "/api/v3/ticker/price";
+    var want = {};
+    syms.forEach(function (s) { want[s] = true; });
+    fetch(url).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }).then(function (rows) {
+      var t = Date.now();
+      (rows || []).forEach(function (row) {
+        var sym = String(row.symbol || "").toUpperCase(), px = parseFloat(row.price);
+        if (!want[sym] || !isFinite(px)) return;
+        if (!live[sym] || live[sym].at < t - 5000) live[sym] = { price: px, at: t };
+        if (!peak[sym] || px > peak[sym]) peak[sym] = px;
+      });
+      savePeak(); render();
+    }).catch(function () { seed(idx + 1); });
+  }
+  seed();
+  setInterval(function () { seed(); }, 30000);
+  setInterval(function () {
+    render();
+    document.getElementById("last").textContent = lastMsg ? dur(Date.now() - lastMsg) + " önce" : "—";
+    if (lastMsg && Date.now() - lastMsg > 60000 && ws && ws.readyState === 1) { try { ws.close(); } catch (e) { /* yeniden bağlanır */ } }
+  }, 1000);
+  render();
+
+  document.getElementById("reset").addEventListener("click", function () { peak = {}; savePeak(); render(); });
+  document.getElementById("theme").addEventListener("click", function () {
+    var cur = document.documentElement.getAttribute("data-theme");
+    var next = cur === "light" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("takip:theme", next); } catch (e) { /* yok sayılır */ }
+  });
+  try { var th = localStorage.getItem("takip:theme"); if (th) document.documentElement.setAttribute("data-theme", th); } catch (e) { /* yok sayılır */ }
+})();
+</script>
+</body>
+</html>

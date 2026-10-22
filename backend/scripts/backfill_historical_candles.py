@@ -42,7 +42,10 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SCALPER_ENV", "development")
 
-TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000,
+         # 2026-10-22: H1/H4/D1 arşivi (kullanıcı isteği) — derin geçmiş için (borsa tek istekte 1000 mum: 4h → 166 gün, 1d → ~3 yıl).
+         # Günlük mum borsada UTC gün sınırına hizalıdır; `window_start_ms` İstanbul gece yarısını verir, fark yalnız ilk mumu etkiler.
+         "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
 DAY_MS = 86_400_000
 _TZ_FALLBACK = dt.timezone(dt.timedelta(hours=3))  # Europe/Istanbul (DST yok)
 

@@ -1,0 +1,184 @@
+<!doctype html><html lang='tr'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Sinyal Yeniden Kurma</title><style>body{margin:0;padding:18px;background:#0f1131;color:#e8eaf6;font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+    h1{font-size:20px;margin:0 0 6px}h2{font-size:16px;margin:26px 0 8px;color:#c7cbea}h3{font-size:14px;margin:18px 0 6px;color:#8f95bf}
+    p.sub{color:#8f95bf;font-size:12px;max-width:1100px}.wrap{overflow-x:auto;border:1px solid #2a2e5c;border-radius:10px;background:#171a3f;margin-bottom:10px}
+    table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{padding:5px 9px;border-bottom:1px solid #2a2e5c;text-align:right;white-space:nowrap}
+    th{color:#8f95bf;font-size:12px;position:sticky;top:0;background:#171a3f}td:first-child,th:first-child{text-align:left}
+    .pos{color:#22c55e}.neg{color:#ef4444}.flat{color:#8f95bf}.b{font-weight:700}
+    .kpi{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 12px}.kpi div{background:#171a3f;border:1px solid #2a2e5c;border-radius:8px;padding:8px 12px;min-width:150px}
+    .kpi b{display:block;font-size:17px}.kpi span{color:#8f95bf;font-size:12px}</style></head><body>
+<h1>Sinyal mantığını yeniden kurma — kazanan/kaybeden analizi (22.10.2026 01:52)</h1>
+<p class='sub'>79 kesit (son 14 gün, her 4 saat, 08.10 01:00 → 21.10 01:00) × 208 sembol = 16432 gözlem. Her gözlemde kesitten önceki mumlarla özellikler, sonraki 24 saatte sonuç (15m mumlar). 'Net' = iz süren 3/1,5 + %10 stop ile 10.000 TL'den komisyon sonrası; 'kazanma' = net > 0. Eğitim/test ayrımı kesitlerin ortası (14.10 13:00). Kural adayları veriye bakılmadan önce yazıldı (betik içinde sabit). Yatırım tavsiyesi değildir.</p>
+<div class='kpi'><div><b>1433</b><span>mevcut sinyal (puan ≥ +3)</span></div><div><b>60%</b><span>kazanma oranı</span></div><div><b class='pos'>+3 TL</b><span>sinyal başı net</span></div><div><b>53%</b><span>tüm evrende kazanma (taban)</span></div><div><b class='neg'>-17 TL</b><span>tüm evrende sinyal başı net</span></div><div><b>41%</b><span>sinyallerin BTC düşük rejimde payı</span></div></div>
+<h2>1. Kazanan ve kaybeden sinyallerde özellik ortalamaları (mevcut kural)</h2>
+<div class='wrap'><table><tr><th>Özellik</th><th>Kazananlar</th><th>Kaybedenler</th><th>Fark</th></tr>
+<tr><td>4h SMA99'a uzaklık %</td><td>10,09</td><td>6,42</td><td class='pos'>3,67</td></tr>
+<tr><td>24 sa tepeye uzaklık %</td><td>-4,05</td><td>-2,68</td><td class='neg'>-1,37</td></tr>
+<tr><td>4 sa değişim %</td><td>2,49</td><td>1,67</td><td class='pos'>0,82</td></tr>
+<tr><td>Son 4h mum gövdesi %</td><td>2,27</td><td>1,57</td><td class='pos'>0,70</td></tr>
+<tr><td>BTC'ye göreli güç 24 sa (puan)</td><td>8,18</td><td>5,67</td><td class='pos'>2,51</td></tr>
+<tr><td>24 sa değişim %</td><td>8,43</td><td>5,99</td><td class='pos'>2,44</td></tr>
+<tr><td>4h SMA20'ye uzaklık %</td><td>7,78</td><td>5,64</td><td class='pos'>2,14</td></tr>
+<tr><td>ATR 1h %</td><td>2,30</td><td>1,71</td><td class='pos'>0,59</td></tr>
+<tr><td>Bollinger genişliği %</td><td>11,75</td><td>8,86</td><td class='pos'>2,89</td></tr>
+<tr><td>24 sa dipten yükseklik %</td><td>11,12</td><td>8,44</td><td class='pos'>2,68</td></tr>
+<tr><td>Hacim 12 sa / 7 gün ort.</td><td>2,39</td><td>1,82</td><td class='pos'>0,57</td></tr>
+<tr><td>OBV eğimi</td><td>0,51</td><td>0,41</td><td class='pos'>0,11</td></tr>
+<tr><td>+DI − −DI (4h)</td><td>15,59</td><td>12,51</td><td class='pos'>3,08</td></tr>
+<tr><td>ATR 4h %</td><td>4,02</td><td>3,26</td><td class='pos'>0,76</td></tr>
+<tr><td>BTC 24 sa değişim %</td><td>0,25</td><td>0,32</td><td class='neg'>-0,07</td></tr>
+<tr><td>7 gün tepeye uzaklık %</td><td>-8,62</td><td>-7,17</td><td class='neg'>-1,45</td></tr>
+<tr><td>VWAP'a uzaklık %</td><td>2,27</td><td>1,97</td><td class='pos'>0,30</td></tr>
+<tr><td>ADX14 4h</td><td>30,22</td><td>27,51</td><td class='pos'>2,71</td></tr>
+<tr><td>Bollinger konumu (0–1)</td><td>0,86</td><td>0,84</td><td class='pos'>0,03</td></tr>
+<tr><td>StochRSI 1h</td><td>65,14</td><td>66,82</td><td class='neg'>-1,67</td></tr>
+<tr><td>Genişlik (puan ≥ +1 payı)</td><td>0,42</td><td>0,41</td><td class='pos'>0,01</td></tr>
+<tr><td>RSI14 1h</td><td>62,64</td><td>62,21</td><td class='pos'>0,42</td></tr>
+<tr><td>RSI14 4h</td><td>58,97</td><td>58,78</td><td class='pos'>0,19</td></tr>
+<tr><td>4h MA üstü sayısı (0–4)</td><td>3,52</td><td>3,53</td><td class='neg'>-0,00</td></tr>
+</table></div>
+<h2>2. Hangi özellik ayırıyor — mevcut sinyallerde üç dilim (alt / orta / üst)</h2>
+<p class='sub'>Fark = üst dilimin sinyal başı neti − alt dilimin neti (boolean'da evet − hayır). Mutlak farka göre sıralı; büyük fark = karar için güçlü unsur.</p>
+<div class='wrap'><table><tr><th>Özellik</th><th>Dilim</th><th>Aralık</th><th>n</th><th>Kazanma</th><th>Sinyal başı net</th><th>Ort. MFE</th><th>Ort. MAE</th><th>Fark (üst − alt)</th></tr>
+<tr><td class='b'>24 sa tepeye uzaklık %</td><td>alt</td><td>-31,70 … -3,65</td><td>477</td><td>73%</td><td class='pos'>+73 TL</td><td>8,38%</td><td class='neg'>-6,74%</td><td class='neg'>-106 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>-3,63 … -1,32</td><td>478</td><td>59%</td><td class='neg'>-30 TL</td><td>6,38%</td><td class='neg'>-5,26%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>-1,32 … 0,00</td><td>478</td><td>47%</td><td class='neg'>-33 TL</td><td>4,70%</td><td class='neg'>-3,97%</td><td class=''></td></tr>
+<tr><td class='b'>4h MA üstü sayısı (0–4)</td><td>alt</td><td>1,00 … 3,00</td><td>477</td><td>58%</td><td class='pos'>+20 TL</td><td>4,56%</td><td class='neg'>-3,62%</td><td class='neg'>-98 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>3,00 … 4,00</td><td>478</td><td>62%</td><td class='pos'>+67 TL</td><td>8,96%</td><td class='neg'>-5,10%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>4,00 … 4,00</td><td>478</td><td>59%</td><td class='neg'>-77 TL</td><td>5,92%</td><td class='neg'>-7,24%</td><td class=''></td></tr>
+<tr><td class='b'>4h yüksek dip</td><td>evet</td><td>—</td><td>1075</td><td>58%</td><td class='neg'>-21 TL</td><td>5,77%</td><td class='neg'>-5,53%</td><td class='neg'>-97 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>358</td><td>63%</td><td class='pos'>+76 TL</td><td>8,64%</td><td class='neg'>-4,71%</td><td class=''></td></tr>
+<tr><td class='b'>RSI14 4h</td><td>alt</td><td>35,52 … 54,64</td><td>477</td><td>60%</td><td class='pos'>+51 TL</td><td>5,46%</td><td class='neg'>-3,84%</td><td class='neg'>-89 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>54,64 … 61,05</td><td>478</td><td>58%</td><td class='neg'>-3 TL</td><td>5,93%</td><td class='neg'>-4,69%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>61,10 … 94,44</td><td>478</td><td>61%</td><td class='neg'>-38 TL</td><td>8,06%</td><td class='neg'>-7,43%</td><td class=''></td></tr>
+<tr><td class='b'>7 gün tepeye uzaklık %</td><td>alt</td><td>-46,94 … -8,92</td><td>477</td><td>66%</td><td class='pos'>+49 TL</td><td>7,37%</td><td class='neg'>-5,45%</td><td class='neg'>-87 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>-8,92 … -4,42</td><td>478</td><td>61%</td><td class='neg'>-1 TL</td><td>6,14%</td><td class='neg'>-5,23%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>-4,41 … 0,00</td><td>478</td><td>52%</td><td class='neg'>-38 TL</td><td>5,94%</td><td class='neg'>-5,28%</td><td class=''></td></tr>
+<tr><td class='b'>1h EMA20 > EMA50 ve fiyat üstte</td><td>evet</td><td>—</td><td>1340</td><td>59%</td><td class='neg'>-2 TL</td><td>6,47%</td><td class='neg'>-5,35%</td><td class='neg'>-87 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>93</td><td>62%</td><td class='pos'>+85 TL</td><td>6,73%</td><td class='neg'>-4,96%</td><td class=''></td></tr>
+<tr><td class='b'>ADX14 4h</td><td>alt</td><td>7,65 … 23,16</td><td>477</td><td>57%</td><td class='neg'>-16 TL</td><td>5,17%</td><td class='neg'>-4,61%</td><td class='pos'>+81 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>23,17 … 31,22</td><td>478</td><td>55%</td><td class='neg'>-39 TL</td><td>5,49%</td><td class='neg'>-5,20%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>31,23 … 66,99</td><td>478</td><td>67%</td><td class='pos'>+65 TL</td><td>8,79%</td><td class='neg'>-6,16%</td><td class=''></td></tr>
+<tr><td class='b'>MACD 1h histogram > 0</td><td>evet</td><td>—</td><td>1303</td><td>60%</td><td class='pos'>+11 TL</td><td>6,56%</td><td class='neg'>-5,19%</td><td class='pos'>+78 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>130</td><td>57%</td><td class='neg'>-67 TL</td><td>5,68%</td><td class='neg'>-6,60%</td><td class=''></td></tr>
+<tr><td class='b'>MACD 4h histogram artıyor</td><td>evet</td><td>—</td><td>1166</td><td>61%</td><td class='pos'>+17 TL</td><td>6,63%</td><td class='neg'>-5,19%</td><td class='pos'>+74 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>267</td><td>52%</td><td class='neg'>-57 TL</td><td>5,83%</td><td class='neg'>-5,89%</td><td class=''></td></tr>
+<tr><td class='b'>4h yüksek tepe</td><td>evet</td><td>—</td><td>691</td><td>58%</td><td class='neg'>-33 TL</td><td>6,53%</td><td class='neg'>-6,21%</td><td class='neg'>-70 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>742</td><td>61%</td><td class='pos'>+37 TL</td><td>6,44%</td><td class='neg'>-4,49%</td><td class=''></td></tr>
+<tr><td class='b'>VWAP'a uzaklık %</td><td>alt</td><td>-8,68 … 0,86</td><td>477</td><td>55%</td><td class='pos'>+32 TL</td><td>5,46%</td><td class='neg'>-4,26%</td><td class='neg'>-69 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,86 … 2,47</td><td>478</td><td>62%</td><td class='pos'>+15 TL</td><td>5,73%</td><td class='neg'>-4,51%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>2,48 … 42,91</td><td>478</td><td>62%</td><td class='neg'>-37 TL</td><td>8,26%</td><td class='neg'>-7,19%</td><td class=''></td></tr>
+<tr><td class='b'>BTC 4h kapanış > SMA20</td><td>evet</td><td>—</td><td>848</td><td>60%</td><td class='neg'>-24 TL</td><td>6,01%</td><td class='neg'>-5,44%</td><td class='neg'>-67 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>585</td><td>59%</td><td class='pos'>+43 TL</td><td>7,17%</td><td class='neg'>-5,14%</td><td class=''></td></tr>
+<tr><td class='b'>4h SMA99'a uzaklık %</td><td>alt</td><td>-27,95 … 0,52</td><td>477</td><td>54%</td><td class='pos'>+25 TL</td><td>4,08%</td><td class='neg'>-3,05%</td><td class='neg'>-64 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,52 … 8,75</td><td>478</td><td>59%</td><td class='pos'>+24 TL</td><td>5,75%</td><td class='neg'>-4,68%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>8,79 … 140,78</td><td>478</td><td>66%</td><td class='neg'>-38 TL</td><td>9,61%</td><td class='neg'>-8,23%</td><td class=''></td></tr>
+<tr><td class='b'>Bollinger konumu (0–1)</td><td>alt</td><td>0,29 … 0,76</td><td>477</td><td>57%</td><td class='neg'>-13 TL</td><td>5,22%</td><td class='neg'>-5,52%</td><td class='pos'>+60 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,76 … 0,93</td><td>478</td><td>58%</td><td class='neg'>-24 TL</td><td>6,02%</td><td class='neg'>-5,02%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>0,93 … 1,50</td><td>478</td><td>65%</td><td class='pos'>+47 TL</td><td>8,21%</td><td class='neg'>-5,43%</td><td class=''></td></tr>
+<tr><td class='b'>4h SMA20'ye uzaklık %</td><td>alt</td><td>-10,91 … 2,95</td><td>477</td><td>49%</td><td class='pos'>+19 TL</td><td>3,89%</td><td class='neg'>-3,37%</td><td class='neg'>-56 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>2,96 … 6,42</td><td>478</td><td>63%</td><td class='pos'>+29 TL</td><td>6,22%</td><td class='neg'>-4,45%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>6,43 … 96,41</td><td>478</td><td>67%</td><td class='neg'>-37 TL</td><td>9,34%</td><td class='neg'>-8,14%</td><td class=''></td></tr>
+<tr><td class='b'>OBV eğimi</td><td>alt</td><td>-2,38 … 0,09</td><td>477</td><td>56%</td><td class='neg'>-24 TL</td><td>5,57%</td><td class='neg'>-5,04%</td><td class='pos'>+55 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,09 … 0,32</td><td>478</td><td>58%</td><td class='pos'>+3 TL</td><td>5,82%</td><td class='neg'>-4,82%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>0,32 … 11,39</td><td>478</td><td>65%</td><td class='pos'>+31 TL</td><td>8,06%</td><td class='neg'>-6,11%</td><td class=''></td></tr>
+<tr><td class='b'>ATR 4h %</td><td>alt</td><td>0,05 … 3,02</td><td>477</td><td>46%</td><td class='neg'>-34 TL</td><td>3,45%</td><td class='neg'>-3,27%</td><td class='pos'>+46 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>3,02 … 4,20</td><td>478</td><td>66%</td><td class='pos'>+32 TL</td><td>6,34%</td><td class='neg'>-5,12%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>4,21 … 11,98</td><td>478</td><td>67%</td><td class='pos'>+12 TL</td><td>9,65%</td><td class='neg'>-7,57%</td><td class=''></td></tr>
+<tr><td class='b'>Genişlik (puan ≥ +1 payı)</td><td>alt</td><td>0,05 … 0,29</td><td>477</td><td>60%</td><td class='neg'>-17 TL</td><td>7,22%</td><td class='neg'>-6,42%</td><td class='pos'>+46 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,29 … 0,52</td><td>478</td><td>59%</td><td class='neg'>-2 TL</td><td>6,66%</td><td class='neg'>-5,48%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>0,52 … 0,77</td><td>478</td><td>60%</td><td class='pos'>+29 TL</td><td>5,58%</td><td class='neg'>-4,06%</td><td class=''></td></tr>
+<tr><td class='b'>MACD 4h histogram > 0</td><td>evet</td><td>—</td><td>1181</td><td>60%</td><td class='neg'>-3 TL</td><td>6,48%</td><td class='neg'>-5,32%</td><td class='neg'>-34 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>252</td><td>56%</td><td class='pos'>+32 TL</td><td>6,50%</td><td class='neg'>-5,32%</td><td class=''></td></tr>
+<tr><td class='b'>Hacim 12 sa / 7 gün ort.</td><td>alt</td><td>0,02 … 0,86</td><td>477</td><td>51%</td><td class='neg'>-14 TL</td><td>5,29%</td><td class='neg'>-4,53%</td><td class='pos'>+30 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,86 … 1,92</td><td>478</td><td>60%</td><td class='pos'>+9 TL</td><td>5,47%</td><td class='neg'>-4,18%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>1,92 … 13,79</td><td>478</td><td>68%</td><td class='pos'>+15 TL</td><td>8,68%</td><td class='neg'>-7,25%</td><td class=''></td></tr>
+<tr><td class='b'>ATR 1h %</td><td>alt</td><td>0,03 … 1,43</td><td>477</td><td>44%</td><td class='neg'>-38 TL</td><td>3,21%</td><td class='neg'>-3,04%</td><td class='pos'>+29 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>1,44 … 2,20</td><td>478</td><td>67%</td><td class='pos'>+58 TL</td><td>6,59%</td><td class='neg'>-4,76%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>2,20 … 9,64</td><td>478</td><td>68%</td><td class='neg'>-9 TL</td><td>9,65%</td><td class='neg'>-8,16%</td><td class=''></td></tr>
+<tr><td class='b'>MACD 1h histogram artıyor</td><td>evet</td><td>—</td><td>840</td><td>60%</td><td class='pos'>+14 TL</td><td>6,83%</td><td class='neg'>-5,14%</td><td class='pos'>+24 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>593</td><td>60%</td><td class='neg'>-11 TL</td><td>5,99%</td><td class='neg'>-5,58%</td><td class=''></td></tr>
+</table></div>
+<h2>3. Aynı analiz, yalnız BTC 4h kapanış < SMA20 kesitlerinde (BTC düşerken)</h2>
+<p class='sub'>Fark = üst dilimin sinyal başı neti − alt dilimin neti (boolean'da evet − hayır). Mutlak farka göre sıralı; büyük fark = karar için güçlü unsur.</p>
+<div class='wrap'><table><tr><th>Özellik</th><th>Dilim</th><th>Aralık</th><th>n</th><th>Kazanma</th><th>Sinyal başı net</th><th>Ort. MFE</th><th>Ort. MAE</th><th>Fark (üst − alt)</th></tr>
+<tr><td class='b'>7 gün tepeye uzaklık %</td><td>alt</td><td>-46,94 … -9,23</td><td>195</td><td>71%</td><td class='pos'>+108 TL</td><td>7,94%</td><td class='neg'>-5,41%</td><td class='neg'>-138 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>-9,21 … -4,18</td><td>195</td><td>65%</td><td class='pos'>+52 TL</td><td>7,59%</td><td class='neg'>-4,94%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>-4,17 … 0,00</td><td>195</td><td>42%</td><td class='neg'>-30 TL</td><td>5,98%</td><td class='neg'>-5,09%</td><td class=''></td></tr>
+<tr><td class='b'>4h yüksek dip</td><td>evet</td><td>—</td><td>395</td><td>56%</td><td class='neg'>-1 TL</td><td>5,37%</td><td class='neg'>-5,38%</td><td class='neg'>-135 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>190</td><td>65%</td><td class='pos'>+135 TL</td><td>10,91%</td><td class='neg'>-4,65%</td><td class=''></td></tr>
+<tr><td class='b'>RSI14 4h</td><td>alt</td><td>35,52 … 54,06</td><td>195</td><td>63%</td><td class='pos'>+110 TL</td><td>6,47%</td><td class='neg'>-3,78%</td><td class='neg'>-119 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>54,10 … 60,52</td><td>195</td><td>59%</td><td class='pos'>+29 TL</td><td>6,60%</td><td class='neg'>-5,13%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>60,54 … 94,44</td><td>195</td><td>56%</td><td class='neg'>-9 TL</td><td>8,44%</td><td class='neg'>-6,51%</td><td class=''></td></tr>
+<tr><td class='b'>1h EMA20 > EMA50 ve fiyat üstte</td><td>evet</td><td>—</td><td>530</td><td>58%</td><td class='pos'>+32 TL</td><td>7,09%</td><td class='neg'>-5,17%</td><td class='neg'>-116 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>55</td><td>71%</td><td class='pos'>+149 TL</td><td>7,99%</td><td class='neg'>-4,90%</td><td class=''></td></tr>
+<tr><td class='b'>4h MA üstü sayısı (0–4)</td><td>alt</td><td>1,00 … 4,00</td><td>195</td><td>63%</td><td class='pos'>+73 TL</td><td>6,67%</td><td class='neg'>-4,45%</td><td class='neg'>-93 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>4,00 … 4,00</td><td>195</td><td>58%</td><td class='pos'>+78 TL</td><td>8,97%</td><td class='neg'>-5,16%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>4,00 … 4,00</td><td>195</td><td>56%</td><td class='neg'>-20 TL</td><td>5,87%</td><td class='neg'>-5,82%</td><td class=''></td></tr>
+<tr><td class='b'>Genişlik (puan ≥ +1 payı)</td><td>alt</td><td>0,05 … 0,19</td><td>195</td><td>66%</td><td class='pos'>+35 TL</td><td>8,10%</td><td class='neg'>-6,54%</td><td class='pos'>+92 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,19 … 0,42</td><td>195</td><td>52%</td><td class='neg'>-32 TL</td><td>6,74%</td><td class='neg'>-5,59%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>0,43 … 0,64</td><td>195</td><td>60%</td><td class='pos'>+127 TL</td><td>6,67%</td><td class='neg'>-3,30%</td><td class=''></td></tr>
+<tr><td class='b'>4h SMA20'ye uzaklık %</td><td>alt</td><td>-9,21 … 2,34</td><td>195</td><td>46%</td><td class='pos'>+63 TL</td><td>4,38%</td><td class='neg'>-2,97%</td><td class='neg'>-80 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>2,35 … 5,80</td><td>195</td><td>68%</td><td class='pos'>+83 TL</td><td>6,74%</td><td class='neg'>-4,44%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>5,81 … 96,41</td><td>195</td><td>64%</td><td class='neg'>-17 TL</td><td>10,39%</td><td class='neg'>-8,02%</td><td class=''></td></tr>
+<tr><td class='b'>4h SMA99'a uzaklık %</td><td>alt</td><td>-27,95 … 1,04</td><td>195</td><td>46%</td><td class='pos'>+61 TL</td><td>3,82%</td><td class='neg'>-2,58%</td><td class='neg'>-76 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>1,06 … 10,66</td><td>195</td><td>66%</td><td class='pos'>+85 TL</td><td>7,16%</td><td class='neg'>-4,86%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>10,71 … 140,78</td><td>195</td><td>65%</td><td class='neg'>-16 TL</td><td>10,53%</td><td class='neg'>-7,99%</td><td class=''></td></tr>
+<tr><td class='b'>Bollinger konumu (0–1)</td><td>alt</td><td>0,39 … 0,76</td><td>195</td><td>56%</td><td class='pos'>+24 TL</td><td>5,39%</td><td class='neg'>-5,18%</td><td class='pos'>+71 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,77 … 0,94</td><td>195</td><td>57%</td><td class='pos'>+11 TL</td><td>6,43%</td><td class='neg'>-4,89%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>0,94 … 1,40</td><td>195</td><td>65%</td><td class='pos'>+95 TL</td><td>9,69%</td><td class='neg'>-5,36%</td><td class=''></td></tr>
+<tr><td class='b'>MACD 1h histogram artıyor</td><td>evet</td><td>—</td><td>360</td><td>62%</td><td class='pos'>+69 TL</td><td>7,75%</td><td class='neg'>-5,13%</td><td class='pos'>+67 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>225</td><td>55%</td><td class='pos'>+2 TL</td><td>6,24%</td><td class='neg'>-5,16%</td><td class=''></td></tr>
+<tr><td class='b'>BTC 24 sa değişim %</td><td>alt</td><td>-3,35 … -0,67</td><td>195</td><td>64%</td><td class='pos'>+6 TL</td><td>8,80%</td><td class='neg'>-7,30%</td><td class='pos'>+65 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>-0,67 … 0,58</td><td>195</td><td>59%</td><td class='pos'>+52 TL</td><td>6,36%</td><td class='neg'>-4,37%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>0,58 … 2,46</td><td>195</td><td>55%</td><td class='pos'>+71 TL</td><td>6,36%</td><td class='neg'>-3,76%</td><td class=''></td></tr>
+<tr><td class='b'>MACD 1h histogram > 0</td><td>evet</td><td>—</td><td>536</td><td>59%</td><td class='pos'>+49 TL</td><td>7,22%</td><td class='neg'>-5,04%</td><td class='pos'>+64 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>49</td><td>57%</td><td class='neg'>-16 TL</td><td>6,63%</td><td class='neg'>-6,23%</td><td class=''></td></tr>
+<tr><td class='b'>Bollinger genişliği %</td><td>alt</td><td>0,05 … 5,89</td><td>195</td><td>46%</td><td class='pos'>+55 TL</td><td>3,98%</td><td class='neg'>-2,96%</td><td class='neg'>-54 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>5,93 … 10,98</td><td>195</td><td>66%</td><td class='pos'>+73 TL</td><td>7,21%</td><td class='neg'>-4,61%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>10,99 … 116,70</td><td>195</td><td>65%</td><td class='pos'>+2 TL</td><td>10,33%</td><td class='neg'>-7,86%</td><td class=''></td></tr>
+<tr><td class='b'>StochRSI 1h</td><td>alt</td><td>0,00 … 59,08</td><td>195</td><td>60%</td><td class='pos'>+25 TL</td><td>6,49%</td><td class='neg'>-5,60%</td><td class='pos'>+51 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>59,21 … 84,76</td><td>195</td><td>58%</td><td class='pos'>+30 TL</td><td>7,62%</td><td class='neg'>-5,01%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>85,02 … 100,00</td><td>195</td><td>59%</td><td class='pos'>+75 TL</td><td>7,41%</td><td class='neg'>-4,82%</td><td class=''></td></tr>
+<tr><td class='b'>MACD 4h histogram > 0</td><td>evet</td><td>—</td><td>446</td><td>59%</td><td class='pos'>+33 TL</td><td>7,20%</td><td class='neg'>-5,14%</td><td class='neg'>-44 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>139</td><td>59%</td><td class='pos'>+77 TL</td><td>7,09%</td><td class='neg'>-5,16%</td><td class=''></td></tr>
+<tr><td class='b'>Hacim 12 sa / 7 gün ort.</td><td>alt</td><td>0,03 … 0,90</td><td>195</td><td>56%</td><td class='pos'>+66 TL</td><td>5,62%</td><td class='neg'>-3,94%</td><td class='neg'>-36 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,90 … 2,13</td><td>195</td><td>54%</td><td class='pos'>+34 TL</td><td>6,03%</td><td class='neg'>-4,33%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>2,15 … 13,65</td><td>195</td><td>67%</td><td class='pos'>+30 TL</td><td>9,86%</td><td class='neg'>-7,15%</td><td class=''></td></tr>
+<tr><td class='b'>24 sa dipten yükseklik %</td><td>alt</td><td>0,06 … 5,95</td><td>195</td><td>46%</td><td class='pos'>+49 TL</td><td>3,86%</td><td class='neg'>-3,06%</td><td class='neg'>-35 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>6,07 … 11,33</td><td>195</td><td>65%</td><td class='pos'>+68 TL</td><td>6,36%</td><td class='neg'>-4,53%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>11,33 … 111,96</td><td>195</td><td>66%</td><td class='pos'>+13 TL</td><td>11,30%</td><td class='neg'>-7,84%</td><td class=''></td></tr>
+<tr><td class='b'>ADX14 4h</td><td>alt</td><td>9,63 … 23,09</td><td>195</td><td>53%</td><td class='pos'>+22 TL</td><td>5,58%</td><td class='neg'>-4,38%</td><td class='pos'>+34 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>23,14 … 32,08</td><td>195</td><td>58%</td><td class='pos'>+53 TL</td><td>5,62%</td><td class='neg'>-4,65%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>32,17 … 66,32</td><td>195</td><td>66%</td><td class='pos'>+56 TL</td><td>10,31%</td><td class='neg'>-6,39%</td><td class=''></td></tr>
+<tr><td class='b'>4h yüksek tepe</td><td>evet</td><td>—</td><td>278</td><td>59%</td><td class='pos'>+26 TL</td><td>7,23%</td><td class='neg'>-5,69%</td><td class='neg'>-34 TL</td></tr>
+<tr><td class='b'></td><td>hayır</td><td>—</td><td>307</td><td>60%</td><td class='pos'>+59 TL</td><td>7,11%</td><td class='neg'>-4,65%</td><td class=''></td></tr>
+<tr><td class='b'>24 sa değişim %</td><td>alt</td><td>-8,39 … 2,99</td><td>195</td><td>46%</td><td class='pos'>+10 TL</td><td>3,74%</td><td class='neg'>-3,64%</td><td class='pos'>+33 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>3,01 … 8,15</td><td>195</td><td>64%</td><td class='pos'>+77 TL</td><td>7,18%</td><td class='neg'>-4,21%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>8,16 … 108,89</td><td>195</td><td>68%</td><td class='pos'>+43 TL</td><td>10,59%</td><td class='neg'>-7,59%</td><td class=''></td></tr>
+<tr><td class='b'>OBV eğimi</td><td>alt</td><td>-2,11 … 0,11</td><td>195</td><td>54%</td><td class='pos'>+21 TL</td><td>5,60%</td><td class='neg'>-4,87%</td><td class='pos'>+31 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,11 … 0,37</td><td>195</td><td>60%</td><td class='pos'>+58 TL</td><td>6,81%</td><td class='neg'>-4,19%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>0,37 … 7,67</td><td>195</td><td>63%</td><td class='pos'>+51 TL</td><td>9,11%</td><td class='neg'>-6,37%</td><td class=''></td></tr>
+<tr><td class='b'>VWAP'a uzaklık %</td><td>alt</td><td>-8,03 … 0,77</td><td>195</td><td>50%</td><td class='pos'>+51 TL</td><td>4,65%</td><td class='neg'>-3,92%</td><td class='neg'>-30 TL</td></tr>
+<tr><td class='b'></td><td>orta</td><td>0,78 … 2,89</td><td>195</td><td>63%</td><td class='pos'>+57 TL</td><td>6,74%</td><td class='neg'>-4,72%</td><td class=''></td></tr>
+<tr><td class='b'></td><td>üst</td><td>2,90 … 38,61</td><td>195</td><td>64%</td><td class='pos'>+21 TL</td><td>10,13%</td><td class='neg'>-6,80%</td><td class=''></td></tr>
+</table></div>
+<h2>4. Kural adayları — eğitim (ilk yarı) / test (ikinci yarı) / BTC düşük rejim</h2>
+<p class='sub'>Her kural için sinyal sayısı, kazanma oranı ve sinyal başı net (iz süren 3/1,5 + %10 stop); 'sabit +3' aynı sinyallerde +%3 hedefle. 'BTC düşük' sütunu yalnız BTC 4h < SMA20 kesitlerindeki sinyaller: BTC düşerken de çalışan kural orada artıda kalır. 'Gün başı' ≈ kuralın günde kaç sinyal verdiği.</p>
+<div class='wrap'><table><tr><th>Kural</th><th>n</th><th>Gün başı</th><th>Kazanma</th><th>Net / sinyal</th><th>Sabit +3 / sinyal</th><th>Ort. MFE</th><th>Ort. MAE</th><th>Eğitim n</th><th>Eğitim net</th><th>Test n</th><th>Test net</th><th>BTC düşük n</th><th>BTC düşük net</th><th>BTC düşük kazanma</th></tr>
+<tr><td class='b'>C. Mevcut + hacim ≥ 1,5× ve RSI1h < 72</td><td>506</td><td>38.4</td><td>69%</td><td class='pos b'>+45 TL</td><td class='pos'>+16 TL</td><td>7,32%</td><td class='neg'>-5,81%</td><td>328</td><td class='pos'>+56 TL</td><td>178</td><td class='pos'>+25 TL</td><td>216</td><td class='pos'>+12 TL</td><td>62%</td></tr>
+<tr><td class='b'>E. Mevcut + 4h MACD hist artıyor ve SMA20 üstü</td><td>1129</td><td>85.7</td><td>61%</td><td class='pos b'>+14 TL</td><td class='neg'>-18 TL</td><td>6,59%</td><td class='neg'>-5,18%</td><td>722</td><td class='pos'>+4 TL</td><td>407</td><td class='pos'>+31 TL</td><td>470</td><td class='pos'>+41 TL</td><td>59%</td></tr>
+<tr><td class='b'>K. B + C birlikte</td><td>244</td><td>18.5</td><td>71%</td><td class='pos b'>+11 TL</td><td class='neg'>-7 TL</td><td>9,28%</td><td class='neg'>-7,02%</td><td>162</td><td class='pos'>+12 TL</td><td>82</td><td class='pos'>+11 TL</td><td>96</td><td class='neg'>-19 TL</td><td>65%</td></tr>
+<tr><td class='b'>F. Göreli güç: RS24 > 0, 24 sa > 0, ADX ≥ 20, hacim ≥ 1,3×</td><td>1404</td><td>106.6</td><td>63%</td><td class='pos b'>+10 TL</td><td class='neg'>-23 TL</td><td>6,86%</td><td class='neg'>-5,44%</td><td>804</td><td class='pos'>+2 TL</td><td>600</td><td class='pos'>+22 TL</td><td>663</td><td class='neg'>-1 TL</td><td>60%</td></tr>
+<tr><td class='b'>L. K + (BTC up VEYA RS24 > 3)</td><td>237</td><td>18.0</td><td>72%</td><td class='pos b'>+9 TL</td><td class='neg'>-10 TL</td><td>9,45%</td><td class='neg'>-7,17%</td><td>161</td><td class='pos'>+12 TL</td><td>76</td><td class='pos'>+4 TL</td><td>89</td><td class='neg'>-26 TL</td><td>65%</td></tr>
+<tr><td class='b'>H. Geri çekilme: trend up, SMA20'ye ±2%, MACD4 artıyor, RSI1h 45–65</td><td>261</td><td>19.8</td><td>49%</td><td class='pos b'>+5 TL</td><td class='neg'>-31 TL</td><td>4,21%</td><td class='neg'>-4,18%</td><td>141</td><td class='neg'>-18 TL</td><td>120</td><td class='pos'>+32 TL</td><td>119</td><td class='pos'>+12 TL</td><td>42%</td></tr>
+<tr><td class='b'>A. Mevcut (puan ≥ 3)</td><td>1433</td><td>108.8</td><td>60%</td><td class='pos b'>+3 TL</td><td class='neg'>-29 TL</td><td>6,48%</td><td class='neg'>-5,32%</td><td>937</td><td class='neg'>-14 TL</td><td>496</td><td class='pos'>+37 TL</td><td>585</td><td class='pos'>+43 TL</td><td>59%</td></tr>
+<tr><td class='b'>J. Mevcut + (BTC up VEYA RS24 > 3 puan)</td><td>1248</td><td>94.8</td><td>62%</td><td class='pos b'>+1 TL</td><td class='neg'>-31 TL</td><td>6,92%</td><td class='neg'>-5,63%</td><td>838</td><td class='neg'>-20 TL</td><td>410</td><td class='pos'>+45 TL</td><td>400</td><td class='pos'>+55 TL</td><td>67%</td></tr>
+<tr><td class='b'>B. Mevcut + ADX ≥ 25 ve DI farkı ≥ 10</td><td>588</td><td>44.7</td><td>62%</td><td class='neg b'>-8 TL</td><td class='neg'>-54 TL</td><td>8,23%</td><td class='neg'>-6,82%</td><td>404</td><td class='neg'>-8 TL</td><td>184</td><td class='neg'>-6 TL</td><td>237</td><td class='pos'>+25 TL</td><td>63%</td></tr>
+<tr><td class='b'>D. Mevcut + Bollinger ≤ 0,9 (aşırı uzamamış)</td><td>887</td><td>67.4</td><td>57%</td><td class='neg b'>-18 TL</td><td class='neg'>-44 TL</td><td>5,56%</td><td class='neg'>-5,18%</td><td>577</td><td class='neg'>-46 TL</td><td>310</td><td class='pos'>+34 TL</td><td>349</td><td class='pos'>+13 TL</td><td>56%</td></tr>
+<tr><td class='b'>I. Mevcut + BTC 4h > SMA20</td><td>848</td><td>64.4</td><td>60%</td><td class='neg b'>-24 TL</td><td class='neg'>-49 TL</td><td>6,01%</td><td class='neg'>-5,44%</td><td>593</td><td class='neg'>-65 TL</td><td>255</td><td class='pos'>+72 TL</td><td>0</td><td class='flat'>—</td><td>—</td></tr>
+<tr><td class='b'>G. Kırılım: 24 sa tepeye ≤ 0,5%, hacim ≥ 2×, RSI1h < 75</td><td>31</td><td>2.4</td><td>39%</td><td class='neg b'>-32 TL</td><td class='neg'>-57 TL</td><td>3,02%</td><td class='neg'>-3,25%</td><td>16</td><td class='neg'>-15 TL</td><td>15</td><td class='neg'>-51 TL</td><td>22</td><td class='pos'>+19 TL</td><td>45%</td></tr>
+</table></div>
+<h2>Okuma</h2><ul>
+<li>Bölüm 1–2 'mevcut kural neyi yanlış yapıyor' sorusuna cevap: kaybedenlerde yüksek olan özellik bir yanıltıcı, kazananlarda yüksek olan bir destekleyicidir.</li>
+<li>Bölüm 3, BTC düşerken yükselen sembolleri ayıran unsurlar içindir (göreli güç, hacim, trend gücü gibi).</li>
+<li>Bölüm 4'te bir kuralın hem eğitim hem test hem BTC-düşük sütununda artı olması gerekir; yalnız 'tümü' artıysa seçim gürültüsü olabilir. 14 gün kısa bir pencere; 90 günlük replay ile teyit edilmeli.</li></ul></body></html>

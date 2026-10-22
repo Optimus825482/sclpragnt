@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stop Takibi</title>
+<meta name="description" content="22.10.2026 02:48 teknik analizindeki saatlik kapanış seviyeleri ile Binance TR canlı fiyatı: her pozisyon için SAT / BEKLE / HEDEF.">
+<style>
+  :root {
+    --bg: #0f1131; --panel: #171a3f; --line: #2a2e5c; --text: #e8eaf6; --muted: #8f95bf;
+    --green: #22c55e; --red: #ef4444; --amber: #f59e0b; --blue: #60a5fa;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f5f6fb; --panel: #ffffff; --line: #d9dcec; --text: #161a3a; --muted: #5d6390; }
+  }
+  :root[data-theme="light"] { --bg: #f5f6fb; --panel: #ffffff; --line: #d9dcec; --text: #161a3a; --muted: #5d6390; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--red); margin-right: 6px; vertical-align: middle; }
+  .dot.on { background: var(--green); }
+  .big { font-size: 15px; color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+  label.tog { cursor: pointer; user-select: none; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-variant-numeric: tabular-nums; position: relative; }
+  .card.sat { border-color: var(--red); box-shadow: 0 0 0 1px var(--red), 0 0 18px rgba(239,68,68,.35); }
+  .card.altinda { border-color: var(--amber); }
+  .card.hedef { border-color: var(--green); }
+  .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .sym { font-size: 18px; font-weight: 800; }
+  .px { font-size: 22px; font-weight: 700; }
+  .arrow { display: inline-block; width: 22px; text-align: center; font-size: 18px; margin-left: 4px; vertical-align: 1px; }
+  .arrow.up { color: var(--green); } .arrow.dn { color: var(--red); } .arrow.eq { color: var(--muted); font-size: 12px; }
+  .pxbox { text-align: right; }
+  .vsopen { font-size: 11px; color: var(--muted); }
+  .pnl { font-size: 12px; color: var(--muted); }
+  .pos { color: var(--green); } .neg { color: var(--red); } .amb { color: var(--amber); } .flat { color: var(--muted); }
+  .verdict { margin: 8px 0 10px; padding: 8px 10px; border-radius: 8px; font-weight: 800; font-size: 15px; letter-spacing: .03em; text-align: center; }
+  .v-bekle { background: rgba(96,165,250,.14); color: var(--blue); }
+  .v-altinda { background: rgba(245,158,11,.16); color: var(--amber); }
+  .v-sat { background: rgba(239,68,68,.22); color: var(--red); animation: blink 0.9s ease-in-out infinite; }
+  .v-hedef { background: rgba(34,197,94,.18); color: var(--green); }
+  .v-off { background: rgba(143,149,191,.14); color: var(--muted); }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+  .grid { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12.5px; }
+  .grid .k { color: var(--muted); }
+  .grid .v { text-align: right; }
+  .meter { height: 6px; background: var(--line); border-radius: 3px; margin: 8px 0 2px; position: relative; overflow: hidden; }
+  .meter > i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--blue); }
+  .meter > b { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text); }
+  .foot { font-size: 11px; color: var(--muted); margin-top: 4px; display: flex; justify-content: space-between; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 14px; line-height: 1.5; }
+  .note b { color: var(--text); }
+  button.mini { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; }
+  button.mini:hover { color: var(--text); }
+  @media (max-width: 420px) { body { padding: 12px; } .cards { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<h1>Stop takibi — <span id="tfTitle">15 dk</span> kapanış</h1>
+<div class="sub">Seviyeler 22.10.2026 05:07 teknik analizinden (1h fraktal destek / günlük S1 / 24 sa dip). Kural: <b><span id="tfRule">15 dk</span> mum kapanışı</b> seviyenin altındaysa SAT; fitil sayılmaz. Yatırım tavsiyesi değildir.</div>
+
+<div class="bar">
+  <span><span id="dot" class="dot"></span><span id="ws">WS bağlanıyor…</span></span>
+  <span>Mum: <select id="tf"><option value="15m">15 dk</option><option value="1h">1 saat</option></select></span>
+  <span>Saat (TSİ): <span id="clock" class="big">—</span></span>
+  <span>Mum kapanışına: <span id="cd" class="big">—</span></span>
+  <span>Toplam: <span id="tot" class="big">—</span></span>
+  <label class="tog"><input type="checkbox" id="snd" checked> Sesli uyarı</label>
+  <button class="mini" id="reset" title="Kapanmış SAT kararlarını temizle">SAT işaretlerini sıfırla</button>
+</div>
+
+<div id="cards" class="cards"></div>
+
+<p class="note">
+<b>BEKLE</b>: fiyat seviyenin üstünde, mum oluşuyor. <b>ALTINDA — KAPANIŞI BEKLE</b>: fiyat şu an seviyenin altında ama mum kapanmadı; seçili mum (15 dk ya da 1 saat) kapanışında hâlâ altındaysa SAT olur. <b>SAT</b>: mum seviyenin altında kapandı (sayfa yenilense de hatırlanır, sıfırla düğmesiyle temizlenir). 15 dk daha erken karar verdirir ama gürültüye biraz daha açıktır; 15 dk ATR'ler %0,4–1,3, stoplar %0,6–3,9 uzakta. <b>HEDEF</b>: fiyat T1'i geçti; T2 için bekle ya da kısmi çıkış.
+"Sıkı seçenek" satırı, varsa fiyata daha yakın ikinci bir destektir (MINA 3,6200, ACE 7,6620, BMT 1,1169 VWAP); daha erken çıkmak istersen onu kullan. Bağlantı koparsa yedek sunuculara (stream.binance.me, stream.binance.com) sırayla geçilir.
+</p>
+
+<script>
+(function () {
+  // ---- Pozisyonlar: sembol, adet, giriş, STOP (saatlik kapanış), T1, T2, sıkı alternatif (opsiyonel) ----------
+  // 22.10.2026 05:07 raporu (docs/TEKNIK_ANALIZ_2026-10-22_0507.md). Stop = en yakın 1h fraktal destek;
+  // destek fiyata %0,5'ten yakınsa bir sonraki destek (ya da Bollinger orta / VWAP) alındı, yakın olan "sıkı seçenek".
+  var POS = [
+    ["DYMTRY",     9522.6545,   1.0521,  0.9465,  0.9547,  0.9673, null],
+    ["MINATRY",    2676.93856,  3.7411,  3.5900,  3.6600,  3.7000, 3.6200],
+    ["ACETRY",     1282.57325,  7.8084,  7.4100,  7.7860,  7.9000, 7.6620],
+    ["MUBARAKTRY", 3658.80355,  2.7373,  2.7450,  2.7930,  2.8320, null],
+    ["MAGICTRY",   1950.17035,  5.1348,  4.6000,  4.7600,  4.8400, null],
+    ["PUMPTRY",   38775.74,     0.25827, 0.2459,  0.2533,  0.2578, null],
+    ["BERATRY",    1062.980844, 9.4213,  8.5150,  8.9720,  9.3380, null],
+    ["BMTTRY",     8348.72675,  1.1996,  1.1050,  1.2390,  1.2700, 1.1169]
+  ];
+  var WS_BASES = ["wss://stream-cloud.binance.tr", "wss://stream.binance.me", "wss://stream.binance.com:9443"];
+  var REST_BASES = ["https://api.binance.me", "https://api.binance.com"];
+  var FEE = 0.001; // komisyon tahmini (tek yön)
+  var TF_MS = { "15m": 900000, "1h": 3600000 }, TF_LABEL = { "15m": "15 dk", "1h": "saatlik" };
+  var tf = "15m";
+  try { tf = localStorage.getItem("stop_takip_tf") || "15m"; if (!TF_MS[tf]) tf = "15m"; } catch (e) {}
+  document.getElementById("tf").value = tf;
+  function applyTfLabels() {
+    document.getElementById("tfTitle").textContent = tf === "1h" ? "saatlik" : "15 dk";
+    document.getElementById("tfRule").textContent = tf === "1h" ? "saatlik" : "15 dk";
+  }
+  applyTfLabels();
+
+  // state[sym] = { o,h,l,c, t (mum açılış ms), T (kapanış ms), live, lastClosed:{c,T} }
+  var state = {}, sat = {};
+  try { sat = JSON.parse(localStorage.getItem("stop_takip_sat") || "{}") || {}; } catch (e) { sat = {}; }
+
+  function dec(x) { return x >= 100 ? 2 : x >= 10 ? 3 : x >= 1 ? 4 : 5; }
+  function fp(x) { return x == null ? "—" : x.toLocaleString("tr-TR", { minimumFractionDigits: dec(x), maximumFractionDigits: dec(x) }); }
+  function ftl(x) { return x == null ? "—" : x.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " ₺"; }
+  function fpct(x) { return x == null ? "—" : (x > 0 ? "+" : "") + x.toFixed(2).replace(".", ",") + "%"; }
+  function cls(x) { return x == null ? "flat" : x > 0 ? "pos" : x < 0 ? "neg" : "flat"; }
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function tsi(ms) { var d = new Date(ms); return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()); }
+
+  // ---- Ses --------------------------------------------------------------------------------------------------
+  var actx = null;
+  function beep(times) {
+    if (!document.getElementById("snd").checked) return;
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      for (var i = 0; i < (times || 3); i++) {
+        var o = actx.createOscillator(), g = actx.createGain();
+        o.connect(g); g.connect(actx.destination);
+        o.frequency.value = 880; g.gain.value = 0.15;
+        var t = actx.currentTime + i * 0.35;
+        o.start(t); o.stop(t + 0.22);
+      }
+    } catch (e) { /* ses yoksa sessiz */ }
+  }
+  document.addEventListener("click", function () { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); } catch (e) {} }, { once: true });
+
+  // ---- Karar -------------------------------------------------------------------------------------------------
+  function verdict(p, s) {
+    var sym = p[0], stop = p[3], t1 = p[4], t2 = p[5];
+    if (sat[sym]) return { k: "sat", label: "SAT — " + tsi(sat[sym].T) + " kapanışı " + fp(sat[sym].c) + " < " + fp(stop) };
+    if (!s || s.c == null) return { k: "off", label: "VERİ BEKLENİYOR" };
+    if (s.c >= t2) return { k: "hedef", label: "HEDEF T2 GÖRÜLDÜ — çıkış bölgesi" };
+    if (s.c >= t1) return { k: "hedef", label: "HEDEF T1 GEÇİLDİ — T2 bekle / kısmi çık" };
+    if (s.c < stop) return { k: "altinda", label: "ALTINDA — KAPANIŞI BEKLE" };
+    return { k: "bekle", label: "BEKLE" };
+  }
+
+  function onClosedCandle(sym, c, T) {
+    var p = POS.filter(function (r) { return r[0] === sym; })[0]; if (!p) return;
+    if (c < p[3] && !sat[sym]) {
+      sat[sym] = { c: c, T: T };
+      try { localStorage.setItem("stop_takip_sat", JSON.stringify(sat)); } catch (e) {}
+      beep(4);
+      try { if (Notification && Notification.permission === "granted") new Notification("SAT: " + sym.replace("TRY", ""), { body: TF_LABEL[tf] + " kapanış " + fp(c) + " < stop " + fp(p[3]) }); } catch (e) {}
+    }
+  }
+
+  // ---- Çizim --------------------------------------------------------------------------------------------------
+  var el = document.getElementById("cards");
+  function render() {
+    var html = "", totVal = 0, totCost = 0, any = false;
+    POS.forEach(function (p) {
+      var sym = p[0], qty = p[1], entry = p[2], stop = p[3], t1 = p[4], t2 = p[5], alt = p[6];
+      var s = state[sym], px = s ? s.c : null;
+      var v = verdict(p, s);
+      var cost = qty * entry, val = px ? qty * px : null;
+      var net = px ? (qty * px * (1 - FEE) - cost) : null;
+      var netPct = px ? (net / cost) * 100 : null;
+      if (val != null) { totVal += val; totCost += cost; any = true; }
+      var dStop = px ? (px / stop - 1) * 100 : null, dT1 = px ? (t1 / px - 1) * 100 : null;
+      // metre: stop (0) … T1 (100), fiyat konumu
+      var pos = px ? Math.max(0, Math.min(100, (px - stop) / (t1 - stop) * 100)) : 0;
+      var dir = s ? s.dir : 0, vsOpen = (s && s.o && px) ? (px / s.o - 1) * 100 : null;
+      var arrow = dir > 0 ? '<span class="arrow up">▲</span>' : dir < 0 ? '<span class="arrow dn">▼</span>' : '<span class="arrow eq">●</span>';
+      html += '<div class="card ' + v.k + '">'
+        + '<div class="top"><span class="sym">' + sym.replace("TRY", "") + '</span>'
+        + '<span class="pxbox"><span class="px ' + cls(vsOpen) + '">' + (px ? fp(px) : "…") + '</span>' + arrow
+        + '<br><span class="vsopen">mum açılışına göre ' + fpct(vsOpen) + '</span></span></div>'
+        + '<div class="pnl">' + qty.toLocaleString("tr-TR", { maximumFractionDigits: 4 }) + ' adet · giriş ' + fp(entry)
+        + ' · <span class="' + cls(net) + '">' + (net == null ? "—" : ftl(net) + " (" + fpct(netPct) + ") net") + '</span></div>'
+        + '<div class="verdict v-' + v.k + '">' + v.label + '</div>'
+        + '<div class="grid">'
+        + '<span class="k">Stop (' + TF_LABEL[tf] + ' kapanış)</span><span class="v"><b>' + fp(stop) + '</b> <span class="' + (dStop != null && dStop < 0 ? "neg" : "flat") + '">' + (dStop == null ? "" : "(" + fpct(dStop) + ")") + '</span></span>'
+        + (alt ? '<span class="k">Sıkı seçenek</span><span class="v">' + fp(alt) + ' <span class="' + (px && px < alt ? "amb" : "flat") + '">' + (px ? "(" + fpct((px / alt - 1) * 100) + ")" : "") + '</span></span>' : "")
+        + '<span class="k">Bu mum açılış / dip</span><span class="v">' + (s ? fp(s.o) + " / <span class='" + (s.l < stop ? "amb" : "flat") + "'>" + fp(s.l) + "</span>" : "—") + '</span>'
+        + '<span class="k">Önceki kapanış</span><span class="v">' + (s && s.lastClosed ? fp(s.lastClosed.c) + " <span class='flat'>(" + tsi(s.lastClosed.T) + ")</span>" : "—") + '</span>'
+        + '<span class="k">T1 / T2</span><span class="v">' + fp(t1) + ' <span class="flat">(' + fpct(dT1) + ')</span> / ' + fp(t2) + '</span>'
+        + '</div>'
+        + '<div class="meter"><i style="width:' + pos.toFixed(1) + '%"></i></div>'
+        + '<div class="foot"><span>stop ' + fp(stop) + '</span><span>T1 ' + fp(t1) + '</span></div>'
+        + '</div>';
+    });
+    el.innerHTML = html;
+    var tot = document.getElementById("tot");
+    if (any) { var tn = totVal * (1 - FEE) - totCost; tot.textContent = ftl(totVal) + " · " + (tn >= 0 ? "+" : "") + ftl(tn); tot.className = "big " + cls(tn); }
+  }
+
+  // ---- Saat ve geri sayım ---------------------------------------------------------------------------------------
+  setInterval(function () {
+    var now = Date.now();
+    document.getElementById("clock").textContent = tsi(now);
+    var step = TF_MS[tf]; var nextClose = Math.ceil((now + 1) / step) * step; var left = Math.max(0, nextClose - now);
+    var m = Math.floor(left / 60000), sec = Math.floor((left % 60000) / 1000);
+    var cd = document.getElementById("cd"); cd.textContent = pad(m) + ":" + pad(sec); cd.className = "big " + (left < 120000 ? "amb" : "");
+    if (lastMsg && now - lastMsg > 60000 && ws && ws.readyState === 1) { try { ws.close(); } catch (e) { /* yeniden bağlanır */ } }
+  }, 1000);
+
+  // ---- REST tohum: son 2 saatlik mum (önceki kapanış + oluşan) -------------------------------------------------
+  function seed(sym, idx) {
+    idx = idx || 0; if (idx >= REST_BASES.length) return;
+    var reqTf = tf;
+    fetch(REST_BASES[idx] + "/api/v3/klines?symbol=" + sym + "&interval=" + tf + "&limit=2")
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (k) {
+        if (!k || k.length < 2 || reqTf !== tf) return;
+        var prev = k[k.length - 2], cur = k[k.length - 1];
+        var s = state[sym] = state[sym] || {};
+        s.lastClosed = s.lastClosed || { c: +prev[4], T: +prev[6] };
+        if (!s.live) { s.o = +cur[1]; s.h = +cur[2]; s.l = +cur[3]; s.c = +cur[4]; s.t = +cur[0]; s.T = +cur[6]; }
+        // Sayfa kapalıyken kapanmış mum stop altındaysa yakala
+        onClosedCandle(sym, +prev[4], +prev[6]);
+        render();
+      })
+      .catch(function () { seed(sym, idx + 1); });
+  }
+  POS.forEach(function (p) { seed(p[0]); });
+
+  // ---- WebSocket: kline_1h ------------------------------------------------------------------------------------
+  var baseIdx = 0, ws = null, retryMs = 2000, lastMsg = 0, gen = 0;
+  function setStatus(on, text) { document.getElementById("dot").className = "dot" + (on ? " on" : ""); document.getElementById("ws").textContent = text; }
+  function connect() {
+    var myGen = ++gen;
+    var base = WS_BASES[baseIdx % WS_BASES.length];
+    var url = base + "/stream?streams=" + POS.map(function (p) { return p[0].toLowerCase() + "@kline_" + tf; }).join("/");
+    setStatus(false, "Bağlanıyor: " + base.replace("wss://", ""));
+    try { ws = new WebSocket(url); } catch (e) { baseIdx++; setTimeout(connect, retryMs); return; }
+    var opened = false;
+    ws.onopen = function () { opened = true; retryMs = 2000; setStatus(true, "Canlı " + TF_LABEL[tf] + ": " + base.replace("wss://", "")); };
+    ws.onmessage = function (ev) {
+      if (myGen !== gen) return;         // eski (ufuk değişmeden önceki) bağlantı
+      lastMsg = Date.now();
+      var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      var d = m && m.data; if (!d || !d.k || d.k.i !== tf) return;
+      var k = d.k, sym = d.s, s = state[sym] = state[sym] || {};
+      if (s.c != null && +k.c !== s.c) s.dir = +k.c > s.c ? 1 : -1;   // son tik yönü
+      s.live = true; s.o = +k.o; s.h = +k.h; s.l = +k.l; s.c = +k.c; s.t = +k.t; s.T = +k.T;
+      if (k.x) { s.lastClosed = { c: +k.c, T: +k.T }; onClosedCandle(sym, +k.c, +k.T); }
+      render();
+    };
+    ws.onclose = function () {
+      if (myGen !== gen) return;         // ufuk değişimiyle bilerek kapatıldı
+      setStatus(false, "Koptu, yeniden bağlanıyor…");
+      if (!opened) baseIdx++;           // hiç açılmadıysa sıradaki sunucu
+      setTimeout(connect, retryMs); retryMs = Math.min(retryMs * 2, 30000);
+    };
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+  connect();
+
+  document.getElementById("tf").onchange = function () {
+    tf = this.value; try { localStorage.setItem("stop_takip_tf", tf); } catch (e) {}
+    applyTfLabels();
+    gen++; try { ws && ws.close(); } catch (e) {}
+    state = {}; render();
+    POS.forEach(function (p) { seed(p[0]); });
+    retryMs = 2000; connect();
+  };
+
+  document.getElementById("reset").onclick = function () { sat = {}; try { localStorage.removeItem("stop_takip_sat"); } catch (e) {} render(); };
+  try { if (window.Notification && Notification.permission === "default") Notification.requestPermission(); } catch (e) {}
+  render();
+})();
+</script>
+</body>
+</html>
