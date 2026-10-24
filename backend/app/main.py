@@ -213,6 +213,8 @@ from app.routers import ma_buy as ma_buy_routes
 app.include_router(ma_buy_routes.router)
 from app.routers import radar_log as radar_log_routes
 app.include_router(radar_log_routes.router)
+from app.routers import n7_scan as n7_scan_routes
+app.include_router(n7_scan_routes.router)
 
 
 _TTS_VOICE = "tr-TR-EmelNeural"

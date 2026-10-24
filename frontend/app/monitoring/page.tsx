@@ -15,6 +15,7 @@ import UserRadar from "../components/user/UserRadar";
 import MaBuyRecent from "../components/MaBuyRecent";
 import H4CrossList from "../components/H4CrossList";
 import { RadarScanLogButton } from "../components/admin/RadarScanLogModal";
+import N7ScanPanel from "../components/N7ScanPanel";
 import { useIsUserView } from "../lib/adminView";
 
 type NotificationSettings = {
@@ -1914,7 +1915,58 @@ function AdminMonitoringPage() {
   );
 }
 
+// 2026-10-24: sayfa üstü sekme şeridi — RADAR (mevcut içerik, varsayılan) / N7 TARAMA (elle M1H taraması).
+type TopTab = "radar" | "n7";
+const TOP_TAB_KEY = "monitoring:tab";
+
+// AuthGate çocukları yalnız istemcide (oturum doğrulandıktan sonra) çizer; `savedUi` deseniyle aynı şekilde
+// ilk değer doğrudan localStorage'dan okunur (SSR'da pencere yoksa varsayılan).
+const readTopTab = (): TopTab => {
+  try {
+    if (typeof window === "undefined") return "radar";
+    return window.localStorage.getItem(TOP_TAB_KEY) === "n7" ? "n7" : "radar";
+  } catch {
+    return "radar";
+  }
+};
+
 export default function MonitoringPage() {
   const userView = useIsUserView();
-  return userView ? <UserRadar /> : <AdminMonitoringPage />;
+  const [topTab, setTopTab] = useState<TopTab>(readTopTab);
+  const pickTab = (t: TopTab) => {
+    setTopTab(t);
+    try {
+      window.localStorage.setItem(TOP_TAB_KEY, t);
+    } catch {
+      // storage kapalıysa kalıcılık opsiyoneldir — davranış bozulmaz.
+    }
+  };
+  const tabCls = (active: boolean) =>
+    `rounded-xl px-4 py-2 font-mono text-xs sm:text-sm font-bold transition-all whitespace-nowrap ${
+      active ? "bg-neon-green/15 text-neon-green border border-neon-green/40 shadow-sm" : "text-bunker-muted hover:text-white hover:bg-bunker-900"
+    }`;
+
+  return (
+    <>
+      <div className="page-shell px-4 sm:px-0 pt-3 pb-2 border-b border-bunker-800" role="tablist" aria-label="Radar sayfası sekmeleri">
+        <div className="flex items-center gap-1 sm:gap-2 overflow-x-auto no-scrollbar">
+          <button type="button" role="tab" aria-selected={topTab === "radar"} onClick={() => pickTab("radar")} className={tabCls(topTab === "radar")}>
+            🎯 RADAR
+          </button>
+          <button type="button" role="tab" aria-selected={topTab === "n7"} onClick={() => pickTab("n7")} className={tabCls(topTab === "n7")}>
+            ⚡ N7 TARAMA
+          </button>
+        </div>
+      </div>
+      {topTab === "n7" ? (
+        <main className="page-shell space-y-6">
+          <N7ScanPanel />
+        </main>
+      ) : userView ? (
+        <UserRadar />
+      ) : (
+        <AdminMonitoringPage />
+      )}
+    </>
+  );
 }
