@@ -1,4 +1,4 @@
-"""N6 kuralı — belirli bir kesitte liste üret ve canlı izleme HTML'i yaz (2026-10-22, kullanıcı isteği).
+"""N6 / N7 kuralı — belirli bir kesitte liste üret ve canlı izleme HTML'i yaz (2026-10-22, kullanıcı isteği).
 
 Kural (docs/SINYAL_YENIDEN_KURMA_90gun_db_2026-10-22_0254.html, N6 + genişlik kapısı):
   kapı: ADX 4h ≥ 25, +DI − −DI ≥ 10, 4h MACD histogramı artıyor · onay: hacim 12 sa / 7 gün ort ≥ 1,5, RSI 1h < 72,
@@ -9,7 +9,8 @@ Liste yerel arşivden (historical_candles) kesit anına kadar kapanmış mumlarl
 HTML kök dizine yazılır: takip_n6_<tarih>.html; sayfa açılınca kesitten bu yana 15m mumları Binance TR REST'ten çekip
 yolu tamamlar (MFE/MAE/iz süren/stop), sonra miniTicker WS ile canlı sürer.
 
-KULLANIM: python backend/scripts/ta_n6_tracker.py --cutoff 2026-10-22T00:00 [--top 3]
+N7 (varsayılan): N6 + vadeli fonlaması negatif olan sembol elenir (vadelisi olmayan kalır); --rule n6 ile eski kural.
+KULLANIM: python backend/scripts/ta_n6_tracker.py --cutoff 2026-10-22T00:00 [--top 3] [--rule n7|n6]
 """
 from __future__ import annotations
 
@@ -25,15 +26,54 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import ta_feature_study as FS                 # noqa: E402
+import fetch_futures_data as FD               # noqa: E402  (perp eşlemesi)
 import ta_symbol_report as T                  # noqa: E402
 
 TZ = dt.timezone(dt.timedelta(hours=3))
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 MIN_QV = 5e6
 BREADTH_FULL = 0.54
+FAPI_DEPTH = "https://fapi.binance.com/fapi/v1/depth"
+LIVE_WINDOW_MS = 90 * 60_000     # kesit şimdiye bu kadar yakınsa derinlik canlı defterden, değilse arşivden
 
 
-async def build_list(cutoff_ms: int, top: int) -> dict:
+def live_depth(fut: str, band: float = 0.01) -> dict | None:
+    """USDT perp defterinden ±band içindeki alış/satış nominalini (USDT) ve dengeyi hesaplar (anahtarsız REST)."""
+    import urllib.parse
+    import urllib.request
+    url = FAPI_DEPTH + "?" + urllib.parse.urlencode({"symbol": fut, "limit": 1000})
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "scalper-research/1.0"}), timeout=15) as r:
+            d = json.load(r)
+    except Exception as exc:  # noqa: BLE001 — sembol yoksa/ağ hatası: derinlik yok
+        print(f"  derinlik alınamadı {fut}: {exc}", file=sys.stderr)
+        return None
+    bids, asks = d.get("bids") or [], d.get("asks") or []
+    if not bids or not asks:
+        return None
+    mid = (float(bids[0][0]) + float(asks[0][0])) / 2
+    b = sum(float(px) * float(q) for px, q in bids if float(px) >= mid * (1 - band))
+    a = sum(float(px) * float(q) for px, q in asks if float(px) <= mid * (1 + band))
+    return {"bid1": b, "ask1": a, "imb1": (b - a) / (b + a) if (b + a) else None, "at_ms": int(d.get("E") or time.time() * 1000)}
+
+
+def attach_depth(cands: list[dict], cutoff_ms: int) -> str:
+    """Adaylara derinlik dengesi ekler: kesit yeni ise canlı defter, değilse arşiv (fut_features f_imb1). Kaynak etiketi döner."""
+    pm = FD.perp_map()
+    live = (time.time() * 1000 - cutoff_ms) <= LIVE_WINDOW_MS
+    for r in cands:
+        r["fut"] = pm.get(r["sym"])
+        if live and r["fut"]:
+            dd = live_depth(r["fut"])
+            if dd:
+                r["imb1"], r["bid1_usdt"], r["ask1_usdt"], r["depth_at"] = dd["imb1"], dd["bid1"], dd["ask1"], dd["at_ms"]
+                continue
+        r["imb1"], r["bid1_usdt"], r["depth_at"] = r.get("f_imb1"), r.get("f_bid1_usdt"), None
+    return "canlı defter" if live else "arşiv (Data Vision, 15 dk)"
+
+
+async def build_list(cutoff_ms: int, top: int, rule: str = "n7", force_top: bool = False, manual: list[str] | None = None,
+                     depth_filter: bool = False) -> dict:
     from app import database
     from app.binance_tr_public import trading_symbols
     syms = sorted(await trading_symbols("TRY"))
@@ -50,26 +90,47 @@ async def build_list(cutoff_ms: int, top: int) -> dict:
         f = FS.features(sym, pit)
         if f is None or f["qv24"] < MIN_QV:
             continue
+        f.update(FS.fut_features(d.get("_fut"), cutoff_ms))
         feats[sym] = f
         if i % 60 == 0:
             print(f"  {i}/{len(syms)} ({time.time() - t0:.0f} sn)", file=sys.stderr)
     breadth = sum(1 for f in feats.values() if f["score"] >= 1) / len(feats) if feats else 0.0
-    cands = [dict(sym=s, **f) for s, f in feats.items() if FS._m2(f) and FS.g(f, "d_rsi", 100) < 60]
+    n6 = [dict(sym=s, **f) for s, f in feats.items() if FS._m2(f) and FS.g(f, "d_rsi", 100) < 60]
+    dropped = [r for r in n6 if rule == "n7" and FS.g(r, "f_funding", 0) < 0]
+    for r in dropped:
+        r["why"] = "fonlama < 0"
+    cands = [r for r in n6 if r not in dropped]
+    depth_src = attach_depth(cands, cutoff_ms)
+    if depth_filter:
+        dd = [r for r in cands if r.get("imb1") is not None and r["imb1"] <= 0]
+        for r in dd:
+            r["why"] = "derinlik satış ağır"
+        dropped += dd
+        cands = [r for r in cands if r not in dd]
     cands.sort(key=lambda r: -(r.get("vol_ratio") or 0))
-    picked = cands if breadth >= BREADTH_FULL else cands[:top]
-    return {"cutoff_ms": cutoff_ms, "breadth": breadth, "universe": len(feats), "candidates": len(cands), "picked": picked}
+    picked = cands if breadth >= BREADTH_FULL and not force_top else cands[:top]
+    if manual:
+        picked = [dict(sym=s, **feats[s]) for s in manual if s in feats]
+        attach_depth(picked, cutoff_ms)
+    return {"cutoff_ms": cutoff_ms, "breadth": breadth, "universe": len(feats), "candidates": len(cands), "picked": picked,
+            "rule": rule, "n6_count": len(n6), "dropped": dropped, "force_top": force_top, "top": top, "manual": bool(manual), "depth_src": depth_src, "depth_filter": depth_filter}
 
 
 def html_page(res: dict, cutoff: dt.datetime) -> str:
     rows = [{"sym": r["sym"], "entry": r["px"], "adx": r.get("adx4"), "di": r.get("di_diff"), "vol": r.get("vol_ratio"), "rsi1": r.get("rsi1"),
-             "drsi": r.get("d_rsi"), "above4": r.get("above4"), "chg24": r.get("chg24"), "qv": r.get("qv24"), "score": r.get("score")} for r in res["picked"]]
-    data = json.dumps({"cutoff_ms": res["cutoff_ms"], "breadth": res["breadth"], "universe": res["universe"], "candidates": res["candidates"], "rows": rows}, ensure_ascii=False)
+             "drsi": r.get("d_rsi"), "above4": r.get("above4"), "chg24": r.get("chg24"), "qv": r.get("qv24"), "score": r.get("score"),
+             "funding": r.get("f_funding"), "oi24": r.get("f_oi_chg24"), "taker": r.get("f_taker"),
+             "fut": r.get("fut"), "imb1": r.get("imb1"), "bid1": r.get("bid1_usdt"), "ask1": r.get("ask1_usdt"), "depth_at": r.get("depth_at")} for r in res["picked"]]
+    rule_name = res.get("rule", "n6").upper()
+    dropped_txt = ", ".join(f"{r['sym'].replace('TRY', '')} ({r.get('why', '')}: {('%+.3f%%' % r['f_funding']) if r.get('why') == 'fonlama < 0' else ('%+.2f' % r['imb1'])})" for r in res.get("dropped", [])) or "yok"
+    data = json.dumps({"cutoff_ms": res["cutoff_ms"], "breadth": res["breadth"], "universe": res["universe"], "candidates": res["candidates"], "rows": rows,
+                       "depth_src": res.get("depth_src", "")}, ensure_ascii=False)
     return f"""<!doctype html>
 <html lang="tr">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>N6 Takip {cutoff:%d.%m %H:%M}</title>
-<meta name="description" content="N6 kuralı ile {cutoff:%d.%m.%Y %H:%M} kesitinde seçilen semboller; iz süren 3/1,5 + %10 stop + 24 saat kuralının canlı izlemesi.">
+<title>{rule_name} Takip {cutoff:%d.%m %H:%M}</title>
+<meta name="description" content="{rule_name} kuralı ile {cutoff:%d.%m.%Y %H:%M} kesitinde seçilen semboller; iz süren 3/1,5 + %10 stop + 24 saat kuralının canlı izlemesi.">
 <style>
   :root {{ --bg:#0f1131; --panel:#171a3f; --line:#2a2e5c; --text:#e8eaf6; --muted:#8f95bf; --green:#22c55e; --red:#ef4444; --amber:#f59e0b; --blue:#60a5fa; }}
   @media (prefers-color-scheme: light) {{ :root:not([data-theme="dark"]) {{ --bg:#f5f6fb; --panel:#fff; --line:#d9dcec; --text:#161a3a; --muted:#5d6390; }} }}
@@ -94,8 +155,8 @@ def html_page(res: dict, cutoff: dt.datetime) -> str:
 </style>
 </head>
 <body>
-<h1>N6 takip — kesit {cutoff:%d.%m.%Y %H:%M}</h1>
-<div class="sub">Kural: ADX 4h ≥ 25, +DI − −DI ≥ 10, 4h MACD histogramı artıyor, hacim ≥ 1,5×, RSI 1h < 72, günlük RSI < 60, 4/4 MA üstü + 4h yüksek dip hariç; 24 sa hacim ≥ 5M TL; piyasa genişliği {res['breadth']:.0%} ({'tam liste' if res['breadth'] >= BREADTH_FULL else 'eşik 54% altı → en iyi ' + str(len(rows))}). Evren {res['universe']} sembol, kurala uyan {res['candidates']}, seçilen {len(rows)}. Giriş: kesitten önceki son 15 dk kapanışı. Çıkış: +%3'ten sonra zirvenin %1,5 altına iz süren stop, −%10 stop, en çok 24 saat (kesit + 24 sa); aynı mumda stop ve iz süren → stop. 10.000 TL/sembol, komisyon %0,1125/bacak. Sayfa açılınca kesitten bu yana 15 dk mumlar borsadan çekilir, sonra canlı fiyatla sürer. Yatırım tavsiyesi değildir.</div>
+<h1>{rule_name} takip — kesit {cutoff:%d.%m.%Y %H:%M}</h1>
+<div class="sub">Kural: ADX 4h ≥ 25, +DI − −DI ≥ 10, 4h MACD histogramı artıyor, hacim ≥ 1,5×, RSI 1h < 72, günlük RSI < 60, 4/4 MA üstü + 4h yüksek dip hariç; {"vadeli fonlaması negatif olan elenir (N6 uyan " + str(res.get("n6_count", 0)) + ", elenen: " + dropped_txt + "); " if res.get("rule") == "n7" else ""}24 sa hacim ≥ 5M TL; derinlik dengesi ±1% = (alış − satış) / (alış + satış) nominal, USDT perp defterinden ({res.get("depth_src", "")}; {"satış ağır olanlar elendi" if res.get("depth_filter") else "bilgi amaçlı, elemiyor"}; 90 günlük çalışmada yalnız 30 gün veri: alış ağır +88, satış ağır −20 TL/sinyal, kanıtlanmamış); piyasa genişliği {res['breadth']:.0%} ({'manuel seçim: kurala tam uymayan en yakın ' + str(len(rows)) + ' sembol' if res.get('manual') else 'hacim oranına göre en iyi ' + str(res['top']) + ' (istek)' if res.get('force_top') else 'tam liste' if res['breadth'] >= BREADTH_FULL else 'eşik 54% altı → en iyi ' + str(len(rows))}). Evren {res['universe']} sembol, kurala uyan {res['candidates']}, seçilen {len(rows)}. Giriş: kesitten önceki son 15 dk kapanışı. Çıkış: +%3'ten sonra zirvenin %1,5 altına iz süren stop, −%10 stop, en çok 24 saat (kesit + 24 sa); aynı mumda stop ve iz süren → stop. 10.000 TL/sembol, komisyon %0,1125/bacak. Sayfa açılınca kesitten bu yana 15 dk mumlar borsadan çekilir, sonra canlı fiyatla sürer. Yatırım tavsiyesi değildir.</div>
 <div class="bar">
   <span><span id="dot" class="dot"></span><span id="ws">WS bağlanıyor…</span></span>
   <span>Şu an: <b id="now">—</b></span><span>Geçen: <b id="elapsed">—</b></span><span>Süre dolumu: <b id="expiry">—</b></span>
@@ -110,7 +171,7 @@ def html_page(res: dict, cutoff: dt.datetime) -> str:
   <div><b id="k-win">—</b><span>artıda olan</span></div>
 </div>
 <div class="wrap"><table id="t"><thead><tr>
-  <th>Sembol</th><th>Giriş</th><th>Canlı</th><th>Değişim</th><th>Net K/Z</th><th>MFE</th><th>MFE zamanı</th><th>MAE</th><th>İz süren stop</th><th>Stop</th><th>Durum</th><th>Çıkış</th><th>ADX / DI</th><th>Hacim×</th><th>RSI 1h / gün</th><th>24 sa</th>
+  <th>Sembol</th><th>Giriş</th><th>Canlı</th><th>Değişim</th><th>Net K/Z</th><th>MFE</th><th>MFE zamanı</th><th>MAE</th><th>İz süren stop</th><th>Stop</th><th>Durum</th><th>Çıkış</th><th>ADX / DI</th><th>Hacim×</th><th>RSI 1h / gün</th><th>24 sa</th><th>Fonlama</th><th>OI 24 sa</th><th>Taker</th><th>Derinlik ±1%</th>
 </tr></thead><tbody></tbody></table></div>
 <p class="note">Durum: <span class="badge b-open">AÇIK</span> kural içinde · <span class="badge b-trail">İZ SÜREN AKTİF</span> +%3 görüldü, stop zirveyi takip ediyor · <span class="badge b-win">KAPANDI +</span> / <span class="badge b-loss">KAPANDI −</span> iz süren veya stop ile · <span class="badge b-time">SÜRE DOLDU</span> 24 saat sonunda kapanıştan. Kapanış fiyatı 15 dk mum içindeyse stop seviyesinden, canlı akışta ise o anki fiyattan alınır.</p>
 <script>
@@ -161,6 +222,28 @@ def html_page(res: dict, cutoff: dt.datetime) -> str:
     }}).catch(function () {{ fetchPath(sym, idx + 1); }});
   }}
   function fetchAllPaths() {{ Object.keys(pos).forEach(function (s) {{ fetchPath(s); }}); }}
+  var depthLive = {{}};   // sym -> {{imb, bid, ask, at}}
+  function imbTxt(v) {{ return v == null ? "—" : (v > 0 ? "+" : "") + v.toFixed(2); }}
+  function imbCls(v) {{ return v == null ? "" : v > 0.13 ? "up" : v > 0 ? "" : "dn"; }}
+  function depthCell(r) {{
+    var base = r.imb1 == null ? "<span class='flat'>" + (r.fut ? "kesitte yok" : "vadeli yok") + "</span>" :
+      "<span class='" + imbCls(r.imb1) + "'>" + imbTxt(r.imb1) + "</span><span class='flat'> kesit</span>";
+    var l = depthLive[r.sym];
+    if (l) base += "<br><span class='" + imbCls(l.imb) + "'><b>" + imbTxt(l.imb) + "</b></span><span class='flat'> canlı " + tstr(l.at) + " · alış " + Math.round(l.bid / 1000) + "k / satış " + Math.round(l.ask / 1000) + "k</span>" +
+      (l.imb <= 0 ? ' <span class="badge b-loss">SATIŞ AĞIR</span>' : l.imb > 0.13 ? ' <span class="badge b-win">ALIŞ AĞIR</span>' : "");
+    return base;
+  }}
+  function fetchDepth(r) {{
+    if (!r.fut) return;
+    fetch("https://fapi.binance.com/fapi/v1/depth?symbol=" + r.fut + "&limit=1000").then(function (x) {{ if (!x.ok) throw new Error(x.status); return x.json(); }}).then(function (d) {{
+      if (!d.bids || !d.asks || !d.bids.length || !d.asks.length) return;
+      var mid = (parseFloat(d.bids[0][0]) + parseFloat(d.asks[0][0])) / 2, b = 0, a = 0;
+      d.bids.forEach(function (x) {{ var p = parseFloat(x[0]); if (p >= mid * 0.99) b += p * parseFloat(x[1]); }});
+      d.asks.forEach(function (x) {{ var p = parseFloat(x[0]); if (p <= mid * 1.01) a += p * parseFloat(x[1]); }});
+      depthLive[r.sym] = {{ imb: (b + a) ? (b - a) / (b + a) : null, bid: b, ask: a, at: d.E || Date.now() }};
+    }}).catch(function () {{}});
+  }}
+  function fetchAllDepth() {{ DATA.rows.forEach(fetchDepth); }}
 
   function render() {{
     var now = Date.now(), html = "", total = 0, open = 0, closed = {{ trail: 0, stop: 0, time: 0 }}, mfes = [], winners = 0;
@@ -186,9 +269,13 @@ def html_page(res: dict, cutoff: dt.datetime) -> str:
         "<td>" + (r.adx != null ? r.adx.toFixed(0) : "—") + " / " + (r.di != null ? r.di.toFixed(0) : "—") + "</td>" +
         "<td>" + (r.vol != null ? r.vol.toFixed(1) + "×" : "—") + "</td>" +
         "<td>" + (r.rsi1 != null ? r.rsi1.toFixed(0) : "—") + " / " + (r.drsi != null ? r.drsi.toFixed(0) : "—") + "</td>" +
-        '<td class="' + cls(r.chg24) + '">' + fpct(r.chg24) + "</td></tr>";
+        '<td class="' + cls(r.chg24) + '">' + fpct(r.chg24) + "</td>" +
+        "<td>" + (r.funding != null ? r.funding.toFixed(3) + "%" : "<span class='flat'>vadeli yok</span>") + "</td>" +
+        '<td class="' + (r.oi24 != null ? cls(r.oi24) : "") + '">' + (r.oi24 != null ? fpct(r.oi24) : "—") + "</td>" +
+        "<td>" + (r.taker != null ? r.taker.toFixed(2) : "—") + "</td>" +
+        "<td>" + depthCell(r) + "</td></tr>";
     }});
-    document.querySelector("#t tbody").innerHTML = html || '<tr><td colspan="16" class="flat">Bu kesitte kurala uyan sembol yok.</td></tr>';
+    document.querySelector("#t tbody").innerHTML = html || '<tr><td colspan="20" class="flat">Bu kesitte kurala uyan sembol yok.</td></tr>';
     var el = document.getElementById("k-total"); el.textContent = ftl(total) + " (" + fpct(total / (STAKE * DATA.rows.length) * 100) + ")"; el.className = cls(total);
     document.getElementById("k-open").textContent = open + " / " + DATA.rows.length;
     document.getElementById("k-closed").textContent = closed.trail + " / " + closed.stop + " / " + closed.time;
@@ -239,6 +326,7 @@ def html_page(res: dict, cutoff: dt.datetime) -> str:
   seed(); setInterval(seed, 30000);
   fetchAllPaths();
   setInterval(fetchAllPaths, 5 * 60 * 1000);     // yol 5 dk'da bir mumlarla tazelenir (canlı adımlar mum yoluyla uyumlanır)
+  fetchAllDepth(); setInterval(fetchAllDepth, 60 * 1000);   // derinlik dengesi dakikada bir USDT perp defterinden
   setInterval(render, 1000);
   render();
   document.getElementById("theme").addEventListener("click", function () {{
@@ -258,16 +346,23 @@ async def main() -> int:
     ap.add_argument("--cutoff", required=True, help="örn. 2026-10-22T00:00 (Türkiye saati)")
     ap.add_argument("--top", type=int, default=3)
     ap.add_argument("--out", default="")
+    ap.add_argument("--rule", choices=("n6", "n7"), default="n7")
+    ap.add_argument("--force-top", action="store_true", help="genişlik yüksek olsa da yalnız en iyi --top sembol")
+    ap.add_argument("--symbols", default="", help="virgüllü manuel liste (kural yerine); giriş = kesit öncesi son 15 dk kapanışı")
+    ap.add_argument("--depth-filter", action="store_true", help="derinlik dengesi ±1% ≤ 0 (satış ağır) olan adayları ele (varsayılan: yalnız göster)")
     args = ap.parse_args()
     cutoff = dt.datetime.fromisoformat(args.cutoff).replace(tzinfo=TZ)
     cutoff_ms = int(cutoff.timestamp() * 1000)
-    res = await build_list(cutoff_ms, args.top)
-    path = args.out or os.path.join(ROOT, f"takip_n6_{cutoff:%Y-%m-%d_%H%M}.html")
+    res = await build_list(cutoff_ms, args.top, args.rule, args.force_top, [x.strip().upper() for x in args.symbols.split(",") if x.strip()] or None, args.depth_filter)
+    path = args.out or os.path.join(ROOT, f"takip_{args.rule}_{cutoff:%Y-%m-%d_%H%M}.html")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(html_page(res, cutoff))
-    print(f"kesit {cutoff:%d.%m.%Y %H:%M} | evren {res['universe']} | genişlik {res['breadth']:.0%} | kurala uyan {res['candidates']} | seçilen {len(res['picked'])}")
+    print(f"kesit {cutoff:%d.%m.%Y %H:%M} | kural {args.rule.upper()} | evren {res['universe']} | genişlik {res['breadth']:.0%} | N6 uyan {res['n6_count']} | elenen (fonlama<0) {len(res['dropped'])} | seçilen {len(res['picked'])}")
+    print(f"derinlik kaynağı: {res.get('depth_src', '—')}")
+    for r in res["dropped"]:
+        print(f"  ELENDİ {r['sym']:12} {r.get('why', '')}: fonlama {('%+.3f%%' % r['f_funding']) if r.get('f_funding') is not None else 'yok'} | derinlik {('%+.2f' % r['imb1']) if r.get('imb1') is not None else '—'} | hacim {r['vol_ratio']:.1f}× | 24sa {r['chg24']:+.1f}%")
     for r in res["picked"]:
-        print(f"  {r['sym']:12} giriş {r['px']:g} | ADX {r['adx4']:.0f} DI {r['di_diff']:.0f} hacim {r['vol_ratio']:.1f}× RSI1h {r['rsi1']:.0f} gRSI {r['d_rsi']:.0f} | 24sa {r['chg24']:+.1f}% | puan {r['score']:+d}")
+        print(f"  {r['sym']:12} giriş {r['px']:g} | ADX {r['adx4']:.0f} DI {r['di_diff']:.0f} hacim {r['vol_ratio']:.1f}× RSI1h {r['rsi1']:.0f} gRSI {r['d_rsi']:.0f} | 24sa {r['chg24']:+.1f}% | puan {r['score']:+d} | fonlama {('%+.3f%%' % r['f_funding']) if r.get('f_funding') is not None else 'vadeli yok'} | OI24 {('%+.1f%%' % r['f_oi_chg24']) if r.get('f_oi_chg24') is not None else '—'} | taker {('%.2f' % r['f_taker']) if r.get('f_taker') is not None else '—'} | derinlik±1% {('%+.2f (alış %.0fk / satış %.0fk)' % (r['imb1'], (r.get('bid1_usdt') or 0) / 1000, (r.get('ask1_usdt') or 0) / 1000)) if r.get('imb1') is not None else '—'}")
     print(f"HTML: {path}")
     return 0
 

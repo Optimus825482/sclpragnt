@@ -92,6 +92,80 @@ def _rows_to_bars(rows) -> list[dict]:
     return out
 
 
+async def load_futures(sym: str, start_ms: int, end_ms: int) -> dict:
+    """futures_metrics / futures_funding / futures_book_depth (varsa) → zaman sıralı diziler. Tablo yoksa boş."""
+    from app import database
+    out = {"m_ts": [], "oi": [], "top_pos": [], "ls_acc": [], "taker": [], "f_ts": [], "f_rate": [], "d_ts": [], "d_bid1": [], "d_ask1": [], "d_bid5": [], "d_ask5": []}
+    try:
+        def op(conn):
+            m = conn.execute("SELECT ts, oi, top_ls_pos, ls_acc, taker_ls FROM futures_metrics WHERE symbol=%s AND ts BETWEEN %s AND %s ORDER BY ts", (sym, start_ms, end_ms)).fetchall()
+            f = conn.execute("SELECT ts, rate FROM futures_funding WHERE symbol=%s AND ts BETWEEN %s AND %s ORDER BY ts", (sym, start_ms, end_ms)).fetchall()
+            d = conn.execute("SELECT ts, pct, notional FROM futures_book_depth WHERE symbol=%s AND ts BETWEEN %s AND %s ORDER BY ts, pct", (sym, start_ms, end_ms)).fetchall()
+            tr = lambda r, keys: tuple(r[k] for k in keys) if isinstance(r, dict) else tuple(r)
+            return ([tr(r, ("ts", "oi", "top_ls_pos", "ls_acc", "taker_ls")) for r in m],
+                    [tr(r, ("ts", "rate")) for r in f], [tr(r, ("ts", "pct", "notional")) for r in d])
+        m, f, d = await database._run_db(op)
+    except Exception:  # noqa: BLE001 — tablo yoksa
+        return out
+    for ts, oi, tp, la, tk in m:
+        out["m_ts"].append(int(ts)); out["oi"].append(oi); out["top_pos"].append(tp); out["ls_acc"].append(la); out["taker"].append(tk)
+    for ts, rate in f:
+        out["f_ts"].append(int(ts)); out["f_rate"].append(rate)
+    cur, acc = None, {}
+    for ts, pct, notional in d:
+        ts = int(ts)
+        if ts != cur:
+            if cur is not None:
+                out["d_ts"].append(cur); out["d_bid1"].append(acc.get(-1, 0.0)); out["d_ask1"].append(acc.get(1, 0.0))
+                out["d_bid5"].append(sum(v for k, v in acc.items() if k < 0)); out["d_ask5"].append(sum(v for k, v in acc.items() if k > 0))
+            cur, acc = ts, {}
+        acc[int(pct)] = float(notional or 0)
+    if cur is not None:
+        out["d_ts"].append(cur); out["d_bid1"].append(acc.get(-1, 0.0)); out["d_ask1"].append(acc.get(1, 0.0))
+        out["d_bid5"].append(sum(v for k, v in acc.items() if k < 0)); out["d_ask5"].append(sum(v for k, v in acc.items() if k > 0))
+    return out
+
+
+def fut_features(fut: dict | None, cutoff_ms: int) -> dict:
+    """Kesit anındaki (öncesindeki son) vadeli/derinlik özellikleri; veri yoksa None."""
+    import bisect
+    o = {"f_oi_chg24": None, "f_oi_chg4": None, "f_taker": None, "f_taker4": None, "f_top_pos": None, "f_ls_acc": None,
+         "f_funding": None, "f_funding24": None, "f_funding_pos": None, "f_imb1": None, "f_imb5": None, "f_bid1_usdt": None}
+    if not fut or not fut.get("m_ts"):
+        return o
+    mt = fut["m_ts"]
+    i = bisect.bisect_right(mt, cutoff_ms) - 1
+    if i >= 0:
+        oi = fut["oi"]
+        def oi_at(ms):
+            j = bisect.bisect_right(mt, ms) - 1
+            return oi[j] if j >= 0 and mt[j] >= ms - 3_600_000 else None
+        o24, o4 = oi_at(cutoff_ms - 86_400_000), oi_at(cutoff_ms - 14_400_000)
+        if oi[i] and o24:
+            o["f_oi_chg24"] = (oi[i] / o24 - 1) * 100
+        if oi[i] and o4:
+            o["f_oi_chg4"] = (oi[i] / o4 - 1) * 100
+        o["f_taker"] = fut["taker"][i]; o["f_top_pos"] = fut["top_pos"][i]; o["f_ls_acc"] = fut["ls_acc"][i]
+        j4 = bisect.bisect_right(mt, cutoff_ms - 14_400_000)
+        win = [x for x in fut["taker"][j4:i + 1] if x is not None]
+        o["f_taker4"] = sum(win) / len(win) if win else None
+    ft = fut.get("f_ts") or []
+    k = bisect.bisect_right(ft, cutoff_ms) - 1
+    if k >= 0:
+        o["f_funding"] = fut["f_rate"][k] * 100
+        last3 = [x for x in fut["f_rate"][max(0, k - 2):k + 1] if x is not None]
+        o["f_funding24"] = sum(last3) / len(last3) * 100 if last3 else None
+        o["f_funding_pos"] = bool(fut["f_rate"][k] > 0)
+    dts = fut.get("d_ts") or []
+    q = bisect.bisect_right(dts, cutoff_ms) - 1
+    if q >= 0 and dts[q] >= cutoff_ms - 3_600_000:
+        b1, a1, b5, a5 = fut["d_bid1"][q], fut["d_ask1"][q], fut["d_bid5"][q], fut["d_ask5"][q]
+        o["f_imb1"] = (b1 - a1) / (b1 + a1) if (b1 + a1) else None
+        o["f_imb5"] = (b5 - a5) / (b5 + a5) if (b5 + a5) else None
+        o["f_bid1_usdt"] = b1
+    return o
+
+
 async def load_db(sym: str, start_ms: int, end_ms: int) -> dict | None:
     """Yerel historical_candles → {15m, 1h, 4h, 1d}. 2026-10-22: 1h/4h/1d arşivde varsa oradan (derin geçmiş: 4h 180 gün,
     1d 400 gün), yoksa 15m'den türetilir. Arşivdeki günlük mum borsa UTC gününe hizalıdır."""
@@ -99,7 +173,7 @@ async def load_db(sym: str, start_ms: int, end_ms: int) -> dict | None:
     b15 = _rows_to_bars(await database.get_market_candles(sym, "15m", start_ms=start_ms, end_ms=end_ms))
     if len(b15) < 500:
         return None
-    out = {"15m": b15}
+    out = {"15m": b15, "_fut": await load_futures(sym, start_ms, end_ms)}
     for tf, back_days in (("1h", 120), ("4h", 200), ("1d", 420)):
         rows = await database.get_market_candles(sym, tf, start_ms=end_ms - back_days * 86_400_000, end_ms=end_ms)
         bars = _rows_to_bars(rows)
@@ -229,8 +303,9 @@ def outcome(entry: float, b15: list[dict], start_ms: int, end_ms: int) -> dict |
 # ------------------------------------------------------------------------------------------------------ analiz
 NUM_FEATS = ["rsi1", "rsi4", "stoch1", "adx4", "di_diff", "atr1p", "atr4p", "bb_pos", "bb_width", "vwap_rel", "obv", "vol_ratio",
              "chg24", "chg4", "dist_hi24", "dist_lo24", "dist_hi7", "dist_s20_4", "dist_s99_4", "body4", "rs24", "breadth", "btc_chg24", "above4",
-             "d_dist_sma50", "d_dist_sma200", "d_rsi", "d_adx", "d_dist_hi30", "d_dist_hi90", "d_chg7", "d_range20"]
-BOOL_FEATS = ["ema_up", "macd1_pos", "macd1_up", "macd4_pos", "macd4_up", "hh", "hl", "btc_up", "d_above50", "d_above200", "d_macd_up", "btc_d_up"]
+             "d_dist_sma50", "d_dist_sma200", "d_rsi", "d_adx", "d_dist_hi30", "d_dist_hi90", "d_chg7", "d_range20",
+             "f_oi_chg24", "f_oi_chg4", "f_taker", "f_taker4", "f_top_pos", "f_ls_acc", "f_funding", "f_funding24", "f_imb1", "f_imb5", "f_bid1_usdt"]
+BOOL_FEATS = ["ema_up", "macd1_pos", "macd1_up", "macd4_pos", "macd4_up", "hh", "hl", "btc_up", "d_above50", "d_above200", "d_macd_up", "btc_d_up", "f_funding_pos"]
 FEAT_TR = {"rsi1": "RSI14 1h", "rsi4": "RSI14 4h", "stoch1": "StochRSI 1h", "adx4": "ADX14 4h", "di_diff": "+DI − −DI (4h)",
            "atr1p": "ATR 1h %", "atr4p": "ATR 4h %", "bb_pos": "Bollinger konumu (0–1)", "bb_width": "Bollinger genişliği %",
            "vwap_rel": "VWAP'a uzaklık %", "obv": "OBV eğimi", "vol_ratio": "Hacim 12 sa / 7 gün ort.", "chg24": "24 sa değişim %",
@@ -242,7 +317,10 @@ FEAT_TR = {"rsi1": "RSI14 1h", "rsi4": "RSI14 4h", "stoch1": "StochRSI 1h", "adx
            "btc_up": "BTC 4h kapanış > SMA20",
            "d_dist_sma50": "Günlük SMA50'ye uzaklık %", "d_dist_sma200": "Günlük SMA200'e uzaklık %", "d_rsi": "Günlük RSI14", "d_adx": "Günlük ADX14",
            "d_dist_hi30": "30 gün tepeye uzaklık %", "d_dist_hi90": "90 gün tepeye uzaklık %", "d_chg7": "7 gün değişim %", "d_range20": "20 gün aralık (tepe/dip) %",
-           "d_above50": "Günlük SMA50 üstü", "d_above200": "Günlük SMA200 üstü", "d_macd_up": "Günlük MACD histogram artıyor", "btc_d_up": "BTC günlük kapanış > SMA50"}
+           "d_above50": "Günlük SMA50 üstü", "d_above200": "Günlük SMA200 üstü", "d_macd_up": "Günlük MACD histogram artıyor", "btc_d_up": "BTC günlük kapanış > SMA50",
+           "f_oi_chg24": "Vadeli OI 24 sa değişim % (coin)", "f_oi_chg4": "Vadeli OI 4 sa değişim %", "f_taker": "Taker alım/satım oranı (5 dk)", "f_taker4": "Taker alım/satım oranı (4 sa ort.)",
+           "f_top_pos": "Top trader long/short (pozisyon)", "f_ls_acc": "Global long/short (hesap)", "f_funding": "Fonlama %", "f_funding24": "Fonlama 24 sa ort. %",
+           "f_imb1": "Derinlik dengesi ±1% (alış−satış)/(toplam)", "f_imb5": "Derinlik dengesi ±5%", "f_bid1_usdt": "Alış derinliği 1% (USDT)", "f_funding_pos": "Fonlama pozitif"}
 
 
 def tercile_stats(rows: list[dict], feat: str) -> list[dict]:
@@ -307,6 +385,15 @@ RULES = {
     "N4. Yeni (M2) + günlük MACD artıyor": lambda r: _m2(r) and bool(r.get("d_macd_up")),
     "N5. Yeni (M2) + BTC günlük SMA50 üstü": lambda r: _m2(r) and bool(r.get("btc_d_up")),
     "N6. Yeni (M2) + günlük RSI < 60": lambda r: _m2(r) and g(r, "d_rsi", 100) < 60,
+    "N7. N6, negatif fonlama elenir (vadelisi olmayan kalır)": lambda r: _m2(r) and g(r, "d_rsi", 100) < 60 and g(r, "f_funding", 0) >= 0,
+    "N8. N7 + vadeli OI 24 sa düşüyor": lambda r: _m2(r) and g(r, "d_rsi", 100) < 60 and g(r, "f_funding", 0) >= 0 and r.get("f_oi_chg24") is not None and r["f_oi_chg24"] < 0,
+    "N9. N7 + taker 5 dk > 1 (vadelisi olmayan kalır)": lambda r: _m2(r) and g(r, "d_rsi", 100) < 60 and g(r, "f_funding", 0) >= 0 and g(r, "f_taker", 2) > 1,
+    "F1. N6 + fonlama ≤ 0,01% (kalabalık long değil)": lambda r: _m2(r) and g(r, "d_rsi", 100) < 60 and r.get("f_funding") is not None and r["f_funding"] <= 0.01,
+    "F2. N6 + OI 24 sa artıyor": lambda r: _m2(r) and g(r, "d_rsi", 100) < 60 and g(r, "f_oi_chg24") > 0,
+    "F3. N6 + taker oranı 4 sa > 1 (alıcı baskın)": lambda r: _m2(r) and g(r, "d_rsi", 100) < 60 and g(r, "f_taker4") > 1.0,
+    "F4. N6 + derinlik ±1% alış ağırlıklı": lambda r: _m2(r) and g(r, "d_rsi", 100) < 60 and g(r, "f_imb1") > 0,
+    "F5. N6 + top trader pozisyon oranı < 2": lambda r: _m2(r) and g(r, "d_rsi", 100) < 60 and r.get("f_top_pos") is not None and r["f_top_pos"] < 2,
+    "F6. N6 + fonlama > 0,05% (karşıt: kalabalık)": lambda r: _m2(r) and g(r, "d_rsi", 100) < 60 and g(r, "f_funding") > 0.05,
     "M3. Yeni + puan ≥ 3": lambda r: g(r, "adx4") >= 25 and g(r, "di_diff") >= 10 and bool(r.get("macd4_up")) and g(r, "vol_ratio") >= 1.5
     and g(r, "rsi1", 100) < 72 and not (r.get("above4") == 4 and bool(r.get("hl"))) and r["score"] >= 3,
 }
@@ -424,7 +511,7 @@ async def main() -> int:
             o = outcome(f["px"], data[sym]["15m"], cms, cms + 24 * 3_600_000)
             if o is None:
                 continue
-            rows.append({"sym": sym, "t": cms, **f, "btc_up": btc_up, "btc_chg24": btc_chg, "btc_d_up": btc_d_up,
+            rows.append({"sym": sym, "t": cms, **f, **fut_features(data[sym].get("_fut"), cms), "btc_up": btc_up, "btc_chg24": btc_chg, "btc_d_up": btc_d_up,
                          "rs24": (f["chg24"] - btc_chg) if (f["chg24"] is not None and btc_chg is not None) else None,
                          "breadth": breadth, **o})
         if ci % 10 == 0 or ci == len(cutoffs):
@@ -498,6 +585,8 @@ async def main() -> int:
              f"<div><b class='{c(univ_stats['net'])}'>{ftl(univ_stats['net'])}</b><span>tüm evrende sinyal başı net</span></div>"
              f"<div><b>{fpc(len(base_btc_down) / len(base)) if base else '—'}</b><span>sinyallerin BTC düşük rejimde payı</span></div>"
              f"<div><b>{fpc(sum(1 for r in rows if r.get('d_dist_sma50') is not None) / len(rows)) if rows else '—'}</b><span>günlük bağlamı olan gözlem</span></div>"
+             f"<div><b>{fpc(sum(1 for r in rows if r.get('f_taker') is not None) / len(rows)) if rows else '—'}</b><span>vadeli verisi olan gözlem</span></div>"
+             f"<div><b>{fpc(sum(1 for r in rows if r.get('f_imb1') is not None) / len(rows)) if rows else '—'}</b><span>derinlik verisi olan gözlem</span></div>"
              "</div>")
     # kazanan vs kaybeden ortalamaları
     H += ["<h2>1. Kazanan ve kaybeden sinyallerde özellik ortalamaları (mevcut kural)</h2>",

@@ -923,8 +923,13 @@ async def _send_push(notif: dict) -> bool:
                 "detected_at": notif.get("detected_at"),
                 "horizon_minutes": notif.get("horizon_minutes"),
                 "source": notif.get("source", "monitoring"),
+                # Günlük sayaç (2026-10-24): ilk denemede None → `deliver_web_push` sayar;
+                # yeniden denemede (ertelenen kuyruk) atanmış değer yeniden kullanılır.
+                "daily_count": notif.get("daily_count"),
             },
         )
+        if result.get("daily_count"):
+            notif["daily_count"] = int(result["daily_count"])
         ok = bool(result.get("ok", False))
         if not ok:
             reason = result.get("reason", result.get("error", "unknown"))

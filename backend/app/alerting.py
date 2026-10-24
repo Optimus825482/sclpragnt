@@ -106,7 +106,38 @@ def push_headers(tag) -> dict:
     return headers
 
 
-async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=None, usernames=None):
+def push_symbol_for_counter(symbol, extra=None, usernames=None):
+    """Günlük sayaç için sembol: `symbol` kwarg'ı, yoksa `extra["symbol"]` (çağıranların çoğu oraya koyar).
+
+    `usernames` dolu push'lar hedefli yönetici bildirimidir (işlem bildirimi); coin sinyali
+    değildir, sayılmaz. Boş / "ALERT" gibi coin olmayan değerleri `normalize_symbol` eler.
+    """
+    if usernames is not None:
+        return None
+    from app.push_daily_counter import normalize_symbol
+    return normalize_symbol(symbol if symbol else (extra or {}).get("symbol"))
+
+
+async def _daily_count_for(symbol, extra=None):
+    """Sayacı artırıp değeri döndürür; `extra["daily_count"]` doluysa (yeniden deneme) onu yeniden kullanır.
+
+    Sayaç arızası push'u DURDURMAZ: hata loglanır, None döner, bildirim sayaçsız gider.
+    """
+    try:
+        prior = int((extra or {}).get("daily_count") or 0)
+    except (TypeError, ValueError):
+        prior = 0
+    if prior > 0:
+        return prior
+    try:
+        from app.push_daily_counter import next_count
+        return await next_count(symbol)
+    except Exception as exc:
+        logger.warning("Push günlük sayacı artırılamadı (%s): %s", symbol, exc)
+        return None
+
+
+async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=None, usernames=None, symbol=None):
     vapid_private, subject = os.getenv("VAPID_PRIVATE_KEY", "").strip(), os.getenv("VAPID_SUBJECT", "mailto:alerts@example.com").strip()
     if not vapid_private: return {"ok": False, "skipped": True, "reason": "vapid_not_configured"}
     try:
@@ -121,6 +152,20 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
         }
         if tag: payload_obj["tag"] = tag
         if extra: payload_obj.update(extra)
+        # GÜNLÜK SAYAÇ (2026-10-24): coin hakkında giden her push "bugün N. bildirim" taşır.
+        # Gerçek gönderim anında sayılır (sessiz saat ertelemesi bittikten sonra); alıcı yoksa
+        # push gitmez, sayaç da artmaz. Başlık sonuna eklenir (service worker `title`'ı
+        # bildirim başlığı olarak gösterir — en görünür yer) ve payload'a `daily_count` yazılır.
+        daily_count = None
+        counter_symbol = push_symbol_for_counter(symbol, extra, usernames)
+        if counter_symbol and subscriptions:
+            daily_count = await _daily_count_for(counter_symbol, extra)
+        if daily_count:
+            from app.push_daily_counter import counter_label
+            payload_obj["title"] = f"{payload_obj['title']} · {counter_label(daily_count)}"
+            payload_obj["daily_count"] = int(daily_count)
+        else:
+            payload_obj.pop("daily_count", None)
         payload = json.dumps(payload_obj)
         success_count = 0
         dead_subscriptions = []
@@ -158,8 +203,12 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
                 logger.info("Push: %d ölü abonelik temizlendi", len(dead_subscriptions))
             except Exception as cleanup_exc:
                 logger.warning("Push: abonelik temizleme hatası: %s", cleanup_exc)
-        return {"ok": success_count > 0, "count": success_count, "total": len(subscriptions),
-                "dead_count": len(dead_subscriptions)}
+        result = {"ok": success_count > 0, "count": success_count, "total": len(subscriptions),
+                  "dead_count": len(dead_subscriptions)}
+        if daily_count:
+            # Çağıran (monitoring._send_push) bunu zarfa yazar: yeniden denemede sayaç bir daha artmaz.
+            result["daily_count"] = int(daily_count)
+        return result
     except Exception as exc:
         logger.error("Push teslimat hatası: %s", exc)
         return {"ok": False, "error": str(exc)}

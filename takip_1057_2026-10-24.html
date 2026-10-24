@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10:57 Takip 24.10</title>
+<meta name="description" content="TREE, AIGENSYN, KAT, ANIME, OPEN ve ZKC TRY paritelerinin 24.10.2026 10:57 fiyatına göre anlık değişimi.">
+<style>
+  :root { --bg:#0f1131; --panel:#171a3f; --line:#2a2e5c; --text:#e8eaf6; --muted:#8f95bf; --green:#22c55e; --red:#ef4444; --amber:#f59e0b; --blue:#60a5fa; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --bg:#f5f6fb; --panel:#fff; --line:#d9dcec; --text:#161a3a; --muted:#5d6390; } }
+  :root[data-theme="light"] { --bg:#f5f6fb; --panel:#fff; --line:#d9dcec; --text:#161a3a; --muted:#5d6390; }
+  * { box-sizing:border-box; } body { margin:0; padding:16px; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; } .sub { color:var(--muted); font-size:12px; margin-bottom:10px; max-width:1000px; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; font-size:12px; color:var(--muted); margin-bottom:10px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--red); margin-right:6px; vertical-align:middle; } .dot.on { background:var(--green); }
+  .kpi { display:flex; flex-wrap:wrap; gap:10px; margin:8px 0 12px; } .kpi div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; min-width:150px; }
+  .kpi b { display:block; font-size:17px; } .kpi span { color:var(--muted); font-size:12px; }
+  .wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+  table { border-collapse:collapse; width:100%; min-width:820px; font-variant-numeric:tabular-nums; }
+  th,td { padding:9px 10px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; } th { color:var(--muted); font-weight:600; font-size:12px; position:sticky; top:0; background:var(--panel); }
+  td:first-child,th:first-child { text-align:left; } tr:last-child td { border-bottom:0; } .sym { font-weight:700; font-size:15px; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flat { color:var(--muted); }
+  .big { font-size:17px; font-weight:700; }
+  .ref { width:96px; background:transparent; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:3px 6px; text-align:right; font:inherit; font-variant-numeric:tabular-nums; }
+  .ref:focus { outline:none; border-color:var(--blue); }
+  .flash-up { animation:fu .6s ease-out; } .flash-dn { animation:fd .6s ease-out; }
+  @keyframes fu { 0% { background:rgba(34,197,94,.35); } 100% { background:transparent; } }
+  @keyframes fd { 0% { background:rgba(239,68,68,.35); } 100% { background:transparent; } }
+  .note { color:var(--muted); font-size:12px; margin-top:12px; }
+  button { background:transparent; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:3px 9px; font:inherit; font-size:12px; cursor:pointer; } button:hover { color:var(--text); }
+  @media (max-width:600px) { body { padding:12px; } .kpi div { min-width:calc(50% - 5px); } }
+</style>
+</head>
+<body>
+<h1>10:57 Referans Takibi — 24.10.2026</h1>
+<div class="sub">Altı TRY paritesinin anlık fiyatı, 24.10.2026 saat 10:57 (Türkiye) 1 dakikalık mum kapanışına göre izlenir. Fiyatlar 3 saniyede bir Binance TR'den çekilir; en yüksek / en düşük sütunları 10:57'den bu yana oluşan mumlardan hesaplanır. Referans fiyatı tıklayıp değiştirebilirsin; değişiklik bu tarayıcıda saklanır.</div>
+<div class="bar">
+  <span><i class="dot" id="dot"></i><span id="conn">bağlanıyor…</span></span>
+  <span>Son fiyat: <b id="last">—</b></span>
+  <span>Kaynak: <b id="src">—</b></span>
+  <span>Sıralama: <button id="sortBtn">değişim %</button></span>
+  <span><button id="resetBtn">referansları 10:57'ye döndür</button></span>
+  <span><button id="themeBtn">tema</button></span>
+</div>
+<div class="kpi">
+  <div><b id="kAvg" class="flat">—</b><span>ortalama değişim</span></div>
+  <div><b id="kBest" class="flat">—</b><span>en iyi</span></div>
+  <div><b id="kWorst" class="flat">—</b><span>en kötü</span></div>
+  <div><b id="kUp">—</b><span>yükselen / düşen</span></div>
+</div>
+<div class="wrap">
+<table>
+  <thead><tr>
+    <th>Sembol</th><th>10:57 fiyatı</th><th>Anlık</th><th>Değişim %</th><th>Fark (TRY)</th><th>En yüksek (10:57'den)</th><th>En düşük (10:57'den)</th><th>Zirveden uzaklık</th><th>24 sa hacim (TRY)</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+</div>
+<div class="note">Referans = 24.10.2026 10:57 1 dk mum kapanışı (api.binance.me klines, 07:57 UTC). OPENTRY'de 10:57 mumunda işlem yok, son fiyat 4,791 taşındı. Sayfa yalnızca izleme amaçlıdır; emir göndermez.</div>
+
+<script>
+(function () {
+  var REF_TS = 1792828620000; // 24.10.2026 07:57:00 UTC = 10:57 TR
+  var DEFAULT_REF = { TREETRY:2.27, AIGENSYNTRY:0.906, KATTRY:0.2293, ANIMETRY:0.147, OPENTRY:4.791, ZKCTRY:1.82 };
+  var LABEL = { TREETRY:"TREE/TRY", AIGENSYNTRY:"AIGENSYN/TRY", KATTRY:"KAT/TRY", ANIMETRY:"ANIME/TRY", OPENTRY:"OPEN/TRY", ZKCTRY:"ZKC/TRY" };
+  var SYMS = Object.keys(DEFAULT_REF);
+  var REST_BASES = ["https://api.binance.me", "https://api.binance.tr", "https://api.binance.com"];
+  var LS_KEY = "takip1057_ref_2026-10-24";
+
+  var ref = loadRef();
+  var live = {}, prev = {}, hi = {}, lo = {}, vol = {};
+  var sortMode = "chg"; var baseIdx = 0; var lastOk = 0;
+
+  function loadRef() {
+    var out = Object.assign({}, DEFAULT_REF);
+    try { var s = JSON.parse(localStorage.getItem(LS_KEY) || "{}"); SYMS.forEach(function (k) { if (s[k] > 0) out[k] = +s[k]; }); } catch (e) {}
+    return out;
+  }
+  function saveRef() { try { localStorage.setItem(LS_KEY, JSON.stringify(ref)); } catch (e) {} }
+
+  function fmtP(x) { if (!(x > 0)) return "—"; var d = x >= 100 ? 2 : x >= 1 ? 3 : x >= 0.1 ? 4 : 5; return x.toLocaleString("tr-TR", { minimumFractionDigits: d, maximumFractionDigits: d }); }
+  function fmtPct(x) { if (!isFinite(x)) return "—"; return (x > 0 ? "+" : "") + x.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " %"; }
+  function fmtVol(x) { if (!(x >= 0)) return "—"; return x >= 1e6 ? (x / 1e6).toLocaleString("tr-TR", { maximumFractionDigits: 2 }) + " M" : x.toLocaleString("tr-TR", { maximumFractionDigits: 0 }); }
+  function cls(x) { return x > 0 ? "pos" : x < 0 ? "neg" : "flat"; }
+  function hhmmss(ms) { return new Date(ms).toLocaleTimeString("tr-TR", { hour12: false }); }
+
+  function buildRows() {
+    var tb = document.getElementById("rows"); tb.innerHTML = "";
+    SYMS.forEach(function (s) {
+      var tr = document.createElement("tr"); tr.id = "r_" + s;
+      tr.innerHTML = '<td class="sym">' + LABEL[s] + '</td>'
+        + '<td><input class="ref" data-sym="' + s + '" value="' + ref[s] + '"></td>'
+        + '<td class="big" data-f="px">—</td><td class="big" data-f="pct">—</td><td data-f="diff">—</td>'
+        + '<td data-f="hi">—</td><td data-f="lo">—</td><td data-f="dd">—</td><td data-f="vol">—</td>';
+      tb.appendChild(tr);
+    });
+    tb.querySelectorAll("input.ref").forEach(function (inp) {
+      inp.addEventListener("change", function () {
+        var v = parseFloat(inp.value.replace(",", ".")); var s = inp.dataset.sym;
+        if (v > 0) { ref[s] = v; saveRef(); } inp.value = ref[s]; render();
+      });
+    });
+  }
+
+  function pollPrice() {
+    var base = REST_BASES[baseIdx % REST_BASES.length];
+    var url = base + "/api/v3/ticker/price?symbols=" + encodeURIComponent(JSON.stringify(SYMS));
+    fetch(url).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }).then(function (rows) {
+      rows.forEach(function (row) { var p = parseFloat(row.price); if (p > 0) { prev[row.symbol] = live[row.symbol]; live[row.symbol] = p;
+        if (!(hi[row.symbol] >= p)) hi[row.symbol] = p; if (!(lo[row.symbol] <= p)) lo[row.symbol] = p; } });
+      lastOk = Date.now(); document.getElementById("src").textContent = base.replace("https://", "");
+      setConn(true); render();
+    }).catch(function () { baseIdx++; setConn(false); });
+  }
+
+  function pollRange() {
+    SYMS.forEach(function (s) {
+      var base = REST_BASES[baseIdx % REST_BASES.length];
+      fetch(base + "/api/v3/klines?symbol=" + s + "&interval=1m&startTime=" + REF_TS + "&limit=1000").then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }).then(function (ks) {
+        var h = -Infinity, l = Infinity;
+        ks.forEach(function (k) { var kh = +k[2], kl = +k[3]; if (kh > h) h = kh; if (kl < l) l = kl; });
+        if (isFinite(h)) hi[s] = Math.max(h, live[s] || 0); if (isFinite(l)) lo[s] = Math.min(l, live[s] || Infinity);
+      }).catch(function () {});
+    });
+    var base = REST_BASES[baseIdx % REST_BASES.length];
+    fetch(base + "/api/v3/ticker/24hr?symbols=" + encodeURIComponent(JSON.stringify(SYMS))).then(function (r) { return r.json(); }).then(function (rows) {
+      rows.forEach(function (row) { vol[row.symbol] = parseFloat(row.quoteVolume); });
+    }).catch(function () {});
+  }
+
+  function setConn(ok) {
+    var d = document.getElementById("dot"), c = document.getElementById("conn");
+    d.className = "dot" + (ok ? " on" : "");
+    c.textContent = ok ? "canlı" : (lastOk ? "bağlantı yok, yeniden deneniyor" : "bağlanamadı, yeniden deneniyor");
+    if (lastOk) document.getElementById("last").textContent = hhmmss(lastOk);
+  }
+
+  function render() {
+    var list = SYMS.map(function (s) { var p = live[s]; var r = ref[s]; return { s: s, p: p, pct: p > 0 ? (p / r - 1) * 100 : NaN }; });
+    if (sortMode === "chg") list.sort(function (a, b) { return (isNaN(b.pct) ? -1e9 : b.pct) - (isNaN(a.pct) ? -1e9 : a.pct); });
+    var tb = document.getElementById("rows");
+    var up = 0, dn = 0, sum = 0, n = 0, best = null, worst = null;
+    list.forEach(function (it) {
+      var tr = document.getElementById("r_" + it.s); tb.appendChild(tr);
+      var p = it.p, r = ref[it.s];
+      var q = function (f) { return tr.querySelector('[data-f="' + f + '"]'); };
+      q("px").textContent = fmtP(p);
+      q("pct").textContent = fmtPct(it.pct); q("pct").className = "big " + cls(it.pct);
+      var d = p - r; q("diff").textContent = p > 0 ? (d > 0 ? "+" : d < 0 ? "-" : "") + (d === 0 ? "0" : fmtP(Math.abs(d))) : "—"; q("diff").className = cls(d);
+      q("hi").textContent = fmtP(hi[it.s]); q("lo").textContent = fmtP(lo[it.s]);
+      var dd = hi[it.s] > 0 && p > 0 ? (p / hi[it.s] - 1) * 100 : NaN; q("dd").textContent = fmtPct(dd); q("dd").className = cls(dd);
+      q("vol").textContent = fmtVol(vol[it.s]);
+      if (prev[it.s] > 0 && p !== prev[it.s]) { q("px").classList.remove("flash-up", "flash-dn"); void q("px").offsetWidth; q("px").classList.add(p > prev[it.s] ? "flash-up" : "flash-dn"); }
+      if (isFinite(it.pct)) { n++; sum += it.pct; if (it.pct > 0) up++; else if (it.pct < 0) dn++; if (!best || it.pct > best.pct) best = it; if (!worst || it.pct < worst.pct) worst = it; }
+    });
+    var avg = n ? sum / n : NaN;
+    var kA = document.getElementById("kAvg"); kA.textContent = fmtPct(avg); kA.className = cls(avg);
+    var kB = document.getElementById("kBest"); kB.textContent = best ? LABEL[best.s].split("/")[0] + " " + fmtPct(best.pct) : "—"; kB.className = best ? cls(best.pct) : "flat";
+    var kW = document.getElementById("kWorst"); kW.textContent = worst ? LABEL[worst.s].split("/")[0] + " " + fmtPct(worst.pct) : "—"; kW.className = worst ? cls(worst.pct) : "flat";
+    document.getElementById("kUp").innerHTML = '<span class="pos">' + up + '</span> / <span class="neg">' + dn + '</span>';
+    document.title = (isFinite(avg) ? fmtPct(avg) + " · " : "") + "10:57 Takip 24.10";
+  }
+
+  document.getElementById("sortBtn").addEventListener("click", function () { sortMode = sortMode === "chg" ? "fixed" : "chg"; this.textContent = sortMode === "chg" ? "değişim %" : "sabit"; render(); });
+  document.getElementById("resetBtn").addEventListener("click", function () { ref = Object.assign({}, DEFAULT_REF); saveRef(); buildRows(); render(); });
+  document.getElementById("themeBtn").addEventListener("click", function () { var h = document.documentElement; h.dataset.theme = h.dataset.theme === "light" ? "dark" : "light"; });
+
+  buildRows(); pollPrice(); pollRange();
+  setInterval(pollPrice, 3000);
+  setInterval(pollRange, 60000);
+})();
+</script>
+</body>
+</html>

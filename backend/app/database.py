@@ -5299,6 +5299,28 @@ async def remove_push_subscriptions(endpoints: list[str]):
     return await _run_db(op)
 
 
+async def bump_push_daily_count(symbol: str, day_key: str, now: float | None = None) -> int:
+    """Sembolün o günkü push sayacını 1 artırır ve YENİ değeri döndürür (migration 028).
+
+    Tek atomik upsert: eşzamanlı iki push aynı sayıyı alamaz. `day_key` Europe/Istanbul
+    takvim günüdür (YYYY-MM-DD) — `app/push_daily_counter.py` üretir. Eski günlerin
+    satırları aynı çağrıda budanır (3 günden eski); tablo sembol x gün ile sınırlı kalır.
+    """
+    ts = float(now if now is not None else time.time())
+
+    def op(conn):
+        row = conn.execute(
+            "INSERT INTO push_daily_counter(symbol, day_key, count, updated_at) VALUES(?,?,1,?) "
+            "ON CONFLICT(symbol, day_key) DO UPDATE SET count = push_daily_counter.count + 1, "
+            "updated_at = excluded.updated_at RETURNING count",
+            (symbol, day_key, ts)).fetchone()
+        # Budama: YYYY-MM-DD metni sözlük sırasıyla kronolojiktir; 3 günden eski satırlar gider.
+        conn.execute("DELETE FROM push_daily_counter WHERE updated_at < ?", (ts - 3 * 86400,))
+        conn.commit()
+        return int(row[0]) if row else 1
+    return await _run_db(op)
+
+
 # ----------------------------------------------------------------------------------------------------------------
 # 2026-10-18: MA şerit BUY sinyal kaydı (migration 026; app/ma_buy_tracker.py yazar, yönetici sayfası okur).
 _MA_BUY_COLS = ("id", "symbol", "timeframe", "bar_open_ms", "bar_close_ms", "detected_at", "rules", "signal_price",
