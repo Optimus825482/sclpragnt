@@ -6324,6 +6324,9 @@ async def report_notifications(
             "outcome_details": row.get("outcome_details") or {},
         })
 
+    # 2026-10-24: /notifications sayfası da ana sayfayla AYNI "Bugün #N" sırasını göstersin.
+    await _attach_daily_seq(result)
+
     # SEMA ÇEŞİTLİLİĞİ (R5)
     symbol_counter = Counter(item["symbol"] for item in result if item.get("symbol"))
     unique_symbols = len(symbol_counter)
@@ -6696,6 +6699,35 @@ async def reset_monitoring_notifications(request: Request):
     return {"ok": True, "message": "Bildirim sıfırlandı"}
 
 
+async def _attach_daily_seq(rows: list[dict]) -> None:
+    """Her satıra `daily_seq` ekle: o coin için BUGÜNKÜ (00:00 Europe/Istanbul'dan beri) kaçıncı bildirim.
+
+    2026-10-24: kaynak kalıcı `monitoring_notifications` tablosudur
+    (`database.get_monitoring_notification_daily_seq`, tek pencere sorgusu) — deploy öncesi
+    bildirimler de sayılır. Eşleme `id` ile; bugünden önceki satır ve id'si olmayan /
+    tabloda bulunmayan satır → `None`. Sorgu hatası uç noktayı BOZMAZ: uyarı loglanır,
+    satırlar `daily_seq` alanı olmadan döner.
+    """
+    if not rows:
+        return
+    from app import push_daily_counter
+    try:
+        since = push_daily_counter.day_start()
+        seq_by_id = await database.get_monitoring_notification_daily_seq(since)
+    except Exception as exc:
+        logger.warning("günlük bildirim sırası (daily_seq) hesaplanamadı: %s", exc)
+        return
+    for row in rows:
+        seq = None
+        try:
+            detected_at = float(row.get("detected_at") or 0)
+            if detected_at >= since and row.get("id") is not None:
+                seq = seq_by_id.get(int(row["id"]))
+        except (TypeError, ValueError):
+            seq = None
+        row["daily_seq"] = seq
+
+
 @router.get("/api/monitoring/notifications")
 async def monitoring_notification_history():
     """Son bildirim geçmişi: kalıcı DB kaydı + oturum içi liste.
@@ -6736,6 +6768,8 @@ async def monitoring_notification_history():
     for row in session:
         _norm_row(row)
         _add_honest_fields(row)
+    # 2026-10-24: "Bugün #N" rozeti — kalıcı geçmişten hesaplanan günlük sıra (hata → alan yok).
+    await _attach_daily_seq(persisted)
     return {"paper_only": True, "history": persisted, "session": session}
 
 

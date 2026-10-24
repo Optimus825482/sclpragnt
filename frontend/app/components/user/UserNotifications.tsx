@@ -5,11 +5,14 @@ import { useVisibleInterval } from "../../lib/useVisibleInterval";
 import SymbolLink from "../SymbolLink";
 import { formatPrice, toMs } from "../../lib/format";
 import { hitProbLabel, netTargetText, statusLabel, windowEnd, type Tone } from "../../lib/userUi";
+import DailySeqChip from "./home/DailySeqChip";
 
 type Row = {
   symbol: string;
   price?: number;
   detected_at: number;
+  // 2026-10-24: bu coin için bugünkü kaçıncı bildirim (ana sayfa kartıyla aynı sayı); eski gün -> null.
+  daily_seq?: number | null;
   target_pct?: number | null;
   horizon_minutes?: number | null;
   hit_prob_calibrated?: number | null;
@@ -115,8 +118,11 @@ export default function UserNotifications() {
           <div className="space-y-2 md:hidden">
             {rows.map((r, i) => (
               <div key={`${r.symbol}-${r.detected_at}-${i}`} className="card p-3">
-                <div className="flex min-h-[44px] items-center justify-between">
-                  <SymbolLink symbol={r.symbol} className="font-mono text-base font-semibold text-white hover:text-neon-green" />
+                <div className="flex min-h-[44px] items-center justify-between gap-2">
+                  <span className="flex min-w-0 flex-wrap items-center gap-2">
+                    <SymbolLink symbol={r.symbol} className="font-mono text-base font-semibold text-white hover:text-neon-green" />
+                    <DailySeqChip seq={r.daily_seq} />
+                  </span>
                   <StatusBadge status={r.status} />
                 </div>
                 <p className="text-xs text-bunker-muted">{clock(r.detected_at)}</p>
@@ -148,7 +154,12 @@ export default function UserNotifications() {
                 {rows.map((r, i) => (
                   <tr key={`${r.symbol}-${r.detected_at}-${i}`} className="border-t border-bunker-700">
                     <td className="p-3">{clock(r.detected_at)}</td>
-                    <td className="p-3"><SymbolLink symbol={r.symbol} /></td>
+                    <td className="p-3">
+                      <span className="inline-flex flex-wrap items-center gap-2">
+                        <SymbolLink symbol={r.symbol} />
+                        <DailySeqChip seq={r.daily_seq} />
+                      </span>
+                    </td>
                     <td className="p-3">{formatPrice(r.price)}</td>
                     <td className="p-3">{r.target_pct != null ? `%${r.target_pct}` : "—"}<NetText r={r} /></td>
                     <td className="p-3"><ProbText r={r} /></td>

@@ -6109,6 +6109,33 @@ async def list_monitoring_notifications(limit=50, push_only: bool = True):
     return await _run_db(op)
 
 
+async def get_monitoring_notification_daily_seq(since: float, push_only: bool = True) -> dict[int, int]:
+    """`since` (gün başı epoch) sonrası bildirimler için id → "o coin için bugünkü sıra" (1'den).
+
+    2026-10-24: "Bugün #3" rozeti. Sıra, KALICI tablodaki gerçek geçmişten TEK pencere
+    sorgusuyla hesaplanır (deploy öncesi bildirimler de sayılır; `push_daily_counter`
+    tablosu yalnız deploy sonrası push'ları bildiği için kaynak olarak kullanılmaz).
+    Sembol `push_daily_counter.normalize_symbol` ile aynı kurala göre normalize edilir
+    (büyük harf, alt çizgi/boşluk yok) — zaman dilimi, tarama türü ve mod ayırt edilmez.
+    Sıra `detected_at`, eşitlikte `id` ile verilir. `push_only=True`: listelerle tutarlı
+    olsun diye yalnız push denenmiş satırlar sayılır.
+    """
+    where = "detected_at >= ?"
+    if push_only:
+        where += " AND (sent_via_push OR push_attempted)"
+
+    def op(conn):
+        rows = conn.execute(
+            "SELECT id, ROW_NUMBER() OVER ("
+            "PARTITION BY UPPER(REPLACE(REPLACE(symbol, '_', ''), ' ', '')) "
+            "ORDER BY detected_at, id) AS daily_seq "
+            "FROM monitoring_notifications WHERE " + where,
+            (float(since),),
+        ).fetchall()
+        return {int(row[0]): int(row[1]) for row in rows if row[0] is not None}
+    return await _run_db(op)
+
+
 async def get_chart_settings(symbol):
     def op(conn):
         row = conn.execute("SELECT data FROM chart_settings WHERE symbol=?", (symbol,)).fetchone()

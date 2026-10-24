@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import PctChange from "../PctChange";
+import DailySeqChip from "./DailySeqChip";
 import { formatPrice, toMs } from "../../../lib/format";
 import { SCORE_LABEL, SCORE_TOOLTIP, baseSymbol, confidenceBadge, hitProbLabel, isRegimeTitle, modeLabel, netTargetText, notificationStatus, type NotificationStatus } from "../../../lib/userUi";
 
@@ -25,6 +26,8 @@ export type RecentRow = {
   target_net_pct?: number | null;
   score_label?: string | null;
   llm_reasons?: unknown;
+  // 2026-10-24: bu coin için bugünkü (00:00 İstanbul'dan beri) kaçıncı bildirim; eski gün / bilinmiyor -> null.
+  daily_seq?: number | null;
   // 2026-10-18: MA kesişim BUY kartı (radar dışı kaynak). Verilmezse radar kartı aynen çizilir.
   timeframe?: string | null;   // grafik bağlantısı + TF rozeti ("M5")
   kind_label?: string | null;  // tür rozeti (varsayılan "Yükseliş adayı")
@@ -131,6 +134,7 @@ export default function NotificationCard({
       <div className="flex items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           {rank != null && <span className="u-chip u-chip-wait" aria-label={`Sıra ${rank}`}>{rank}</span>}
+          <DailySeqChip seq={row.daily_seq} />
           {row.timeframe ? (
             <span className="u-chip u-chip-info" title="Sinyalin oluştuğu grafik zaman dilimi">{tfLabel(row.timeframe)}</span>
           ) : hasHorizon && <span className="u-chip u-chip-info">{Math.round(Number(row.horizon_minutes))} DK</span>}

@@ -30,6 +30,17 @@ def day_key(now: float | None = None) -> str:
     return datetime.fromtimestamp(ts, ISTANBUL_TZ).strftime("%Y-%m-%d")
 
 
+def day_start(now: float | None = None) -> float:
+    """Epoch → o anın Europe/Istanbul gününün 00:00'ı (epoch saniye).
+
+    `day_key` ile AYNI gün sınırı; bildirim geçmişinde "bugün bu coin için kaçıncı"
+    sırasını (`daily_seq`) hesaplarken DB `detected_at` alt sınırı olarak kullanılır.
+    """
+    ts = time.time() if now is None else float(now)
+    local = datetime.fromtimestamp(ts, ISTANBUL_TZ)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
 def normalize_symbol(symbol) -> str | None:
     """Sayaç anahtarı: büyük harf, boşluk/alt çizgi yok (`BTC_TRY` → `BTCTRY`).
 
