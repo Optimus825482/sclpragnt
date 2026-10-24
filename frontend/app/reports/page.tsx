@@ -7,6 +7,7 @@ import { useIsUserView } from "../lib/adminView";
 import UserSignalReport from "../components/user/UserSignalReport";
 import SymbolLink from "../components/SymbolLink";
 import MacdMtfTab from "./MacdMtfTab";
+import DailyFirstNotificationTab from "./DailyFirstNotificationTab";
 import LlmVsRulesTab from "./LlmVsRulesTab";
 import CombinedRisingTab from "./CombinedRisingTab";
 import CombinedPaperPanel from "../components/CombinedPaperPanel";
@@ -1623,7 +1624,7 @@ function SelfLearningTab() {
 function AdminReportsPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
-  const [tab, setTab] = useState<"overview" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "daily_rising" | "combined_paper" | "advanced">("overview");
+  const [tab, setTab] = useState<"overview" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "daily_first" | "daily_rising" | "combined_paper" | "advanced">("overview");
   const [advancedSubTab, setAdvancedSubTab] = useState("velocity");
   // VARSAYILAN: "bu deploy" görünümü. `day=all` + arşiv kapalı = yalnız rapor
   // başlangıcı (2026-10-07 11:30) SONRASI veri. `selectedDay` bir güne
@@ -1650,6 +1651,7 @@ function AdminReportsPage() {
     { id: "llm_compare", label: "🤖 Kural vs LLM", icon: "🤖" },
     { id: "symbols", label: "📈 Sembol Başarısı", icon: "📈" },
     { id: "mtf", label: "🧠 MTF Konfluans", icon: "🧠" },
+    { id: "daily_first", label: "🔔 Günün ilk bildirimi", icon: "🔔" },
     { id: "daily_rising", label: "🌅 Kombine Yükseliş", icon: "🌅" },
     { id: "combined_paper", label: "💠 Kombine Paper", icon: "💠" },
     ...(isAdmin ? [{ id: "advanced", label: "⚙️ Gelişmiş Teşhis", icon: "⚙️" }] : []),
@@ -1787,6 +1789,7 @@ function AdminReportsPage() {
       {tab === "llm_compare" && <LlmVsRulesTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "symbols" && <SymbolsTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "mtf" && <MacdMtfTab includeArchived={includeArchived} />}
+      {tab === "daily_first" && <DailyFirstNotificationTab />}
       {tab === "daily_rising" && <CombinedRisingTab includeArchived={includeArchived} />}
       {tab === "combined_paper" && <CombinedPaperPanel />}
       {tab === "advanced" && isAdmin && (

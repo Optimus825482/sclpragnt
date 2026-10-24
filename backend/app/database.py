@@ -5322,6 +5322,127 @@ async def bump_push_daily_count(symbol: str, day_key: str, now: float | None = N
 
 
 # ----------------------------------------------------------------------------------------------------------------
+# 2026-10-25: GÜNÜN İLK BİLDİRİMİ izleyicisi (migration 029; app/daily_first_notification.py yazar,
+# Raporlar > "Günün ilk bildirimi" okur). Sembol normalizasyonu `get_monitoring_notification_daily_seq` ile AYNI.
+_NORM_SYMBOL_SQL = "UPPER(REPLACE(REPLACE(symbol, '_', ''), ' ', ''))"
+
+
+async def get_first_notifications_between(start_ts: float, end_ts: float, push_only: bool = True) -> list[dict]:
+    """[start_ts, end_ts) aralığındaki bildirimlerden SEMBOL BAŞINA EN ERKEN olanı (normalize sembol).
+
+    Sıra `detected_at`, eşitlikte `id`. `push_only=True`: yalnız push denenmiş satırlar sayılır
+    (panel-only eski satırlar dışlanır) — "hangi bildirimler sayılır" kuralı `daily_seq` ile aynı.
+    Dönen satır: {id, symbol (normalize), raw_symbol, detected_at, price}.
+    """
+    where = "detected_at >= ? AND detected_at < ?"
+    if push_only:
+        where += " AND (sent_via_push OR push_attempted)"
+
+    def op(conn):
+        rows = conn.execute(
+            "SELECT id, norm_symbol, symbol, detected_at, price FROM ("
+            "SELECT id, symbol, detected_at, price, " + _NORM_SYMBOL_SQL + " AS norm_symbol, "
+            "ROW_NUMBER() OVER (PARTITION BY " + _NORM_SYMBOL_SQL + " ORDER BY detected_at, id) AS rn "
+            "FROM monitoring_notifications WHERE " + where + ") t WHERE rn = 1 "
+            "ORDER BY detected_at, id",
+            (float(start_ts), float(end_ts)),
+        ).fetchall()
+        out = []
+        for row in rows:
+            if row[0] is None or not row[1]:
+                continue
+            out.append({
+                "id": int(row[0]), "symbol": str(row[1]), "raw_symbol": row[2],
+                "detected_at": float(row[3] or 0), "price": float(row[4]) if row[4] is not None else None,
+            })
+        return out
+    return await _run_db(op)
+
+
+async def insert_daily_first_notifications(rows: list[dict], now: float | None = None) -> int:
+    """Eksik (symbol, day_key) satırlarını ekler; var olanlara DOKUNMAZ. Eklenen sayı.
+
+    Satır: {symbol, day_key, first_notification_id, first_ts, first_price}.
+    """
+    if not rows:
+        return 0
+    ts = float(now if now is not None else time.time())
+
+    def op(conn):
+        inserted = 0
+        for r in rows:
+            cur = conn.execute(
+                "INSERT INTO daily_first_notification"
+                "(symbol, day_key, first_notification_id, first_ts, first_price, finalized, created_at, updated_at) "
+                "VALUES(?,?,?,?,?,FALSE,?,?) ON CONFLICT(symbol, day_key) DO NOTHING",
+                (str(r["symbol"]), str(r["day_key"]), r.get("first_notification_id"),
+                 float(r["first_ts"]), r.get("first_price"), ts, ts))
+            if cur.rowcount and cur.rowcount > 0:
+                inserted += int(cur.rowcount)
+        conn.commit()
+        return inserted
+    return await _run_db(op)
+
+
+_DAILY_FIRST_COLS = ("id, symbol, day_key, first_notification_id, first_ts, first_price, mfe_pct, mfe_ts, "
+                     "mae_pct, mae_ts, last_tracked_ts, finalized, created_at, updated_at")
+
+
+def _daily_first_row(row) -> dict:
+    keys = [k.strip() for k in _DAILY_FIRST_COLS.split(",")]
+    out = {k: row[i] for i, k in enumerate(keys)}
+    for k in ("first_ts", "first_price", "mfe_pct", "mfe_ts", "mae_pct", "mae_ts",
+              "last_tracked_ts", "created_at", "updated_at"):
+        out[k] = float(out[k]) if out[k] is not None else None
+    out["id"] = int(out["id"])
+    out["first_notification_id"] = int(out["first_notification_id"]) if out["first_notification_id"] is not None else None
+    out["finalized"] = bool(out["finalized"])
+    return out
+
+
+async def list_open_daily_first_notifications() -> list[dict]:
+    """Henüz gün sonu kapanışı yapılmamış (finalized=false) izleme satırları (eski gün önce)."""
+    def op(conn):
+        rows = conn.execute(
+            "SELECT " + _DAILY_FIRST_COLS + " FROM daily_first_notification "
+            "WHERE NOT finalized ORDER BY day_key, first_ts, id").fetchall()
+        return [_daily_first_row(r) for r in rows]
+    return await _run_db(op)
+
+
+async def update_daily_first_notification_tracking(row_id: int, *, mfe_pct, mfe_ts, mae_pct, mae_ts,
+                                                   last_tracked_ts, finalized: bool,
+                                                   first_price=None, now: float | None = None) -> None:
+    """İzleme sonucunu yazar. `first_price` verilirse (bildirimde fiyat yoktu) o da doldurulur."""
+    ts = float(now if now is not None else time.time())
+
+    def op(conn):
+        if first_price is not None:
+            conn.execute(
+                "UPDATE daily_first_notification SET mfe_pct=?, mfe_ts=?, mae_pct=?, mae_ts=?, "
+                "last_tracked_ts=?, finalized=?, first_price=?, updated_at=? WHERE id=?",
+                (mfe_pct, mfe_ts, mae_pct, mae_ts, last_tracked_ts, bool(finalized), float(first_price), ts, int(row_id)))
+        else:
+            conn.execute(
+                "UPDATE daily_first_notification SET mfe_pct=?, mfe_ts=?, mae_pct=?, mae_ts=?, "
+                "last_tracked_ts=?, finalized=?, updated_at=? WHERE id=?",
+                (mfe_pct, mfe_ts, mae_pct, mae_ts, last_tracked_ts, bool(finalized), ts, int(row_id)))
+        conn.commit()
+    await _run_db(op)
+
+
+async def list_daily_first_notifications(since_day_key: str, limit: int = 5000) -> list[dict]:
+    """`since_day_key` (YYYY-MM-DD, dahil) ve sonrası satırlar: en yeni gün önce, sonra sembol."""
+    def op(conn):
+        rows = conn.execute(
+            "SELECT " + _DAILY_FIRST_COLS + " FROM daily_first_notification "
+            "WHERE day_key >= ? ORDER BY day_key DESC, symbol ASC LIMIT ?",
+            (str(since_day_key), int(limit))).fetchall()
+        return [_daily_first_row(r) for r in rows]
+    return await _run_db(op)
+
+
+# ----------------------------------------------------------------------------------------------------------------
 # 2026-10-18: MA şerit BUY sinyal kaydı (migration 026; app/ma_buy_tracker.py yazar, yönetici sayfası okur).
 _MA_BUY_COLS = ("id", "symbol", "timeframe", "bar_open_ms", "bar_close_ms", "detected_at", "rules", "signal_price",
                 "ema_fast", "ema_mid", "ema_slow", "status", "max_rise_5m_pct", "max_rise_10m_pct", "max_rise_15m_pct",

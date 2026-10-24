@@ -499,6 +499,63 @@ async def get_macd_mtf_report(days: int = 14, limit: int = 1000, include_archive
     }
 
 
+@router.get("/api/reports/daily-first-notification")
+async def get_daily_first_notification_report(days: int = 7):
+    """GÜNÜN İLK BİLDİRİMİ raporu (2026-10-25; app/daily_first_notification.py, migration 029).
+
+    Son `days` Europe/Istanbul günü (bugün dahil) için sembol başına günün ilk bildirimi ve o andan gün
+    sonuna kadar ölçülen MFE (en yüksek high'a yükseliş, >= 0) / MAE (en düşük low'a düşüş, <= 0 NEGATİF).
+    Zamanlar epoch saniye; arayüz Europe/Istanbul'a çevirir. `summary`: gün başına adet, ort. MFE,
+    ort. MAE, MFE >= %1 olan sembollerin payı (ölçülmüş satırlar üzerinden).
+    """
+    from app import push_daily_counter
+    days = max(1, min(int(days), 60))
+    now = time.time()
+    since_key = push_daily_counter.day_key(push_daily_counter.day_start(now) - (days - 1) * 86400 + 3600)
+    rows = await database.list_daily_first_notifications(since_key)
+    row_keys = ("id", "symbol", "day_key", "first_notification_id", "first_ts", "first_price",
+                "mfe_pct", "mfe_ts", "mae_pct", "mae_ts", "last_tracked_ts", "finalized")
+    out_rows = [{k: r.get(k) for k in row_keys} for r in rows]
+    per_day: dict[str, dict] = {}
+    for r in out_rows:
+        d = per_day.setdefault(str(r["day_key"]), {
+            "day_key": str(r["day_key"]), "count": 0, "measured": 0, "finalized": 0,
+            "_mfe": 0.0, "_mae": 0.0, "_mae_n": 0, "_ge1": 0,
+        })
+        d["count"] += 1
+        if r.get("finalized"):
+            d["finalized"] += 1
+        if r.get("mfe_pct") is not None:
+            d["measured"] += 1
+            d["_mfe"] += float(r["mfe_pct"])
+            if float(r["mfe_pct"]) >= 1.0:
+                d["_ge1"] += 1
+        if r.get("mae_pct") is not None:
+            d["_mae"] += float(r["mae_pct"])
+            d["_mae_n"] += 1
+    summary = []
+    for d in per_day.values():
+        measured = d["measured"]
+        summary.append({
+            "day_key": d["day_key"], "count": d["count"], "measured": measured, "finalized": d["finalized"],
+            "avg_mfe_pct": round(d["_mfe"] / measured, 2) if measured else None,
+            "avg_mae_pct": round(d["_mae"] / d["_mae_n"], 2) if d["_mae_n"] else None,
+            "mfe_ge_1_share_pct": round(d["_ge1"] / measured * 100.0, 1) if measured else None,
+        })
+    summary.sort(key=lambda x: x["day_key"], reverse=True)
+    return {
+        "paper_only": True,
+        "generated_at": now,
+        "days": days,
+        "since_day_key": since_key,
+        "today_day_key": push_daily_counter.day_key(now),
+        "mae_sign": "negative",
+        "total": len(out_rows),
+        "summary": summary,
+        "rows": out_rows,
+    }
+
+
 @router.get("/api/reports/symbols")
 async def get_report_symbols(limit: int = 200, day: str | None = None,
                              include_archived: bool = False):
