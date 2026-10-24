@@ -55,5 +55,5 @@ async def next_count(symbol, now: float | None = None) -> int | None:
 
 
 def counter_label(count: int) -> str:
-    """Bildirim başlığına eklenen kısa Türkçe metin: `bugün 3. bildirim`."""
-    return f"bugün {int(count)}. bildirim"
+    """Bildirim başlığının BAŞINA konan kısa etiket: `#3` = bu coin için bugünkü 3. bildirim."""
+    return f"#{int(count)}"

@@ -3,7 +3,7 @@
 Kilitler:
   * sayaç sembol + Europe/Istanbul günü başına artar; semboller birbirinden bağımsız
   * gün dönünce (00:00 İstanbul) sıfırlanır
-  * payload başlığı ` · bugün N. bildirim` soneki ve `daily_count` alanı alır
+  * payload başlığı `#N · ` öneki (en başta) ve `daily_count` alanı alır
   * sembolsüz / "ALERT" / hedefli yönetici push'u sayaç almaz
   * sayaç arızası push'u durdurmaz (sayaçsız gider)
   * yeniden denemede (ertelenen kuyruk) atanmış sayaç yeniden kullanılır
@@ -45,7 +45,7 @@ class DayKeyTests(unittest.TestCase):
         self.assertIsNone(push_daily_counter.normalize_symbol("ALERT"))
 
     def test_counter_label_turkish(self):
-        self.assertEqual("bugün 3. bildirim", push_daily_counter.counter_label(3))
+        self.assertEqual("#3", push_daily_counter.counter_label(3))
 
 
 class NextCountTests(unittest.IsolatedAsyncioTestCase):
@@ -143,7 +143,7 @@ class DeliverWebPushCounterTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(expected, result["daily_count"])
             payload = self._payload()
-            self.assertEqual(f"🚀 BTCTRY radar · bugün {expected}. bildirim", payload["title"])
+            self.assertEqual(f"#{expected} · 🚀 BTCTRY radar", payload["title"])
             self.assertEqual(expected, payload["daily_count"])
             self.assertEqual("BTCTRY radar", payload["body"])  # gövde değişmez
 
@@ -184,7 +184,7 @@ class DeliverWebPushCounterTests(unittest.IsolatedAsyncioTestCase):
         result = await alerting.deliver_web_push("BTCTRY radar", title="Radar", tag="radar-BTCTRY",
                                                  extra={"symbol": "BTCTRY", "daily_count": 5})
         self.assertEqual(5, result["daily_count"])
-        self.assertEqual("Radar · bugün 5. bildirim", self._payload()["title"])
+        self.assertEqual("#5 · Radar", self._payload()["title"])
         self.assertEqual([], self.mem.calls)
 
     async def test_no_subscribers_does_not_count(self):

@@ -152,7 +152,7 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
         }
         if tag: payload_obj["tag"] = tag
         if extra: payload_obj.update(extra)
-        # GÜNLÜK SAYAÇ (2026-10-24): coin hakkında giden her push "bugün N. bildirim" taşır.
+        # GÜNLÜK SAYAÇ (2026-10-24): coin hakkında giden her push başlığın EN BAŞINDA "#N" (bugünkü N. bildirim) taşır.
         # Gerçek gönderim anında sayılır (sessiz saat ertelemesi bittikten sonra); alıcı yoksa
         # push gitmez, sayaç da artmaz. Başlık sonuna eklenir (service worker `title`'ı
         # bildirim başlığı olarak gösterir — en görünür yer) ve payload'a `daily_count` yazılır.
@@ -162,7 +162,7 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
             daily_count = await _daily_count_for(counter_symbol, extra)
         if daily_count:
             from app.push_daily_counter import counter_label
-            payload_obj["title"] = f"{payload_obj['title']} · {counter_label(daily_count)}"
+            payload_obj["title"] = f"{counter_label(daily_count)} · {payload_obj['title']}"
             payload_obj["daily_count"] = int(daily_count)
         else:
             payload_obj.pop("daily_count", None)
