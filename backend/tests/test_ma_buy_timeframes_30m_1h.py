@@ -15,12 +15,15 @@ def test_tracker_timeframes_keep_30m_and_1h(monkeypatch):
     assert tracker.timeframes() == ["1m", "5m", "15m", "30m", "1h"]
 
 
-def test_default_scan_and_notify_timeframes_include_30m_and_1h_and_exclude_1m():
+def test_default_scan_timeframes_include_30m_and_1h_and_notify_excludes_30m_1m():
     """Replay 2026-10-20: M1 medyan MFE %0,19 (komisyon alti) -> sinyal + paper kapali; M30 acik."""
-    for attr in ("MA_BUY_TIMEFRAMES", "MA_BUY_NOTIFY_TIMEFRAMES"):
-        tfs = {t.strip() for t in str(getattr(config, attr)).split(",")}
-        assert {"30m", "1h"} <= tfs, attr
-        assert "1m" not in tfs, attr
+    tfs = {t.strip() for t in str(getattr(config, "MA_BUY_TIMEFRAMES")).split(",")}
+    assert {"30m", "1h"} <= tfs, "MA_BUY_TIMEFRAMES"
+    assert "1m" not in tfs, "MA_BUY_TIMEFRAMES"
+    # 2026-10-26: M30 push'u kaldirildi; bildirim listesinde 1h var, 30m yok ve 1m yok.
+    notify_tfs = {t.strip() for t in str(getattr(config, "MA_BUY_NOTIFY_TIMEFRAMES")).split(",")}
+    assert "1h" in notify_tfs, "MA_BUY_NOTIFY_TIMEFRAMES"
+    assert "30m" not in notify_tfs and "1m" not in notify_tfs, "MA_BUY_NOTIFY_TIMEFRAMES"
 
 
 def test_signals_from_bars_on_1h_closes_bar_one_hour_after_open():

@@ -5321,6 +5321,22 @@ async def bump_push_daily_count(symbol: str, day_key: str, now: float | None = N
     return await _run_db(op)
 
 
+async def release_push_daily_count(symbol: str, day_key: str) -> int:
+    """Sembolün o günkü push sayacını 1 azaltır (0'ın altına inmez); yeni değeri döndürür.
+
+    Sayım yapılmış ama HİÇBİR abonelikte teslim edilememiş push için kullanılır: sayaç
+    tüketilip bildirim gitmediyse sembol günün geri kalanında boşuna kilitlenmesin.
+    """
+    def op(conn):
+        conn.execute("UPDATE push_daily_counter SET count = MAX(count - 1, 0) WHERE symbol = ? AND day_key = ?",
+                     (symbol, day_key))
+        row = conn.execute("SELECT count FROM push_daily_counter WHERE symbol = ? AND day_key = ?",
+                           (symbol, day_key)).fetchone()
+        conn.commit()
+        return int(row[0]) if row else 0
+    return await _run_db(op)
+
+
 # ----------------------------------------------------------------------------------------------------------------
 # 2026-10-25: GÜNÜN İLK BİLDİRİMİ izleyicisi (migration 029; app/daily_first_notification.py yazar,
 # Raporlar > "Günün ilk bildirimi" okur). Sembol normalizasyonu `get_monitoring_notification_daily_seq` ile AYNI.

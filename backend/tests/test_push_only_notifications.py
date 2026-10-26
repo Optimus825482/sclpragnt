@@ -190,6 +190,20 @@ class QuietHoursDeferralTests(_Base):
         self.assertTrue(n["sent_via_push"])
         self.assertEqual(0, len(monitoring._deferred_push))
 
+    def test_flush_drops_daily_symbol_limit_skip_without_requeue(self):
+        """Günde-1-push atlaması kalıcıdır: kuyruğa geri konmaz (TTL'e kadar sonsuz deneme yok)."""
+        n = _notif()
+        monitoring._deferred_push.append(n)
+
+        async def _skip(notif):
+            notif["push_skip_reason"] = "daily_symbol_limit"
+            return False
+        self.send.side_effect = _skip
+        with patch.object(monitoring, "_in_quiet_hours", return_value=False):
+            _run(monitoring._flush_deferred_push())
+        self.assertEqual(0, len(monitoring._deferred_push))
+        self.assertEqual(1, self.send.await_count)
+
     def test_flush_drops_stale_without_record_or_broadcast(self):
         n = _notif(detected_at=time.time() - 3600)
         monitoring._deferred_push.append(n)

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app import alerting, database, push_daily_counter
+from app.config import config
 from app.routers import monitoring
 
 
@@ -25,6 +26,10 @@ class _MemoryCounter:
     def __init__(self):
         self.rows: dict[tuple[str, str], int] = {}
         self.calls: list[tuple[str, str]] = []
+
+    async def release(self, symbol, day_key):
+        self.rows[(symbol, day_key)] = max(self.rows.get((symbol, day_key), 0) - 1, 0)
+        return self.rows[(symbol, day_key)]
 
     async def __call__(self, symbol, day_key, now=None):
         self.calls.append((symbol, day_key))
@@ -126,7 +131,10 @@ class DeliverWebPushCounterTests(unittest.IsolatedAsyncioTestCase):
             patch("app.database.list_push_subscriptions", new=_subs(1)),
             patch("pywebpush.webpush", self.webpush),
             patch.object(database, "bump_push_daily_count", new=self.mem),
+            patch.object(database, "release_push_daily_count", new=self.mem.release),
             patch.object(push_daily_counter, "day_key", new=lambda now=None: "2026-10-24"),
+            # Bu sınıf SAYAÇ davranışını sınar; günde-1-push kapısı kapalı (kapı: OnePerSymbolPerDayTests).
+            patch.object(config, "PUSH_ONE_PER_SYMBOL_PER_DAY", False),
         ]
         for p in patches:
             p.start()
@@ -191,6 +199,102 @@ class DeliverWebPushCounterTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.database.list_push_subscriptions", new=_subs(0)):
             result = await alerting.deliver_web_push("x", tag="radar-BTCTRY", extra={"symbol": "BTCTRY"})
         self.assertFalse(result["ok"])
+        self.assertEqual([], self.mem.calls)
+
+
+class OnePerSymbolPerDayTests(unittest.IsolatedAsyncioTestCase):
+    """2026-10-26: sembol başına günde en fazla 1 push (PUSH_ONE_PER_SYMBOL_PER_DAY, varsayılan açık)."""
+
+    _payload = DeliverWebPushCounterTests._payload
+
+    def setUp(self):
+        DeliverWebPushCounterTests.setUp(self)  # aynı sahte sayaç / webpush / abonelik düzeneği
+        p = patch.object(config, "PUSH_ONE_PER_SYMBOL_PER_DAY", True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    async def test_first_sends_second_same_symbol_skipped(self):
+        first = await alerting.deliver_web_push("a", tag="radar-BTCTRY", extra={"symbol": "BTCTRY"})
+        self.assertTrue(first["ok"])
+        self.assertEqual(1, first["daily_count"])
+        second = await alerting.deliver_web_push("b", tag="ma-buy-BTCTRY", symbol="BTCTRY", extra={"source": "ma_buy"})
+        self.assertFalse(second["ok"])
+        self.assertTrue(second["skipped"])
+        self.assertEqual("daily_symbol_limit", second["reason"])
+        self.assertEqual("BTCTRY", second["symbol"])
+        self.assertNotIn("daily_count", second)
+        self.assertEqual(1, self.webpush.call_count)
+
+    async def test_different_symbol_sends(self):
+        await alerting.deliver_web_push("a", tag="r-BTCTRY", extra={"symbol": "BTCTRY"})
+        other = await alerting.deliver_web_push("b", tag="r-ETHTRY", extra={"symbol": "ETHTRY"})
+        self.assertTrue(other["ok"])
+        self.assertEqual(2, self.webpush.call_count)
+
+    async def test_retry_with_count_one_still_sends_but_legacy_higher_is_blocked(self):
+        ok = await alerting.deliver_web_push("a", tag="r-BTCTRY", extra={"symbol": "BTCTRY", "daily_count": 1})
+        self.assertTrue(ok["ok"])
+        blocked = await alerting.deliver_web_push("a", tag="r-BTCTRY", extra={"symbol": "BTCTRY", "daily_count": 3})
+        self.assertEqual("daily_symbol_limit", blocked["reason"])
+        self.assertEqual(1, self.webpush.call_count)
+
+    async def test_usernames_targeted_and_symbolless_unaffected(self):
+        for _ in range(2):
+            r = await alerting.deliver_web_push("admin", tag="admin-trade", usernames=["ali"],
+                                                extra={"source": "admin_real_buy", "symbol": "BTC_TRY"})
+            self.assertTrue(r["ok"])
+            r = await alerting.deliver_web_push("t", tag="scalper-test", extra={"source": "settings_test"})
+            self.assertTrue(r["ok"])
+        self.assertEqual(4, self.webpush.call_count)
+
+    async def test_flag_off_restores_old_behavior(self):
+        with patch.object(config, "PUSH_ONE_PER_SYMBOL_PER_DAY", False):
+            await alerting.deliver_web_push("a", tag="r-BTCTRY", extra={"symbol": "BTCTRY"})
+            second = await alerting.deliver_web_push("b", tag="r-BTCTRY", extra={"symbol": "BTCTRY"})
+        self.assertTrue(second["ok"])
+        self.assertEqual("#2 · Scalper Agent alarmı", self._payload()["title"])
+
+
+class ReleaseAndFailOpenTests(unittest.IsolatedAsyncioTestCase):
+    """Teslim edilemeyen push sayacı tüketmez; sayaç arızası ve abonesizlik kapıyı etkilemez."""
+
+    _payload = DeliverWebPushCounterTests._payload
+
+    def setUp(self):
+        OnePerSymbolPerDayTests.setUp(self)
+
+    async def test_failed_first_delivery_releases_count(self):
+        self.webpush.side_effect = RuntimeError("push servisi çöktü")
+        if True:
+            failed = await alerting.deliver_web_push("a", tag="r-BTCTRY", extra={"symbol": "BTCTRY"})
+            self.assertFalse(failed["ok"])
+            self.assertNotIn("daily_count", failed)
+            self.assertEqual(0, self.mem.rows[("BTCTRY", "2026-10-24")])
+            self.webpush.side_effect = None
+            nxt = await alerting.deliver_web_push("b", tag="r-BTCTRY", extra={"symbol": "BTCTRY"})
+        self.assertTrue(nxt["ok"])
+        self.assertEqual("#1 · Scalper Agent alarmı", self._payload()["title"])
+
+    async def test_release_failure_is_swallowed(self):
+        self.webpush.side_effect = RuntimeError("x")
+        boom = AsyncMock(side_effect=RuntimeError("db down"))
+        with patch.object(database, "release_push_daily_count", new=boom):
+            result = await alerting.deliver_web_push("a", tag="r-BTCTRY", extra={"symbol": "BTCTRY"})
+        self.assertFalse(result["ok"])
+        boom.assert_awaited()
+
+    async def test_counter_raises_fails_open(self):
+        boom = AsyncMock(side_effect=RuntimeError("db down"))
+        with patch.object(database, "bump_push_daily_count", new=boom):
+            result = await alerting.deliver_web_push("a", tag="r-BTCTRY", extra={"symbol": "BTCTRY"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, self.webpush.call_count)
+
+    async def test_no_subscribers_gate_on_no_bump_no_skip(self):
+        with patch("app.database.list_push_subscriptions", new=_subs(0)):
+            for _ in range(2):
+                result = await alerting.deliver_web_push("x", tag="r-BTCTRY", extra={"symbol": "BTCTRY"})
+                self.assertNotEqual("daily_symbol_limit", result.get("reason"))
         self.assertEqual([], self.mem.calls)
 
 

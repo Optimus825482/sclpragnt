@@ -65,6 +65,17 @@ async def next_count(symbol, now: float | None = None) -> int | None:
     return await database.bump_push_daily_count(sym, day_key(now), now)
 
 
+async def release_count(symbol, now: float | None = None) -> int | None:
+    """`next_count` ile alınan sayımı geri verir (teslim edilemeyen push); sembol sayılmıyorsa None.
+
+    Veritabanı hatası çağırana fırlatılır; `deliver_web_push` yakalayıp loglar.
+    """
+    sym = normalize_symbol(symbol)
+    if sym is None:
+        return None
+    return await database.release_push_daily_count(sym, day_key(now))
+
+
 def counter_label(count: int) -> str:
     """Bildirim başlığının BAŞINA konan kısa etiket: `#3` = bu coin için bugünkü 3. bildirim."""
     return f"#{int(count)}"

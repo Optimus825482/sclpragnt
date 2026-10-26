@@ -931,9 +931,15 @@ async def _send_push(notif: dict) -> bool:
         if result.get("daily_count"):
             notif["daily_count"] = int(result["daily_count"])
         ok = bool(result.get("ok", False))
+        # Günlük sembol sınırı kalıcı bir atlamadır: ertelenen kuyruk yeniden denemesin diye işaretlenir.
+        notif["push_skip_reason"] = result.get("reason") if not ok else None
         if not ok:
             reason = result.get("reason", result.get("error", "unknown"))
-            logger.warning("Monitoring push failed for %s: %s", notif["symbol"], reason)
+            # Günlük sembol sınırı beklenen bir durum; uyarı değil bilgi olarak logla.
+            if reason == "daily_symbol_limit":
+                logger.info("Monitoring push skipped for %s: %s", notif["symbol"], reason)
+            else:
+                logger.warning("Monitoring push failed for %s: %s", notif["symbol"], reason)
         else:
             # 2026-10-18 sessizlik nabzı: son başarılı push zamanı (tüm yollar buradan geçer).
             _monitoring_state["_last_push_ts"] = time.time()
@@ -1097,6 +1103,9 @@ async def _flush_deferred_push():
                     await database.mark_rising_alert_notified(int(alert_id), True)
                 except Exception as exc:
                     logger.debug("rising push etiketi güncellenemedi %s: %s", alert_id, exc)
+        elif notif.get("push_skip_reason") == "daily_symbol_limit":
+            # Günde 1 push/sembol: bu sembol bugün zaten bildirildi — KALICI atlama, yeniden denenmez.
+            dropped += 1
         else:
             # Gönderilemedi; TTL'e kadar bir sonraki fırsatta yeniden dene.
             survivors.append(notif)

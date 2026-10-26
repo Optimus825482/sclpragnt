@@ -10,8 +10,8 @@ from app.routers import auto_paper, monitoring
 PER = (7, 20, 99)
 
 
-def _row(symbol="ABCTRY", tf="5m", age_ms=5_000, rules="fast_cross_mid", now_ms=None, price=10.0):
-    # 2026-10-20: varsayilan TF 5m (M1 bildirim listesinden cikti; mekanizma testleri TF'den bagimsiz).
+def _row(symbol="ABCTRY", tf="15m", age_ms=5_000, rules="fast_cross_mid", now_ms=None, price=10.0):
+    # 2026-10-26: varsayilan TF 15m (M5 push'u kaldirildi; mekanizma testleri TF'den bagimsiz).
     now_ms = now_ms or int(time.time() * 1000)
     tf_ms = {"1m": 60_000, "5m": 300_000, "15m": 900_000}[tf]
     close = now_ms - age_ms
@@ -35,6 +35,11 @@ class BuildNotificationTests(unittest.TestCase):
             self.assertEqual(ma_buy_notify.target_pct("1m"), 0.8)
             self.assertEqual(ma_buy_notify.target_pct("5m"), 1.6)
             self.assertEqual(ma_buy_notify.target_pct("15m"), float(ma_buy_notify.config.AUTO_PAPER_DEFAULT_TARGET_PCT))
+
+    def test_notify_timeframes_excludes_5m_and_30m(self):
+        # 2026-10-26: M5 ve M30 push'u kaldirildi; kayitli ayar icerse bile notify_timeframes disarida tutar.
+        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m,15m,30m,1h,4h", create=True):
+            self.assertEqual(ma_buy_notify.notify_timeframes(), {"1m", "15m", "1h", "4h"})
 
     def test_only_fresh_bar_is_notified(self):
         now = int(time.time() * 1000)
@@ -73,25 +78,43 @@ class DeliverTests(unittest.TestCase):
                 patch.object(auto_paper, "try_open_from_notification", side_effect=try_open):
             return asyncio.run(ma_buy_notify.deliver(rows, PER))
 
-    def test_m1_and_m5_push_and_open_paper(self):
-        # M1 varsayilan listede degil (2026-10-20); mekanizma acik listeyle sinanir.
-        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m", create=True):
-            n = self._run([_row("AAATRY", "1m"), _row("BBBTRY", "5m", age_ms=20_000)])
+    def test_m1_and_m15_push_and_open_paper(self):
+        # M1 varsayilan listede degil (2026-10-20); mekanizma acik listeyle sinanir. M5 push'u kaldirildi (2026-10-26).
+        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,15m", create=True):
+            n = self._run([_row("AAATRY", "1m"), _row("BBBTRY", "15m", age_ms=20_000)])
         self.assertEqual(n, 2)
-        self.assertEqual({p["title"] for p in self.pushes}, {"📈 AAATRY · MA BUY (M1)", "📈 BBBTRY · MA BUY (M5)"})
+        self.assertEqual({p["title"] for p in self.pushes}, {"📈 AAATRY · MA BUY (M1)", "📈 BBBTRY · MA BUY (M15)"})
         self.assertTrue(all(o["sent_via_push"] for o in self.opened))
         self.assertIn((1, {"paper_status": "acildi", "paper_trade_id": 55}), self.marks)
 
     def test_same_symbol_both_timeframes_single_push_bigger_tf_first(self):
-        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m", create=True):
-            self._run([_row("AAATRY", "1m"), _row("AAATRY", "5m", age_ms=20_000)])
-        self.assertEqual([p["timeframe"] for p in self.pushes], ["5m"])
+        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,15m", create=True):
+            self._run([_row("AAATRY", "1m"), _row("AAATRY", "15m", age_ms=20_000)])
+        self.assertEqual([p["timeframe"] for p in self.pushes], ["15m"])
+
+    def test_disabled_5m_row_is_not_pushed_even_if_config_lists_it(self):
+        # 2026-10-26: M5 push'u kaldirildi; kayitli ayar "5m" icerse bile push ve paper acilmaz.
+        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m,15m", create=True):
+            n = self._run([_row("AAATRY", "5m", age_ms=20_000)])
+        self.assertEqual(n, 0)
+        self.assertEqual(self.pushes, [])
+        self.assertEqual(self.opened, [])
 
     def test_stale_or_untracked_timeframe_not_pushed(self):
-        # 2026-10-20: varsayilan liste artik 15m/30m/1h'yi de kapsiyor; "izlenmeyen TF" icin liste daraltilir.
-        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m", create=True):
-            self._run([_row(age_ms=30 * 60_000), _row(tf="15m", age_ms=5_000)])
+        # Bayat satir: TF listede (15m) ama mum 30 dk once kapanmis -> is_fresh reddetmeli.
+        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,15m", create=True):
+            stale = _row(age_ms=30 * 60_000)
+            self.assertFalse(ma_buy_notify.is_fresh(stale, int(time.time() * 1000)))
+            self._run([stale])
         self.assertEqual(self.pushes, [])
+        # Izlenmeyen TF: taze satir ama TF listede yok (1m listede degil) -> push yok.
+        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "15m", create=True):
+            self._run([_row(tf="1m", age_ms=5_000)])
+        self.assertEqual(self.pushes, [])
+        # Kontrol: ayni taze satir listede olunca push edilir (yukaridaki sonuclarin vacuous olmadigi).
+        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,15m", create=True):
+            self._run([_row(age_ms=5_000)])
+        self.assertEqual(len(self.pushes), 1)
 
     def test_already_notified_bar_is_skipped(self):
         self._run([_row()], claim=AsyncMock(return_value=None))

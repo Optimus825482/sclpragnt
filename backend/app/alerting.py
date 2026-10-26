@@ -118,6 +118,11 @@ def push_symbol_for_counter(symbol, extra=None, usernames=None):
     return normalize_symbol(symbol if symbol else (extra or {}).get("symbol"))
 
 
+def _one_per_symbol_per_day() -> bool:
+    from app.config import config
+    return bool(getattr(config, "PUSH_ONE_PER_SYMBOL_PER_DAY", True))
+
+
 async def _daily_count_for(symbol, extra=None):
     """Sayacı artırıp değeri döndürür; `extra["daily_count"]` doluysa (yeniden deneme) onu yeniden kullanır.
 
@@ -137,9 +142,19 @@ async def _daily_count_for(symbol, extra=None):
         return None
 
 
+async def _release_count_safe(symbol):
+    """Teslim edilemeyen push'ın sayımını geri ver; hata push akışını bozmaz (loglanır)."""
+    try:
+        from app.push_daily_counter import release_count
+        await release_count(symbol)
+    except Exception as exc:
+        logger.warning("Push günlük sayacı geri verilemedi (%s): %s", symbol, exc)
+
+
 async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=None, usernames=None, symbol=None):
     vapid_private, subject = os.getenv("VAPID_PRIVATE_KEY", "").strip(), os.getenv("VAPID_SUBJECT", "mailto:alerts@example.com").strip()
     if not vapid_private: return {"ok": False, "skipped": True, "reason": "vapid_not_configured"}
+    bumped_symbol = None  # bu çağrının sayacı artırdığı sembol (yeniden deneme değil); teslim olmazsa geri verilir
     try:
         from pywebpush import webpush
         # usernames verilirse yalnız seçili alıcıların abonelikleri hedeflenir
@@ -159,7 +174,22 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
         daily_count = None
         counter_symbol = push_symbol_for_counter(symbol, extra, usernames)
         if counter_symbol and subscriptions:
+            try:
+                _prior = int((extra or {}).get("daily_count") or 0)
+            except (TypeError, ValueError):
+                _prior = 0
             daily_count = await _daily_count_for(counter_symbol, extra)
+            if _prior <= 0 and daily_count:
+                bumped_symbol = counter_symbol
+            # GÜNDE 1 PUSH / SEMBOL (2026-10-26, kullanıcı isteği): tüm taramalar bu tek kapıdan geçer.
+            # Bugünün 1. push'u (ya da daily_count=1 taşıyan yeniden deneme) gider; sayaç >1 ise
+            # gönderilmez. Sayaç arızasında (None) kapı açık kalır (fail-open, push durmasın).
+            if daily_count and int(daily_count) > 1 and _one_per_symbol_per_day():
+                logger.info("Push günlük sembol sınırı: %s bugün zaten bildirildi (sayaç=%s) — gönderilmedi",
+                            counter_symbol, daily_count)
+                if bumped_symbol:
+                    await _release_count_safe(bumped_symbol)  # atlanan push sayacı şişirmesin
+                return {"ok": False, "skipped": True, "reason": "daily_symbol_limit", "symbol": counter_symbol}
         if daily_count:
             from app.push_daily_counter import counter_label
             payload_obj["title"] = f"{counter_label(daily_count)} · {payload_obj['title']}"
@@ -205,12 +235,18 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
                 logger.warning("Push: abonelik temizleme hatası: %s", cleanup_exc)
         result = {"ok": success_count > 0, "count": success_count, "total": len(subscriptions),
                   "dead_count": len(dead_subscriptions)}
-        if daily_count:
+        if bumped_symbol and success_count == 0:
+            # Hiçbir aboneliğe teslim edilemedi: sayım geri verilir (sembol boşuna kilitlenmesin),
+            # `daily_count` döndürülmez → yeniden deneme sayacı baştan alır.
+            await _release_count_safe(bumped_symbol)
+        elif daily_count:
             # Çağıran (monitoring._send_push) bunu zarfa yazar: yeniden denemede sayaç bir daha artmaz.
             result["daily_count"] = int(daily_count)
         return result
     except Exception as exc:
         logger.error("Push teslimat hatası: %s", exc)
+        if bumped_symbol:
+            await _release_count_safe(bumped_symbol)
         return {"ok": False, "error": str(exc)}
 
 

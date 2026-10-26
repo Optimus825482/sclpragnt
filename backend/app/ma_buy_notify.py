@@ -1,8 +1,8 @@
 """MA şerit BUY sinyali → kullanıcıya push (TF etiketli) + otonom paper (2026-10-18, kullanıcı isteği).
 
-`ma_buy_tracker` yeni kapanan M1/M5 mumunda grafikteki BUY rozetiyle aynı kuralı (EMA7/20/99 kesişimi) bulunca
+`ma_buy_tracker` yeni kapanan mumda (push listesindeki TF'ler; 2026-10-26'da M5/M30 push'tan çıktı) grafikteki BUY rozetiyle aynı kuralı (EMA7/20/99 kesişimi) bulunca
 `deliver()` çağrılır. Akış radar bildirimiyle aynı kanallardan geçer:
-  * push (`monitoring._send_push`): başlıkta "MA BUY (M1)" / "(M5)"; service worker'daki "Alım yap" aksiyonu da çalışır.
+  * push (`monitoring._send_push`): başlıkta "MA BUY (<TF etiketi>)", örn. "(M1)" / "(M15)"; service worker'daki "Alım yap" aksiyonu da çalışır.
   * WS `monitoring_alert`: uygulama açıksa radar modalı aynı şekilde gösterir.
   * otonom paper (`auto_paper.try_open_from_notification`): zarf `sent_via_push` taşır; push GİTMEDİYSE paper açılmaz
     (AUTO_PAPER_ONLY_ON_PUSH kararı). Skor/mod kapısı yerine `MA_BUY_AUTO_PAPER_ENABLED` geçerlidir
@@ -26,6 +26,9 @@ logger = logging.getLogger("scalper.ma_buy")
 SOURCE = "ma_buy"
 HORIZON_MIN = 15
 _last_push: dict[str, float] = {}   # sembol → son başarılı MA push zamanı (cooldown)
+# 2026-10-26 (kullanıcı isteği): M5 ve M30 MA kesişim push'u kaldırıldı. Ayarlar/runtime_config'te kayıtlı olsa bile
+# bu TF'ler push almaz; dolayısıyla otonom paper da açılmaz (paper push'a bağlı).
+PUSH_DISABLED_TFS = frozenset({"5m", "30m"})
 
 
 def enabled() -> bool:
@@ -33,8 +36,10 @@ def enabled() -> bool:
 
 
 def notify_timeframes() -> set[str]:
+    """Push alabilecek TF'ler: ayar listesi eksi `PUSH_DISABLED_TFS` (2026-10-26: M5/M30 hiç push almaz)."""
     raw = str(getattr(config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m") or "")
-    return {t.strip() for t in raw.split(",") if t.strip()}
+    tfs = {t.strip() for t in raw.split(",") if t.strip()}
+    return tfs - PUSH_DISABLED_TFS
 
 
 def target_pct(tf: str) -> float:
@@ -203,7 +208,7 @@ async def deliver(rows: list[dict], periods: tuple, now_ms: int | None = None) -
         logger.info("MA BUY: VAPID yok — %d sinyal push edilmedi (paper push şartıyla açılmaz)", len(fresh))
         return 0
     pushed: list[dict] = []
-    # Aynı turda aynı sembol M1 ve M5'te birlikte tetiklendiyse büyük TF önce (daha az gürültülü), tek push.
+    # Aynı turda aynı sembol iki TF'de (ör. M1 ve M15) birlikte tetiklendiyse büyük TF önce (daha az gürültülü), tek push.
     for row in sorted(fresh, key=lambda r: -_tf_minutes(r.get("timeframe"))):
         sym = str(row["symbol"]).upper()
         now = time.time()

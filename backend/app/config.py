@@ -498,7 +498,14 @@ class Config:
     MA_BUY_RETENTION_DAYS = max(0, int(os.getenv("MA_BUY_RETENTION_DAYS", "120") or 0))  # 0 = silme yok
     # 2026-10-18 (kullanıcı isteği): MA BUY sinyali → push (TF etiketli) + otonom paper (app/ma_buy_notify.py).
     MA_BUY_NOTIFY_ENABLED = os.getenv("MA_BUY_NOTIFY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-    MA_BUY_NOTIFY_TIMEFRAMES = os.getenv("MA_BUY_NOTIFY_TIMEFRAMES", "5m,15m,30m,1h,4h").strip()      # M1 kapali (replay 2026-10-20); push + paper bu TF'lerde (2026-10-21: H4 dahil)
+    MA_BUY_NOTIFY_TIMEFRAMES = os.getenv("MA_BUY_NOTIFY_TIMEFRAMES", "15m,1h,4h").strip()      # M1 kapali (replay 2026-10-20); M5/M30 push'u kaldirildi (2026-10-26, ma_buy_notify.PUSH_DISABLED_TFS); push + paper bu TF'lerde (H4 dahil)
+    # 2026-10-26 (kullanıcı isteği): her sembol için günde (Europe/Istanbul) EN FAZLA 1 push; tüm taramalar için
+    # geçerli (alerting.deliver_web_push kapısı). Kapatılırsa eski davranış: her push gider, başlıkta #N sayacı.
+    PUSH_ONE_PER_SYMBOL_PER_DAY = os.getenv("PUSH_ONE_PER_SYMBOL_PER_DAY", "true").strip().lower() not in {"0", "false", "no", "off"}
+    # 2026-10-26 (kullanıcı isteği): N7 taraması her saat başı otomatik koşar; sıra 1-2 sonuç skoru eşikten BÜYÜKSE push.
+    N7_HOURLY_ENABLED = os.getenv("N7_HOURLY_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+    N7_PUSH_MIN_SCORE = float(os.getenv("N7_PUSH_MIN_SCORE", "10") or 10)
+    N7_PUSH_TOP = max(1, int(os.getenv("N7_PUSH_TOP", "2") or 2))
     MA_BUY_NOTIFY_COOLDOWN_MIN = max(0.0, float(os.getenv("MA_BUY_NOTIFY_COOLDOWN_MIN", "15") or 0))  # sembol başına (TF'ler ortak)
     MA_BUY_NOTIFY_MAX_AGE_SEC = max(10.0, float(os.getenv("MA_BUY_NOTIFY_MAX_AGE_SEC", "90") or 90))  # mum kapanışından bu kadar sonra bayat
     MA_BUY_AUTO_PAPER_ENABLED = os.getenv("MA_BUY_AUTO_PAPER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
