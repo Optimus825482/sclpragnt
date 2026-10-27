@@ -10,6 +10,9 @@ açılır; çökerse durum "error" olur, yeniden başlatılmaz.
 yazılır, arayüz otomatik sonucu da görür); sıra 1 ve 2'deki sonuçlardan skoru `N7_PUSH_MIN_SCORE`'dan BÜYÜK olanlar
 push edilir (`push_top`). Sıra 3 ve sonrası asla doldurulmaz. Sembol başına günlük tek push kapısı
 `alerting.deliver_web_push` içinde olduğundan aynı sembol gün içinde ikinci kez push edilmez.
+
+2026-10-28 (kullanıcı isteği): N7 push'u radar / MA ile AYNI teslim düzeninde (`_deliver_one`): plan eklenir, push
+gittiyse bildirim kaydedilir, uygulama içine düşer ve otonom paper denenir; push gitmediyse hiçbiri olmaz.
 """
 from __future__ import annotations
 
@@ -121,10 +124,67 @@ def seconds_until_next_hour(now: float | None = None) -> float:
     return 3600.0 - (now % 3600.0)
 
 
-async def push_top(result: dict | None) -> int:
-    """Tarama sonucunun sıra 1..N_PUSH_TOP satırlarından skoru eşikten BÜYÜK olanları push eder (sıra 3+ doldurulmaz).
+def build_notification(sym: str, rank: int, score: float, px: float, now: float) -> dict:
+    """N7 bildirim zarfı — radar bildirimiyle aynı alanlar (plan, kayıt, uygulama içi, paper aynı yoldan geçer).
 
-    Bildirim ayarları / sessiz saat / VAPID kontrolü `ma_buy_notify.deliver` ile aynı. Dönüş: başarılı push sayısı."""
+    `notification_key` radar satır anahtarıyla (`monitoring-{sym}-{ts}`) aynı biçimde: kayıtlı satırın planı
+    geçmiş listesinde de bulunur. Hedef N7'de yoktur → otonom varsayılan; plan net %3 tabanını kendisi uygular."""
+    target = float(getattr(config, "AUTO_PAPER_DEFAULT_TARGET_PCT", 1.5))
+    return {
+        "symbol": sym,
+        "title": f"🚀 {sym} · N7 #{rank} · skor {score:.1f}",
+        "message": f"{sym} | N7 saatlik tarama sıra #{rank} | skor {score:.1f} | Anlık: {px:.6f} TRY",
+        "url": f"/charts?symbol={sym}&timeframe=15m",
+        "tag": f"n7-{sym}",
+        "detected_at": now,
+        "price": px,
+        "score": score,
+        "target_pct": target,
+        "expected_price": px * (1 + target / 100) if px else 0.0,
+        "source": "n7",
+        "mode": "n7",
+        "horizon_minutes": 60,
+        "notification_key": f"monitoring-{sym}-{int(now)}",
+        "updated": False,
+        "sent_via_push": False,
+    }
+
+
+async def _deliver_one(monitoring, notif: dict) -> bool:
+    """TEK TESLİM KURALI (2026-10-28, radar/MA ile aynı): plan → push → yalnız push GİTTİYSE kayıt +
+    uygulama içi bildirim + otonom paper. Push gitmediyse (günlük sembol limiti, hata) hiçbiri yapılmaz."""
+    from app import database, notification_plan, signal_eta
+    sym = notif["symbol"]
+    await notification_plan.attach_plan(notif, signal_eta.bucket_for("n7", notif))
+    ok = bool(await monitoring._send_push(notif))
+    notif["push_success"] = ok
+    notif["push_attempted"] = True
+    notif["sent_via_push"] = ok
+    if not ok:
+        return False
+    try:
+        await database.save_monitoring_notifications([notif])
+    except Exception as exc:  # noqa: BLE001 — kayıt hatası teslimi bozmaz
+        logger.warning("n7 bildirim kaydı %s: %s", sym, exc)
+    monitoring._monitoring_state["history"] = ([notif] + monitoring._monitoring_state["history"])[:monitoring.HISTORY_LIMIT]
+    try:
+        await monitoring.ws_manager.broadcast({"type": "monitoring_alert", "data": [notif]})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("n7 WS yayını %s: %s", sym, exc)
+    try:
+        from app.routers.auto_paper import try_open_from_notification
+        res = await try_open_from_notification(notif)
+        logger.info("n7 otonom paper %s: %s", sym, (res or {}).get("trade_id") or (res or {}).get("reason") or res)
+    except Exception as exc:  # noqa: BLE001 — paper hatası bildirimi bozmaz
+        logger.warning("n7 otonom paper %s: %s", sym, exc)
+    return True
+
+
+async def push_top(result: dict | None) -> int:
+    """Tarama sonucunun sıra 1..N_PUSH_TOP satırlarından skoru eşikten BÜYÜK olanları teslim eder (sıra 3+ doldurulmaz).
+
+    Bildirim ayarları / sessiz saat / VAPID kontrolü `ma_buy_notify.deliver` ile aynı; teslim `_deliver_one`
+    (push gittiyse kayıt + uygulama içi + otonom paper). Dönüş: başarılı push sayısı."""
     picked = list((result or {}).get("picked") or [])[:max(1, int(getattr(config, "N7_PUSH_TOP", 2)))]
     min_score = float(getattr(config, "N7_PUSH_MIN_SCORE", 10.0))
     cands = []
@@ -150,24 +210,9 @@ async def push_top(result: dict | None) -> int:
     pushed = 0
     for rank, row, score in cands:
         sym = str(row["sym"]).upper()
-        px = float(row.get("px") or 0.0)
-        notif = {
-            "symbol": sym,
-            "title": f"🚀 {sym} · N7 #{rank} · skor {score:.1f}",
-            "message": f"{sym} | N7 saatlik tarama sıra #{rank} | skor {score:.1f} | Anlık: {px:.6f} TRY",
-            "url": f"/charts?symbol={sym}&timeframe=15m",
-            "tag": f"n7-{sym}",
-            "detected_at": time.time(),
-            "price": px,
-            "score": score,
-            "source": "n7",
-            "mode": "n7",
-            "horizon_minutes": 60,
-            "updated": False,
-            "sent_via_push": False,
-        }
+        notif = build_notification(sym, rank, score, float(row.get("px") or 0.0), time.time())
         try:
-            ok = await monitoring._send_push(notif)
+            ok = await _deliver_one(monitoring, notif)
         except Exception as exc:  # noqa: BLE001 — tek sembol hatası diğerini engellemez
             logger.warning("n7 saatlik push hatası %s: %s", sym, exc)
             continue

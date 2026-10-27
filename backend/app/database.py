@@ -5589,7 +5589,8 @@ async def list_unmeasured_signals(kind: str, since_ts: float, until_ts: float, l
     """
     if kind == "radar":
         sql = ("SELECT id, symbol, detected_at AS ts, price, NULL AS extra FROM monitoring_notifications t "
-               "WHERE t.sent_via_push = TRUE AND t.detected_at >= ? AND t.detected_at <= ? ")
+               "WHERE t.sent_via_push = TRUE AND t.detected_at >= ? AND t.detected_at <= ? "
+               "AND COALESCE(t.mode, '') <> 'n7' ")  # 2026-10-28: N7 satırları radar ETA kovasını kirletmez
     elif kind == "rising":
         sql = ("SELECT id, symbol, created_at AS ts, price, kind AS extra FROM rising_alerts t "
                "WHERE t.sent_via_push = TRUE AND t.created_at >= ? AND t.created_at <= ? ")
@@ -6110,7 +6111,7 @@ async def get_pending_monitoring_notification(symbol: str) -> dict | None:
     def op(conn):
         row = conn.execute(
             "SELECT id, symbol, score, target_pct, price, expected_price, "
-            "horizon_minutes, detected_at, mode "
+            "horizon_minutes, detected_at, mode, sent_via_push "
             "FROM monitoring_notifications "
             "WHERE symbol=%s "
             "ORDER BY detected_at DESC LIMIT 1",
@@ -6187,7 +6188,7 @@ async def get_pending_monitoring_notifications(symbols: list[str]) -> dict[str, 
         placeholders = ",".join(["%s"] * len(syms))
         rows = conn.execute(
             "SELECT id, symbol, score, target_pct, price, expected_price, "
-            "horizon_minutes, detected_at, mode "
+            "horizon_minutes, detected_at, mode, sent_via_push "
             "FROM monitoring_notifications "
             f"WHERE symbol IN ({placeholders}) "
             "ORDER BY detected_at DESC",

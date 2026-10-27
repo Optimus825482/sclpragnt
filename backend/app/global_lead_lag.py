@@ -225,28 +225,33 @@ async def handle_global_detection(detection: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         logger.error("global_lead_lag: bildirim kaydı başarısız (%s): %s", tr_symbol, exc)
 
-    # 5) Arayüze yayın — TR bildirimi zarfı, Global alanı YOK.
-    try:
-        from app.ws_runtime import ws_manager
-        await ws_manager.broadcast({
-            "type": "monitoring_alert",
-            "data": [dict(notif_entry)],
-        })
-    except Exception as exc:
-        logger.debug("global_lead_lag: WS yayını hatası: %s", exc)
-
-    # 6) Web push — mevcut TR hattının aynı yardımcısı.
+    # 5) Web push — mevcut TR hattının aynı yardımcısı.
+    push_ok = False
     try:
         from app.routers.monitoring import _send_push
         push_ok = await _send_push(notif_entry)
+        notif_entry["sent_via_push"] = bool(push_ok)
         if push_ok and notif_entry.get("id"):
             await database.mark_monitoring_push_sent(notif_entry["id"])
     except Exception as exc:
         logger.debug("global_lead_lag: web push hatası: %s", exc)
 
+    # 6) Arayüze yayın — TR bildirimi zarfı, Global alanı YOK.
     # 7) Otonom paper işlem — TR sembolü, TR fiyatı, TRY.
-    trade_outcome = await _open_tr_paper_trade(
-        analyzer, tr_symbol, tr_price, target_pct, horizon_minutes, detection, score)
+    # 2026-10-28 (tek teslim kuralı): ikisi de yalnız push GİTTİYSE.
+    if not push_ok:
+        trade_outcome = {"status": "skipped", "reason": "push_bildirimi_yok"}
+    else:
+        try:
+            from app.ws_runtime import ws_manager
+            await ws_manager.broadcast({
+                "type": "monitoring_alert",
+                "data": [dict(notif_entry)],
+            })
+        except Exception as exc:
+            logger.debug("global_lead_lag: WS yayını hatası: %s", exc)
+        trade_outcome = await _open_tr_paper_trade(
+            analyzer, tr_symbol, tr_price, target_pct, horizon_minutes, detection, score)
     return {"status": "processed", "tr_symbol": tr_symbol,
             "global_symbol": global_symbol, "trade": trade_outcome}
 

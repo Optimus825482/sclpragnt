@@ -833,6 +833,30 @@ class ActivityPassiveExitTests(unittest.IsolatedAsyncioTestCase):
         config_src = (_APP / "config.py").read_text(encoding="utf-8")
         self.assertIn("SYMBOL_ACTIVITY_PASSIVE_EXIT", config_src)
 
+    def test_open_trade_symbols_are_held_out_of_passive_set(self):
+        """2026-10-28: açık işlemi olan sembol pasife alınmaz; otonom işlem kapatılmaz."""
+        from app.routers import runtime as runtime_routes
+
+        src = inspect.getsource(runtime_routes.refresh_symbol_activity)
+        self.assertIn("held_symbols = set(analyzer.positions) | await _open_auto_paper_symbols()", src)
+        self.assertIn('not item.get("passive_held")', src)
+        self.assertLess(src.index("held_symbols ="), src.index("_close_positions_on_passivation(passive_symbols)"))
+        close_src = inspect.getsource(runtime_routes._close_positions_on_passivation)
+        self.assertNotIn("_close_trade", close_src)
+        top_src = inspect.getsource(runtime_routes.refresh_top_gainer_symbols)
+        self.assertIn("await _open_auto_paper_symbols()", top_src)
+        self.assertNotIn("symbol_deactivated", top_src)
+
+    async def test_open_auto_paper_symbols_survives_db_error(self):
+        from app.routers import runtime as runtime_routes
+
+        db = MagicMock(list_auto_paper_trades=AsyncMock(side_effect=RuntimeError("db")))
+        with patch.object(runtime_routes, "database", db):
+            self.assertEqual(await runtime_routes._open_auto_paper_symbols(), set())
+        db = MagicMock(list_auto_paper_trades=AsyncMock(return_value=[{"symbol": "raretry"}, {"symbol": None}]))
+        with patch.object(runtime_routes, "database", db):
+            self.assertEqual(await runtime_routes._open_auto_paper_symbols(), {"RARETRY"})
+
     def test_exit_reason_is_not_an_llm_legacy_blocked_prefix(self):
         """Pasif çıkış nedeni, LLM_PAPER legacy çıkış bloğuna takılmamalı."""
         from app.analyzer import ScalpAnalyzer

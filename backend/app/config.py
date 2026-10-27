@@ -508,6 +508,8 @@ class Config:
     N7_HOURLY_ENABLED = os.getenv("N7_HOURLY_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
     N7_PUSH_MIN_SCORE = float(os.getenv("N7_PUSH_MIN_SCORE", "10") or 10)
     N7_PUSH_TOP = max(1, int(os.getenv("N7_PUSH_TOP", "2") or 2))
+    # 2026-10-28: N7 push'u da radar/MA ile aynı teslim düzeninde → push GİTTİYSE otonom paper açılır.
+    N7_AUTO_PAPER_ENABLED = os.getenv("N7_AUTO_PAPER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
     MA_BUY_NOTIFY_COOLDOWN_MIN = max(0.0, float(os.getenv("MA_BUY_NOTIFY_COOLDOWN_MIN", "15") or 0))  # sembol başına (TF'ler ortak)
     MA_BUY_NOTIFY_MAX_AGE_SEC = max(10.0, float(os.getenv("MA_BUY_NOTIFY_MAX_AGE_SEC", "90") or 90))  # mum kapanışından bu kadar sonra bayat
     MA_BUY_AUTO_PAPER_ENABLED = os.getenv("MA_BUY_AUTO_PAPER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}

@@ -93,8 +93,8 @@ class PushAttemptedDeliveryTests(_Base):
         self.assertEqual([n], monitoring._monitoring_state["history"])
         self.llm.assert_called_once_with([n])
 
-    def test_failed_delivery_is_still_a_recorded_push_notification(self):
-        """Teslimi başarısız push: kayıt + yayın VAR, `sent_via_push` dürüstçe False."""
+    def test_failed_delivery_is_recorded_but_not_shown_in_app(self):
+        """Teslimi başarısız push: kayıt VAR (`sent_via_push` dürüstçe False), uygulama içi yayın / LLM YOK (2026-10-28)."""
         self.send.return_value = False
         n = _notif()
         _run(monitoring._deliver_scan_notifications([n]))
@@ -102,15 +102,21 @@ class PushAttemptedDeliveryTests(_Base):
         self.assertTrue(self.record.await_args.args[0][0]["push_attempted"])
         self.assertFalse(n["sent_via_push"])
         self.mark.assert_not_awaited()
-        self.broadcast.assert_awaited_once()
+        self.broadcast.assert_not_awaited()
+        self.llm.assert_called_once_with([])
 
     def test_updates_are_rebroadcast_but_not_re_recorded_or_pushed(self):
-        upd = _notif("ETHTRY", id=55, updated=True)
+        upd = _notif("ETHTRY", id=55, updated=True, sent_via_push=True)
         _run(monitoring._deliver_scan_notifications([upd]))
         self.record.assert_not_awaited()
         self.send.assert_not_awaited()
         self.broadcast.assert_awaited_once()
         self.llm.assert_called_once_with([])
+
+    def test_update_of_unpushed_row_is_not_shown_in_app(self):
+        upd = _notif("ETHTRY", id=56, updated=True, sent_via_push=False)
+        _run(monitoring._deliver_scan_notifications([upd]))
+        self.broadcast.assert_not_awaited()
 
     def test_policy_blocked_candidate_is_not_recorded_pushed_or_broadcast(self):
         n = _notif(mode="notr")  # varsayılan politikada devre dışı mod
@@ -171,7 +177,7 @@ class QuietHoursDeferralTests(_Base):
         self.assertEqual([n], monitoring._monitoring_state["history"])
         self.assertEqual(0, len(monitoring._deferred_push))
 
-    def test_flush_failed_push_is_recorded_once_and_retried_without_duplicates(self):
+    def test_flush_failed_push_is_recorded_once_and_shown_only_after_delivery(self):
         n = _notif()
         monitoring._deferred_push.append(n)
         self.send.return_value = False
@@ -180,8 +186,8 @@ class QuietHoursDeferralTests(_Base):
             self.assertEqual(1, len(monitoring._deferred_push), "başarısız push TTL'e kadar kuyrukta kalır")
             self.assertEqual(1, self.record.await_count)
             self.assertFalse(n["sent_via_push"])
-            self.assertEqual(1, self.broadcast.await_count)
-            # İkinci tur: push bu sefer ulaşır → yalnız etiket düzelir, çift kayıt/yayın YOK.
+            self.assertEqual(0, self.broadcast.await_count, "gitmeyen push uygulamaya düşmez")
+            # İkinci tur: push bu sefer ulaşır → etiket düzelir + uygulamaya TEK yayın; çift kayıt YOK.
             self.send.return_value = True
             _run(monitoring._flush_deferred_push())
         self.assertEqual(1, self.record.await_count)

@@ -95,6 +95,8 @@ def bucket_for(source_kind: str, row: dict) -> str:
         return f"rising:{row.get('kind')}"
     if source_kind == "ma_buy":
         return f"ma_buy:{row.get('timeframe')}"
+    if source_kind == "n7":
+        return "n7"
     return "radar"
 
 

@@ -51,7 +51,9 @@ router = APIRouter()
 _REASON_NO_PUSH = "push_bildirimi_yok"
 _REASON_HEARTBEAT = "teyitsiz nabız bildirimi paper açmaz"
 # Skorsuz kural sinyali kaynakları: skor/mod kapısı yerine kendi anahtarı (bkz. `_try_open_impl`).
-_RULE_SIGNAL_SOURCES = frozenset({"ma_buy"})
+_RULE_SIGNAL_SOURCES = frozenset({"ma_buy", "n7"})
+#: Kural sinyali kaynağının kendi otonom paper anahtarı (2026-10-28: N7 eklendi).
+_RULE_SIGNAL_SWITCHES = {"ma_buy": "MA_BUY_AUTO_PAPER_ENABLED", "n7": "N7_AUTO_PAPER_ENABLED"}
 #: 2026-10-21: çıkış profilli işlem (MA BUY H4) iz süren stop kuralını profilden alır (`ma_buy_profiles.manage_params`):
 #: 19:46 kararı — tetik %3 / mesafe %1,5, başabaş stop ve dinamik tetik/mesafe YOK (replay simülasyonuyla birebir).
 
@@ -620,9 +622,10 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
 
         # KURAL SİNYALİ (2026-10-18, MA BUY): skoru yoktur ve modu radar mod listesinde değildir → skor ve mod
         # kapıları yerine kendi anahtarı (`MA_BUY_AUTO_PAPER_ENABLED`) uygulanır. Diğer TÜM kapılar aynen geçerli.
-        rule_signal = str(notification.get("source") or "") in _RULE_SIGNAL_SOURCES
-        if rule_signal and not getattr(config, "MA_BUY_AUTO_PAPER_ENABLED", True):
-            return _blocked(symbol, "ma_buy_paper_kapali")
+        _source = str(notification.get("source") or "")
+        rule_signal = _source in _RULE_SIGNAL_SOURCES
+        if rule_signal and not getattr(config, _RULE_SIGNAL_SWITCHES[_source], True):
+            return _blocked(symbol, f"{_source}_paper_kapali")
 
         score = float(notification.get("score") or 0)
         min_score = float(settings.get("min_score", config.AUTO_PAPER_MIN_SCORE_DEFAULT))
@@ -1568,21 +1571,8 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
             except Exception as exc:
                 logger.warning("auto_paper %s akış evrenine ekleme koruması: %s", symbol, exc)
 
-    # Yalnızca açıkça doğrulanmış durağan/ölü semboller (gerçekten ölü tahta / hacimsiz)
-    passive_symbols = getattr(config, "PASSIVE_SYMBOLS", None)
-    is_passive = bool(passive_symbols and symbol in passive_symbols)
-
-    if is_passive:
-        # D-02: aynı tazelik kuralı — bayat fiyatla kapatma yapılmaz.
-        if not price_is_fresh:
-            logger.info("auto_paper %s: sembol pasif ama fiyat bayat — kapanış ertelendi", symbol)
-            return
-        exit_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
-        logger.info("auto_paper %s: SEMBOL PASİFE ALINMIŞ (doğrulanmış durağan) — açık pozisyon kapatılıyor (çıkış=%.6f)",
-                    symbol, exit_price)
-        await _close_trade(trade_id, symbol, paper_ledger.exit_fill("symbol_deactivated", exit_price),
-                           now, "symbol_deactivated")
-        return
+    # 2026-10-28 Erkan kararı: sembolün pasife düşmesi açık işlemi KAPATMAZ;
+    # işlem kendi SL/TP/süre kurallarıyla kapanır.
 
     if not price_is_fresh:
         return

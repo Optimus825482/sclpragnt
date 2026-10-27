@@ -9,15 +9,43 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app import n7_scan_job  # noqa: E402
 from app.config import config  # noqa: E402
-from app.routers import monitoring  # noqa: E402
+from app import database  # noqa: E402
+from app.routers import auto_paper, monitoring  # noqa: E402
 
 
 def _rows(*scores):
     return {"picked": [{"sym": f"C{i}TRY", "px": 1.5, "score": s} for i, s in enumerate(scores, start=1)]}
 
 
+class _Sink:
+    """2026-10-28 tek teslim kuralı: push sonrası kayıt / uygulama içi yayın / otonom paper çağrılarını toplar."""
+
+    def __init__(self, monkeypatch):
+        self.saved, self.broadcasts, self.papers = [], [], []
+
+        async def save(rows):
+            self.saved.extend(rows)
+
+        async def broadcast(msg):
+            self.broadcasts.append(msg)
+
+        async def paper(notif):
+            self.papers.append(notif)
+            return {"trade_id": 7}
+
+        class _Ws:
+            pass
+        ws = _Ws()
+        ws.broadcast = broadcast
+        monkeypatch.setattr(database, "save_monitoring_notifications", save)
+        monkeypatch.setattr(monitoring, "ws_manager", ws)
+        monkeypatch.setattr(auto_paper, "try_open_from_notification", paper)
+        monkeypatch.setitem(monitoring._monitoring_state, "history", [])
+
+
 def _setup(monkeypatch, *, enabled=True, quiet=False, vapid=True, ok=True):
     sent = []
+    _setup.sink = _Sink(monkeypatch)
 
     async def settings():
         return {"enabled": enabled}
@@ -78,6 +106,7 @@ def test_daily_limit_not_counted(monkeypatch):
     async def settings():
         return {"enabled": True}
 
+    sink = _Sink(monkeypatch)
     monkeypatch.setattr(monitoring, "get_user_notification_settings", settings)
     monkeypatch.setattr(monitoring, "_in_quiet_hours", lambda s: False)
     monkeypatch.setattr(monitoring, "_vapid_configured", lambda: True)
@@ -87,6 +116,36 @@ def test_daily_limit_not_counted(monkeypatch):
     assert asyncio.run(n7_scan_job.push_top(_rows(20.0, 15.0))) == 0
     assert len(sent) == 2
     assert all(s["push_skip_reason"] == "daily_symbol_limit" for s in sent)
+    # Push gitmedi → kayıt, uygulama içi bildirim ve otonom paper YOK.
+    assert sink.saved == [] and sink.broadcasts == [] and sink.papers == []
+    assert monitoring._monitoring_state["history"] == []
+
+
+def test_delivered_push_records_shows_in_app_and_opens_paper(monkeypatch):
+    sent = _setup(monkeypatch)
+    sink = _setup.sink
+    assert asyncio.run(n7_scan_job.push_top(_rows(15.0))) == 1
+    notif = sent[0]
+    assert notif["sent_via_push"] is True and notif["push_attempted"] is True
+    assert notif["mode"] == "n7" and notif["source"] == "n7"
+    assert notif["notification_key"] == f"monitoring-C1TRY-{int(notif['detected_at'])}"
+    assert sink.saved == [notif]
+    assert sink.broadcasts == [{"type": "monitoring_alert", "data": [notif]}]
+    assert sink.papers == [notif]
+    assert monitoring._monitoring_state["history"][0] is notif
+
+
+def test_failed_push_creates_nothing_in_app(monkeypatch):
+    _setup(monkeypatch, ok=False)
+    sink = _setup.sink
+    assert asyncio.run(n7_scan_job.push_top(_rows(15.0, 14.0))) == 0
+    assert sink.saved == [] and sink.broadcasts == [] and sink.papers == []
+
+
+def test_n7_is_rule_signal_with_own_switch():
+    assert "n7" in auto_paper._RULE_SIGNAL_SOURCES
+    assert auto_paper._RULE_SIGNAL_SWITCHES["n7"] == "N7_AUTO_PAPER_ENABLED"
+    assert hasattr(config, "N7_AUTO_PAPER_ENABLED")
 
 
 def test_empty_result():

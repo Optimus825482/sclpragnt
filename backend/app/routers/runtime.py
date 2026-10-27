@@ -498,7 +498,8 @@ async def refresh_top_gainer_symbols():
     # DB okuması da kilit dışında: `load_positions` tek bir SELECT'tir ve
     # iki eşzamanlı yenilemenin aynı sonucu görmesi sorun değildir —
     # kilidi tutacak tek şey sonraki saf hesap.
-    open_symbols = set(analyzer.positions) | set((await database.load_positions()).keys())
+    open_symbols = (set(analyzer.positions) | set((await database.load_positions()).keys())
+                    | await _open_auto_paper_symbols())
     async with _top_gainers_lock:
         ranked = []
         for item in all_tickers or []:
@@ -521,31 +522,9 @@ async def refresh_top_gainer_symbols():
     # (bkz. app/state.py). Boş liste reddedilir; burada zaten kontrol edildi.
     apply_symbol_universe(active, source="top_gainers")
     dropped_symbols = previous_active - set(active)
-    if dropped_symbols:
-        # 2026-09-21 Erkan kararı: Sembol pasife alınırken/listeden düşerken
-        # varsa açık otonom paper pozisyonu kâr/zarara bakılmaksızın kapatılır.
-        # DENETİM (2026-09-26): bu DB yazma işlemi KİLİT DIŞINDA. Hata
-        # yakalansa da evren ataması yukarıda tamamlandığı için tutarlı kalır;
-        # kapanmayan pozisyon sonraki turda yeniden denenir.
-        try:
-            from app.routers import auto_paper as _ap
-            # P0-3 (2026-10-07): pozisyon KAPATMA yolu — açık pozisyon rapor
-            # görünüm sınırına takılmamalı, yoksa düşen sembolün pozisyonu hiç
-            # kapanmaz (SL/TP yok, pozisyon sonsuza dek açık kalır).
-            open_auto_trades = await database.list_auto_paper_trades(
-                status="open", apply_reports_baseline=False)
-            for trade in open_auto_trades:
-                sym = str(trade.get("symbol") or "").upper()
-                if sym in dropped_symbols:
-                    trade_id = int(trade["id"])
-                    tk = market.get_ticker(sym)
-                    price = float(tk.get("last_price") or 0) if tk else 0
-                    if not price:
-                        price = float(trade.get("peak_price") or trade.get("entry_price") or 0)
-                    await _ap._close_trade(trade_id, sym, price, time.time(), "symbol_deactivated")
-                    print(f"[Top Gainers] Pasife düşen {sym} için auto_paper pozisyonu ({trade_id}) kapatıldı @ {price}", flush=True)
-        except Exception as exc:
-            print(f"[Top Gainers] auto_paper pasif kapatma hatası: {exc}", flush=True)
+    # 2026-10-28 Erkan kararı: açık işlemi olan sembol listeden DÜŞMEZ (yukarıda
+    # `open_symbols` ile korunur); düşen sembolde pozisyon kapatılmaz. Önceki
+    # "listeden düşünce kapat" kuralı işlemleri sürekli zararda kapatıyordu.
     # Newly activated symbols would otherwise wait ~4.6h on the WS alone
     # to collect enough closed 5m candles; hydrate them up front so MTF
     # gates are usable from the first scan.
@@ -926,6 +905,16 @@ def _m1_activity_features(indicator_analyzer: ScalpAnalyzer, bars: dict, now_ms:
         "atr_ema_13_pct": round(atr_ema_13 / price * 100, 5) if atr_ema_13 is not None and price else None,
     }
 
+async def _open_auto_paper_symbols():
+    """Açık otonom paper işlemi olan semboller (okunamazsa boş küme)."""
+    try:
+        trades = await database.list_auto_paper_trades(
+            status="open", apply_reports_baseline=False)
+        return {str(t.get("symbol") or "").upper() for t in trades or [] if t.get("symbol")}
+    except Exception as exc:
+        print(f"[Activity] açık otonom işlem listesi okunamadı: {exc}", flush=True)
+        return set()
+
 async def _close_positions_on_passivation(passive_symbols):
     """Pasife düşen sembollerdeki açık paper pozisyonları PnL'den bağımsız kapat.
 
@@ -956,30 +945,6 @@ async def _close_positions_on_passivation(passive_symbols):
                 await ws_manager.broadcast({"type": "signal", "data": sig})
                 print(f"[Activity passive exit] {symbol} pasif; açık pozisyon PnL'den bağımsız kapatıldı @ {price}", flush=True)
 
-    # 2. Otonom paper trade açık pozisyonları kapat (2026-09-21 Erkan kararı)
-    try:
-        from app.routers import auto_paper as _ap
-        # P0-3 (2026-10-07): pasif-sembol pozisyon kapatma yolu — rapor görünüm
-        # sınırı açık pozisyonu gizlememeli (yoksa kapanmadan açık kalır).
-        open_auto_trades = await database.list_auto_paper_trades(
-            status="open", apply_reports_baseline=False)
-        for trade in open_auto_trades:
-            sym = str(trade.get("symbol") or "").upper()
-            if sym in passive_symbols:
-                trade_id = int(trade["id"])
-                try:
-                    price, _ = await _fresh_public_price(sym)
-                except Exception:
-                    price = None
-                if not price:
-                    tk = market.get_ticker(sym)
-                    price = float(tk.get("last_price") or 0) if tk else 0
-                if not price:
-                    price = float(trade.get("peak_price") or trade.get("entry_price") or 0)
-                await _ap._close_trade(trade_id, sym, price, time.time(), "symbol_deactivated")
-                print(f"[Activity passive exit] auto_paper {sym} pasif; pozisyon ({trade_id}) kapatıldı @ {price}", flush=True)
-    except Exception as exc:
-        print(f"[Activity passive exit] auto_paper kontrol hatası: {exc}", flush=True)
     invalidate_wallet_caches()
 
 async def refresh_symbol_activity():
@@ -1121,7 +1086,16 @@ async def refresh_symbol_activity():
             "reason": "active" if active else (comprehensive.get("combined_reason", flat_reason if not m1_flat_ok else "volume_or_liquidity_below_threshold")),
             "checked_at": time.time(),
         }
-    passive_symbols = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
+    # 2026-10-28 Erkan kararı: açık işlemi olan sembol, işlem kapanana kadar
+    # pasife ALINMAZ (ölçüm durumu görünür kalır, `passive_held` ile işaretlenir).
+    held_symbols = set(analyzer.positions) | await _open_auto_paper_symbols()
+    for symbol in held_symbols:
+        item = statuses.get(symbol)
+        if item and item["status"] == "PASSIVE":
+            item["passive_held"] = True
+            item["has_open_position"] = True
+    passive_symbols = {symbol for symbol, item in statuses.items()
+                       if item["status"] == "PASSIVE" and not item.get("passive_held")}
     # Kapat → sonra pasifleştir: pasife düşen semboldeki açık pozisyon askıda
     # kalmasın. Başarısız kapanış sonraki turda yeniden denenir.
     if config.SYMBOL_ACTIVITY_PASSIVE_EXIT:

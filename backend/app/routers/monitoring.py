@@ -1100,8 +1100,9 @@ async def _flush_deferred_push():
                 await database.mark_monitoring_push_sent(notif.get("id"))
             except Exception as exc:
                 logger.warning("push etiketi güncellenemedi %s: %s", notif.get("id"), exc)
-        if first_attempt and not is_alarm and not notif.get("policy_blocked"):
-            # Uygulamaya yayın: push denendiği anda (panel bildirimi yok).
+        if ok and not is_alarm and not notif.get("policy_blocked"):
+            # Uygulamaya yayın: yalnız push GİTTİYSE (2026-10-28 tek teslim kuralı). Başarılı push kuyruktan
+            # çıktığından yayın tek sefer olur (ilk deneme başarısız, yeniden deneme başarılıysa da yayınlanır).
             try:
                 await ws_manager.broadcast({"type": _ws_alert_type(notif), "data": [notif]})
             except Exception as exc:
@@ -1810,6 +1811,14 @@ def _stored_panel_score(row: dict) -> float:
         return 0.0
 
 
+def _delivered(notifs) -> list:
+    """TEK TESLİM KURALI (2026-10-28, kullanıcı kararı): uygulama içi bildirim = GERÇEKTEN gitmiş push.
+
+    Push denenip gitmeyen (günlük sembol limiti, abonelik hatası) bildirim uygulamaya yayınlanmaz, geçmişte
+    görünmez, LLM ikinci göze girmez; otonom paper zaten `_push_gate` ile aynı şarta bağlı."""
+    return [n for n in (notifs or []) if n.get("sent_via_push")]
+
+
 async def _record_history(entries):
     """Bildirim geçmişini DB'ye kaydet (uygulama kapalıyken gönderilenler dahil)."""
     try:
@@ -2061,6 +2070,8 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
             if orig_detected > 0:
                 notif["detected_at"] = orig_detected
             notif["id"] = existing_pending["id"]
+            # Güncelleme, asıl satırın push sonucunu taşır (push'u gitmemiş satır uygulamaya güncelleme olarak da düşmez).
+            notif["sent_via_push"] = bool(existing_pending.get("sent_via_push"))
             # Aynı bildirim (aynı tag + ilk detected_at) → aynı plan anahtarı; ilk plan kazanır.
             plan_batch.append(notif)  # döngü sonrası TOPLU (eşzamanlı) eklenir
             notif["updated"] = True
@@ -2440,7 +2451,7 @@ async def _deliver_scan_notifications(notified: list) -> None:
     # WS yayını: push DENENEN yeni bildirimler + var olan bildirim satırlarının güncellemeleri.
     # Push denenmeyen adaylar uygulamaya bildirim olarak GİTMEZ.
     updates = [n for n in notified if n.get("updated") and not n.get("policy_blocked")]
-    to_broadcast = attempted + updates
+    to_broadcast = _delivered(attempted + updates)
     if to_broadcast:
         try:
             await ws_manager.broadcast({"type": "monitoring_alert", "data": to_broadcast})
@@ -2449,7 +2460,7 @@ async def _deliver_scan_notifications(notified: list) -> None:
     # LLM İKİNCİ GÖZ (2026-09-26): push denenen yeni bildirimler şemalı LLM
     # onayına gönderilir; karar ayrı bir bildirim olarak ekrana düşer.
     # 2026-10-18: sessizlik nabzı (teyitsiz) LLM maliyeti doğurmaz.
-    _maybe_llm_second_eye([n for n in attempted if n.get("notify_tier") != _notification_policy.TIER_HEARTBEAT])
+    _maybe_llm_second_eye([n for n in _delivered(attempted) if n.get("notify_tier") != _notification_policy.TIER_HEARTBEAT])
 
 
 async def _llm_second_eye_task(notif: dict) -> None:
@@ -2530,7 +2541,7 @@ async def _llm_second_eye_task(notif: dict) -> None:
         _dnotif["llm_reasons"] = reasons
         await _post_llm_second_eye_entry(_dnotif, envelope)
     try:
-        if push_attempted and not envelope.get("policy_blocked"):  # 2026-10-16/17: yalnız push denendiyse
+        if envelope.get("sent_via_push") and not envelope.get("policy_blocked"):  # 2026-10-28: yalnız push GİTTİYSE
             await ws_manager.broadcast({"type": "monitoring_alert", "data": [envelope]})
             logger.info("LLM ikinci göz kararı yayınlandı: %s → %s",
                         sym, str(envelope.get("llm_verdict")))
@@ -2861,7 +2872,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
         await try_open_from_notification(notif)
     except Exception as exc:
         logger.debug("fast auto_paper %s: %s", sym, exc)
-    if push_attempted:
+    if notif.get("sent_via_push"):
         try:
             await ws_manager.broadcast({"type": "monitoring_alert", "data": [notif]})
         except Exception as exc:
@@ -2869,7 +2880,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     logger.info("BİRLEŞİK SİNYAL: %s tetik=%s füzyon=%.1f kaynak=%s",
                 sym, kind, float(candidate.get("unified_score") or 0),
                 "+".join(notif.get("sources") or []))
-    if push_attempted:
+    if notif.get("sent_via_push"):
         _maybe_llm_second_eye([notif])
     return notif
 
@@ -3176,19 +3187,19 @@ async def _rising_deliver(notified: list) -> None:
         # Tek tip: yalnızca birincil yükseliş bildirimleri `monitoring_alert`
         # kanalından gider (radar modalı zaten bunu dinler). Bastırılanlar radar'ın
         # kendi `monitoring_alert` yayınında mevcut → ayrı `rising_alert` YOK.
-        if attempted:
+        if _delivered(attempted):
             try:
-                await ws_manager.broadcast({"type": "monitoring_alert", "data": attempted})
+                await ws_manager.broadcast({"type": "monitoring_alert", "data": _delivered(attempted)})
             except Exception as exc:
                 logger.warning("Yükseliş birleşik WS broadcast hatası: %s", exc)
     else:
-        if attempted:
+        if _delivered(attempted):
             try:
-                await ws_manager.broadcast({"type": "rising_alert", "data": attempted})
+                await ws_manager.broadcast({"type": "rising_alert", "data": _delivered(attempted)})
             except Exception as exc:
                 logger.warning("Yükseliş WS broadcast hatası: %s", exc)
-    # LLM İKİNCİ GÖZ: push DENENEN yükseliş bildirimleri değerlendirmeye girer.
-    _maybe_llm_second_eye(attempted)
+    # LLM İKİNCİ GÖZ: push'u GİDEN yükseliş bildirimleri değerlendirmeye girer.
+    _maybe_llm_second_eye(_delivered(attempted))
 
 
 async def _run_rising_scan() -> dict:
@@ -6790,7 +6801,7 @@ async def monitoring_notification_history():
         row["target_net_pct"] = notify_metrics.target_net_pct(row.get("target_pct"))
         row["score_label"] = notify_metrics.SCORE_LABEL
     try:
-        persisted = await database.list_monitoring_notifications(limit=50)
+        persisted = _delivered(await database.list_monitoring_notifications(limit=50))
         for row in persisted:
             _norm_row(row)
             _add_honest_fields(row)
@@ -6799,7 +6810,7 @@ async def monitoring_notification_history():
         persisted = []
     # M1/P2 (R2-18): oturum geçmişi state kilidi altında okunur.
     async with _locked_state():
-        session = _monitoring_state["history"][:20]
+        session = _delivered(_monitoring_state["history"])[:20]
     for row in session:
         _norm_row(row)
         _add_honest_fields(row)

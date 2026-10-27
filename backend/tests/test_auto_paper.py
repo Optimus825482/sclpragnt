@@ -328,8 +328,8 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[1], "APTEST")           # symbol
         self.assertEqual(args[4], "max_duration")     # reason
 
-    async def test_trade_closes_when_symbol_is_passive(self):
-        """Sembol PASSIVE_SYMBOLS içindeyse süreye bakılmaksızın symbol_deactivated ile kapatılır."""
+    async def test_trade_not_closed_when_symbol_is_passive(self):
+        """2026-10-28: sembol pasif olsa da açık işlem symbol_deactivated ile KAPATILMAZ."""
         now = time.time()
         trade = self._sample_trade(symbol="PASSTEST", entry_time=now - 10 * 60)
         close_mock = AsyncMock(return_value=None)
@@ -339,8 +339,8 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
              patch.object(auto_paper, "_close_trade", close_mock):
             await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
 
-        close_mock.assert_awaited_once()
-        self.assertEqual(close_mock.await_args.args[4], "symbol_deactivated")
+        reasons = [c.args[4] for c in close_mock.await_args_list]
+        self.assertNotIn("symbol_deactivated", reasons)
 
     async def test_trade_not_closed_when_outside_market_symbols(self):
         """Açık pozisyonu olan sembol market.symbols'te olmasa bile kapatılmaz; stream'e eklenip TP/SL ile korunur."""

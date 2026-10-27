@@ -103,6 +103,10 @@ class DailySeqQueryTests(unittest.TestCase):
 
 class HistoryEndpointDailySeqTests(unittest.IsolatedAsyncioTestCase):
     def _rows(self):
+        # 2026-10-28: geçmiş yalnız push'u GİTMİŞ satırları gösterir (`_delivered`).
+        return [dict(r, sent_via_push=True) for r in self._raw_rows()]
+
+    def _raw_rows(self):
         return [
             {"id": 6, "symbol": "BTCTRY", "detected_at": DAY_START + 300, "score": 50.0},
             {"id": 4, "symbol": "TREETRY", "detected_at": DAY_START + 180, "score": 50.0},
