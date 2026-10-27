@@ -461,6 +461,8 @@ class Config:
     # Yalnız yönetici sayfası içindir (emir/bildirim/karar YOK). 0 = kapalı.
     # 2026-10-18: admin Radar tarama günlüğü (bellek içi halka tampon; her tur 1 kayıt, ~30 sn) — tutulan tur sayısı.
     ADMIN_SCAN_LOG_KEEP = max(5, int(os.getenv("ADMIN_SCAN_LOG_KEEP", "60") or 60))
+    # 2026-10-27: signal_eta turu başına en çok bu kadar geçmiş sinyal 1m mumla örneklenir.
+    SIGNAL_ETA_BATCH = max(1, int(os.getenv("SIGNAL_ETA_BATCH", "200") or 200))
     MA_BUY_TRACKER_ENABLED = os.getenv("MA_BUY_TRACKER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
     # "active" = symbol_activity_status ACTIVE olanlar (yoksa izlenen semboller); "tracked" = yalnız izlenen semboller.
     MA_BUY_SYMBOL_SCOPE = os.getenv("MA_BUY_SYMBOL_SCOPE", "active").strip().lower() or "active"

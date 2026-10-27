@@ -45,6 +45,8 @@ export type Plan = {
   cost_try: number;
   fee_buy_try?: number;
   break_even_price?: number;
+  /** Açık kâr al yüzdesi gönderildiyse (bildirim planı) sunucunun yankısı. */
+  tp_pct?: number;
 };
 
 export type TradePlanResponse = {

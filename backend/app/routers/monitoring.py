@@ -17,6 +17,8 @@ from app import database
 from app.api_common import (log_user_action, _background_tasks, _start_background, get_task,
                             _alert_system_event)
 from app.state import market, analyzer
+from app import notification_plan
+from app import signal_eta
 from app import notify_metrics  # 2026-10-18: kalibre isabet / başabaş / net hedef alanları
 from app import unified_signals
 from app import notification_policy as _notification_policy
@@ -263,6 +265,7 @@ async def _persist_runtime_state() -> None:
                 "unified": n.get("unified"), "kind": n.get("kind"),
                 "deferred_alert": n.get("deferred_alert"),
                 "push_attempted": n.get("push_attempted"),
+                "plan_key": n.get("plan_key"), "trade_plan": n.get("trade_plan"),
             })
         payload = {
             "pending_targets": _monitoring_state["pending_targets"],
@@ -636,6 +639,15 @@ async def combined_rising_settings() -> dict:
     }
 
 
+@router.get("/api/monitoring/trade-plan")
+async def get_trade_plan(key: str):
+    """Bildirim anında dondurulan işlem planı (güvenli tutar/hedef/süre/stop)."""
+    plan = await database.get_trade_plan(key)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="plan bulunamadı")
+    return {"plan": plan}
+
+
 @router.get("/api/monitoring/settings")
 async def get_monitoring_settings():
     """Global bildirim ayarlarını döndür (okuma tüm kullanıcıya açık)."""
@@ -926,6 +938,7 @@ async def _send_push(notif: dict) -> bool:
                 # Günlük sayaç (2026-10-24): ilk denemede None → `deliver_web_push` sayar;
                 # yeniden denemede (ertelenen kuyruk) atanmış değer yeniden kullanılır.
                 "daily_count": notif.get("daily_count"),
+                "plan_key": notif.get("plan_key"),
             },
         )
         if result.get("daily_count"):
@@ -1489,6 +1502,7 @@ async def _heartbeat_notification(candidates_list, notified, settings, quiet: bo
         return None
     sym = str(pick.get("symbol") or "").upper()
     notif = _build_notification(sym, pick, settings)
+    await notification_plan.attach_plan(notif, "radar")
     notif["updated"] = False
     notif["sent_via_push"] = False
     _notification_policy.mark_tier(notif, _notification_policy.TIER_HEARTBEAT)
@@ -1921,6 +1935,7 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
     now_mono = time.monotonic()
     notified = []
     new_entries = []     # Yeni bildirimler
+    plan_batch: list = []  # işlem planı döngü sonunda eşzamanlı eklenir
     # N+1 önlemi: aday sembollerinin BEKLİYOR kayıtlarını tek toplu sorguyla çek
     # (2026-09-05). Eşik altı adaylar pending kontrolüne girmez; yine de tüm
     # aday setini sorgulamak tek DB round-trip'idir. (Kopyalanmış ikinci yorum
@@ -2046,6 +2061,8 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
             if orig_detected > 0:
                 notif["detected_at"] = orig_detected
             notif["id"] = existing_pending["id"]
+            # Aynı bildirim (aynı tag + ilk detected_at) → aynı plan anahtarı; ilk plan kazanır.
+            plan_batch.append(notif)  # döngü sonrası TOPLU (eşzamanlı) eklenir
             notif["updated"] = True
             notified.append(notif)
             # Güncellenen bildirimin streak'i temizlenir (bildirim zaten aktif)
@@ -2120,6 +2137,7 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
             _note_notify_skip(sym, str(_policy_reason))
             continue
         notif = _build_notification(sym, c, settings)
+        plan_batch.append(notif)
         notif["updated"] = False
         new_entries.append(notif)
         notified.append(notif)
@@ -2173,6 +2191,9 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
     # unified_candidate_outcomes / blok nedenleri) tarama aşamasında zaten yazılmıştır.
     # Sink politikası (`notification_policy`) kararı burada KAYIT YAZMADAN işlenir ki
     # bloklanan aday push/WS/otonom paper yollarına girmesin (eski davranış aynen).
+    if plan_batch:
+        # Güncellenen (zaten bildirilmiş) adayın planı saklıysa yeniden kurulmaz (tarama başına REST yok).
+        await notification_plan.attach_plans(plan_batch, "radar")
     if new_entries:
         for n in new_entries:
             n["sent_via_push"] = False
@@ -2741,6 +2762,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     cand_id = candidate.get("candidate_id") or f"unified-{kind}-{int(time.time() * 1000)}-{sym}"
     candidate["candidate_id"] = cand_id
     notif = _build_notification(sym, candidate, settings)
+    await notification_plan.attach_plan(notif, "radar")
     notif["candidate_id"] = cand_id
     notif["updated"] = False
     notif["quiet_hours"] = False
@@ -3380,6 +3402,9 @@ async def _run_rising_scan() -> dict:
             notif["alert_id"] = alert_id
         notified.append(notif)
     if notified:
+        await asyncio.gather(*(notification_plan.attach_plan(
+            n, signal_eta.bucket_for("rising", {"kind": n.get("kind")})) for n in notified))
+    if notified:
         _monitoring_state["rising_notified"] = int(_monitoring_state.get("rising_notified", 0)) + len(notified)
         try:
             await _rising_deliver(notified)
@@ -3471,6 +3496,7 @@ async def _daily_momentum_scan_once() -> int:
             if price <= 0:
                 continue
             notif = _build_notification(sym, c, settings)
+            await notification_plan.attach_plan(notif, "radar")
             _strat = str(c.get("strategy") or "daily_momentum")
             notif["strategy"] = _strat
             notif["sources"] = list(set((notif.get("sources") or []) + [s for s in (_strat.split("+") or ["daily_momentum"])]))
@@ -6779,6 +6805,10 @@ async def monitoring_notification_history():
         _add_honest_fields(row)
     # 2026-10-24: "Bugün #N" rozeti — kalıcı geçmişten hesaplanan günlük sıra (hata → alan yok).
     await _attach_daily_seq(persisted)
+    # 2026-10-27: dondurulmuş işlem planı (tek toplu sorgu); plan yoksa trade_plan null.
+    # Rising (yükseliş) bildirimleri `monitoring_notifications`'a YAZILMAZ (bkz. _flush_deferred_push `recordable`),
+    # bu yüzden satır anahtarı her zaman `monitoring-{sym}-{int(detected_at)}`'tir. Oturum listesi de aynı çağrıda.
+    await notification_plan.enrich_rows_with_plans(persisted + session, notification_plan.radar_row_plan_key)
     return {"paper_only": True, "history": persisted, "session": session}
 
 

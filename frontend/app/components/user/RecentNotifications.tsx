@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
 import type { WatchPrefs } from "../../lib/useWatchPrefs";
 import BuyDialog from "./home/BuyDialog";
+import type { TradePlan } from "./home/tradePlan";
 import NotificationCard, { type CardActions, type RecentRow } from "./home/NotificationCard";
 
 export type { RecentRow } from "./home/NotificationCard";
@@ -15,7 +16,7 @@ export default function RecentNotifications({
 }: { rows: RecentRow[]; prices: Record<string, number>; failed?: boolean; prefs: WatchPrefs }) {
   const [nowSec, setNowSec] = useState(nowSeconds);
   useVisibleInterval(() => setNowSec(nowSeconds()), 30_000);
-  const [buy, setBuy] = useState<{ symbol: string; price: number | null } | null>(null);
+  const [buy, setBuy] = useState<{ symbol: string; price: number | null; plan: TradePlan | null; planKey: string | null } | null>(null);
   const [prefError, setPrefError] = useState("");
 
   const live = (symbol: string) => prices[symbol.toUpperCase()] ?? prices[symbol] ?? null;
@@ -28,7 +29,7 @@ export default function RecentNotifications({
     isPinned: prefs.isPinned,
     onToggleFavorite: (s, p) => guard(prefs.toggleFavorite(s, p)),
     onTogglePin: (s, p) => guard(prefs.togglePin(s, p)),
-    onBuy: (s, p) => setBuy({ symbol: s, price: p }),
+    onBuy: (s, p, plan, planKey) => setBuy({ symbol: s, price: p, plan: plan ?? null, planKey: planKey ?? null }),
   };
 
   const nothing = rows.length === 0;
@@ -55,7 +56,7 @@ export default function RecentNotifications({
           </div>
         </div>
       )}
-      {buy && <BuyDialog open symbol={buy.symbol} referencePrice={buy.price} onClose={() => setBuy(null)} />}
+      {buy && <BuyDialog open symbol={buy.symbol} referencePrice={buy.price} tradePlan={buy.plan} planKey={buy.plan ? buy.planKey : null} onClose={() => setBuy(null)} />}
     </section>
   );
 }

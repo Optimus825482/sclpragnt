@@ -241,3 +241,33 @@ describe("sayfa görünürken push (iOS bildirimsiz push riski)", () => {
     expect(sw.closed).toEqual([]);
   });
 });
+
+describe("sw şablonu: Alım yap derin bağlantısı", () => {
+  it("plan_key varsa &key= (URL-kodlu) eklenir", () => {
+    expect(TEMPLATE).toContain('if (data.plan_key) buyUrl += "&key=" + encodeURIComponent(String(data.plan_key));');
+  });
+});
+
+describe("push: Alım yap aksiyonu", () => {
+  it("TRY sembollü sinyal bildiriminde Alım yap + plan anahtarı", async () => {
+    const sw = bootServiceWorker("b-1");
+    const ev = pushEvent({ title: "Radar", body: "x", tag: "radar-ADATRY", symbol: "ADA_TRY", plan_key: "k1" });
+    sw.handlers.push(ev);
+    await ev.done;
+    const { options } = sw.notifications[0];
+    expect(options.actions.map((a: any) => a.action)).toEqual(["buy", "open"]);
+    expect(options.data.buyUrl).toBe("/?buy=ADATRY&key=k1");
+  });
+
+  it("gerçek pozisyon çıkış hatırlatıcısında Alım yap YOK", async () => {
+    const sw = bootServiceWorker("b-1");
+    const ev = pushEvent({ title: "Çıkış zamanı", body: "x", tag: "exit-ADATRY-c1", url: "/binance-tr",
+      source: "real_exit_reminder", symbol: "ADA_TRY", stage: "stage1" });
+    sw.handlers.push(ev);
+    await ev.done;
+    const { options } = sw.notifications[0];
+    expect(options.actions).toBeUndefined();
+    expect(options.data.buyUrl).toBeUndefined();
+    expect(options.data.url).toBe("/binance-tr");
+  });
+});

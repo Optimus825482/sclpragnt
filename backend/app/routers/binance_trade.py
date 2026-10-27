@@ -49,6 +49,14 @@ class BinanceExchange:
         row = next((b for b in rows if str(b.get("asset") or "").upper() == asset.upper()), None)
         return float(row.get("free", 0) or 0) if row else 0.0
 
+    async def asset_balance(self, asset: str) -> tuple[float, float]:
+        """SALT OKUNUR: (free, locked). Taze okuma (önbelleği atlar); hata yükselir."""
+        rows = await asyncio.to_thread(btp.get_account_balance, self._k, self._s, True)
+        row = next((b for b in rows if str(b.get("asset") or "").upper() == asset.upper()), None)
+        if not row:
+            return 0.0, 0.0
+        return float(row.get("free", 0) or 0), float(row.get("locked", 0) or 0)
+
     async def price(self, symbol_u: str):
         """Önce bellekteki ticker; yoksa public REST. (`btp._resolve_live_price` senkron sarmalı async `ticker_price`'ı
         beklemediği için bellek dışı coinlerde None dönüyordu.)"""
@@ -178,7 +186,8 @@ async def trade_plan(payload: dict, request: Request):
             raise HTTPException(status_code=422, detail="Geçersiz yüzde") from None
         amount = round(free_try * min(max(frac, 0.0), risk["max_position_pct"] / 100.0), 2)
     try:
-        built = await build_plan(ex, symbol=symbol, amount_try=amount, sl_pct=sl_pct, rr=rr, risk=risk)
+        built = await build_plan(ex, symbol=symbol, amount_try=amount, sl_pct=sl_pct, rr=rr, risk=risk,
+                                 tp_pct=payload.get("tp_pct"))
     except OrderError as exc:
         raise _to_http(exc) from None
     return {
@@ -187,7 +196,8 @@ async def trade_plan(payload: dict, request: Request):
         "mode": "manual" if manual else "auto",
         "suggestion": {"sl_pct": suggestion["sl_pct"], "rr": suggestion["rr"], "source": suggestion["source"],
                        "rationale": suggestion.get("rationale", "")},
-        "plan": {**built["plan"], "sl_pct": built["sl_pct"], "rr": built["rr"]},
+        "plan": {**built["plan"], "sl_pct": built["sl_pct"], "rr": built["rr"],
+                 **({"tp_pct": built["tp_pct"]} if built["tp_pct"] is not None else {})},
         "warnings": built["warnings"], "warning_texts": _warning_texts(built["warnings"]),
         "disclaimer": "Bu bir öneridir, kâr garantisi değildir.",
     }

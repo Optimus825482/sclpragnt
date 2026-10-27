@@ -389,3 +389,15 @@ describe("H4 kesişim taraması yanıtı", () => {
     expect(fmtDuration(null)).toBe("—");
   });
 });
+
+describe("MA bildirimi planı karta taşınır", () => {
+  it("trade_plan ve plan_key parse edilip kart satırına geçer; yoksa null", () => {
+    const plan = { max_amount_try: 5000 };
+    const [a, b] = parseRecent({ items: [
+      { id: 1, symbol: "AAATRY", timeframe: "5m", rules: [], trade_plan: plan, plan_key: "ma-5m-AAATRY-1" },
+      { id: 2, symbol: "BBBTRY", timeframe: "5m", rules: [], trade_plan: null, plan_key: null },
+    ] });
+    expect(toCardRow(a)).toMatchObject({ trade_plan: plan, plan_key: "ma-5m-AAATRY-1" });
+    expect(toCardRow(b)).toMatchObject({ trade_plan: null, plan_key: null });
+  });
+});

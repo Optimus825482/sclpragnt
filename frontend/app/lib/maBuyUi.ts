@@ -5,6 +5,7 @@
  * tuzağına düşmemek için tüm okumalar `num()` üzerinden geçer ("veri yok" 0 DEĞİLDİR).
  */
 import { formatPrice } from "./format";
+import type { TradePlan } from "../components/user/home/tradePlan";
 
 export type MaBuyStatus = "open" | "done" | "no_data";
 export type MaBuyRule = "fast_cross_mid" | "mid_cross_slow";
@@ -435,6 +436,9 @@ export type MaBuyRecentItem = {
   paperStatus: string | null;
   targetPct: number | null;
   horizonMinutes: number | null;
+  // 2026-10-27: dondurulmuş işlem planı + anahtarı (yoksa null).
+  tradePlan: TradePlan | null;
+  planKey: string | null;
 };
 
 /** Ham yanıt → güvenli liste (bozuk satırlar atılır). */
@@ -456,6 +460,8 @@ export function parseRecent(raw: unknown): MaBuyRecentItem[] {
       paperStatus: r.paper_status == null ? null : String(r.paper_status),
       targetPct: num(r.target_pct),
       horizonMinutes: num(r.horizon_minutes),
+      tradePlan: r.trade_plan && typeof r.trade_plan === "object" ? (r.trade_plan as TradePlan) : null,
+      planKey: r.plan_key ? String(r.plan_key) : null,
     }];
   });
 }
@@ -477,6 +483,7 @@ export function changeSinceSignal(signalPrice: number | null, live: number | nul
 export function toCardRow(it: MaBuyRecentItem): {
   id: string; symbol: string; price: number; detected_at: number; target_pct: number | null; horizon_minutes: number | null;
   mode: string; timeframe: string; kind_label: string; detail: string; sent_via_push: boolean;
+  trade_plan: TradePlan | null; plan_key: string | null;
 } {
   return {
     id: `ma-${it.id}`,
@@ -490,6 +497,8 @@ export function toCardRow(it: MaBuyRecentItem): {
     kind_label: `MA BUY · ${timeframeLabel(it.timeframe)}`,
     detail: it.rules.map(ruleLabel).join(" · ") || "MA kesişimi",
     sent_via_push: true,
+    trade_plan: it.tradePlan,
+    plan_key: it.planKey,
   };
 }
 

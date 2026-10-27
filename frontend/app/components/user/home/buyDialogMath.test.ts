@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  SL_PCT_CHIPS, TP_PCT_CHIPS, amountFromFree, checkSlTp, describeBuyFill, pctFromPrice, priceAtPct, pricesFromPlan, rrFromPrices, slPctFromPrice,
+  SL_PCT_CHIPS, TP_PCT_CHIPS, amountFromFree, checkSlTp, checkSlTpPlan, describeBuyFill, pctFromPrice, priceAtPct, pricesFromPlan, rrFromPrices, slPctFromPrice,
 } from "./buyDialogMath";
 
 describe("slPctFromPrice", () => {
@@ -112,5 +112,25 @@ describe("describeBuyFill (alım onay penceresi)", () => {
     const r = describeBuyFill(200, { fill_verified: false }, "BTC");
     expect(r.tone).toBe("warn");
     expect(r.pending).toBe(false);
+  });
+});
+
+describe("checkSlTpPlan (plan modunda RR sınırı yok)", () => {
+  it("TP < SL mesafesi olsa da geçerli; sl_pct ve tp_pct döner", () => {
+    const r = checkSlTpPlan(100, 95.8, 103.6);
+    expect(r).toEqual({ ok: true, slPct: 4.2, tpPct: 3.6 });
+  });
+  it("SL aralığı ve TP yönü denetlenir", () => {
+    expect(checkSlTpPlan(100, 100, 103).ok).toBe(false);
+    expect(checkSlTpPlan(100, 99.9, 103).ok).toBe(false);
+    expect(checkSlTpPlan(100, 95, 99).ok).toBe(false);
+    expect(checkSlTpPlan(100, 95, 160).ok).toBe(false); // tp > %50
+    expect(checkSlTpPlan(0, 95, 103).ok).toBe(false);
+  });
+  it("TP alt sınırı %0,5 (gerçek para; komisyon kısmını sunucu denetler)", () => {
+    const low = checkSlTpPlan(100, 95, 100.4);
+    expect(low.ok).toBe(false);
+    if (!low.ok) expect(low.error).toContain("%0,5");
+    expect(checkSlTpPlan(100, 95, 100.5)).toEqual({ ok: true, slPct: 5, tpPct: 0.5 });
   });
 });

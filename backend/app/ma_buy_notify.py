@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import time
 
-from app import database, ma_buy_profiles, ma_buy_signals
+from app import database, ma_buy_profiles, ma_buy_signals, notification_plan, signal_eta
 from app.config import config
 
 logger = logging.getLogger("scalper.ma_buy")
@@ -218,6 +218,9 @@ async def deliver(rows: list[dict], periods: tuple, now_ms: int | None = None) -
         if signal_id is None:
             continue  # bu mum zaten bildirildi (yeniden başlatma / çift tur)
         notif = build_notification(row, periods, now)
+        await notification_plan.attach_plan(
+            notif, signal_eta.bucket_for("ma_buy", row),
+            profile=ma_buy_profiles.profile(row.get("timeframe")))
         ok = await monitoring._send_push(notif)
         notif["push_success"] = ok
         notif["push_attempted"] = True

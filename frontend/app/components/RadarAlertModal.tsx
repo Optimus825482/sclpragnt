@@ -9,6 +9,7 @@ import { pickMissedAlerts, rowKey, symTimeKey, type NotificationHistoryRow } fro
 import { fmtDateTime, formatPrice } from "../lib/format";
 import { SCORE_LABEL, SCORE_TOOLTIP, hitProbLabel, netTargetText } from "../lib/userUi";
 import SymbolLink from "./SymbolLink";
+import { planSummary, planTiles, planWarningLabels, type TradePlan } from "./user/home/tradePlan";
 
 /**
  * Kısa, keskin "radar" sesi. Paylaşılan, kullanıcı jestiyle açılan AudioContext kullanır
@@ -33,6 +34,9 @@ export type RadarAlertItem = {
   target_net_pct?: number | null;
   price?: number;
   expected_price?: number;
+  // 2026-10-27: bildirim işlem planı (yoksa null -> plan arayüzü çizilmez).
+  trade_plan?: TradePlan | null;
+  plan_key?: string | null;
   mode?: string;
   // 2026-09-17: `monitoring_alert` yayınlarında mevcut (hâlâ BEKLİYOR)
   // bildirimin tazelemesini işaretler — modal bu satırları GÖSTERMEZ.
@@ -299,6 +303,23 @@ export default function RadarAlertModal() {
                 </div>
               )}
             </div>
+          )}
+          {item.trade_plan && (
+            <>
+              <div className="ra-tiles" aria-label="İşlem planı">
+                {planTiles(item.trade_plan).map((t) => (
+                  <div key={t.label} className="ra-tile">
+                    <p className="ra-tile-label">{t.label}</p>
+                    <p className="ra-tile-value">{t.value}</p>
+                    {t.sub && <p className="ra-tile-label">{t.sub}</p>}
+                  </div>
+                ))}
+              </div>
+              <p className="ra-note">{planSummary(item.trade_plan, Date.now() / 1000)}</p>
+              {planWarningLabels(item.trade_plan.warnings).map((w) => (
+                <p key={w} className="ra-note ra-note-warn">⚠ {w}</p>
+              ))}
+            </>
           )}
           {item.auto_paper_trade && item.auto_paper_trade.status === "ok" && (
             <p className="ra-note">🤖 Otomatik paper işlem denemesi başlatıldı.</p>

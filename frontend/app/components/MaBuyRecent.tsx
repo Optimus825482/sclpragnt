@@ -7,6 +7,7 @@ import { useWatchPrefs } from "../lib/useWatchPrefs";
 import { useWatchPrices } from "../lib/useWatchPrices";
 import { paperStatusChip, parseRecent, toCardRow, type MaBuyRecentItem } from "../lib/maBuyUi";
 import BuyDialog from "./user/home/BuyDialog";
+import type { TradePlan } from "./user/home/tradePlan";
 import NotificationCard, { type CardActions } from "./user/home/NotificationCard";
 
 const ALERT_TYPES = ["monitoring_alert"] as const;
@@ -21,7 +22,7 @@ export default function MaBuyRecent({ hours = 12, limit = 20 }: { hours?: number
   const [items, setItems] = useState<MaBuyRecentItem[]>([]);
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [buy, setBuy] = useState<{ symbol: string; price: number | null } | null>(null);
+  const [buy, setBuy] = useState<{ symbol: string; price: number | null; plan: TradePlan | null; planKey: string | null } | null>(null);
   const [prefError, setPrefError] = useState("");
   const [nowSec, setNowSec] = useState(nowSeconds);
 
@@ -59,7 +60,7 @@ export default function MaBuyRecent({ hours = 12, limit = 20 }: { hours?: number
     isPinned: prefs.isPinned,
     onToggleFavorite: (s, p) => guard(prefs.toggleFavorite(s, p)),
     onTogglePin: (s, p) => guard(prefs.togglePin(s, p)),
-    onBuy: (s, p) => setBuy({ symbol: s, price: p }),
+    onBuy: (s, p, plan, planKey) => setBuy({ symbol: s, price: p, plan: plan ?? null, planKey: planKey ?? null }),
   };
 
   return (
@@ -85,7 +86,7 @@ export default function MaBuyRecent({ hours = 12, limit = 20 }: { hours?: number
           ))}
         </div>
       )}
-      {buy && <BuyDialog open symbol={buy.symbol} referencePrice={buy.price} onClose={() => setBuy(null)} />}
+      {buy && <BuyDialog open symbol={buy.symbol} referencePrice={buy.price} tradePlan={buy.plan} planKey={buy.plan ? buy.planKey : null} onClose={() => setBuy(null)} />}
     </section>
   );
 }

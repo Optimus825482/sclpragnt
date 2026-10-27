@@ -127,10 +127,13 @@ self.addEventListener("push", function (event) {
     // (components/QuickBuyFromUrl.tsx). Aksiyon düğmeleri Chrome/Android/masaüstünde var; iOS göstermez,
     // orada gövdeye dokunmak eskisi gibi grafiğe gider.
     var sym = String(data.symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    if (sym && /TRY$/.test(sym)) {
+    // Gerçek pozisyon çıkış hatırlatıcısı ALIM değildir: "Alım yap" düğmesi/planı gösterilmez.
+    if (sym && /TRY$/.test(sym) && data.source !== "real_exit_reminder") {
       var buyUrl = "/?buy=" + encodeURIComponent(sym);
       var px = Number(data.price);
       if (px > 0 && isFinite(px)) buyUrl += "&buy_price=" + encodeURIComponent(String(px));
+      // İşlem planı dondurma anahtarı: alım penceresi planı bununla çeker (yoksa plansız açılır).
+      if (data.plan_key) buyUrl += "&key=" + encodeURIComponent(String(data.plan_key));
       notifOpts.data.buyUrl = buyUrl;
       notifOpts.actions = [
         { action: "buy", title: "Alım yap" },

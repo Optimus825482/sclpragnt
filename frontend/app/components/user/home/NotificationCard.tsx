@@ -2,6 +2,7 @@
 import Link from "next/link";
 import PctChange from "../PctChange";
 import DailySeqChip from "./DailySeqChip";
+import { planSummary, planTiles, planWarningLabels, type TradePlan } from "./tradePlan";
 import { formatPrice, toMs } from "../../../lib/format";
 import { SCORE_LABEL, SCORE_TOOLTIP, baseSymbol, confidenceBadge, hitProbLabel, isRegimeTitle, modeLabel, netTargetText, notificationStatus, type NotificationStatus } from "../../../lib/userUi";
 
@@ -32,6 +33,9 @@ export type RecentRow = {
   timeframe?: string | null;   // grafik bağlantısı + TF rozeti ("M5")
   kind_label?: string | null;  // tür rozeti (varsayılan "Yükseliş adayı")
   detail?: string | null;      // ek satır (ör. "Turuncu maviyi yukarı kesti")
+  // 2026-10-27: bildirim işlem planı (yoksa null / eksik -> plan arayüzü hiç çizilmez) + dondurma anahtarı.
+  trade_plan?: TradePlan | null;
+  plan_key?: string | null;
 };
 
 /** "14:05 · 12 dk önce" */
@@ -58,7 +62,7 @@ export type CardActions = {
   isPinned: (symbol: string) => boolean;
   onToggleFavorite: (symbol: string, price: number | null) => void;
   onTogglePin: (symbol: string, price: number | null) => void;
-  onBuy: (symbol: string, price: number | null) => void;
+  onBuy: (symbol: string, price: number | null, plan?: TradePlan | null, planKey?: string | null) => void;
 };
 
 function StarButton({ symbol, fav, onClick }: { symbol: string; fav: boolean; onClick: () => void }) {
@@ -75,8 +79,9 @@ function StarButton({ symbol, fav, onClick }: { symbol: string; fav: boolean; on
   );
 }
 
-function ActionRows({ symbol, price, live, actions, timeframe }: {
+function ActionRows({ symbol, price, live, actions, timeframe, plan, planKey }: {
   symbol: string; price: number | null; live: number | null; actions: CardActions; timeframe?: string | null;
+  plan?: TradePlan | null; planKey?: string | null;
 }) {
   const fav = actions.isFavorite(symbol);
   const pin = actions.isPinned(symbol);
@@ -85,7 +90,7 @@ function ActionRows({ symbol, price, live, actions, timeframe }: {
     <div className="mt-3 space-y-2">
       <button
         type="button"
-        onClick={() => actions.onBuy(symbol, price)}
+        onClick={() => actions.onBuy(symbol, price, plan ?? null, planKey ?? null)}
         className="ui-button ui-button-primary u-btn-brand inline-flex min-h-[44px] w-full items-center justify-center gap-1"
       >
         ⚡ Alım yap
@@ -173,6 +178,26 @@ export default function NotificationCard({
         </div>
       </dl>
 
+      {row.trade_plan && (
+        <div className="mt-3 rounded-lg border border-bunker-border p-2" aria-label="İşlem planı">
+          <dl className="grid grid-cols-3 gap-2 text-sm">
+            {planTiles(row.trade_plan).map((t) => (
+              <div key={t.label}>
+                <dt className="text-xs text-bunker-muted">{t.label}</dt>
+                <dd className="font-semibold">{t.value}</dd>
+                {t.sub && <dd className="text-xs text-bunker-muted">{t.sub}</dd>}
+              </div>
+            ))}
+          </dl>
+          <p className="mt-2 text-xs text-bunker-muted">{planSummary(row.trade_plan, nowSec)}</p>
+          {planWarningLabels(row.trade_plan.warnings).length > 0 && (
+            <p className="mt-1 flex flex-wrap gap-1">
+              {planWarningLabels(row.trade_plan.warnings).map((w) => <span key={w} className="u-chip u-chip-warn">{w}</span>)}
+            </p>
+          )}
+        </div>
+      )}
+
       <p className="mt-2 flex flex-wrap items-center gap-2">
         <span className="u-chip u-chip-info" title={mode ? `Mod: ${mode}` : undefined}>{row.kind_label || "Yükseliş adayı"}</span>
         {regime && (
@@ -187,7 +212,7 @@ export default function NotificationCard({
         <span>{status.label}</span>
       </p>
 
-      <ActionRows symbol={row.symbol} price={row.price} live={live} actions={actions} timeframe={row.timeframe} />
+      <ActionRows symbol={row.symbol} price={row.price} live={live} actions={actions} timeframe={row.timeframe} plan={row.trade_plan} planKey={row.plan_key} />
     </article>
   );
 }

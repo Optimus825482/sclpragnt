@@ -484,6 +484,8 @@ async def init_db():
         # 2026-10-21: kural sinyali çıkış profili (MA BUY H4): ad + işlem başına tutma süresi (dk). NULL = genel ayarlar.
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS exit_profile TEXT")
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS max_hold_minutes DOUBLE PRECISION")
+        # 2026-10-27 (işlem planı): plan işleminin exit_at / grace_minutes / plan_key'i (JSON metin). NULL = plansız.
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS plan_context TEXT")
         conn.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_commission_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_commission_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_commission_pct DOUBLE PRECISION")
@@ -5559,6 +5561,131 @@ async def list_ma_buy_notified(since_ts: float, limit: int = 30) -> list[dict]:
     return await _run_db(op)
 
 
+# 2026-10-27: SİNYAL SÜRE / STOP İSTATİSTİĞİ (migration 030; app/signal_eta.py yazar/okur).
+def _json_obj(v) -> dict:
+    if isinstance(v, dict):
+        return v
+    try:
+        out = json.loads(v) if v else {}
+        return out if isinstance(out, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _eta_bucket(kind: str, row: dict) -> str:
+    # app.signal_eta.bucket_for ile aynı kural (döngüsel import olmasın diye burada tekrarlı).
+    if kind == "rising":
+        return f"rising:{row.get('kind')}"
+    if kind == "ma_buy":
+        return f"ma_buy:{row.get('timeframe')}"
+    return "radar"
+
+
+async def list_unmeasured_signals(kind: str, since_ts: float, until_ts: float, limit: int) -> list[dict]:
+    """Push'u gitmiş, henüz örneklenmemiş sinyaller (en yeni önce): {ref_id, symbol, signal_ts, entry_price, bucket}.
+
+    kind: radar (monitoring_notifications.sent_via_push) | rising (rising_alerts.sent_via_push, kova `kind`) |
+    ma_buy (ma_buy_signals.push_ok, kova `timeframe`). Zaman aralığı [since_ts, until_ts].
+    """
+    if kind == "radar":
+        sql = ("SELECT id, symbol, detected_at AS ts, price, NULL AS extra FROM monitoring_notifications t "
+               "WHERE t.sent_via_push = TRUE AND t.detected_at >= ? AND t.detected_at <= ? ")
+    elif kind == "rising":
+        sql = ("SELECT id, symbol, created_at AS ts, price, kind AS extra FROM rising_alerts t "
+               "WHERE t.sent_via_push = TRUE AND t.created_at >= ? AND t.created_at <= ? ")
+    elif kind == "ma_buy":
+        sql = ("SELECT id, symbol, notified_at AS ts, signal_price AS price, timeframe AS extra FROM ma_buy_signals t "
+               "WHERE t.push_ok = TRUE AND t.notified_at >= ? AND t.notified_at <= ? ")
+    else:
+        return []
+    sql += ("AND NOT EXISTS (SELECT 1 FROM signal_eta_samples s WHERE s.source_kind = ? AND s.ref_id = t.id) "
+            "ORDER BY ts DESC LIMIT ?")
+
+    def op(conn):
+        rows = conn.execute(sql, (float(since_ts), float(until_ts), kind, int(limit))).fetchall()
+        out = []
+        for r in rows:
+            extra = {"kind": r[4]} if kind == "rising" else ({"timeframe": r[4]} if kind == "ma_buy" else {})
+            out.append({"ref_id": int(r[0]), "symbol": str(r[1]), "signal_ts": float(r[2]),
+                        "entry_price": float(r[3]) if r[3] is not None else None,
+                        "bucket": _eta_bucket(kind, extra)})
+        return out
+    return await _run_db(op)
+
+
+async def insert_eta_samples(samples: list[dict], now: float | None = None) -> int:
+    """Örnekleri yazar (var olan (source_kind, ref_id) atlanır); eklenen sayı."""
+    if not samples:
+        return 0
+    ts = float(now if now is not None else time.time())
+
+    def op(conn):
+        n = 0
+        for s in samples:
+            cur = conn.execute(
+                "INSERT INTO signal_eta_samples(source_kind, ref_id, bucket, symbol, signal_ts, entry_price,"
+                " hits, mae_before, measured_at) VALUES(?,?,?,?,?,?,?::jsonb,?::jsonb,?) "
+                "ON CONFLICT(source_kind, ref_id) DO NOTHING",
+                (str(s["source_kind"]), int(s["ref_id"]), str(s["bucket"]), str(s["symbol"]),
+                 float(s["signal_ts"]), s.get("entry_price"), json.dumps(s["hits"]),
+                 json.dumps(s["mae_before"]), ts))
+            n += int(cur.rowcount or 0)
+        conn.commit()
+        return n
+    return await _run_db(op)
+
+
+async def list_eta_buckets(since_ts: float) -> list[str]:
+    def op(conn):
+        rows = conn.execute("SELECT DISTINCT bucket FROM signal_eta_samples WHERE signal_ts >= ?",
+                            (float(since_ts),)).fetchall()
+        return [str(r[0]) for r in rows]
+    return await _run_db(op)
+
+
+async def list_eta_samples(bucket: str, since_ts: float) -> list[dict]:
+    def op(conn):
+        rows = conn.execute(
+            "SELECT hits, mae_before FROM signal_eta_samples WHERE bucket = ? AND signal_ts >= ?",
+            (str(bucket), float(since_ts))).fetchall()
+        return [{"hits": _json_obj(r[0]), "mae_before": _json_obj(r[1])} for r in rows]
+    return await _run_db(op)
+
+
+async def upsert_eta_stats(bucket: str, threshold: float, stats: dict, now: float | None = None) -> None:
+    ts = float(now if now is not None else time.time())
+
+    def op(conn):
+        conn.execute(
+            "INSERT INTO signal_eta_stats(bucket, threshold, n, hit_rate, p50_min, p75_min, mae_p80_pct, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(bucket, threshold) DO UPDATE SET n=excluded.n, "
+            "hit_rate=excluded.hit_rate, p50_min=excluded.p50_min, p75_min=excluded.p75_min, "
+            "mae_p80_pct=excluded.mae_p80_pct, updated_at=excluded.updated_at",
+            (str(bucket), float(threshold), int(stats["n"]), stats.get("hit_rate"), stats.get("p50_min"),
+             stats.get("p75_min"), stats.get("mae_p80_pct"), ts))
+        conn.commit()
+    await _run_db(op)
+
+
+async def delete_eta_stats(bucket: str, threshold: float) -> None:
+    def op(conn):
+        conn.execute("DELETE FROM signal_eta_stats WHERE bucket = ? AND threshold = ?",
+                     (str(bucket), float(threshold)))
+        conn.commit()
+    await _run_db(op)
+
+
+async def get_eta_stats(bucket: str, threshold: float) -> dict | None:
+    def op(conn):
+        r = conn.execute(
+            "SELECT n, hit_rate, p50_min, p75_min, mae_p80_pct FROM signal_eta_stats "
+            "WHERE bucket = ? AND threshold = ?", (str(bucket), float(threshold))).fetchone()
+        if not r:
+            return None
+        return {"n": int(r[0]), "hit_rate": r[1], "p50_min": r[2], "p75_min": r[3], "mae_p80_pct": r[4]}
+    return await _run_db(op)
+
+
 async def mark_ma_buy_delivery(signal_id: int, *, push_ok: bool | None = None, paper_status: str | None = None,
                                paper_trade_id: int | None = None) -> None:
     """Bildirim/otonom paper sonucunu sinyal satırına yazar (None alanlar korunur)."""
@@ -6820,6 +6947,78 @@ async def get_order_request(user_id: int, client_order_id: str) -> dict | None:
     return await _run_db(op)
 
 
+# Gerçek pozisyon çıkış hatırlatıcısı (2026-10-27, Task 7). Aşama bilgisi YENİ SÜTUN/MİGRASYON olmadan
+# `result.exit_reminder` JSON'unda tutulur: {"stage1_at": ts, "stage2_at": ts, "closed": ts}.
+EXIT_REMINDER_STAGE_KEYS = {"stage1": "stage1_at", "stage2": "stage2_at", "kapali": "closed"}
+EXIT_REMINDER_MAX_AGE_SEC = 3 * 86400   # çıkış zamanından bu kadar sonra hatırlatma artık anlamsız
+
+
+async def list_plan_order_requests_due(now: float) -> list[dict]:
+    """Çıkış zamanı gelmiş, hatırlatması BİTMEMİŞ tamamlanmış plan emirleri (tüm kullanıcılar).
+
+    Hariç: kapalı işaretli, aşama 2 gönderilmiş, ya da aşama 1 gönderilmiş ve ek süre (grace) olmayan satırlar.
+    """
+    def op(conn):
+        rows = conn.execute(
+            "SELECT user_id, client_order_id, symbol, result FROM order_requests "
+            "WHERE status='done' AND result->>'exit_at' IS NOT NULL "
+            "AND (result->>'exit_at')::double precision <= %s "
+            "AND (result->>'exit_at')::double precision >= %s "
+            "AND result->'exit_reminder'->>'closed' IS NULL "
+            "AND result->'exit_reminder'->>'stage2_at' IS NULL "
+            "AND NOT (result->'exit_reminder'->>'stage1_at' IS NOT NULL "
+            "AND COALESCE((result->>'grace_minutes')::double precision, 0) <= 0) "
+            "ORDER BY created_at",
+            (float(now), float(now) - EXIT_REMINDER_MAX_AGE_SEC)).fetchall()
+        out = []
+        for row in rows:
+            result = row[3]
+            if isinstance(result, str):
+                try:
+                    result = json.loads(result)
+                except ValueError:
+                    result = {}
+            out.append({"user_id": int(row[0]), "client_order_id": str(row[1]), "symbol": row[2],
+                        "result": result if isinstance(result, dict) else {}})
+        return out
+    return await _run_db(op)
+
+
+async def mark_exit_reminder(user_id: int, client_order_id: str, stage: str) -> bool:
+    """Aşamayı `result.exit_reminder` içine ATOMİK işaretler. Bu çağrı ilk işaretleyen ise True (çok işçi güvenli:
+    aynı aşama iki kez gönderilmez). stage: stage1 | stage2 | kapali."""
+    key = EXIT_REMINDER_STAGE_KEYS.get(stage)
+    if key is None:
+        raise ValueError(f"geçersiz hatırlatma aşaması: {stage}")
+
+    def op(conn):
+        now = time.time()
+        cur = conn.execute(
+            "UPDATE order_requests SET result = jsonb_set(COALESCE(result, '{}'::jsonb), '{exit_reminder}', "
+            "COALESCE(result->'exit_reminder', '{}'::jsonb) || jsonb_build_object(%s::text, %s::double precision)), "
+            "updated_at=%s WHERE user_id=%s AND client_order_id=%s AND result->'exit_reminder'->>%s IS NULL",
+            (key, now, now, int(user_id), str(client_order_id), key))
+        conn.commit()
+        return int(getattr(cur, "rowcount", 0) or 0) == 1
+    return await _run_db(op)
+
+
+async def unmark_exit_reminder(user_id: int, client_order_id: str, stage: str) -> None:
+    """Geçici push hatasında alınan aşamayı geri bırakır (sonraki tur yeniden dener)."""
+    key = EXIT_REMINDER_STAGE_KEYS.get(stage)
+    if key is None:
+        raise ValueError(f"geçersiz hatırlatma aşaması: {stage}")
+
+    def op(conn):
+        conn.execute(
+            "UPDATE order_requests SET result = jsonb_set(result, '{exit_reminder}', "
+            "(result->'exit_reminder') - %s::text), updated_at=%s "
+            "WHERE user_id=%s AND client_order_id=%s AND result->'exit_reminder' IS NOT NULL",
+            (key, time.time(), int(user_id), str(client_order_id)))
+        conn.commit()
+    await _run_db(op)
+
+
 async def get_user_risk_settings(user_id: int) -> dict:
     """Risk Merkezi ayarları; kayıt yoksa varsayılanlar (app/risk_settings.py)."""
     from app.risk_settings import DEFAULTS
@@ -7434,15 +7633,16 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
                (symbol, side, status, notification_id, notification_key, entry_price, quantity, order_value_try,
                 stop_loss, take_profit, peak_price, entry_time,
                 notification_score, notification_target_pct, notification_expected_price,
-                created_at, updated_at, entry_commission_pct, exit_profile, max_hold_minutes)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+                created_at, updated_at, entry_commission_pct, exit_profile, max_hold_minutes, plan_context)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
             (symbol, trade.get("side", "LONG"), "open",
              notification_id, notification_key, trade["entry_price"], trade["quantity"], order_value,
              trade.get("stop_loss"), trade.get("take_profit"),
              trade.get("peak_price", trade["entry_price"]), trade["entry_time"],
              trade.get("notification_score"), trade.get("notification_target_pct"),
              trade.get("notification_expected_price"), trade["created_at"], trade["updated_at"],
-             commission_pct, trade.get("exit_profile"), trade.get("max_hold_minutes"))
+             commission_pct, trade.get("exit_profile"), trade.get("max_hold_minutes"),
+             trade.get("plan_context"))
         ).fetchone()
         if signal:
             trade_id_val = row["id"] if row else None
@@ -8747,3 +8947,49 @@ async def get_unified_mfe_quantiles(days: int = 14, min_rows: int = 30) -> dict[
     except Exception as exc:
         logger.warning("hedef kalibrasyonu MFE yüzdelikleri okunamadı: %s", exc)
         return {}
+
+
+async def save_trade_plan(key: str, symbol: str, bucket: str | None, plan: dict) -> dict:
+    """Planı bildirim anahtarıyla DONDURUR (ilk yazan kazanır); saklanan planı döndürür."""
+    def op(conn):
+        conn.execute(
+            "INSERT INTO notification_trade_plans(notification_key, symbol, bucket, plan, created_at) "
+            "VALUES(?,?,?,?::jsonb,?) ON CONFLICT(notification_key) DO NOTHING",
+            (str(key), str(symbol), bucket, json.dumps(plan), time.time()))
+        conn.commit()
+        r = conn.execute("SELECT plan FROM notification_trade_plans WHERE notification_key = ?",
+                         (str(key),)).fetchone()
+        if not r:
+            return plan
+        v = r[0]
+        return json.loads(v) if isinstance(v, (str, bytes)) else v
+    return await _run_db(op)
+
+
+async def get_trade_plans(keys) -> dict[str, dict]:
+    """Tek sorguda birden çok dondurulmuş planı okur: {anahtar: plan}. Bulunmayanlar sonuçta yoktur."""
+    uniq = sorted({str(k) for k in (keys or []) if k})
+    if not uniq:
+        return {}
+
+    def op(conn):
+        out: dict[str, dict] = {}
+        marks = ",".join("?" for _ in uniq)
+        for r in conn.execute(
+                f"SELECT notification_key, plan FROM notification_trade_plans WHERE notification_key IN ({marks})",
+                tuple(uniq)).fetchall():
+            v = r[1]
+            out[str(r[0])] = json.loads(v) if isinstance(v, (str, bytes)) else v
+        return out
+    return await _run_db(op)
+
+
+async def get_trade_plan(key: str) -> dict | None:
+    def op(conn):
+        r = conn.execute("SELECT plan FROM notification_trade_plans WHERE notification_key = ?",
+                         (str(key),)).fetchone()
+        if not r:
+            return None
+        v = r[0]
+        return json.loads(v) if isinstance(v, (str, bytes)) else v
+    return await _run_db(op)

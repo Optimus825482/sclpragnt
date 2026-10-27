@@ -34,6 +34,20 @@ def _confirm_rule_off_by_default(request, monkeypatch):
     monkeypatch.setattr(config, "RADAR_FUSION_TARGET_DYNAMIC", False, raising=False)
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_plan: notification_plan.build_plan gerçek (stub'sız) çalışsın")
+
+
+@pytest.fixture(autouse=True)
+def _stub_build_plan(request, monkeypatch):
+    """Testler canlı Binance'e gitmesin: build_plan varsayılan None (real_plan işaretiyle kapatılır)."""
+    if request.node.get_closest_marker("real_plan"):
+        return
+    from unittest.mock import AsyncMock
+    from app import notification_plan
+    monkeypatch.setattr(notification_plan, "build_plan", AsyncMock(return_value=None))
+
+
 @pytest.fixture(autouse=True)
 def _reset_binance_client_id_memory():
     """3703 sonrası 'bu anahtarla clientId gönderme' hafızası süreç geneli; testler arasında sızmasın."""

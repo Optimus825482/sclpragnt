@@ -39,15 +39,21 @@ def round_to_tick(value: float, tick: float | None) -> float:
     return float((Decimal(str(value)) / t).to_integral_value(ROUND_HALF_UP) * t)
 
 
-def compute_plan(price: float, amount_try: float, sl_pct: float, rr: float, filters: dict, fee_rate: float) -> dict:
+def compute_plan(price: float, amount_try: float, sl_pct: float, rr: float | None, filters: dict, fee_rate: float,
+                 tp_pct: float | None = None) -> dict:
     """Piyasa alımı + OCO (SL/TP) planı. Emir GÖNDERMEZ.
 
-    SL = fiyat × (1 − sl_pct/100); TP = fiyat × (1 + sl_pct × rr/100). Miktar komisyon düşülüp LOT adımına aşağı yuvarlanır;
-    fiyatlar tick'e yuvarlanır. Senaryolar alım + satım komisyonu dahil NET TL sonucudur.
+    SL = fiyat × (1 − sl_pct/100); TP = fiyat × (1 + sl_pct × rr/100). `tp_pct` verilirse TP = fiyat × (1 + tp_pct/100)
+    ve `rr` yok sayılır (dönüşteki rr = tp_pct / sl_pct, bilgi amaçlı). Miktar komisyon düşülüp LOT adımına aşağı
+    yuvarlanır; fiyatlar tick'e yuvarlanır. Senaryolar alım + satım komisyonu dahil NET TL sonucudur.
     """
-    for name, val in (("fiyat", price), ("tutar", amount_try), ("sl_pct", sl_pct), ("rr", rr)):
-        if not (isinstance(val, (int, float)) and math.isfinite(val) and val > 0):
+    checks = [("fiyat", price), ("tutar", amount_try), ("sl_pct", sl_pct)]
+    checks.append(("tp_pct", tp_pct) if tp_pct is not None else ("rr", rr))
+    for name, val in checks:
+        if not (isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val) and val > 0):
             raise ValueError(f"Geçersiz {name}")
+    if tp_pct is not None:
+        rr = float(tp_pct) / float(sl_pct)
     fee = max(0.0, min(float(fee_rate or 0), 0.05))
     step = float(filters.get("step_size") or 0)
     tick = float(filters.get("tick_size") or 0)
@@ -56,7 +62,7 @@ def compute_plan(price: float, amount_try: float, sl_pct: float, rr: float, filt
 
     qty = round_down(amount_try / price * (1.0 - fee), step)
     sl_price = round_to_tick(price * (1.0 - sl_pct / 100.0), tick)
-    tp_price = round_to_tick(price * (1.0 + sl_pct * rr / 100.0), tick)
+    tp_price = round_to_tick(price * (1.0 + (tp_pct if tp_pct is not None else sl_pct * rr) / 100.0), tick)
     proceeds = lambda px: qty * px * (1.0 - fee)  # noqa: E731
     loss = proceeds(sl_price) - amount_try
     gain = proceeds(tp_price) - amount_try
@@ -74,11 +80,14 @@ def compute_plan(price: float, amount_try: float, sl_pct: float, rr: float, filt
     if tp_price <= price:
         warnings.append("tp_fiyata_cok_yakin")
 
-    return {
+    out = {
         "qty": qty, "cost_try": float(amount_try), "fee_buy_try": float(amount_try) * fee,
         "sl_price": sl_price, "tp_price": tp_price, "sl_pct": float(sl_pct), "rr": float(rr),
         "loss_try": loss, "gain_try": gain, "break_even_price": break_even, "warnings": warnings,
     }
+    if tp_pct is not None:
+        out["tp_pct"] = float(tp_pct)
+    return out
 
 
 def rule_suggestion(atr_pct: float | None, default_rr: float) -> dict:

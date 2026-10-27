@@ -69,6 +69,8 @@ from app import ui_prefs
 from app.config_bounds import sanitize_persisted
 from app.watch_prices import watch_prices_loop
 from app.notification_outcomes import notification_outcome_loop
+from app.signal_eta import eta_loop
+from app.real_exit_reminder import reminder_loop
 from app.daily_first_notification import daily_first_notification_loop
 from app.n7_scan_job import n7_hourly_loop
 from app import pattern_research
@@ -1208,6 +1210,12 @@ async def startup_services():
     _start_background(watch_prices_loop, "watch-prices")
     await asyncio.sleep(_yield)
     _start_background(notification_outcome_loop, "notification-outcomes")
+    await asyncio.sleep(_yield)
+    # 2026-10-27: geçmiş sinyallerden süre/stop istatistiği (günde bir; 1m mum replay, yavaş ve yumuşak).
+    _start_background(eta_loop, "signal-eta")
+    await asyncio.sleep(_yield)
+    # 2026-10-27: plan ile açılmış GERÇEK pozisyonlara "çıkış zamanı geldi" push'u (60 sn; emir göndermez).
+    _start_background(reminder_loop, "real-exit-reminder")
     await asyncio.sleep(_yield)
     # 2026-10-25: Raporlar > "Günün ilk bildirimi" — sembol başına günün ilk bildiriminin MFE/MAE izleyicisi (5 dk).
     _start_background(daily_first_notification_loop, "daily-first-notification")

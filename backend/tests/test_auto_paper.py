@@ -1184,6 +1184,282 @@ class AutoPaperP0P2FixTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(defaults["tp_cancel_on_trail"])
 
 
+# ---------------------------------------------------------------------------
+# 2026-10-27 (Task 5): otonom paper bildirimin dondurulmuş işlem planını kullanır.
+# ---------------------------------------------------------------------------
+def _plan(now=None, **over):
+    now = time.time() if now is None else now
+    p = {
+        "symbol": "PLANTRY", "bucket": "trend_devam", "entry_ref_price": 100.0,
+        "max_amount_try": 40_000.0, "max_amount_binding": "book",
+        "target_net_pct": 3.0, "target_gross_pct": 3.6, "target_price": 103.6,
+        "stop_pct": 4.2, "stop_price": 95.8, "eta_minutes": 30.0,
+        "exit_at": now + 45 * 60, "grace_minutes": 45.0,
+        "hit_rate": 0.6, "sample_n": 40, "profile_exit": False,
+        "warnings": [], "created_at": now,
+    }
+    p.update(over)
+    return p
+
+
+def _volatile_market():
+    """ATR genişletmesini tetikleyecek oynak 5m mumlu sahte market."""
+    m = MagicMock()
+    closes = [100.0 + (5 if i % 2 else -5) for i in range(20)]
+    m.get_ut_kline = MagicMock(return_value={
+        "highs": [c + 4 for c in closes], "lows": [c - 4 for c in closes], "closes": closes})
+    m.ensure_history = AsyncMock(return_value=None)
+    return m
+
+
+class AutoPaperTradePlanOpenTests(unittest.IsolatedAsyncioTestCase):
+    SETTINGS = {"balance_pct": 10.0, "min_order_try": 100.0, "stop_loss_pct": 2.0,
+                "volatility_sl_enabled": True, "max_target_pct": 0.0}
+
+    async def _open(self, notif, settings=None, balance=1_000_000.0):
+        captured = {}
+
+        async def fake_open(trade_data, signal):
+            captured.update(trade_data)
+            return ({"id": 7}, "opened")
+
+        with patch.object(auto_paper.database, "open_auto_paper_trade", new=fake_open), \
+             patch.object(auto_paper, "_broadcast_trade", AsyncMock()), \
+             patch.object(auto_paper, "record_entry_latency", MagicMock()), \
+             patch.object(auto_paper, "extend_stream_universe", MagicMock()), \
+             patch.object(auto_paper, "market", _volatile_market()):
+            res = await auto_paper._open_new_trade(notif["symbol"], notif, 100.0,
+                                                   dict(settings or self.SETTINGS), balance=balance)
+        return res, captured
+
+    def _notif(self, plan=None, **over):
+        n = _make_notification(symbol="PLANTRY", target_pct=2.0)
+        if plan is not None:
+            n["trade_plan"] = plan
+            n["plan_key"] = "PLANTRY:k1"
+        n.update(over)
+        return n
+
+    async def test_plan_caps_order_value(self):
+        # bakiye 1.000.000 × %10 = 100.000 → plan tavanı 40.000
+        res, trade = await self._open(self._notif(_plan()))
+        self.assertEqual("opened", res["status"])
+        c = paper_ledger.commission_pct()
+        self.assertAlmostEqual(40_000 / (1 + c), trade["order_value_try"], places=4)
+        # hedef gerçekçi değil uyarısı da tavanı uygular
+        _, trade2 = await self._open(self._notif(_plan(warnings=["hedef_gercekci_degil"])))
+        self.assertAlmostEqual(40_000 / (1 + c), trade2["order_value_try"], places=4)
+        # tavan sipariş değerinden büyükse değişmez
+        _, trade3 = await self._open(self._notif(_plan(max_amount_try=500_000.0)))
+        self.assertAlmostEqual(100_000 / (1 + c), trade3["order_value_try"], places=4)
+
+    async def test_plan_tiny_cap_blocked_by_min_order(self):
+        res, trade = await self._open(self._notif(_plan(max_amount_try=50.0,
+                                                        warnings=["hedef_gercekci_degil"])))
+        self.assertEqual("order_below_min", res["reason"])
+        self.assertEqual({}, trade)
+
+    async def test_plan_cap_helper_used_before_liquidity_gate(self):
+        notif = self._notif(_plan())
+        self.assertEqual(40_000.0, auto_paper._plan_capped_order_value(100_000.0, notif))
+        self.assertEqual(30_000.0, auto_paper._plan_capped_order_value(30_000.0, notif))
+        # veri yetersiz plan: tavan (defter tabanlı) YİNE uygulanır
+        self.assertEqual(40_000.0, auto_paper._plan_capped_order_value(
+            100_000.0, self._notif(_plan(warnings=["veri_yetersiz"]))))
+        self.assertEqual(100_000.0, auto_paper._plan_capped_order_value(100_000.0, self._notif()))
+
+    async def test_plan_sets_tp_enabled_and_stop_without_atr(self):
+        plan = _plan()
+        with patch.object(auto_paper, "_effective_sl_pct", MagicMock(return_value=0.5)) as atr:
+            res, trade = await self._open(self._notif(plan, tp2_runner_pct=9.0))
+        self.assertEqual("opened", res["status"])
+        atr.assert_not_called()
+        entry = trade["entry_price"]
+        self.assertAlmostEqual(4.2, (1 - trade["stop_loss"] / entry) * 100, places=6)
+        # brüt hedef doğrudan; maliyet işaretlemesi / TP2 yükseltmesi eklenmez
+        self.assertAlmostEqual(entry * 1.036, trade["take_profit"], places=6)
+        self.assertAlmostEqual(3.6, trade["notification_target_pct"], places=6)
+        self.assertEqual("plan", trade["exit_profile"])
+        expected_hold = (plan["exit_at"] - trade["entry_time"] + 45 * 60) / 60
+        self.assertAlmostEqual(expected_hold, trade["max_hold_minutes"], places=3)
+        ctx = json.loads(trade["plan_context"])
+        self.assertAlmostEqual(plan["exit_at"], ctx["exit_at"], places=3)
+        self.assertEqual(45.0, ctx["grace_minutes"])
+        self.assertEqual("PLANTRY:k1", ctx["plan_key"])
+
+    async def test_profile_exit_keeps_profile_stop(self):
+        from app import ma_buy_profiles
+        notif = self._notif(_plan(profile_exit=True, stop_pct=6.0, grace_minutes=0),
+                            source="ma_buy", target_pct=9.0,
+                            exit_profile={"name": ma_buy_profiles.H4_PROFILE_NAME, "stop_loss_pct": 6.0,
+                                          "max_hold_minutes": 240.0, "trailing": True})
+        with patch.object(auto_paper, "_effective_sl_pct", MagicMock(return_value=0.5)) as atr:
+            res, trade = await self._open(notif)
+        self.assertEqual("opened", res["status"])
+        atr.assert_not_called()
+        self.assertEqual(ma_buy_profiles.H4_PROFILE_NAME, trade["exit_profile"])
+        self.assertEqual(240.0, trade["max_hold_minutes"])
+        self.assertAlmostEqual(6.0, (1 - trade["stop_loss"] / trade["entry_price"]) * 100, places=6)
+        self.assertIsNone(trade.get("plan_context"))
+        c = paper_ledger.commission_pct()
+        self.assertAlmostEqual(40_000 / (1 + c), trade["order_value_try"], places=4)
+        # profil yolu: hedef işaretlemeli (bugünkü davranış)
+        markup = paper_ledger.round_trip_markup(c, paper_ledger.slippage_pct(), exit_kind="take_profit")
+        self.assertAlmostEqual(trade["entry_price"] * (1 + 0.09 + markup), trade["take_profit"], places=6)
+
+    async def test_no_plan_unchanged(self):
+        fixed = 1_800_000_000.0
+        with patch("app.routers.auto_paper.time.time", return_value=fixed):
+            _, base = await self._open(self._notif())
+            _, insufficient = await self._open(self._notif(_plan(warnings=["veri_yetersiz"])))
+            _, non_dict = await self._open(self._notif("bozuk"))
+        self.assertIsNone(base["exit_profile"])
+        self.assertIsNone(base["max_hold_minutes"])
+        self.assertIsNone(base.get("plan_context"))
+        c = paper_ledger.commission_pct()
+        self.assertAlmostEqual(100_000 / (1 + c), base["order_value_try"], places=4)
+        self.assertEqual(base, non_dict)
+        # veri yetersiz plan: yalnız tutar tavanı uygulanır; hedef/stop/süre bugünkü gibi
+        self.assertAlmostEqual(40_000 / (1 + c), insufficient["order_value_try"], places=4)
+        for k in ("exit_profile", "max_hold_minutes", "stop_loss", "take_profit", "notification_target_pct"):
+            self.assertEqual(base.get(k), insufficient.get(k), k)
+        self.assertIsNone(insufficient.get("plan_context"))
+
+
+class AutoPaperTradePlanManageTests(unittest.IsolatedAsyncioTestCase):
+    SETTINGS = {"trailing_enabled": False, "breakeven_enabled": False,
+                "tp_primary_exit_enabled": False, "max_hold_minutes": 120.0}
+
+    def _trade(self, now, exit_at, grace=45.0, **over):
+        entry_time = now - 50 * 60
+        t = {
+            "id": 77, "symbol": "PLANTRY", "status": "open", "entry_price": 100.0,
+            "quantity": 10.0, "stop_loss": 95.8, "take_profit": 103.6, "peak_price": 100.0,
+            "entry_time": entry_time, "breakeven_activated": False, "breakeven_stop": None,
+            "trailing_activated": False, "trailing_stop": None,
+            "exit_profile": "plan",
+            "max_hold_minutes": (exit_at - entry_time + grace * 60) / 60,
+            "plan_context": json.dumps({"exit_at": exit_at, "grace_minutes": grace, "plan_key": "PLANTRY:k1"}),
+        }
+        t.update(over)
+        return t
+
+    async def _manage(self, trade, now, price):
+        mk = MagicMock()
+        mk.symbols = ["plantry"]
+        mk.get_ticker = MagicMock(return_value={"last_price": price, "timestamp": now * 1000})
+        close = AsyncMock(return_value=None)
+        with patch.object(auto_paper, "market", mk), \
+             patch.object(auto_paper, "_close_trade", close), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()):
+            await auto_paper._manage_single_trade(trade, now, 1.5, dict(self.SETTINGS))
+        return close
+
+    async def test_plan_exit_at_closes_when_net_positive(self):
+        now = time.time()
+        close = await self._manage(self._trade(now, exit_at=now - 60), now, 101.0)
+        close.assert_awaited_once()
+        self.assertEqual("plan_sure_doldu", close.await_args.args[4])
+
+    async def test_plan_keeps_open_when_negative_before_grace(self):
+        now = time.time()
+        close = await self._manage(self._trade(now, exit_at=now - 60), now, 99.0)
+        close.assert_not_awaited()
+
+    async def test_plan_closes_after_grace_even_if_negative(self):
+        now = time.time()
+        close = await self._manage(self._trade(now, exit_at=now - 50 * 60 + 60, grace=1.0), now, 99.0)
+        close.assert_awaited_once()
+        self.assertEqual("plan_sure_doldu", close.await_args.args[4])
+
+    async def test_plan_not_closed_before_exit_at(self):
+        now = time.time()
+        close = await self._manage(self._trade(now, exit_at=now + 600), now, 101.0)
+        close.assert_not_awaited()
+
+    async def test_plan_tp_exit_enabled_even_if_global_off(self):
+        now = time.time()
+        close = await self._manage(self._trade(now, exit_at=now + 600), now, 104.0)
+        close.assert_awaited_once()
+        self.assertEqual("take_profit", close.await_args.args[4])
+
+    async def test_non_plan_trade_tp_still_gated(self):
+        now = time.time()
+        trade = self._trade(now, exit_at=now + 600, exit_profile=None, max_hold_minutes=None,
+                            plan_context=None)
+        close = await self._manage(trade, now, 104.0)
+        close.assert_not_awaited()
+
+
+class AutoPaperTradePlanFixRound1Tests(unittest.IsolatedAsyncioTestCase):
+    """2026-10-27 fix round 1: dondurulmuş plan korunur; iz süren/başabaş/TP iptali kapalı; süresi geçmiş plan açılmaz."""
+    SETTINGS = AutoPaperTradePlanManageTests.SETTINGS
+    _trade = AutoPaperTradePlanManageTests._trade
+    _manage = AutoPaperTradePlanManageTests._manage
+
+    async def test_update_existing_trade_does_not_touch_plan_tp(self):
+        calls = []
+        orig = auto_paper.database
+        auto_paper.database = _FakeDatabase(calls)
+        try:
+            trade = _make_open_trade(entry=100.0, target_pct=2.0)
+            trade["exit_profile"] = "plan"
+            out = await auto_paper._update_existing_trade(trade, _make_notification(target_pct=9.0), 101.0)
+        finally:
+            auto_paper.database = orig
+        self.assertEqual("no_change", out["status"])
+        self.assertEqual([], calls)
+
+    async def test_plan_trade_no_trailing_breakeven_or_tp_cancel(self):
+        now = time.time()
+        trade = self._trade(now, exit_at=now + 600, peak_price=101.6)
+        settings = {"trailing_enabled": True, "trailing_trigger_pct": 1.0, "trailing_gap_pct": 0.3,
+                    "breakeven_enabled": True, "breakeven_buffer_pct": 0.02,
+                    "tp_cancel_on_trail": True, "tp_primary_exit_enabled": False, "max_hold_minutes": 120.0}
+        mk = MagicMock()
+        mk.symbols = ["plantry"]
+        mk.get_ticker = MagicMock(return_value={"last_price": 101.5, "timestamp": now * 1000})
+        close = AsyncMock(return_value=None)
+        trail = AsyncMock()
+        be = AsyncMock()
+        cancel = AsyncMock()
+        with patch.object(auto_paper, "market", mk), \
+             patch.object(auto_paper, "_close_trade", close), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trailing", trail, create=True), \
+             patch.object(auto_paper.database, "update_auto_paper_breakeven", be, create=True), \
+             patch.object(auto_paper.database, "cancel_auto_paper_trade_tp", cancel, create=True):
+            await auto_paper._manage_single_trade(trade, now, 1.0, settings)
+            # fiyat zirveden geri çekilir: iz süren olsaydı 101.6×(1-0.003)=101.29 altında kapatırdı
+            mk.get_ticker = MagicMock(return_value={"last_price": 101.0, "timestamp": now * 1000})
+            await auto_paper._manage_single_trade(trade, now, 1.0, settings)
+        close.assert_not_awaited()
+        trail.assert_not_awaited()
+        be.assert_not_awaited()
+        cancel.assert_not_awaited()
+
+    async def test_plan_check_yields_to_take_profit(self):
+        now = time.time()
+        close = await self._manage(self._trade(now, exit_at=now - 60), now, 104.0)
+        close.assert_awaited_once()
+        self.assertEqual("take_profit", close.await_args.args[4])
+
+    async def test_plan_check_yields_to_stop_loss(self):
+        now = time.time()
+        # ek süre de bitti (plan "cik" der) ama fiyat stop altında → stop_loss kendi dolum modeliyle
+        close = await self._manage(self._trade(now, exit_at=now - 50 * 60 + 60, grace=1.0), now, 95.0)
+        close.assert_awaited_once()
+        self.assertEqual("stop_loss", close.await_args.args[4])
+
+    async def test_plan_expired_at_open_is_blocked(self):
+        t = AutoPaperTradePlanOpenTests()
+        notif = t._notif(_plan(exit_at=time.time() - 3600, grace_minutes=1.0))
+        res, trade = await t._open(notif)
+        self.assertEqual("blocked", res["status"])
+        self.assertEqual("plan_expired", res["reason"])
+        self.assertEqual({}, trade)
+
+
 if __name__ == "__main__":
     unittest.main()
 

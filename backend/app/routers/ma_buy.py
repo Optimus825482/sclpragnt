@@ -9,6 +9,7 @@ import time
 
 from fastapi import APIRouter, Query, Request
 
+from app import notification_plan
 from app import database, ma_buy_h4_scan, ma_buy_notify, ma_buy_signals, ma_buy_tracker
 from app.api_common import require_admin, require_user
 
@@ -47,6 +48,7 @@ async def recent_ma_buy_notifications(request: Request, hours: int = Query(12, g
         item["target_pct"] = ma_buy_notify.target_pct(str(r.get("timeframe") or ""))
         item["horizon_minutes"] = ma_buy_notify.HORIZON_MIN
         items.append(item)
+    await notification_plan.enrich_rows_with_plans(items, notification_plan.ma_buy_row_plan_key)
     return {"ok": True, "hours": hours, "items": items}
 
 

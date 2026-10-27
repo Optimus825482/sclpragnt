@@ -7,13 +7,15 @@ import {
   normalizeSymbol, parseTrNumber, rrLabel, scenarioTexts, type OpenResult,
 } from "../../../lib/tradeUi";
 import { useModalA11y } from "../../../lib/useModalA11y";
+import { useWatchPrices } from "../../../lib/useWatchPrices";
 import { UncertainOrderError, orderFailureText, postJsonGuarded, uncertainOrderText } from "../../../binance-tr/orderSafety";
 import UncertainOrderNotice from "../binance/UncertainOrderNotice";
 import { buyIntentKey, describeOrderLookup, intentId, isDefinitiveReject, resetIntent, retryWhileGatewayUnavailable, type IntentRef } from "../binance/orderIntent";
 import {
   BUY_PCT_CHIPS, SL_PCT_CHIPS, TP_PCT_CHIPS, amountFromFree, checkSlTp, describeBuyFill, pctFromPrice, priceAtPct,
-  pricesFromPlan, rrFromPrices, slPctFromPrice, type BuyFillBody,
+  pricesFromPlan, rrFromPrices, slPctFromPrice, checkSlTpPlan, type BuyFillBody,
 } from "./buyDialogMath";
+import { DEVIATION_WARN_PCT, planDialogDefaults, planSummary, priceDeviationPct, type TradePlan } from "./tradePlan";
 
 type Props = {
   open: boolean;
@@ -21,6 +23,10 @@ type Props = {
   symbol: string;
   /** Bildirimdeki fiyat (yalnız bilgi amaçlı gösterilir). */
   referencePrice?: number | null;
+  /** Bildirim işlem planı (yoksa/null: bugünkü plansız davranış). */
+  tradePlan?: TradePlan | null;
+  /** Planın dondurma anahtarı; alım isteğine `plan_key` olarak eklenir (yalnız plan varken). */
+  planKey?: string | null;
   onClose: () => void;
   onTraded?: () => void;
 };
@@ -48,7 +54,7 @@ const amountOf = (a: AmountMode, freeTry: number | null) =>
  *  - kapalı → `/api/binance/buy` düz piyasa alımı; SL/TP sonradan Binance TR sayfasındaki kalkan düğmesiyle eklenir.
  *  - açık   → `/api/binance/open-position`: alım dolunca seçilen SL/TP ile OCO kurulur.
  */
-export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onClose, onTraded }: Props) {
+export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, tradePlan, planKey, onClose, onTraded }: Props) {
   const symbol = normalizeSymbol(rawSymbol);
   const coin = symbol.replace(/TRY$/, "") || "Coin";
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -78,6 +84,11 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
   const seq = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const basePrice = useRef(0);
+  const watched = useWatchPrices(open && tradePlan && symbol ? [symbol] : []);
+  const planRef = useRef<TradePlan | null>(null);
+  planRef.current = tradePlan ?? null;
+  // Plan modunda başlangıç SL/TP yüzdesi (kullanıcı elle değiştirene kadar sunucuya bu gider).
+  const planSeed = useRef<{ slPct: number; tpPct: number } | null>(null);
   const latest = useRef({ amount, slText, tpText, manual, freeTry, oco, symbol });
   latest.current = { amount, slText, tpText, manual, freeTry, oco, symbol };
 
@@ -92,9 +103,17 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
     if (!(amountTry > 0)) { setFieldError("Tutar seç ya da TL olarak yaz (örn. 250)."); setDirty(true); return; }
     const body: Record<string, unknown> = { symbol: cur.symbol, amount_try: amountTry };
     if (cur.manual) {
-      const chk = checkSlTp(basePrice.current, parseTrNumber(cur.slText), parseTrNumber(cur.tpText));
-      if (!chk.ok) { setFieldError(chk.error); setDirty(true); return; }
-      Object.assign(body, { rr_mode: "manual", rr: chk.rr, sl_pct: chk.slPct });
+      if (planRef.current) {
+        const chk = checkSlTpPlan(basePrice.current, parseTrNumber(cur.slText), parseTrNumber(cur.tpText));
+        if (!chk.ok) { setFieldError(chk.error); setDirty(true); return; }
+        Object.assign(body, { rr_mode: "manual", sl_pct: chk.slPct, tp_pct: chk.tpPct });
+      } else {
+        const chk = checkSlTp(basePrice.current, parseTrNumber(cur.slText), parseTrNumber(cur.tpText));
+        if (!chk.ok) { setFieldError(chk.error); setDirty(true); return; }
+        Object.assign(body, { rr_mode: "manual", rr: chk.rr, sl_pct: chk.slPct });
+      }
+    } else if (planRef.current && planSeed.current) {
+      Object.assign(body, { rr_mode: "manual", sl_pct: planSeed.current.slPct, tp_pct: planSeed.current.tpPct });
     }
     setFieldError("");
     const my = ++seq.current;
@@ -135,6 +154,7 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
     setAmount({ kind: "chip", chip: DEFAULT_CHIP }); setOco(false); setSlText(""); setTpText(""); setManual(false); setDirty(false);
     setStep("plan"); setResult(null); setLookup("");
     basePrice.current = 0;
+    planSeed.current = null;
     setUncertain((u) => (u && u.symbol === symbol ? u : null));
     (async () => {
       const [s, a] = await Promise.all([
@@ -147,10 +167,24 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
       if (!s.body.configured) return;
       if (!a.ok) { setLoadError(errorText(a.error, "Bakiye alınamadı")); return; }
       const tryRow = (a.body.balances || []).find((b) => b.asset === "TRY");
-      setFreeTry(Number(tryRow?.free ?? 0) || 0);
+      const free = Number(tryRow?.free ?? 0) || 0;
+      setFreeTry(free);
+      // Bildirim planı varsa tutar/SL/TP/OCO plandan başlar (kullanıcı hepsini değiştirebilir).
+      const tp = planRef.current;
+      if (tp) {
+        const d = planDialogDefaults(tp, free);
+        const amt: AmountMode = d.amountTry > 0 ? { kind: "custom", text: String(d.amountTry) } : { kind: "chip", chip: DEFAULT_CHIP };
+        setAmount(amt);
+        if (d.oco && d.slPct != null && d.tpPct != null) {
+          planSeed.current = { slPct: d.slPct, tpPct: d.tpPct };
+          setOco(true);
+          latest.current = { ...latest.current, amount: amt, freeTry: free, oco: true, manual: false };
+          schedulePlan(0);
+        }
+      }
     })();
     return () => { cancelled = true; if (timer.current) clearTimeout(timer.current); };
-  }, [open, symbol]);
+  }, [open, symbol, schedulePlan]);
 
   if (!open) return null;
 
@@ -167,6 +201,12 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
   const live = !!settings?.sell_enabled;
   const overFree = amount.kind === "custom" && freeTry != null && amountTry > freeTry;
   const ready = oco ? !!plan && !dirty && !planBusy && !fieldError : amountTry > 0 && !overFree;
+  // Sapma: OCO önizlemesindeki fiyat varsa o, yoksa izleme akışındaki canlı fiyat (OCO kapalıyken de çalışır).
+  const livePx = plan?.price ?? watched[symbol] ?? watched[symbol.toUpperCase()];
+  const deviation = tradePlan ? priceDeviationPct(tradePlan.entry_ref_price, livePx) : null;
+  const planNote = !tradePlan || oco ? null
+    : tradePlan.stop_pct == null ? "Planda stop yok — bu alım çıkış hatırlatıcısına bağlanmaz"
+    : "OCO kapalı — çıkış hatırlatıcısı bağlanmaz";
   const canBuy = ready && live && !blocked && !lockedByUncertain && !!symbol;
 
   const setAmountMode = (a: AmountMode, delay: number) => { setAmount(a); latest.current.amount = a; setFieldError(""); schedulePlan(delay); };
@@ -195,6 +235,8 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
     oco && plan
       ? postJsonGuarded<Record<string, unknown> & { detail?: unknown }>("/api/binance/open-position", {
           symbol: plan.symbol, amount_try: plan.amount_try, sl_pct: plan.plan.sl_pct, rr: plan.plan.rr,
+          ...(tradePlan && plan.plan.tp_pct != null ? { tp_pct: plan.plan.tp_pct } : {}),
+          ...(tradePlan && planKey ? { plan_key: planKey } : {}),
           client_order_id: cid, confirmation: "REAL_OPEN",
         })
       : postJsonGuarded<BuyFillBody & { detail?: unknown }>("/api/binance/buy", {
@@ -316,6 +358,18 @@ export default function BuyDialog({ open, symbol: rawSymbol, referencePrice, onC
         {settings?.configured && step === "plan" && (
           <>
             {!live && <p className="text-sm text-yellow-300">Canlı işlem kapalı; alım yapılamaz. <Link href="/binance-tr" className="underline">Binance TR sayfasındaki Bağlantı bölümünden</Link> aç.</p>}
+
+            {tradePlan && (
+              <div className="rounded-lg border border-bunker-700 p-2 text-xs text-bunker-muted" aria-label="İşlem planı">
+                <p>{planSummary(tradePlan, Date.now() / 1000)}</p>
+                {planNote && <p className="mt-1" role="note">{planNote}</p>}
+                {deviation != null && deviation > DEVIATION_WARN_PCT && (
+                  <p role="alert" className="mt-1 rounded bg-yellow-900/40 px-2 py-1 text-yellow-300">
+                    Fiyat plandaki giriş fiyatından %{deviation.toFixed(1).replace(".", ",")} sapmış ({fmtPrice(tradePlan.entry_ref_price)} → {fmtPrice(livePx)}). Hedef ve stop yüzdeleri değişmedi; fiyatlar dolum fiyatına göre hesaplanır.
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="text-sm text-white">
               <span id="bd-tutar">Tutar <span className="text-bunker-muted">(serbest bakiye {freeTry == null ? "…" : fmtTry(freeTry)})</span></span>

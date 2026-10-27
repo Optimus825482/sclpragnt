@@ -89,6 +89,34 @@ export function checkSlTp(price: number, sl: number | null, tp: number | null): 
   return { ok: true, slPct, rr };
 }
 
+export const TP_PCT_MAX = 50;
+/**
+ * Gerçek para kâr al alt sınırı (%). Sunucu `open_position.tp_pct_floor()` = max(0,5; 2×bacak komisyonu×100 + 0,1);
+ * pencere komisyonu bilmediği için mutlak 0,5 tabanını uygular, komisyon kısmını sunucu denetler (422).
+ */
+export const TP_PCT_MIN = 0.5;
+
+/**
+ * Bildirim planı modu: kâr al DOĞRUDAN yüzde (`tp_pct`) olarak gider, kazanç/risk oranı (1–5) uygulanmaz.
+ * SL aralığı (%0,5–10) ve TP yönü / alt (≥ %0,5) / üst (≤ %50) sınırı denetlenir.
+ */
+export type SlTpPlanCheck = { ok: true; slPct: number; tpPct: number } | { ok: false; error: string };
+export function checkSlTpPlan(price: number, sl: number | null, tp: number | null): SlTpPlanCheck {
+  if (!isPos(price)) return { ok: false, error: "Güncel fiyat alınamadı; planı yenile." };
+  if (sl == null || sl <= 0) return { ok: false, error: "Zarar durdur fiyatını yaz." };
+  if (tp == null || tp <= 0) return { ok: false, error: "Kâr al fiyatını yaz." };
+  if (sl >= price) return { ok: false, error: "Zarar durdur fiyatı güncel fiyatın altında olmalı." };
+  if (tp <= price) return { ok: false, error: "Kâr al fiyatı güncel fiyatın üstünde olmalı." };
+  const slPct = slPctFromPrice(price, sl);
+  const tpPct = round(((tp - price) / price) * 100, 4);
+  if (slPct == null) return { ok: false, error: "Fiyatlar geçersiz." };
+  if (slPct < SL_PCT_MIN) return { ok: false, error: "Zarar durdur güncel fiyata çok yakın (en az %0,5 uzakta olmalı)." };
+  if (slPct > SL_PCT_MAX) return { ok: false, error: "Zarar durdur çok uzak (en fazla %10 uzakta olabilir)." };
+  if (tpPct < TP_PCT_MIN) return { ok: false, error: "Kâr hedefi çok yakın (en az %0,5 uzakta olmalı; komisyonu karşılamaz)." };
+  if (tpPct > TP_PCT_MAX) return { ok: false, error: "Kâr hedefi çok uzak (en fazla %50 olabilir)." };
+  return { ok: true, slPct, tpPct };
+}
+
 /** `/api/binance/buy` yanıt gövdesi (yalnız onay penceresinde kullanılan alanlar). */
 export type BuyFillBody = {
   status?: string;

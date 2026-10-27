@@ -25,7 +25,7 @@ import math
 from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
-from app import database, ma_buy_profiles, paper_ledger, price_service, security
+from app import database, ma_buy_profiles, notification_plan, paper_ledger, price_service, security
 from app.api_common import log_user_action, _background_tasks, _start_background, _fresh_public_price
 # R3-06: likidite + korelasyon küme kapıları (velocity-auto ile aynı kaynak)
 # için analyzer örneği kullanılır (state'ten; market ile aynı yaşam döngüsü).
@@ -107,6 +107,81 @@ def _effective_sl_pct(sl_pct: float, atr_pct: float, cap_pct: float | None = Non
     return max(float(sl_pct), min(cap, 1.2 * float(atr_pct)))
 
 
+# 2026-10-27 (işlem planı): bildirimin dondurulmuş `trade_plan`'ı. Yalnız plan sözlükse ve
+# "veri_yetersiz" uyarısı yoksa uygulanır; aksi halde bugünkü davranış birebir korunur.
+# İSTİSNA: `max_amount_try` tavanı defterden türer (istatistikten bağımsız) → "veri_yetersiz"
+# planda da uygulanır (yalnız tavan; hedef/stop/süre uygulanmaz).
+PLAN_EXIT_PROFILE = "plan"
+PLAN_EXIT_REASON = "plan_sure_doldu"
+
+
+def _any_trade_plan(notification: dict) -> dict | None:
+    plan = (notification or {}).get("trade_plan") if isinstance(notification, dict) else None
+    return plan if isinstance(plan, dict) else None
+
+
+def _active_trade_plan(notification: dict) -> dict | None:
+    plan = _any_trade_plan(notification)
+    if plan is None:
+        return None
+    if "veri_yetersiz" in (plan.get("warnings") or []):
+        return None
+    return plan
+
+
+def _plan_capped_order_value(order_value: float, notification: dict) -> float:
+    """Plan tavanı (`max_amount_try`) mevcut tüm çarpanlardan SONRA uygulanır; yalnız düşürür.
+
+    Tavan defter tabanlıdır → "veri_yetersiz" planda da uygulanır.
+    """
+    plan = _any_trade_plan(notification)
+    if plan is None:
+        return order_value
+    try:
+        cap = float(plan.get("max_amount_try"))
+    except (TypeError, ValueError):
+        return order_value
+    if not math.isfinite(cap) or cap < 0:
+        return order_value
+    return min(float(order_value), cap)
+
+
+def _plan_exit_params(notification: dict) -> dict | None:
+    """profile_exit=False plan → hedef/stop/süre. Eksik/geçersiz alan varsa None (plan çıkışı uygulanmaz)."""
+    plan = _active_trade_plan(notification)
+    if plan is None or plan.get("profile_exit"):
+        return None
+    try:
+        out = {
+            "target_pct": float(plan["target_gross_pct"]),
+            "stop_pct": float(plan["stop_pct"]),
+            "exit_at": float(plan["exit_at"]),
+            "grace_minutes": float(plan.get("grace_minutes") or 0.0),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    if out["target_pct"] <= 0 or out["stop_pct"] <= 0 or out["grace_minutes"] < 0:
+        return None
+    if not all(math.isfinite(v) for v in out.values()):
+        return None
+    out["plan_key"] = notification.get("plan_key")
+    return out
+
+
+def _trade_plan_context(trade: dict) -> dict | None:
+    """`plan_context` kolonu (JSON metin) → sözlük; okunamazsa None."""
+    raw = trade.get("plan_context")
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return None
+    try:
+        ctx = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return ctx if isinstance(ctx, dict) else None
+
+
 def _blocked(symbol: str, reason: str, **extra) -> dict:
     """R3-06/R3-07: giriş engeli için görünür durum — sessiz düşme yok.
 
@@ -154,6 +229,7 @@ async def _log_blocked_decision(symbol: str, reason: str, price: float, extra: d
             "notification_already_processed": "Bu bildirim anahtarıyla daha önce işlem açılmıştı (saatte en fazla bir)",
             "reopen_not_allowed": f"Aynı bildirimle yeniden açma koşulları sağlanmadı ({extra.get('detail')})",
             "zero_quantity": "Hesaplanan adet sıfır (bakiye/fiyat)",
+            "plan_expired": "İşlem planının süresi geçmiş (çıkış zamanı + ek süre doldu), açılmadı",
             # 2026-10-18: push kapısı ve nabız istisnası artık try_open_from_notification içinde (tüm yollar).
             _REASON_NO_PUSH: "Bu sinyal için push bildirimi gönderilmedi (AUTO_PAPER_ONLY_ON_PUSH)",
             _REASON_HEARTBEAT: "Teyitsiz sessizlik nabzı bildirimi otonom paper açmaz",
@@ -905,6 +981,8 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         balance = await database.get_wallet_balance()
         balance_pct = float(settings.get("balance_pct", config.AUTO_PAPER_BALANCE_PCT_DEFAULT)) / 100.0
         order_value = balance * balance_pct
+        # 2026-10-27 (işlem planı): plan tavanı kapıdan ÖNCE (kapı gerçek tutarı görür).
+        order_value = _plan_capped_order_value(order_value, notification)
         gate = await _liquidity_cluster_gate(symbol, order_value, balance)
         if gate is not None:
             logger.warning("auto_paper %s giriş engellendi: %s (R3-06)", symbol, gate.get("reason"))
@@ -936,6 +1014,9 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             balance = await database.get_wallet_balance()
         if order_value is None:
             order_value = balance * balance_pct
+        # 2026-10-27 (işlem planı): tavan tüm çarpanlardan sonra (profilli işlemde de);
+        # küçük tavan aşağıdaki min emir kontrolüne takılır (bilinçli).
+        order_value = _plan_capped_order_value(order_value, notification)
         # RİSK SİZİNG (2026-09-16 denetimi): ESKİDEN `order_value < min_order` iken
         # `order_value = balance` yapılıyordu → tek pozisyona TÜM bakiye gidiyordu ve
         # `balance_pct` fiilen baypas ediliyordu. Ölçülebilir örnek: bakiye 100 TRY,
@@ -965,9 +1046,13 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         sl_pct = float(settings.get("stop_loss_pct", _exit_defaults()["stop_loss_pct"])) / 100.0
         # 2026-10-21: kural sinyalinin ÇIKIŞ PROFİLİ (MA BUY H4): zarftaki stop/tutma/iz süren ayarı ayarların önüne geçer.
         _is_rule_signal = str(notification.get("source") or "") in _RULE_SIGNAL_SOURCES   # _open_new_trade ayrı fonksiyon: kapsamda rule_signal yok
-        exit_profile = ma_buy_profiles.exit_overrides(notification) if _is_rule_signal else None
+        # 2026-10-27 (işlem planı): profile_exit=False plan → hedef/stop/süre plandan; profil yolu devre dışı.
+        plan_exit = _plan_exit_params(notification)
+        exit_profile = ma_buy_profiles.exit_overrides(notification) if (_is_rule_signal and plan_exit is None) else None
         if exit_profile and exit_profile.get("stop_loss_pct"):
             sl_pct = float(exit_profile["stop_loss_pct"]) / 100.0
+        if plan_exit is not None:
+            sl_pct = plan_exit["stop_pct"] / 100.0
         target_pct = _effective_target_pct(notification)
         if target_pct <= 0:
             target_pct = float(settings.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT))
@@ -981,7 +1066,7 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         # Artık TP2, TP fiyatı hesaplanmadan ÖNCE uygulanır.
         tp1_scalp_val = notification.get("tp1_scalp_pct")
         tp2_runner_val = notification.get("tp2_runner_pct")
-        if tp2_runner_val and float(tp2_runner_val) > target_pct:
+        if plan_exit is None and tp2_runner_val and float(tp2_runner_val) > target_pct:
             target_pct = float(tp2_runner_val)
 
         # HEDEF TAVANI (2026-10-07 incelemesi). `default_target_pct` ayarı
@@ -992,7 +1077,7 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         # değiyordu. Tavan, hedefi realize edilebilir bir aralığa çeker.
         # 0 = sınırsız (eski davranış); geriye dönük uyum için kapalı bırakılabilir.
         max_target = float(settings.get("max_target_pct", 0.0) or 0.0)
-        if max_target > 0 and target_pct > max_target:
+        if plan_exit is None and max_target > 0 and target_pct > max_target:
             logger.info("auto_paper %s: bildirim hedefi +%.2f%% tavanı +%.2f%%'e çekildi",
                         symbol, target_pct, max_target)
             target_pct = max_target
@@ -1018,12 +1103,17 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         # mark-up'lı olmalı ki bildirimdeki hedef gerçekten realize edilsin.
         # 2026-10-17: kâr al bekleyen LIMIT → çıkış maker ve kaymasız (paper_ledger.is_maker_exit).
         cost_markup = paper_ledger.round_trip_markup(commission_pct, entry_slip, exit_kind="take_profit")
+        if plan_exit is not None:
+            # Plan brüt hedefi ücret + kaymayı ZATEN içerir → mark-up ikinci kez eklenmez.
+            target_pct = plan_exit["target_pct"]
+            cost_markup = 0.0
         take_profit_price = fill_entry * (1 + target_pct / 100 + cost_markup)
 
         # Volatiliteye duyarlı Stop Loss (ATR koruması):
         # 5m gürültüsü içinde normal -%1.6-1.8 geri çekilmelerde erken stop olmamak için
         # ATR'ye göre nefes alma payı (maksimum %2.8 ile sınırlı).
-        volatility_sl_enabled = bool(settings.get("volatility_sl_enabled", True)) and not exit_profile
+        volatility_sl_enabled = (bool(settings.get("volatility_sl_enabled", True)) and not exit_profile
+                                 and plan_exit is None)
         effective_sl_pct = sl_pct
         if volatility_sl_enabled:
             try:
@@ -1061,6 +1151,21 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         elif isinstance(raw_nid, str) and raw_nid.lstrip("-").isdigit():
             notification_id_val = int(raw_nid)
         notification_key = notification.get("notification_key")
+        if plan_exit is not None:
+            trade_exit_profile = PLAN_EXIT_PROFILE
+            trade_max_hold = (plan_exit["exit_at"] - now + plan_exit["grace_minutes"] * 60) / 60.0
+            if trade_max_hold <= 0:
+                # Süresi geçmiş plan: açılsa ilk turda kapanırdı; max_hold<=0 / 0.0 genel-ayar düşüşü de olmaz.
+                return _blocked(symbol, "plan_expired", price=current_price,
+                                exit_at=plan_exit["exit_at"], grace_minutes=plan_exit["grace_minutes"])
+            plan_context = json.dumps({"exit_at": plan_exit["exit_at"],
+                                       "grace_minutes": plan_exit["grace_minutes"],
+                                       "plan_key": plan_exit["plan_key"]})
+        else:
+            trade_exit_profile = exit_profile["name"] if exit_profile else None
+            trade_max_hold = (float(exit_profile["max_hold_minutes"])
+                              if exit_profile and exit_profile.get("max_hold_minutes") else None)
+            plan_context = None
 
         # NOT (2026-10-07): Master Surge TP2 yükseltmesi buradan YUKARI taşındı
         # (TP fiyatı hesaplanmadan önce). Burada ikinci kez uygulanırsa
@@ -1088,8 +1193,10 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             "confluence_4way": bool(notification.get("confluence_4way")),
             "trailing_gap_pct": float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40)) if notification.get("confluence_4way") else None,
             # 2026-10-21: çıkış profili satıra yazılır; yönetim döngüsü tutma süresini ve iz süren/başabaş kapalılığını buradan okur.
-            "exit_profile": exit_profile["name"] if exit_profile else None,
-            "max_hold_minutes": float(exit_profile["max_hold_minutes"]) if exit_profile and exit_profile.get("max_hold_minutes") else None,
+            "exit_profile": trade_exit_profile,
+            "max_hold_minutes": trade_max_hold,
+            # 2026-10-27 (işlem planı): plan çıkış zamanı/ek süre/anahtarı (JSON metin); plansızda None.
+            "plan_context": plan_context,
             "created_at": now,
             "updated_at": now,
         }
@@ -1178,6 +1285,10 @@ async def _update_existing_trade(open_trade: dict, notification: dict, current_p
     # Eski davranış (2026-09-18): trailing aktifken TP güncelleme tamamen
     # engelleniyordu çünkü TP siliniyordu. Artık TP korunduğu için
     # güncellemeye izin vermek mantıklı.
+    # 2026-10-27 (işlem planı): plan işleminin hedefi DONDURULMUŞTUR — sonraki bildirim TP'ye dokunmaz.
+    # `no_change` reopen akışında başarı sayılır (_blocked docstring'i).
+    if open_trade.get("exit_profile") == PLAN_EXIT_PROFILE:
+        return {"status": "no_change", "trade_id": open_trade["id"], "symbol": open_trade["symbol"]}
     try:
         target_pct = _effective_target_pct(notification)
         if target_pct <= 0:
@@ -1377,6 +1488,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     _profile_manage = ma_buy_profiles.manage_params(trade.get("exit_profile"))
     profile_no_trail = _profile_manage is not None and not _profile_manage["trailing"]
     profile_no_breakeven = _profile_manage is not None and not _profile_manage.get("breakeven", False)
+    # 2026-10-27 (işlem planı): plan işleminde iz süren / başabaş / TP iptali KAPALI — çıkış yalnız plan hedefi,
+    # plan stopu, plan süre kuralı ve rejim/LLM/bayat fiyat güvenlik çıkışları (hedef min. %3 net).
+    is_plan_trade = trade.get("exit_profile") == PLAN_EXIT_PROFILE
     if (not price_is_fresh and max_hold_minutes > 0
             and hold_minutes >= max_hold_minutes * _STALE_FORCE_CLOSE_FACTOR):
         logger.warning("auto_paper %s: taze fiyat alınamıyor ve süre %.1f dk >= max_hold %.0f dk × %.1f — "
@@ -1385,6 +1499,35 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         await _close_trade(trade_id, symbol, paper_ledger.exit_fill("stale_force_close", last_known_price),
                            now, "stale_force_close")
         return
+    # 2026-10-27 (işlem planı): planın çıkış zamanı geldi ve net >= 0 (ya da ek süre bitti) → piyasa çıkışı.
+    # max_hold (= exit_at + ek süre) bundan SONRA; taze fiyat yoksa bu tur ertelenir.
+    if trade.get("exit_profile") == PLAN_EXIT_PROFILE and price_is_fresh and current_price > 0:
+        _plan_ctx = _trade_plan_context(trade)
+        if _plan_ctx is not None and _plan_ctx.get("exit_at") is not None:
+            try:
+                _advice = notification_plan.exit_advice(_plan_ctx, entry_price, current_price, now,
+                                                        commission_pct)
+            except Exception as plan_exc:
+                logger.warning("auto_paper %s: plan çıkış önerisi hatası: %s", symbol, plan_exc)
+                _advice = None
+            # Hedef / stop aynı anda tetiklendiyse onlar kendi adı ve dolum modeliyle kapanır
+            # (aşağıdaki max_hold'a düşmeden, burada).
+            if _advice == "cik" and not tp_cancelled and take_profit is not None and current_price >= take_profit:
+                await _close_trade(trade_id, symbol, paper_ledger.exit_fill("take_profit", current_price, take_profit),
+                                   now, "take_profit")
+                return
+            if _advice == "cik" and effective_stop_loss is not None and current_price <= effective_stop_loss:
+                _sl_reason = "breakeven_stop" if (effective_stop_loss != stop_loss) else "stop_loss"
+                await _close_trade(trade_id, symbol,
+                                   paper_ledger.exit_fill(_sl_reason, current_price, effective_stop_loss),
+                                   now, _sl_reason)
+                return
+            if _advice == "cik":
+                logger.info("auto_paper %s: PLAN SÜRESİ DOLDU (%.1f dk) — pozisyon kapatılıyor (çıkış=%.6f)",
+                            symbol, hold_minutes, current_price)
+                await _close_trade(trade_id, symbol, paper_ledger.exit_fill(PLAN_EXIT_REASON, current_price),
+                                   now, PLAN_EXIT_REASON)
+                return
     # 2026-10-15 (radar iyileştirme): ZAMAN-DURDURMA — max_hold'dan ÖNCE. Süre
     # `hold_minutes` (yukarıdaki) ile, kâr canlı `gross_pnl_pct` ile AYNI formülle
     # (brüt, komisyonsuz) ölçülür. Taze fiyat yoksa bu tur ertelenir (D-02).
@@ -1449,6 +1592,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # 2026-10-16 (maliyet/çıkış): varsayılanlar çıkış profilinden (DB ayarı önce).
     _exit_def = _exit_defaults()
     tp_primary_exit_enabled = bool((settings or {}).get("tp_primary_exit_enabled", _exit_def["tp_primary_exit_enabled"]))
+    # 2026-10-27 (işlem planı): plan işleminde hedefte satış genel ayardan bağımsız AÇIK.
+    if trade.get("exit_profile") == PLAN_EXIT_PROFILE:
+        tp_primary_exit_enabled = True
     if tp_primary_exit_enabled and not tp_cancelled and take_profit is not None and current_price >= take_profit:
         # D-08 (2026-09-12): TP dolumu TETİK fiyatından (gap-through: min(price, tp)).
         await _close_trade(trade_id, symbol, paper_ledger.exit_fill("take_profit", current_price, take_profit),
@@ -1483,7 +1629,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # Breakeven kontrolü (isteğe bağlı — erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI, 2026-09-22 Erkan kararı).
     breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False))) \
-        and not profile_no_trail and not profile_no_breakeven
+        and not profile_no_trail and not profile_no_breakeven and not is_plan_trade
     BREAKEVEN_TRAIL_GAP_PCT = float(_exit_def["trailing_gap_pct"])  # 2026-10-16 (maliyet/çıkış): profil
     if breakeven_enabled:
         breakeven_activated = bool(trade.get("breakeven_activated", False))
@@ -1548,7 +1694,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # ayarlardan kapatılabilir (trailing_enabled=false).
     # 2026-10-21 19:46: profilli işlemde (MA BUY H4) iz süren stop ayarlardan BAĞIMSIZ — profil açık diyorsa açık,
     # tetik/mesafe profilden, dinamik tetik/mesafe ve breakeven kısıtı uygulanmaz (replay simülasyonuyla birebir).
-    if _profile_manage is not None:
+    if is_plan_trade:
+        trailing_enabled = False
+    elif _profile_manage is not None:
         trailing_enabled = bool(_profile_manage["trailing"])
     else:
         trailing_enabled = bool((settings or {}).get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED))

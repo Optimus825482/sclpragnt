@@ -6,7 +6,8 @@ testlerde sahte). Böylece tüm akış GERÇEK EMİR GÖNDERMEDEN test edilir.
 Güvenlik ilkeleri (docs/superpowers/specs/2026-10-16-binance-tr-kullanici-ticaret-design.md):
   * Tutar sınırı (serbest TRY × max_position_pct) SUNUCUDA zorlanır.
   * `client_order_id` ile idempotency: aynı id ikinci gerçek emir üretmez; belirsiz sonuç 202 UNKNOWN döner.
-  * Plan (SL/TP) sunucuda yeniden hesaplanır; istemci yalnız sl_pct ve rr verir (kenetlenir).
+  * Plan (SL/TP) sunucuda yeniden hesaplanır; istemci yalnız sl_pct ve rr (veya açık tp_pct) verir; fiyat göndermez.
+  * plan_key verilirse bildirim planı SUNUCUDA okunur (database.get_trade_plan); çıkış zamanı = dolum anı + plan süresi.
   * OCO, gerçekleşen (adım yuvarlı) miktarla ve gerçekleşen ortalama fiyata göre kurulur; başarısızsa açıkça bildirilir.
 """
 from __future__ import annotations
@@ -15,6 +16,7 @@ import asyncio
 import logging
 import math
 import os
+import time
 from typing import Any
 
 from app import database
@@ -25,6 +27,9 @@ from app.trade_plan import RR_MAX, RR_MIN, SL_PCT_MAX, SL_PCT_MIN, compute_plan,
 
 logger = logging.getLogger("scalper.open_position")
 
+TP_PCT_MAX = 50.0                       # açık kâr al yüzdesi üst sınırı (aşan → 422)
+TP_PCT_MIN_FLOOR = 0.5                  # açık kâr al yüzdesi mutlak alt sınırı (gerçek para)
+PLAN_KEY_MAX_LEN = 200
 DEFAULT_TAKER_FEE_RATE = 0.001          # tahmini; Binance TR komisyon alanları doğrulanamadığı için sabit/ortam ayarı
 BLOCKING_WARNINGS = {
     "min_tutar_alti": "Tutar bu coin için en düşük emir tutarının altında",
@@ -68,12 +73,44 @@ def _to_positive_float(name: str, raw: Any) -> float:
     return value
 
 
-async def build_plan(exchange, *, symbol: str, amount_try: float, sl_pct: float, rr: float, risk: dict,
-                     fee_rate: float | None = None) -> dict:
-    """Plan hesabı (emir GÖNDERMEZ). Limit/bakiye aşımı uyarı olarak döner; geçersiz sembol/fiyat OrderError."""
+def tp_pct_floor() -> float:
+    """Gerçek para kâr al alt sınırı (%): max(0.5, 2×bacak komisyonu×100 + 0.1). Altı komisyonu karşılamaz."""
+    from app.config import config
+    try:
+        fee = float(config.effective_commission_pct())   # bacak başı KESİR
+    except Exception:  # noqa: BLE001 — yapılandırma okunamazsa mutlak taban
+        fee = 0.0
+    if not math.isfinite(fee) or fee < 0:
+        fee = 0.0
+    return max(TP_PCT_MIN_FLOOR, 2 * fee * 100 + 0.1)
+
+
+def _tp_pct_or_none(raw: Any) -> float | None:
+    """İsteğe bağlı açık kâr al yüzdesi: yok/boş → None; sonlu, ≥ tp_pct_floor() ve ≤ TP_PCT_MAX değilse OrderError(422)."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    if isinstance(raw, bool):
+        raise OrderError(422, "Geçersiz kâr al yüzdesi")
+    value = _to_positive_float("kâr al yüzdesi", raw)
+    if value > TP_PCT_MAX:
+        raise OrderError(422, "Geçersiz kâr al yüzdesi")
+    floor = tp_pct_floor()
+    if value < floor:
+        floor_s = f"{floor:.2f}".replace(".", ",")
+        raise OrderError(422, f"Kâr al yüzdesi en az %{floor_s} olmalı (komisyonu karşılamıyor)")
+    return value
+
+
+async def build_plan(exchange, *, symbol: str, amount_try: float, sl_pct: float, rr: float | None = None, risk: dict,
+                     fee_rate: float | None = None, tp_pct: float | None = None) -> dict:
+    """Plan hesabı (emir GÖNDERMEZ). Limit/bakiye aşımı uyarı olarak döner; geçersiz sembol/fiyat OrderError.
+
+    `tp_pct` verilirse TP doğrudan ondan hesaplanır, RR kullanılmaz/kenetlenmez (rr gerekmez); SL kenedi aynen.
+    """
     amount = _to_positive_float("tutar", amount_try)
     sl = _clamp(_to_positive_float("zarar durdur yüzdesi", sl_pct), SL_PCT_MIN, SL_PCT_MAX)
-    ratio = _clamp(_to_positive_float("RR", rr), RR_MIN, RR_MAX)
+    tp = _tp_pct_or_none(tp_pct)
+    ratio = tp / sl if tp is not None else _clamp(_to_positive_float("RR", rr), RR_MIN, RR_MAX)
     symbol_u = await exchange.symbol_to_underscore(symbol)
     filters = await exchange.filters(symbol_u)
     if not filters:
@@ -88,7 +125,8 @@ async def build_plan(exchange, *, symbol: str, amount_try: float, sl_pct: float,
     free_try = float(await exchange.free_balance("TRY", force=True))
     cap_try = free_try * float(risk.get("max_position_pct", 20.0)) / 100.0
     try:
-        plan = compute_plan(price, amount, sl, ratio, filters, fee_rate if fee_rate is not None else _fee_rate())
+        plan = compute_plan(price, amount, sl, ratio, filters, fee_rate if fee_rate is not None else _fee_rate(),
+                            tp_pct=tp)
     except ValueError as exc:
         raise OrderError(422, str(exc)) from None
     warnings = list(plan["warnings"])
@@ -97,7 +135,7 @@ async def build_plan(exchange, *, symbol: str, amount_try: float, sl_pct: float,
     if amount > free_try + 1e-9:
         warnings.append("bakiye_yetersiz")
     return {"symbol": symbol_u, "price": price, "free_try": free_try, "cap_try": cap_try, "amount_try": amount,
-            "plan": plan, "warnings": warnings, "filters": filters, "sl_pct": sl, "rr": ratio}
+            "plan": plan, "warnings": warnings, "filters": filters, "sl_pct": sl, "rr": ratio, "tp_pct": tp}
 
 
 def _first_blocking(warnings: list[str]) -> str | None:
@@ -130,7 +168,7 @@ async def _fetch_fill(exchange, symbol_u: str, client_id: str, buy_result: dict,
 
 
 async def _protect(exchange, symbol_u: str, qty: float, avg_price: float | None, sl_pct: float, rr: float,
-                   filters: dict) -> dict:
+                   filters: dict, tp_pct: float | None = None) -> dict:
     """OCO (TP + SL) kurar. Dönüş: {status: placed|failed|skipped, ...}. Asla istisna fırlatmaz."""
     step = float(filters.get("step_size") or 0)
     tick = float(filters.get("tick_size") or 0)
@@ -139,7 +177,7 @@ async def _protect(exchange, symbol_u: str, qty: float, avg_price: float | None,
     if not avg_price or avg_price <= 0 or use_qty <= 0 or (min_qty and use_qty < min_qty):
         return {"status": "skipped", "reason": "Gerçekleşen miktar belirlenemedi veya çok küçük; koruma emri kurulmadı"}
     sl_price = round_to_tick(avg_price * (1 - sl_pct / 100.0), tick)
-    tp_price = round_to_tick(avg_price * (1 + sl_pct * rr / 100.0), tick)
+    tp_price = round_to_tick(avg_price * (1 + (tp_pct if tp_pct else sl_pct * rr) / 100.0), tick)
     try:
         res = await exchange.oco(symbol_u, use_qty, tp_price, sl_price)
     except Exception as exc:  # noqa: BLE001
@@ -161,6 +199,48 @@ def _replay(existing: dict, cid: str) -> tuple[int, dict]:
                  "detail": "Emir sonucu henüz netleşmedi; Açık emirler ve geçmişi kontrol edin, tekrar göndermeyin"}
 
 
+def _plan_key_or_none(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    key = str(raw).strip()
+    if not key:
+        return None
+    if len(key) > PLAN_KEY_MAX_LEN:
+        raise OrderError(422, "Geçersiz plan anahtarı")
+    return key
+
+
+async def _load_plan(plan_key: str | None) -> dict | None:
+    """Bildirim planını SUNUCUDA okur; yoksa/okunamazsa None (emri engellemez, yalnız çıkış zamanı kaydı olmaz)."""
+    if not plan_key:
+        return None
+    try:
+        plan = await database.get_trade_plan(plan_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("işlem planı okunamadı (%s): %s", plan_key, type(exc).__name__)
+        return None
+    return plan if isinstance(plan, dict) else None
+
+
+def _plan_link(plan_key: str | None, plan: dict | None, filled_at: float) -> dict:
+    """Sonuç gövdesine eklenecek plan alanları: plan_key, (plan varsa) grace_minutes ve süre biliniyorsa exit_at."""
+    if not plan_key:
+        return {}
+    out: dict = {"plan_key": plan_key}
+    if plan is None:
+        return out
+    out["grace_minutes"] = plan.get("grace_minutes")
+    try:
+        exit_at, created_at = plan.get("exit_at"), plan.get("created_at")
+        if exit_at is not None and created_at is not None:
+            duration = float(exit_at) - float(created_at)
+            if math.isfinite(duration):
+                out["exit_at"] = filled_at + max(0.0, duration)
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
 async def execute_open_position(exchange, user_id: int, payload: dict, risk: dict, *,
                                 fee_rate: float | None = None) -> tuple[int, dict]:
     """Piyasa alımı + OCO. Döner: (http_status, gövde). İş kuralı ihlali OrderError ile yükselir."""
@@ -173,14 +253,23 @@ async def execute_open_position(exchange, user_id: int, payload: dict, risk: dic
     if existing:
         return _replay(existing, cid)
 
+    plan_key = _plan_key_or_none(payload.get("plan_key"))
     built = await build_plan(exchange, symbol=str(payload.get("symbol") or ""), amount_try=payload.get("amount_try"),
-                             sl_pct=payload.get("sl_pct"), rr=payload.get("rr"), risk=risk, fee_rate=fee_rate)
+                             sl_pct=payload.get("sl_pct"), rr=payload.get("rr"), risk=risk, fee_rate=fee_rate,
+                             tp_pct=payload.get("tp_pct"))
     blocked = _first_blocking(built["warnings"])
     if blocked:
         raise OrderError(422, blocked)
 
     symbol_u, amount, plan = built["symbol"], built["amount_try"], built["plan"]
-    if not await database.claim_order_request(user_id, cid, symbol_u, {"amount_try": amount, "sl_pct": built["sl_pct"], "rr": built["rr"]}):
+    tp_pct = built["tp_pct"]
+    meta = {"amount_try": amount, "sl_pct": built["sl_pct"], "rr": built["rr"]}
+    if tp_pct is not None:
+        meta["tp_pct"] = tp_pct
+    if plan_key:
+        meta["plan_key"] = plan_key
+    trade_plan_row = await _load_plan(plan_key)
+    if not await database.claim_order_request(user_id, cid, symbol_u, meta):
         existing = await database.get_order_request(user_id, cid)
         return _replay(existing or {"status": IN_PROGRESS}, cid)
 
@@ -194,8 +283,10 @@ async def execute_open_position(exchange, user_id: int, payload: dict, risk: dic
         await database.finish_order_request(user_id, cid, FAILED, {"error": str(exc)})
         raise OrderError(502, f"Alım emri gönderilemedi: {exc}") from None
 
+    filled_at = time.time()
     executed, avg_price = await _fetch_fill(exchange, symbol_u, cid, buy_result or {}, built["price"])
-    protection = await _protect(exchange, symbol_u, executed, avg_price, built["sl_pct"], built["rr"], built["filters"])
+    protection = await _protect(exchange, symbol_u, executed, avg_price, built["sl_pct"], built["rr"], built["filters"],
+                                tp_pct=tp_pct)
     body = {
         "ok": True, "symbol": symbol_u, "client_order_id": cid, "order_id": (buy_result or {}).get("order_id"),
         "executed_qty": executed, "avg_price": avg_price, "amount_try": amount,
@@ -204,6 +295,9 @@ async def execute_open_position(exchange, user_id: int, payload: dict, risk: dic
                  "loss_try": plan["loss_try"], "gain_try": plan["gain_try"]},
         "protection": protection,
     }
+    if tp_pct is not None:
+        body["tp_pct"] = tp_pct
+    body.update(_plan_link(plan_key, trade_plan_row, filled_at))
     await database.finish_order_request(user_id, cid, DONE, body)
     return 200, body
 
@@ -224,7 +318,7 @@ async def protect_position(exchange, user_id: int, client_order_id: str) -> tupl
     filters = await exchange.filters(symbol_u) or {}
     protection = await _protect(exchange, symbol_u, float(result.get("executed_qty") or 0),
                                 result.get("avg_price"), float(result.get("sl_pct") or 2.0),
-                                float(result.get("rr") or 2.0), filters)
+                                float(result.get("rr") or 2.0), filters, tp_pct=result.get("tp_pct"))
     result["protection"] = protection
     await database.finish_order_request(user_id, cid, DONE, result)
     return 200, result
