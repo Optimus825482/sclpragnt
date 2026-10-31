@@ -113,7 +113,7 @@ class Config:
     #
     # VARSAYILAN KAPALI: davranış değişmez; bayrak açılana kadar hiçbir Global
     # bağlantısı kurulmaz. Gerçek emir yolu AÇILMAZ (Global salt-okunur tarama).
-    GLOBAL_SCAN_ENABLED = os.getenv("GLOBAL_SCAN_ENABLED", "false").lower() == "true"
+    GLOBAL_SCAN_ENABLED = os.getenv("GLOBAL_SCAN_ENABLED", "true").lower() == "true"
     # Global tarama yalnız TR'de listeli baz varlıklarla sınırlanır (BTCUSDT→BTCTRY);
     # TR'de işlem açılamayan bir coin için erken sinyal üretmenin faydası yoktur.
     # Bu kapı `binance_tr_symbols.is_binance_tr_symbol` üzerinden uygulanır.
@@ -145,9 +145,9 @@ class Config:
     ]
 
     SYMBOLS = [
-    "BTCTRY", "ETHTRY", "SOLTRY",   # Ana Hacimliler (Balinalar)
-    "XRPTRY", "ADATRY", "AVAXTRY",  # Orta Hacimliler (Trend Takipçileri)
-    "LINKTRY", "NEARTRY", "APTTRY", # Güçlü Projeler (Kırılım avcıları)
+    "BTCTRY", "SOLTRY", "AVAXTRY", "NEARTRY", "DOGETRY", "ETHTRY", # En Yüksek Getirili Top Liderler (VectorBT Testli)
+    "XRPTRY", "ADATRY",
+    "LINKTRY", "APTTRY",
     "ARBTRY", "OPTRY", "SUITRY",    # Yeni Nesil L2'ler (Hızlı Hareket)
     "DOGETRY", "LTCTRY","BNBTRY",         # Memecoinler (Hacim Patlaması Kralları)
     "INJTRY", "WLDTRY", "DOTTRY"               # Yüksek Volatilite (Agresif Skalp)

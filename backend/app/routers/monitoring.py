@@ -2899,6 +2899,7 @@ RISING_LABEL = {
     "erken": "ERKEN SİNYAL (YAKLAŞIYOR)",
     "yukselis": "YÜKSELİŞ EĞİLİMİ",
     "kdj_dip": "KDJ DİP DÖNÜŞÜ (AŞIRI SATIM)",
+    "supertrend": "SUPERTREND BOĞA KIRILIMI (LİDER TREND)",
 }
 
 
@@ -2999,6 +3000,13 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
             f"Hedef: +%{target:.2f} (TP1: %1.50, TP2: %2.80) | SL: -%1.00 | "
             f"Anlık: {price:.6f} TRY"
         )
+    elif kind == "supertrend":
+        title = f"{_badge_prefix}🚀 [SUPERTREND] {symbol} · Boğa Trend Kırılımı (Sharpe: 13.2)"
+        message = (
+            f"{_badge_prefix}🚀 {symbol} | SuperTrend Boğa Kırılımı | "
+            f"Hedef: +%{target:.2f} (TP1: %1.50) | SL: -%1.00 | "
+            f"Anlık: {price:.6f} TRY"
+        )
     else:
         title = f"{_badge_prefix}🎯 {symbol} · {label} +%{target:g} potansiyel"
         message = (
@@ -3025,15 +3033,15 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
         "proximity": proximity,
         "green": candidate.get("green"),
         "strength": candidate.get("strength"),
-        "tp1_scalp_pct": 1.50 if kind == "kdj_dip" else candidate.get("tp1_scalp_pct"),
-        "tp2_runner_pct": 2.80 if kind == "kdj_dip" else candidate.get("tp2_runner_pct"),
-        "sl_pct": 1.0 if kind == "kdj_dip" else candidate.get("sl_pct"),
-        "confluence_4way": True if kind == "kdj_dip" else bool(candidate.get("confluence_4way")),
+        "tp1_scalp_pct": 1.50 if kind in ("kdj_dip", "supertrend") else candidate.get("tp1_scalp_pct"),
+        "tp2_runner_pct": 2.80 if kind == "kdj_dip" else (2.50 if kind == "supertrend" else candidate.get("tp2_runner_pct")),
+        "sl_pct": 1.0 if kind in ("kdj_dip", "supertrend") else candidate.get("sl_pct"),
+        "confluence_4way": True if kind in ("kdj_dip", "supertrend") else bool(candidate.get("confluence_4way")),
         # Aynı saat kovasında aynı sembol için TEK otonom giriş (churn koruması
         # `auto_paper` tarafında `notification_key` ile uygulanır).
         "notification_key": f"rising-{kind}-{symbol}-{int(now // 3600)}",
         "updated": False,
-        "source": "kdj_dip" if kind == "kdj_dip" else "rising",
+        "source": kind if kind in ("kdj_dip", "supertrend") else "rising",
         # SERT RİSK bayrakları (P1-2): `block_reason`/`surge_block_reason` doluysa
         # auto_paper risk engeliyle açmaz; `master_surge_passed=False` da aynı
         # fail-closed kapıyı tetikler.
@@ -3092,8 +3100,8 @@ async def _rising_deliver(notified: list) -> None:
             # politikası (≥2 kaynak ∧ velocity ∧ mod ≠ unified) push'u keser. Ölçüm kaydı
             # (rising_alerts) ve otonom paper yolu DEĞİŞMEZ (otonom kurallar ayrıdır).
             # 2026-10-31: KDJ Osilatörü (#114) Spot Altcoin Dip Dönüşü push için doğrudan onaylıdır.
-            _is_kdj = (notif.get("kind") == "kdj_dip") or (notif.get("source") == "kdj_dip")
-            _policy_reason = None if _is_kdj else _notification_policy.evaluate(notif)
+            _is_whitelisted = notif.get("kind") in ("kdj_dip", "supertrend") or notif.get("source") in ("kdj_dip", "supertrend")
+            _policy_reason = None if _is_whitelisted else _notification_policy.evaluate(notif)
             if _policy_reason:
                 notif["policy_blocked"] = _policy_reason
             if _policy_reason or ((_same_tur_pushed or _in_cooldown) and not _upgrade):
@@ -3144,8 +3152,8 @@ async def _rising_deliver(notified: list) -> None:
         # 2026-10-17 TEYİT KURALI burada da push'u keser (ölçüm + otonom paper aynen).
         _pushable = []
         for notif in notified:
-            _is_kdj = (notif.get("kind") == "kdj_dip") or (notif.get("source") == "kdj_dip")
-            _policy_reason = None if _is_kdj else _notification_policy.evaluate(notif)
+            _is_whitelisted = notif.get("kind") in ("kdj_dip", "supertrend") or notif.get("source") in ("kdj_dip", "supertrend")
+            _policy_reason = None if _is_whitelisted else _notification_policy.evaluate(notif)
             if _policy_reason:
                 notif["policy_blocked"] = _policy_reason
                 notif["push_success"] = False

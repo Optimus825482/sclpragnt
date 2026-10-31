@@ -223,7 +223,32 @@ def evaluate_layer2_volatility(
         score += 35.0
         reasons.append(f"kdj_dip_buy(J={float(kdj.get('j', 0)):.1f})")
 
-    passed = (is_dip or proximity >= 0.60 or transition or squeeze_now or kdj_dip_buy) and score >= 35.0
+    # 5. SuperTrend (#1 Trend Takipçisi: VectorBT Lideri Period 10, Factor 3.0)
+    supertrend_bullish = False
+    try:
+        from app.technical_analysis import _supertrend
+        k5 = market_instance.get_ut_kline(sym, "5m") if market_instance else None
+        if not k5:
+            from app.state import market
+            k5 = market.get_ut_kline(sym, "5m") or {}
+        h5 = list(k5.get("highs") or [])
+        l5 = list(k5.get("lows") or [])
+        c5 = list(k5.get("closes") or [])
+        if len(c5) >= 15:
+            st_res = _supertrend(h5, l5, c5, period=10, factor=3.0)
+            if st_res and st_res.get("bullish"):
+                supertrend_bullish = True
+    except Exception:
+        pass
+
+    if supertrend_bullish:
+        score += 25.0
+        reasons.append("supertrend_bullish")
+        if kdj_dip_buy:
+            score += 15.0
+            reasons.append("supertrend_kdj_dual_confluence")
+
+    passed = (is_dip or proximity >= 0.60 or transition or squeeze_now or kdj_dip_buy or supertrend_bullish) and score >= 35.0
 
     return {
         "passed": passed,
@@ -234,6 +259,7 @@ def evaluate_layer2_volatility(
         "transition": transition,
         "expand_now": expand_now,
         "kdj_dip_buy": kdj_dip_buy,
+        "supertrend_bullish": supertrend_bullish,
         "reasons": reasons,
     }
 

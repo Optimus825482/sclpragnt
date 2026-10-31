@@ -51,9 +51,9 @@ router = APIRouter()
 _REASON_NO_PUSH = "push_bildirimi_yok"
 _REASON_HEARTBEAT = "teyitsiz nabız bildirimi paper açmaz"
 # Skorsuz kural sinyali kaynakları: skor/mod kapısı yerine kendi anahtarı (bkz. `_try_open_impl`).
-_RULE_SIGNAL_SOURCES = frozenset({"ma_buy", "n7", "kdj_dip"})
-#: Kural sinyali kaynağının kendi otonom paper anahtarı (2026-10-28: N7 eklendi, 2026-10-31: KDJ eklendi).
-_RULE_SIGNAL_SWITCHES = {"ma_buy": "MA_BUY_AUTO_PAPER_ENABLED", "n7": "N7_AUTO_PAPER_ENABLED", "kdj_dip": "KDJ_AUTO_PAPER_ENABLED"}
+_RULE_SIGNAL_SOURCES = frozenset({"ma_buy", "n7", "kdj_dip", "supertrend"})
+#: Kural sinyali kaynağının kendi otonom paper anahtarı (2026-10-28: N7 eklendi, 2026-10-31: KDJ ve SuperTrend eklendi).
+_RULE_SIGNAL_SWITCHES = {"ma_buy": "MA_BUY_AUTO_PAPER_ENABLED", "n7": "N7_AUTO_PAPER_ENABLED", "kdj_dip": "KDJ_AUTO_PAPER_ENABLED", "supertrend": "SUPERTREND_AUTO_PAPER_ENABLED"}
 #: 2026-10-21: çıkış profilli işlem (MA BUY H4) iz süren stop kuralını profilden alır (`ma_buy_profiles.manage_params`):
 #: 19:46 kararı — tetik %3 / mesafe %1,5, başabaş stop ve dinamik tetik/mesafe YOK (replay simülasyonuyla birebir).
 

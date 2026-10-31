@@ -168,3 +168,44 @@ def test_kdj_in_velocity_warm_gate():
     assert prox == 0.80
 
 
+def test_supertrend_live_integration():
+    import time
+    from unittest.mock import patch
+    from app import rising_signals
+    from app.routers import macd_monitor as _macd
+    from app.routers.monitoring import _build_rising_notification, RISING_LABEL
+    
+    # 1. RISING_LABEL has supertrend
+    assert "supertrend" in RISING_LABEL
+    
+    # 2. Row with supertrend bullish and green >= 3
+    mock_row = {
+        "strength": 8.0,
+        "supertrend": {"bullish": True},
+        "tfs": {"5m": {"green": True}, "15m": {"green": True}, "30m": {"green": True}},
+        "tier": "A",
+    }
+    snap = {
+        "universe": ["SOLTRY"],
+        "symbols": {"SOLTRY": mock_row},
+        "generated_at": time.time() - 1.0,
+    }
+    with patch.object(_macd, "_SNAPSHOT", snap):
+        candidates = rising_signals.detect_rising_candidates()
+    
+    st_cands = [c for c in candidates if c["symbol"] == "SOLTRY" and c["kind"] == "supertrend"]
+    assert len(st_cands) == 1
+    cand = st_cands[0]
+    assert cand["score"] >= 85.0
+    assert cand["target_pct"] == 1.50
+    
+    # 3. Notification builder
+    notif = _build_rising_notification(cand, price=6500.0)
+    assert "[SUPERTREND] SOLTRY" in notif["title"]
+    assert "SuperTrend Boğa Kırılımı" in notif["message"]
+    assert notif["source"] == "supertrend"
+    assert notif["tp1_scalp_pct"] == 1.50
+    assert notif["sl_pct"] == 1.0
+
+
+
