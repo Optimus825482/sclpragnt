@@ -2898,6 +2898,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
 RISING_LABEL = {
     "erken": "ERKEN SİNYAL (YAKLAŞIYOR)",
     "yukselis": "YÜKSELİŞ EĞİLİMİ",
+    "kdj_dip": "KDJ DİP DÖNÜŞÜ (AŞIRI SATIM)",
 }
 
 
@@ -2989,14 +2990,25 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
     _risk_reason, _risk_evidence = _rising_risk_block_reason(symbol)
     _regime_badge = (_risk_evidence or {}).get("regime_badge")
     _badge_prefix = "⚠ BTC REJİM · " if _regime_badge else ""
-    message = (
-        f"{_badge_prefix}🎯 {symbol} | Skor: {score:.1f} | Potansiyel: +%{target:g} (5dk){prox_txt} | "
-        f"Anlık: {price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
-    )
+    if kind == "kdj_dip":
+        kdj_data = candidate.get("kdj") or {}
+        j_val = round(float(kdj_data.get("j", 0.0)), 1)
+        title = f"{_badge_prefix}🎯 [KDJ DİP] {symbol} · Altcoin Aşırı Satım Kırılımı (J <= 15)"
+        message = (
+            f"{_badge_prefix}🎯 {symbol} | KDJ J-Çizgisi Dip Dönüşü (J: {j_val} <= 15) | "
+            f"Hedef: +%{target:.2f} (TP1: %1.50, TP2: %2.80) | SL: -%1.00 | "
+            f"Anlık: {price:.6f} TRY"
+        )
+    else:
+        title = f"{_badge_prefix}🎯 {symbol} · {label} +%{target:g} potansiyel"
+        message = (
+            f"{_badge_prefix}🎯 {symbol} | Skor: {score:.1f} | Potansiyel: +%{target:g} (5dk){prox_txt} | "
+            f"Anlık: {price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
+        )
     return {
         "symbol": symbol,
         "message": message,
-        "title": f"{_badge_prefix}🎯 {symbol} · {label} +%{target:g} potansiyel",
+        "title": title,
         "url": f"/charts?symbol={symbol}",
         "tag": f"rising-{symbol}",
         "detected_at": now,
@@ -3013,11 +3025,15 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
         "proximity": proximity,
         "green": candidate.get("green"),
         "strength": candidate.get("strength"),
+        "tp1_scalp_pct": 1.50 if kind == "kdj_dip" else candidate.get("tp1_scalp_pct"),
+        "tp2_runner_pct": 2.80 if kind == "kdj_dip" else candidate.get("tp2_runner_pct"),
+        "sl_pct": 1.0 if kind == "kdj_dip" else candidate.get("sl_pct"),
+        "confluence_4way": True if kind == "kdj_dip" else bool(candidate.get("confluence_4way")),
         # Aynı saat kovasında aynı sembol için TEK otonom giriş (churn koruması
         # `auto_paper` tarafında `notification_key` ile uygulanır).
         "notification_key": f"rising-{kind}-{symbol}-{int(now // 3600)}",
         "updated": False,
-        "source": "rising",
+        "source": "kdj_dip" if kind == "kdj_dip" else "rising",
         # SERT RİSK bayrakları (P1-2): `block_reason`/`surge_block_reason` doluysa
         # auto_paper risk engeliyle açmaz; `master_surge_passed=False` da aynı
         # fail-closed kapıyı tetikler.
@@ -3075,7 +3091,9 @@ async def _rising_deliver(notified: list) -> None:
             # 2026-10-17 TEYİT KURALI: yükseliş zarfı tek kaynaklıdır (["rising"]); bildirim
             # politikası (≥2 kaynak ∧ velocity ∧ mod ≠ unified) push'u keser. Ölçüm kaydı
             # (rising_alerts) ve otonom paper yolu DEĞİŞMEZ (otonom kurallar ayrıdır).
-            _policy_reason = _notification_policy.evaluate(notif)
+            # 2026-10-31: KDJ Osilatörü (#114) Spot Altcoin Dip Dönüşü push için doğrudan onaylıdır.
+            _is_kdj = (notif.get("kind") == "kdj_dip") or (notif.get("source") == "kdj_dip")
+            _policy_reason = None if _is_kdj else _notification_policy.evaluate(notif)
             if _policy_reason:
                 notif["policy_blocked"] = _policy_reason
             if _policy_reason or ((_same_tur_pushed or _in_cooldown) and not _upgrade):
@@ -3126,7 +3144,8 @@ async def _rising_deliver(notified: list) -> None:
         # 2026-10-17 TEYİT KURALI burada da push'u keser (ölçüm + otonom paper aynen).
         _pushable = []
         for notif in notified:
-            _policy_reason = _notification_policy.evaluate(notif)
+            _is_kdj = (notif.get("kind") == "kdj_dip") or (notif.get("source") == "kdj_dip")
+            _policy_reason = None if _is_kdj else _notification_policy.evaluate(notif)
             if _policy_reason:
                 notif["policy_blocked"] = _policy_reason
                 notif["push_success"] = False

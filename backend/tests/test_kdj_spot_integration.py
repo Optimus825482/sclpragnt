@@ -77,3 +77,53 @@ def test_adaptive_targets_spot_altcoin():
     # Non-altcoin fallback
     t_other = calculate_adaptive_targets(score=50.0, atr_pct=1.0, symbol="XYZ")
     assert t_other["tp1_scalp_pct"] != 1.50 or t_other["tp2_runner_pct"] != 2.80
+
+
+def test_kdj_rising_candidate_and_notification():
+    import time
+    from unittest.mock import patch
+    from app import rising_signals
+    from app.routers import macd_monitor as _macd
+    from app.routers.monitoring import _build_rising_notification, RISING_LABEL
+    
+    # Verify RISING_LABEL contains kdj_dip
+    assert "kdj_dip" in RISING_LABEL
+    
+    # Mock symbols in rising_signals via fresh snapshot
+    mock_row = {
+        "strength": 7.5,
+        "kdj": {"j": 11.2, "cross_up": True, "dip_buy": True},
+        "pre": {"dip": False},
+        "m5": {"green": True, "break": True},
+        "m15": {"green": True, "break": False},
+        "cvd": {"buy_dominant": True},
+        "tier": "A",
+    }
+    
+    snap = {
+        "universe": ["AVAXTRY"],
+        "symbols": {"AVAXTRY": mock_row},
+        "generated_at": time.time() - 1.0,
+    }
+    
+    # Detect candidate
+    with patch.object(_macd, "_SNAPSHOT", snap):
+        candidates = rising_signals.detect_rising_candidates()
+    
+    kdj_cands = [c for c in candidates if c["symbol"] == "AVAXTRY" and c["kind"] == "kdj_dip"]
+    assert len(kdj_cands) == 1
+    cand = kdj_cands[0]
+    assert cand["score"] >= 82.0
+    assert cand["target_pct"] == 1.50
+    assert cand["kdj"]["dip_buy"] is True
+    
+    # Build notification
+    notif = _build_rising_notification(cand, price=30.0)
+    assert "[KDJ DİP] AVAXTRY" in notif["title"]
+    assert "KDJ J-Çizgisi Dip Dönüşü" in notif["message"]
+    assert notif["source"] == "kdj_dip"
+    assert notif["tp1_scalp_pct"] == 1.50
+    assert notif["tp2_runner_pct"] == 2.80
+    assert notif["sl_pct"] == 1.0
+    assert notif["confluence_4way"] is True
+

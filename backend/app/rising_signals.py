@@ -29,6 +29,7 @@ logger = logging.getLogger("scalper.rising")
 
 KIND_EARLY = "erken"          # dip + yakınlık (kırılım ÖNCESİ, asıl MACD gücü)
 KIND_STRENGTH = "yukselis"    # güç + yeşil TF uyumu (mevcut panelin sunucuya taşınmış hali)
+KIND_KDJ = "kdj_dip"          # KDJ Osilatörü (#114) Spot Altcoin Aşırı Satım Dip Dönüşü (J <= 15)
 
 # --- Histerezis durumu (MACD'nin `_early_alerted_at` / `pre_key` deseni) -----
 # symbol → son ateşlenen öncü kümesi. Yalnız 0→1 KENARINDA veya kümeye YENİ
@@ -390,6 +391,7 @@ def _signals_from_row(row: dict) -> dict:
         "break5": bool(m5.get("break")),
         "break15": bool(m15.get("break")),
         "buy_dominant": bool(cvd.get("buy_dominant")),
+        "kdj": row.get("kdj"),
     }
 
 
@@ -403,8 +405,14 @@ def _candidate(symbol: str, row: dict, kind: str) -> dict:
     #  esnetilmez (bkz. plan §4/R3 — ölçek karışımı bilinçli olarak yapılmaz).
     if kind == KIND_EARLY:
         score = float(early) if early is not None else 0.0
+        target = float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2)
+    elif kind == KIND_KDJ:
+        # KDJ Dip Dönüşü VectorBT kanıtlı güçlü sinyaldir (Taban: 82.0 skor, %1.50 TP1)
+        score = max(82.0, float(early or 0.0), round(float(strength or 0.0) * 10.0, 1))
+        target = 1.50
     else:
         score = round(float(strength) * 10.0, 1) if strength is not None else 0.0
+        target = float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2)
     return {
         "symbol": symbol,
         "kind": kind,
@@ -414,7 +422,8 @@ def _candidate(symbol: str, row: dict, kind: str) -> dict:
         "green": green_count(row),
         "tier": row.get("tier"),
         "signals": _signals_from_row(row),
-        "target_pct": float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2),
+        "kdj": row.get("kdj"),
+        "target_pct": target,
         "tf": "5m",
         "source": "macd_snapshot",
     }
@@ -438,7 +447,15 @@ def detect_rising_candidates(now: float | None = None) -> list[dict]:
         row = symbols.get(symbol) or {}
         if not row:
             continue
-        if bool(getattr(config, "RISING_EARLY_ENABLED", True)) and bool((row.get("pre") or {}).get("dip")):
+        # 2026-10-31: KDJ Osilatörü (#114) Spot Altcoin Dip Dönüşü
+        kdj = row.get("kdj") or {}
+        kdj_dip = bool(kdj.get("dip_buy"))
+        if not kdj_dip and kdj.get("j") is not None:
+            kdj_dip = bool(float(kdj.get("j", 50)) <= 15.0 and kdj.get("cross_up"))
+
+        if kdj_dip:
+            out.append(_candidate(symbol, row, KIND_KDJ))
+        elif bool(getattr(config, "RISING_EARLY_ENABLED", True)) and bool((row.get("pre") or {}).get("dip")):
             out.append(_candidate(symbol, row, KIND_EARLY))
         elif bool(getattr(config, "RISING_STRENGTH_ENABLED", True)) \
                 and strength_qualifies(row.get("strength"), green_count(row), raw=row.get("raw"), row=row):
