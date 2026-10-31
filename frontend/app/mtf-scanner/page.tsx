@@ -25,6 +25,9 @@ type TfCell = {
   zl_fresh_cross?: boolean;
   wt_bullish?: boolean;
   wt_oversold_cross?: boolean;
+  kdj_dip?: boolean;
+  kdj_j?: number | null;
+  kdj_bullish?: boolean;
 };
 
 type ScanItem = {
@@ -42,6 +45,8 @@ type ScanItem = {
   wt_oversold_cross?: string[];
   zl_fresh_cross?: string[];
   early_spark?: boolean;
+  kdj_dip_cross?: string[];
+  kdj_bullish_count?: number;
   coverage: number;
   tfs: TfCell[];
 };
@@ -57,6 +62,7 @@ type ScanResponse = {
   early_trough_count?: number;
   squeeze_count?: number;
   early_spark_count?: number;
+  kdj_dip_count?: number;
   tfs: string[];
   scope: string;
   duration_sec: number;
@@ -64,7 +70,7 @@ type ScanResponse = {
   items: ScanItem[];
 };
 
-type FilterType = "ALL" | "GUCLU" | "GUCLU_ORTA" | "EARLY_DIP" | "SQUEEZE" | "FRESH" | "PARALLEL";
+type FilterType = "ALL" | "GUCLU" | "GUCLU_ORTA" | "EARLY_DIP" | "SQUEEZE" | "KDJ_DIP" | "FRESH" | "PARALLEL";
 
 
 export default function MtfScannerPage() {
@@ -126,6 +132,8 @@ export default function MtfScannerPage() {
           (it.squeeze_count || 0) >= 1 &&
           ((it.green_count || 0) >= 1 || (it.early_trough_count || 0) >= 1)
       );
+    } else if (filter === "KDJ_DIP") {
+      list = list.filter((it) => it.kdj_dip_cross && it.kdj_dip_cross.length > 0);
     } else if (filter === "FRESH") {
       list = list.filter((it) => it.fresh_cross && it.fresh_cross.length > 0);
     } else if (filter === "PARALLEL") {
@@ -366,6 +374,17 @@ export default function MtfScannerPage() {
             </button>
             <button
               type="button"
+              onClick={() => setFilter("KDJ_DIP")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+                filter === "KDJ_DIP"
+                  ? "bg-emerald-500 text-white shadow-md shadow-emerald-500/20"
+                  : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              <span>🎯</span> KDJ Dip ({data?.kdj_dip_count || 0})
+            </button>
+            <button
+              type="button"
               onClick={() => setFilter("FRESH")}
               className={`rounded-lg px-3 py-1.5 font-bold transition-colors flex items-center gap-1.5 ${
                 filter === "FRESH"
@@ -559,6 +578,14 @@ export default function MtfScannerPage() {
                                 title="WaveTrend aşırı satım kesişimi"
                               >
                                 <span>⭐</span> WT {item.wt_oversold_cross.join(",")}
+                              </span>
+                            )}
+                            {item.kdj_dip_cross && item.kdj_dip_cross.length > 0 && (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                                title="KDJ Osilatörü (#114) Spot Dip Dönüşü J <= 15"
+                              >
+                                <span>🎯</span> KDJ {item.kdj_dip_cross.join(",")}
                               </span>
                             )}
                             {item.zl_fresh_cross && item.zl_fresh_cross.length > 0 && (

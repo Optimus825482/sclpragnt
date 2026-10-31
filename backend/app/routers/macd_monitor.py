@@ -1250,6 +1250,18 @@ def _symbol_trend_and_signals(sym: str, snapshot_symbols: dict) -> tuple[dict, d
     m1_detail = _tf_breakout_detail(sym, "1m")
     m1_pre = bool(m1_detail["break"]) and green5
     dip_detail = _dip_detail(sym, "5m")
+    # 2026-10-31: KDJ Oscillator (#114) Spot Altcoin Dip Kontrolü
+    kdj_val = None
+    try:
+        from app.technical_analysis import _kdj
+        _k5 = market.get_ut_kline(sym, "5m") or {}
+        _c5 = list(_k5.get("closes") or [])
+        if len(_c5) >= 15:
+            _h5 = list(_k5.get("highs") or [])
+            _l5 = list(_k5.get("lows") or [])
+            kdj_val = _kdj(_h5, _l5, _c5, period=9, signal=3)
+    except Exception:
+        kdj_val = None
     # KALIBRASYON KANITI: dip tek basina baseline alti (negatif EV). dip yalnizca
     # MACD histogram dip donusunu + fiyatin 20-bar zirvesine yakinligini (approach/gap)
     # BIRLIKTE dogrular. Direnciye yakin degilse dip susturulur.
@@ -1279,7 +1291,8 @@ def _symbol_trend_and_signals(sym: str, snapshot_symbols: dict) -> tuple[dict, d
     early_score = _early_score(pre, pre_detail, cvd, green, row_tfs)
     extra = {"sigs": sigs, "cvd": cvd, "green": green,
              "pre": pre, "pre_any": bool(approach or m1_pre or dip),
-             "pre_detail": pre_detail, "early_score": early_score}
+             "pre_detail": pre_detail, "early_score": early_score,
+             "kdj": kdj_val}
     return trend, extra
 
 
@@ -1538,6 +1551,7 @@ async def _compute_pass_locked(pass_no: int) -> dict:
         updated = {
             "strength": score,
             "tier": tier,
+            "kdj": extra.get("kdj"),
             "r2": round(entry["r2"], 3),
             "speed": round(entry["speed"], 4) if entry["speed"] is not None else None,
             "dir": round(entry["dir"], 4) if entry.get("dir") is not None else None,

@@ -127,3 +127,44 @@ def test_kdj_rising_candidate_and_notification():
     assert notif["sl_pct"] == 1.0
     assert notif["confluence_4way"] is True
 
+
+def test_kdj_in_macd_mtf_summary():
+    from app.macd_mtf import _summarize
+    
+    # 2 mock cells: 5m has kdj_dip=True, 15m is neutral
+    cell_5m = {
+        "tf": "5m", "green": False, "parallel_up": False, "expanding": False,
+        "fresh_bull_cross": False, "hist_trough": False, "hist_turn_up": False,
+        "squeeze": False, "zl_green": False, "zl_fresh_cross": False,
+        "wt_bullish": False, "wt_oversold_cross": False,
+        "kdj_dip": True, "kdj_j": 12.4, "kdj_bullish": True,
+    }
+    cell_15m = {
+        "tf": "15m", "green": False, "parallel_up": False, "expanding": False,
+        "fresh_bull_cross": False, "hist_trough": False, "hist_turn_up": False,
+        "squeeze": False, "zl_green": False, "zl_fresh_cross": False,
+        "wt_bullish": False, "wt_oversold_cross": False,
+        "kdj_dip": False, "kdj_j": 45.0, "kdj_bullish": False,
+    }
+    
+    res = _summarize("AVAXTRY", [cell_5m, cell_15m], tfs=("5m", "15m"))
+    assert "kdj_dip_cross" in res
+    assert res["kdj_dip_cross"] == ["5m"]
+    assert res["early_spark"] is True
+    assert res["confluence"] >= 15.0
+
+
+def test_kdj_in_velocity_warm_gate():
+    from app.routers.velocity import _warm_gate
+    
+    # Test warm gate with kdj_dip_buy
+    warm, reason, prox = _warm_gate(
+        prof_atr=0.5, atr_pct=0.4, bb_width=0.8, slope=0.1, aroon_up=20.0,
+        macd_bullish=False, macd_rising=False, ret3=0.0, volume_ratio=1.0,
+        leading_ok=False, kdj_dip_buy=True
+    )
+    assert warm is True
+    assert reason == "kdj_dip_yaklas"
+    assert prox == 0.80
+
+

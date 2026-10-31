@@ -368,7 +368,8 @@ def _velocity_raw_score_gate() -> float:
 def _warm_gate(*, prof_atr: float, atr_pct: float, bb_width: float | None,
                slope: float | None, aroon_up: float | None,
                macd_bullish: bool, macd_rising: bool, ret3: float,
-               volume_ratio: float, leading_ok: bool) -> tuple[bool, str | None, float]:
+               volume_ratio: float, leading_ok: bool,
+               kdj_dip_buy: bool = False) -> tuple[bool, str | None, float]:
     """Isınıyor (warm) şeridi — eşiği kıl payı kaçıran adaylar için erken görünürlük.
 
     Kök neden (2026-09-26 kullanıcı şikâyeti: "bildirimler geç geliyor"): eşiği
@@ -399,9 +400,11 @@ def _warm_gate(*, prof_atr: float, atr_pct: float, bb_width: float | None,
     _aroon_oran = (aroon_up or 0.0) / 50.0
     struct_oran = max(_slope_oran, _aroon_oran)
 
-    # (a) M1/M3 öncü kesişim: bağımsız yüksek güven şeridi.
+    # (a) M1/M3 öncü kesişim veya KDJ Aşırı Satım Dip Dönüşü: bağımsız yüksek güven şeridi.
     if leading_ok:
         return True, "m1_m3_oncu_atr", 0.75
+    if kdj_dip_buy:
+        return True, "kdj_dip_yaklas", 0.80
 
     # (b) Geçilememiş kapılar (yalnız oranla ifade edilebilen {atr, bb, struct});
     # negatif oranlar (ör. aşağı eğim) 0'a kırpılır — proximity negatif olmasın.
@@ -420,7 +423,7 @@ def _warm_gate(*, prof_atr: float, atr_pct: float, bb_width: float | None,
     if min_oran < 0.6:
         # Eşiğin çok altında → ısınma değil, hareketsizlik.
         return False, None, 0.0
-    if not (macd_bullish or macd_rising or ret3 >= 0.5 or volume_ratio >= 2.0):
+    if not (macd_bullish or macd_rising or ret3 >= 0.5 or volume_ratio >= 2.0 or kdj_dip_buy):
         # Destek sinyali yok: eşeğin dibinde duran aday erken görünürlük kazanmaz.
         return False, None, 0.0
     en_zayif = min(failed, key=lambda item: item[1])[0]
@@ -672,6 +675,12 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             macd_hist_prev = _macd_prev.get("histogram") if _macd_prev else None
             macd_bullish = bool(macd_hist is not None and macd_hist > 0)
             macd_rising = bool(macd_hist is not None and macd_hist_prev is not None and macd_hist > macd_hist_prev)
+
+            # 2026-10-31: KDJ Osilatörü (#114 - Altcoin Spot Aşırı Satım Dip Dönüşü)
+            from app.technical_analysis import _kdj
+            _kdj_res = _kdj(highs, lows, closes, period=9, signal=3)
+            kdj_dip_buy = bool(_kdj_res and _kdj_res.get("dip_buy"))
+            kdj_j = round(float(_kdj_res.get("j", 50.0)), 1) if _kdj_res else None
             i = len(rows) - 1
             price = closes[-1]
             if price <= 0:
@@ -805,6 +814,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                                    * (0.2 + 0.8 * struct_ratio)
                                    * (0.5 + 0.5 * momentum_ratio)
                                    * (0.5 + 0.5 * min(1.0, volume_ratio / 2.0)), 2)
+            # 2026-10-31: KDJ Dip Teyidi (#114 VectorBT %33+ net getiri)
+            if kdj_dip_buy:
+                velocity_score = round(velocity_score * 1.15, 2)
+
             # A1: MACD histogram confirmation multiplier
             if config.VELOCITY_MACD_CONFIRMATION_ENABLED:
                 if macd_bullish and macd_rising:
@@ -922,7 +935,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     prof_atr=prof_atr, atr_pct=atr_pct, bb_width=bb_width,
                     slope=slope, aroon_up=aroon_up,
                     macd_bullish=macd_bullish, macd_rising=macd_rising, ret3=ret3,
-                    volume_ratio=volume_ratio, leading_ok=bool(leading_ok))
+                    volume_ratio=volume_ratio, leading_ok=bool(leading_ok),
+                    kdj_dip_buy=kdj_dip_buy)
             # ---- GÜNLÜK MOMENTUM KATMANI (2026-10-10) -------------------------
             # Backtest (2670 gözlem, 80 sembol, 70 gün): 11:30 taramasında
             # ret_8h>=+2 & ATR%>=0.5 & ADX>=25(+DI>20) & slope>=0.3 → sonraki
@@ -1248,6 +1262,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "macd_bullish": macd_bullish,
                     "macd_rising": macd_rising,
                     "m5_macd_bullish": m5_macd_bullish,
+                    "kdj": _kdj_res, "kdj_dip_buy": kdj_dip_buy, "kdj_j": kdj_j,
                     "m5_pattern": m5_pattern, "m5_pattern_ok": m5_pattern_ok,
                     # ML-01: gölge ML tahmininin girdisi. Bu sözlük KAPANMIŞ 5m
                     # seriden üretilir (eğitimle aynı dayanak). Aday satırındaki

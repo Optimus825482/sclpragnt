@@ -210,6 +210,15 @@ def _tf_cell(symbol: str, tf: str) -> dict | None:
     # 4. WaveTrend (Oversold Cross & Bullish)
     wt_bullish, wt_os_cross = _wavetrend_status(highs, lows, closes)
 
+    # 5. KDJ Oscillator (#114 - Spot Altcoin Aşırı Satım Dip Dönüşü J <= 15)
+    from app.technical_analysis import _kdj
+    kdj_h = highs if highs and len(highs) == len(closes) else closes
+    kdj_l = lows if lows and len(lows) == len(closes) else closes
+    kdj_res = _kdj(kdj_h, kdj_l, closes, period=9, signal=3)
+    kdj_dip = bool(kdj_res and kdj_res.get("dip_buy"))
+    kdj_j = round(float(kdj_res.get("j", 50.0)), 1) if kdj_res else None
+    kdj_bullish = bool(kdj_res and float(kdj_res.get("k", 0)) > float(kdj_res.get("d", 0)))
+
     return {
         "tf": tf,
         "macd": round(float(macd[-1]), 10),
@@ -230,6 +239,9 @@ def _tf_cell(symbol: str, tf: str) -> dict | None:
         "zl_fresh_cross": zl_fresh,
         "wt_bullish": wt_bullish,
         "wt_oversold_cross": wt_os_cross,
+        "kdj_dip": kdj_dip,
+        "kdj_j": kdj_j,
+        "kdj_bullish": kdj_bullish,
     }
 
 
@@ -253,6 +265,8 @@ def _summarize(symbol: str, cells: list[dict | None], tfs: tuple = TFS) -> dict:
         "wt_bullish_count": 0,
         "wt_oversold_cross": [],
         "early_spark": False,
+        "kdj_dip_cross": [],
+        "kdj_bullish_count": 0,
         "cells": [],
     }
     if len(available) < 2:
@@ -271,14 +285,19 @@ def _summarize(symbol: str, cells: list[dict | None], tfs: tuple = TFS) -> dict:
     wt_bullish_count = sum(1 for c in available if c.get("wt_bullish"))
     wt_os_cross = [c["tf"] for c in available if c.get("wt_oversold_cross")]
 
+    # KDJ Öncü Sayımları (#114)
+    kdj_dip_cross = [c["tf"] for c in available if c.get("kdj_dip")]
+    kdj_bullish_count = sum(1 for c in available if c.get("kdj_bullish"))
+
     # Erken Kıvılcım (Early Spark):
     # En erken dip dönüşü (>=2 TF'de negatiften yukarı ivmelenme)
-    # VEYA Sıkışma + Eğim pozitif VEYA WaveTrend aşırı satım kesişimi
+    # VEYA Sıkışma + Eğim pozitif VEYA WaveTrend aşırı satım kesişimi VEYA KDJ dip dönüşü
     early_spark = bool(
         early_trough_count >= 2 or
         (squeeze_count >= 1 and hist_turn_up_count >= 2) or
         bool(wt_os_cross) or
-        bool(zl_fresh)
+        bool(zl_fresh) or
+        bool(kdj_dip_cross)
     )
 
     # Ağırlık: yeşil (MACD>signal durumu) %60 + paralel yukarı (momentum) %40.
@@ -286,6 +305,8 @@ def _summarize(symbol: str, cells: list[dict | None], tfs: tuple = TFS) -> dict:
     score = (0.6 * green_count + 0.4 * parallel_count) / len(available) * 80.0
     if fresh:
         score += 20.0
+    if kdj_dip_cross:
+        score += 15.0
     confluence = round(min(100.0, score), 1)
     if confluence >= 75.0:
         verdict = "GÜÇLÜ"
@@ -308,6 +329,8 @@ def _summarize(symbol: str, cells: list[dict | None], tfs: tuple = TFS) -> dict:
         "wt_bullish_count": wt_bullish_count,
         "wt_oversold_cross": wt_os_cross,
         "early_spark": early_spark,
+        "kdj_dip_cross": kdj_dip_cross,
+        "kdj_bullish_count": kdj_bullish_count,
         "cells": available,
     })
     return base
@@ -481,6 +504,8 @@ async def scan_market(
                     "wt_oversold_cross": res.get("wt_oversold_cross", []),
                     "zl_fresh_cross": res.get("zl_fresh_cross", []),
                     "early_spark": res.get("early_spark", False),
+                    "kdj_dip_cross": res.get("kdj_dip_cross", []),
+                    "kdj_bullish_count": res.get("kdj_bullish_count", 0),
                     "coverage": res.get("coverage", 0),
                     "tfs": res.get("cells", []),
                 }
@@ -501,6 +526,7 @@ async def scan_market(
     early_trough_count = sum(1 for r in valid_items if r.get("early_trough_count", 0) >= 2)
     squeeze_count = sum(1 for r in valid_items if r.get("squeeze_count", 0) >= 1)
     early_spark_count = sum(1 for r in valid_items if r.get("early_spark"))
+    kdj_dip_count = sum(1 for r in valid_items if len(r.get("kdj_dip_cross", [])) > 0)
 
     # Filtreleme
     filtered = valid_items
@@ -537,6 +563,7 @@ async def scan_market(
         "early_trough_count": early_trough_count,
         "squeeze_count": squeeze_count,
         "early_spark_count": early_spark_count,
+        "kdj_dip_count": kdj_dip_count,
         "tfs": list(tfs),
         "scope": scope,
         "duration_sec": round(time.time() - t0, 2),

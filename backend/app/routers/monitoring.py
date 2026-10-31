@@ -5628,7 +5628,8 @@ async def _run_scan() -> dict:
                      "passes": bool(r.get("passes")),
                      "block_reason": r.get("block_reason"),
                      "rsi": r.get("rsi"), "mfi": r.get("mfi"), "atr_pct": r.get("atr_pct"),
-                     "m5_pattern_ok": r.get("m5_pattern_ok"), "leading_ok": r.get("leading_ok"), "volume_ratio": r.get("volume_ratio")}
+                     "m5_pattern_ok": r.get("m5_pattern_ok"), "leading_ok": r.get("leading_ok"), "volume_ratio": r.get("volume_ratio"),
+                     "kdj": r.get("kdj"), "kdj_dip_buy": r.get("kdj_dip_buy")}
             for h, r in profs.items()
         }
         row["upside_rank"] = round(upside_rank_score(row, touch_rates), 2)
