@@ -1262,6 +1262,18 @@ def _symbol_trend_and_signals(sym: str, snapshot_symbols: dict) -> tuple[dict, d
             kdj_val = _kdj(_h5, _l5, _c5, period=9, signal=3)
     except Exception:
         kdj_val = None
+
+    # 2026-10-31: EMA 50 Pullback Bounce (#1 Lider: %83-%100 WinRate, Sharpe 5.83)
+    ema50_bounce = None
+    try:
+        from app.technical_analysis import _ema_pullback_bounce
+        _k5 = market.get_ut_kline(sym, "5m") or {}
+        _c5 = list(_k5.get("closes") or [])
+        if len(_c5) >= 55:
+            _l5 = list(_k5.get("lows") or [])
+            ema50_bounce = _ema_pullback_bounce(_c5, _l5, period=50, tolerance_pct=0.008)
+    except Exception:
+        ema50_bounce = None
     # KALIBRASYON KANITI: dip tek basina baseline alti (negatif EV). dip yalnizca
     # MACD histogram dip donusunu + fiyatin 20-bar zirvesine yakinligini (approach/gap)
     # BIRLIKTE dogrular. Direnciye yakin degilse dip susturulur.
@@ -1292,7 +1304,8 @@ def _symbol_trend_and_signals(sym: str, snapshot_symbols: dict) -> tuple[dict, d
     extra = {"sigs": sigs, "cvd": cvd, "green": green,
              "pre": pre, "pre_any": bool(approach or m1_pre or dip),
              "pre_detail": pre_detail, "early_score": early_score,
-             "kdj": kdj_val}
+             "kdj": kdj_val,
+             "ema50_bounce": ema50_bounce}
     return trend, extra
 
 
@@ -1552,6 +1565,7 @@ async def _compute_pass_locked(pass_no: int) -> dict:
             "strength": score,
             "tier": tier,
             "kdj": extra.get("kdj"),
+            "ema50_bounce": extra.get("ema50_bounce"),
             "r2": round(entry["r2"], 3),
             "speed": round(entry["speed"], 4) if entry["speed"] is not None else None,
             "dir": round(entry["dir"], 4) if entry.get("dir") is not None else None,

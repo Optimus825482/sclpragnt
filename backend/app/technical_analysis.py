@@ -1095,3 +1095,30 @@ def _microstructure_block(flow: dict, price: float) -> dict:
         "updated_at": flow.get("updated_at"),
     }
     return block
+
+def _ema_pullback_bounce(closes: list[float], lows: list[float], period: int = 50, tolerance_pct: float = 0.008) -> dict:
+    """EMA 50 Pullback Bounce (#1 Lider: %83-%100 WinRate, Sharpe 5.83).
+    Fiyat EMA 50 trendi uzerindeyken (close > ema50), barin en dusugu (low)
+    EMA 50 seviyesine dokunur / yakinlasir (low <= ema * (1 + tolerance_pct))
+    ve ardindan tepki verirse pullback_bounce: True doner.
+    """
+    if len(closes) < period + 5:
+        return {"ema": None, "pullback_bounce": False, "dist_pct": None}
+
+    # EMA serisi hesapla
+    k = 2.0 / (period + 1.0)
+    ema_val = float(closes[0])
+    for close_val in closes[1:]:
+        ema_val = (float(close_val) * k) + (ema_val * (1.0 - k))
+
+    c = float(closes[-1])
+    l = float(lows[-1]) if lows else c
+    dist_pct = round(((c - ema_val) / ema_val) * 100.0, 2)
+
+    # Kosul: Fiyat EMA uzerinde kapatmis, ama low seviyesi EMA bandina degmis/yaklasmis
+    bounce = bool(c >= ema_val and l <= ema_val * (1.0 + tolerance_pct))
+    return {
+        "ema": round(ema_val, 6),
+        "pullback_bounce": bounce,
+        "dist_pct": dist_pct,
+    }

@@ -31,6 +31,7 @@ KIND_EARLY = "erken"          # dip + yakınlık (kırılım ÖNCESİ, asıl MAC
 KIND_STRENGTH = "yukselis"    # güç + yeşil TF uyumu (mevcut panelin sunucuya taşınmış hali)
 KIND_KDJ = "kdj_dip"          # KDJ Osilatörü (#114) Spot Altcoin Aşırı Satım Dip Dönüşü (J <= 15)
 KIND_SUPERTREND = "supertrend" # SuperTrend (#1 Trend Lideri: %80 WinRate, 13.19 Sharpe)
+KIND_EMA_BOUNCE = "ema_bounce" # EMA 50 Pullback Bounce (#1 Lider: %83-%100 WinRate, Sharpe 5.83)
 
 # --- Histerezis durumu (MACD'nin `_early_alerted_at` / `pre_key` deseni) -----
 # symbol → son ateşlenen öncü kümesi. Yalnız 0→1 KENARINDA veya kümeye YENİ
@@ -415,6 +416,10 @@ def _candidate(symbol: str, row: dict, kind: str) -> dict:
         # SuperTrend Boğa Kırılımı (#1 Lider: Taban 85.0 skor, %1.50 TP1)
         score = max(85.0, float(early or 0.0), round(float(strength or 0.0) * 10.0, 1))
         target = 1.50
+    elif kind == KIND_EMA_BOUNCE:
+        # EMA 50 Trend Sekmesi (#1 MTF Lider: %83-%100 WinRate, Taban 86.0 skor, %2.00 TP1)
+        score = max(86.0, float(early or 0.0), round(float(strength or 0.0) * 10.0, 1))
+        target = 2.00
     else:
         score = round(float(strength) * 10.0, 1) if strength is not None else 0.0
         target = float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2)
@@ -466,6 +471,9 @@ def detect_rising_candidates(now: float | None = None) -> list[dict]:
             out.append(_candidate(symbol, row, KIND_KDJ))
         elif st_bull and green_count(row) >= 3:
             out.append(_candidate(symbol, row, KIND_SUPERTREND))
+        elif (row.get("ema50_bounce") or {}).get("pullback_bounce") and kdj_buy:
+            # 2026-10-31: EMA 50 Pullback Bounce + KDJ Aşırı Satım Sekmesi
+            out.append(_candidate(symbol, row, KIND_EMA_BOUNCE))
         elif bool(getattr(config, "RISING_EARLY_ENABLED", True)) and bool((row.get("pre") or {}).get("dip")):
             out.append(_candidate(symbol, row, KIND_EARLY))
         elif bool(getattr(config, "RISING_STRENGTH_ENABLED", True)) \

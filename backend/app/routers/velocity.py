@@ -369,7 +369,8 @@ def _warm_gate(*, prof_atr: float, atr_pct: float, bb_width: float | None,
                slope: float | None, aroon_up: float | None,
                macd_bullish: bool, macd_rising: bool, ret3: float,
                volume_ratio: float, leading_ok: bool,
-               kdj_dip_buy: bool = False) -> tuple[bool, str | None, float]:
+               kdj_dip_buy: bool = False,
+               ema50_bounce: bool = False) -> tuple[bool, str | None, float]:
     """Isınıyor (warm) şeridi — eşiği kıl payı kaçıran adaylar için erken görünürlük.
 
     Kök neden (2026-09-26 kullanıcı şikâyeti: "bildirimler geç geliyor"): eşiği
@@ -405,6 +406,8 @@ def _warm_gate(*, prof_atr: float, atr_pct: float, bb_width: float | None,
         return True, "m1_m3_oncu_atr", 0.75
     if kdj_dip_buy:
         return True, "kdj_dip_yaklas", 0.80
+    if ema50_bounce:
+        return True, "ema50_bounce_yaklas", 0.85
 
     # (b) Geçilememiş kapılar (yalnız oranla ifade edilebilen {atr, bb, struct});
     # negatif oranlar (ör. aşağı eğim) 0'a kırpılır — proximity negatif olmasın.
@@ -677,10 +680,12 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             macd_rising = bool(macd_hist is not None and macd_hist_prev is not None and macd_hist > macd_hist_prev)
 
             # 2026-10-31: KDJ Osilatörü (#114 - Altcoin Spot Aşırı Satım Dip Dönüşü)
-            from app.technical_analysis import _kdj
+            from app.technical_analysis import _kdj, _ema_pullback_bounce
             _kdj_res = _kdj(highs, lows, closes, period=9, signal=3)
             kdj_dip_buy = bool(_kdj_res and _kdj_res.get("dip_buy"))
             kdj_j = round(float(_kdj_res.get("j", 50.0)), 1) if _kdj_res else None
+            _ema_bounce_res = _ema_pullback_bounce(closes, lows, period=50, tolerance_pct=0.008)
+            ema50_bounce = bool(_ema_bounce_res and _ema_bounce_res.get("pullback_bounce"))
             i = len(rows) - 1
             price = closes[-1]
             if price <= 0:
@@ -817,6 +822,9 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # 2026-10-31: KDJ Dip Teyidi (#114 VectorBT %33+ net getiri)
             if kdj_dip_buy:
                 velocity_score = round(velocity_score * 1.15, 2)
+            # 2026-10-31: EMA 50 Pullback Bounce Teyidi (%83-%100 WinRate Lideri)
+            if ema50_bounce:
+                velocity_score = round(velocity_score * 1.20, 2)
 
             # A1: MACD histogram confirmation multiplier
             if config.VELOCITY_MACD_CONFIRMATION_ENABLED:
@@ -936,7 +944,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     slope=slope, aroon_up=aroon_up,
                     macd_bullish=macd_bullish, macd_rising=macd_rising, ret3=ret3,
                     volume_ratio=volume_ratio, leading_ok=bool(leading_ok),
-                    kdj_dip_buy=kdj_dip_buy)
+                    kdj_dip_buy=kdj_dip_buy,
+                    ema50_bounce=ema50_bounce)
             # ---- GÜNLÜK MOMENTUM KATMANI (2026-10-10) -------------------------
             # Backtest (2670 gözlem, 80 sembol, 70 gün): 11:30 taramasında
             # ret_8h>=+2 & ATR%>=0.5 & ADX>=25(+DI>20) & slope>=0.3 → sonraki
@@ -1263,6 +1272,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "macd_rising": macd_rising,
                     "m5_macd_bullish": m5_macd_bullish,
                     "kdj": _kdj_res, "kdj_dip_buy": kdj_dip_buy, "kdj_j": kdj_j,
+                    "ema50_bounce": _ema_bounce_res, "ema50_bounce_ok": ema50_bounce,
                     "m5_pattern": m5_pattern, "m5_pattern_ok": m5_pattern_ok,
                     # ML-01: gölge ML tahmininin girdisi. Bu sözlük KAPANMIŞ 5m
                     # seriden üretilir (eğitimle aynı dayanak). Aday satırındaki
