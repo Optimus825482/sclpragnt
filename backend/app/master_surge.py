@@ -211,7 +211,19 @@ def evaluate_layer2_volatility(
         score += 20.0
         reasons.append("volatility_expanding")
 
-    passed = (is_dip or proximity >= 0.60 or transition or squeeze_now) and score >= 35.0
+    # 4. KDJ Osilatörü (#114) Spot Altcoin Dip Dönüşü (J <= 15 ve yukarı kesişim)
+    kdj = row.get("kdj") or {}
+    kdj_dip_buy = bool(kdj.get("dip_buy"))
+    if not kdj_dip_buy and kdj.get("j") is not None:
+        j_val = float(kdj.get("j", 50))
+        cross_up = bool(kdj.get("cross_up"))
+        kdj_dip_buy = bool(j_val <= 15.0 and cross_up)
+
+    if kdj_dip_buy:
+        score += 35.0
+        reasons.append(f"kdj_dip_buy(J={float(kdj.get('j', 0)):.1f})")
+
+    passed = (is_dip or proximity >= 0.60 or transition or squeeze_now or kdj_dip_buy) and score >= 35.0
 
     return {
         "passed": passed,
@@ -221,6 +233,7 @@ def evaluate_layer2_volatility(
         "squeeze_now": squeeze_now,
         "transition": transition,
         "expand_now": expand_now,
+        "kdj_dip_buy": kdj_dip_buy,
         "reasons": reasons,
     }
 
@@ -384,6 +397,7 @@ def calculate_adaptive_targets(
     score: float,
     atr_pct: float | None = None,
     base_target_pct: float | None = None,
+    symbol: str | None = None,
 ) -> dict:
     """Dinamik Uyarlanabilir Hedefler (Dynamic Adaptive Targets).
 
@@ -396,6 +410,17 @@ def calculate_adaptive_targets(
     """
     sc = max(0.0, min(100.0, float(score or 0.0)))
     atr = float(atr_pct) if (atr_pct is not None and float(atr_pct) > 0) else 1.4
+
+    # 2026-10-31: KDJ Osilatörü (#114) Spot Altcoin Uyarlaması
+    sym_u = str(symbol or "").upper()
+    if any(coin in sym_u for coin in ["AVAX", "NEAR", "BNB", "DOGE", "SUI", "ETH", "SOL", "LINK", "XRP"]):
+        # VectorBT Test Kanıtı: Spot Altcoin KDJ İdeal TP: %1.5 - %2.5, SL: %1.0, BE: %0.9
+        return {
+            "tp1_scalp_pct": 1.50,
+            "tp2_runner_pct": 2.80,
+            "breakeven_trigger_pct": 0.90,
+            "trailing_gap_pct": 0.40,
+        }
 
     # 2026-09-26 (denetim #2 düzeltmesi): TRY mikro çiftlerin ATR%'si tipik
     # 0.3-0.9 bandında; eski sabit tabanlar (TP1 ≥ 1.2, TP2 ≥ 3.0, BE ≥ 0.9)
@@ -594,6 +619,7 @@ def evaluate_master_surge(
         score=composite_index,
         atr_pct=atr_pct,
         base_target_pct=float((velocity_candidate or {}).get("target_pct") or 2.2),
+        symbol=sym,
     )
 
     min_score = float(getattr(config, "MASTER_SURGE_MIN_SCORE", 70.0))

@@ -97,6 +97,51 @@ def _bollinger(closes, period=20, std_mult=2.0):
     upper, lower = mid + std_mult * std, mid - std_mult * std
     return {"upper": upper, "middle": mid, "lower": lower, "width_pct": (upper - lower) / mid if mid else None, "position": (closes[-1] - lower) / (upper - lower) if upper != lower else None}
 
+
+def _kdj(highs, lows, closes, period=9, signal=3):
+    """KDJ Göstergesi (#114) — Spot Altcoin Dip Dönüşü & Momentum Osilatörü.
+
+    K ve D çizgilerini EMA yumuşatmasıyla türetir, J = 3K - 2D formülüyle
+    aşırı satım dip dönüşlerini (J <= 15 ve yukarı kesişim) tespit eder.
+    """
+    if len(closes) < period + signal:
+        return None
+    c = np.asarray(closes, dtype=float)
+    h = np.asarray(highs, dtype=float)
+    l = np.asarray(lows, dtype=float)
+    rsv = []
+    for i in range(period - 1, len(c)):
+        hi = float(np.max(h[i - period + 1 : i + 1]))
+        lo = float(np.min(l[i - period + 1 : i + 1]))
+        rsv.append((float(c[i]) - lo) / (hi - lo) * 100.0 if hi != lo else 50.0)
+    if len(rsv) < signal:
+        return None
+    k_val = 50.0
+    d_val = 50.0
+    k_series = []
+    d_series = []
+    alpha = 1.0 / float(signal)
+    for r in rsv:
+        k_val = (1.0 - alpha) * k_val + alpha * float(r)
+        d_val = (1.0 - alpha) * d_val + alpha * k_val
+        k_series.append(k_val)
+        d_series.append(d_val)
+    j_series = [3.0 * k - 2.0 * d for k, d in zip(k_series, d_series)]
+    k_now = float(k_series[-1])
+    d_now = float(d_series[-1])
+    j_now = float(j_series[-1])
+    j_prev = float(j_series[-2]) if len(j_series) >= 2 else j_now
+    d_prev = float(d_series[-2]) if len(d_series) >= 2 else d_now
+    cross_up = bool(j_prev <= d_prev and j_now > d_now)
+    dip_buy = bool(j_prev <= 15.0 and cross_up)
+    return {
+        "k": round(k_now, 2),
+        "d": round(d_now, 2),
+        "j": round(j_now, 2),
+        "cross_up": cross_up,
+        "dip_buy": dip_buy,
+    }
+
 def _stochastic(highs, lows, closes, period=14, smooth=3):
     if len(closes) < period + smooth - 1: return None
     values = []
@@ -912,6 +957,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     adx = _adx(highs, lows, closes); obv = _obv(closes, volumes); mfi = _mfi(highs, lows, closes, volumes)
     fisher = _fisher_transform(highs, lows, 9)
     fisher_11 = _fisher_transform(highs, lows, 11)
+    kdj = _kdj(highs, lows, closes, 9, 3)
     wavetrend = _wavetrend(highs, lows, closes, 7, 1, 4)
     trend_indicators = {"alma_20": _alma(closes, 20), "dema_20": _dema(closes, 20), "tema_20": _tema(closes, 20),
                         "hma_16": _hma(closes, 16), "aroon_25": _aroon(highs, lows, 25), "supertrend_10_3": _supertrend(highs, lows, closes, 10, 3.0),
@@ -939,7 +985,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     # C-13: anahtar `hma_9` idi ama değer `_sma` idi — LLM/UI'ya yanlış
     # özellik anlamı taşıyordu. Modülün kendi kanonik `_hma`'sı kullanılır.
     moving_averages["hma_9"] = _hma(closes, 9)
-    oscillator_values = {"rsi_14": _rsi(closes), "stochastic_k": stochastic.get("k") if stochastic else None, "stochastic_d": stochastic.get("d") if stochastic else None, "cci_20": cci, "adx_14": adx.get("adx") if adx else None, "awesome": ao, "momentum_10": ret(10), "macd_histogram": macd.get("histogram") if macd else None, "stoch_rsi_fast": stoch_rsi.get("k") if stoch_rsi else None, "stoch_rsi_signal": stoch_rsi.get("d") if stoch_rsi else None, "cmo_9": cmo, "crsi": crsi, "williams_r": williams, "bull_bear": bull_bear.get("bull") if bull_bear else None, "ultimate": ultimate, "mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend}
+    oscillator_values = {"rsi_14": _rsi(closes), "stochastic_k": stochastic.get("k") if stochastic else None, "stochastic_d": stochastic.get("d") if stochastic else None, "cci_20": cci, "adx_14": adx.get("adx") if adx else None, "awesome": ao, "momentum_10": ret(10), "macd_histogram": macd.get("histogram") if macd else None, "stoch_rsi_fast": stoch_rsi.get("k") if stoch_rsi else None, "stoch_rsi_signal": stoch_rsi.get("d") if stoch_rsi else None, "cmo_9": cmo, "crsi": crsi, "williams_r": williams, "bull_bear": bull_bear.get("bull") if bull_bear else None, "ultimate": ultimate, "mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend, "kdj": kdj}
     oscillator_signals = {"rsi_14": _signal(oscillator_values["rsi_14"], 50, 70, 30, 20), "stochastic_k": _signal(oscillator_values["stochastic_k"], 50, 80, 20, 10), "cci_20": _signal(cci, 0, 100, -100, -200), "adx_14": "neutral" if adx is None else ("buy" if adx["plus_di"] > adx["minus_di"] else "sell"), "awesome": "buy" if (ao or 0) > 0 else "sell", "momentum_10": "buy" if (ret(10) or 0) > 0 else "sell", "macd": "buy" if macd and macd["histogram"] > 0 else "sell",
         # C-02: %R lives in [-100, 0] where -10 is *overbought*. `_signal`
         # reads ascending values, so negate it and use positive thresholds:
@@ -1001,7 +1047,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
         "fair_value_gap": _fair_value_gap(highs, lows, closes, atr),
         "wick_rejection_zscore": _wick_rejection_zscore(opens, highs, lows, closes),
         "volume_profile": _volume_profile_proxy(highs, lows, closes, volumes),
-        "indicators": {"mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend},
+        "indicators": {"mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend, "kdj": kdj},
         "unavailable_without_trade_level_data": ["footprint", "true_cvd", "aggressor_side_orderflow", "actual_liquidation_levels"],
         "not_implemented_without_separate_validation": ["lorentzian_classifier", "supertrend_ml_clustering"],
     }
@@ -1011,6 +1057,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
         day_open = daily.get("opens", [])[-1] if daily.get("opens") else dclose[-1]
         used = max(price, day_open) / min(price, day_open) - 1 if price > 0 and day_open > 0 else 0
         result["volatility"].update({"day_range_used_pct": used, "day_range_used_ratio": used, "adr_utilization": used / adr, "remaining_capacity_pct": adr - used, "remaining_capacity_ratio": adr - used})
+    result["kdj"] = kdj
     result["summary"] = "bullish" if result["trend"]["alignment"] == "bullish" and (result["momentum"]["rsi_14"] or 0) >= 50 else "mixed"
     return result
 
