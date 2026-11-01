@@ -146,7 +146,7 @@ class Config:
 
     SYMBOLS = [
     "BTCTRY", "SOLTRY", "AVAXTRY", "NEARTRY", "DOGETRY", "ETHTRY", # En Yüksek Getirili Top Liderler (VectorBT Testli)
-    "XRPTRY", "ADATRY",
+    "XRPTRY", "ADATRY", "GTRY",
     "LINKTRY", "APTTRY",
     "ARBTRY", "OPTRY", "SUITRY",    # Yeni Nesil L2'ler (Hızlı Hareket)
     "DOGETRY", "LTCTRY","BNBTRY",         # Memecoinler (Hacim Patlaması Kralları)

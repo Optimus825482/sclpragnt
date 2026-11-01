@@ -803,50 +803,47 @@ function ChatPageInner() {
 
   return (
     <div className="chat-page">
-      <div className="chat-layout">
+      <div className={`chat-layout ${controlsOpen ? "has-controls" : "controls-collapsed"}`}>
         <Card className="chat-conversation">
           {/* Üst Başlık & Kontrol Çubuğu */}
-          <div className="chat-top-bar flex flex-wrap items-center justify-between gap-2 pb-3 mb-2 border-b border-bunker-800">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-base">
+          <div className="chat-top-bar flex items-center justify-between gap-2 pb-2.5 mb-1.5 border-b border-bunker-800">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-sm sm:text-base shrink-0">
                 💬
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="font-mono text-sm font-bold text-white tracking-wide">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                  <h1 className="font-mono text-xs sm:text-sm font-bold text-white tracking-wide truncate">
                     CHAT MERKEZİ
                   </h1>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${role === "admin" ? "bg-purple-500/20 text-purple-300 border border-purple-500/40" : "bg-emerald-500/20 text-neon-green border border-emerald-500/40"}`}>
-                    {role === "admin" ? "🛡️ YÖNETİCİ" : "📈 UZMAN TRADER"}
+                  <span className={`px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-mono font-bold shrink-0 ${role === "admin" ? "bg-purple-500/20 text-purple-300 border border-purple-500/40" : "bg-emerald-500/20 text-neon-green border border-emerald-500/40"}`}>
+                    {role === "admin" ? "🛡️ YÖNETİCİ" : "📈 TRADER"}
                   </span>
-                  <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-mono text-bunker-muted">
+                  <span className="inline-flex items-center gap-1 text-[9px] sm:text-[10px] font-mono text-bunker-muted shrink-0">
                     <span className={`w-1.5 h-1.5 rounded-full ${busy ? "bg-amber-400 animate-ping" : "bg-neon-green"}`} />
                     {busy ? "YANITLANIYOR" : "HAZIR"}
                   </span>
                 </div>
-                <p className="text-[11px] text-bunker-muted">
-                  {username ? `${username} ile aktif sohbet · ` : ""}Canlı Binance TR piyasa analizi
-                </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              <span className={`chat-context-meter text-[11px] font-mono px-2 py-1 rounded bg-black/40 border border-bunker-800 ${contextTone}`}>
+            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+              <span className={`chat-context-meter text-[10px] sm:text-[11px] font-mono px-2 py-1 rounded bg-black/40 border border-bunker-800 hidden md:inline-block ${contextTone}`}>
                 {Math.min(100, contextRatio * 100).toFixed(1)}% hafıza
               </span>
-              <Button variant="secondary" onClick={startNewChat} className="text-xs px-2.5 py-1.5 font-mono">
-                ＋ YENİ SOHBET
+              <Button variant="secondary" onClick={startNewChat} className="text-[11px] sm:text-xs px-2 sm:px-2.5 py-1 sm:py-1.5 font-mono">
+                ＋ YENİ
               </Button>
               <button
                 type="button"
                 onClick={() => setControlsOpen((v) => !v)}
-                className="ui-button ui-button-secondary text-xs px-2.5 py-1.5 flex items-center gap-1 font-mono md:hidden"
-                title="Model Akışını Aç/Kapat"
+                className={`ui-button ui-button-secondary text-[11px] sm:text-xs px-2 sm:px-2.5 py-1 sm:py-1.5 flex items-center gap-1 font-mono transition-colors ${controlsOpen ? "border-emerald-500/50 bg-emerald-500/15 text-neon-green font-bold" : ""}`}
+                title={controlsOpen ? "Model Akışını Gizle" : "Model Akışını Göster"}
               >
                 <span>⚡</span>
-                <span>AKIŞ</span>
+                <span className="hidden sm:inline">AKIŞ</span>
                 {activities.length > 0 && (
-                  <span className="w-4 h-4 rounded-full bg-emerald-500/30 text-neon-green text-[9px] flex items-center justify-center font-bold">
+                  <span className="w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full bg-emerald-500/30 text-neon-green text-[8px] sm:text-[9px] flex items-center justify-center font-bold">
                     {Math.min(activities.length, 99)}
                   </span>
                 )}
@@ -1026,43 +1023,40 @@ function ChatPageInner() {
             <div ref={endRef} />
           </div>
 
-          {/* Hızlı İşlemler & Soru Önerileri */}
-          <div className="chat-quick-toolbar flex flex-col gap-1.5 my-2">
-            <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                className="chat-scan-button-wide flex-1 min-h-[2.4rem] font-mono text-xs border-emerald-500/30 hover:border-emerald-500/60 bg-emerald-950/20"
-                onClick={runUpsideScout}
-                disabled={upsideScoutBusy || busy}
-              >
-                {upsideScoutBusy ? (
-                  <span className="upside-scout-loading flex items-center justify-center gap-2">
-                    <span className="upside-scout-spinner" />
-                    <span className="upside-scout-text text-neon-green font-bold">EN HIZLI YÜKSELİŞ KEŞFEDİLİYOR</span>
-                  </span>
-                ) : (
-                  <span className="flex items-center justify-center gap-1.5 text-neon-green font-bold">
-                    <span>🎯</span>
-                    <span>EN HIZLI YÜKSELİŞ ANALİZİ (5DK + 15DK)</span>
-                  </span>
-                )}
-              </Button>
-            </div>
+          {/* Hızlı İşlemler & Soru Önerileri (Kompakt Tek Satır) */}
+          <div className="chat-quick-toolbar flex items-center gap-1.5 my-1.5 overflow-x-auto pb-1 scrollbar-none" aria-label="Hızlı soru ve keşif önerileri">
+            <button
+              type="button"
+              className="shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 hover:bg-emerald-500/30 text-neon-green text-[11px] font-mono font-bold transition-all disabled:opacity-40 shadow-sm"
+              onClick={runUpsideScout}
+              disabled={upsideScoutBusy || busy}
+              title="En Hızlı Yükseliş Analizi (5dk + 15dk)"
+            >
+              {upsideScoutBusy ? (
+                <span className="flex items-center gap-1">
+                  <span className="upside-scout-spinner" />
+                  <span>KEŞFEDİLİYOR…</span>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1">
+                  <span>🎯</span>
+                  <span>5D+15D YÜKSELİŞ KEŞFİ</span>
+                </span>
+              )}
+            </button>
 
-            <div className="chat-quick-prompts flex overflow-x-auto gap-1.5 pb-1" aria-label="Hızlı soru önerileri">
-              {QUICK_PROMPTS.map((item, idx) => (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => sendMessage(item.prompt)}
-                  disabled={busy}
-                  className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bunker-900/80 border border-bunker-700/70 hover:border-emerald-500/50 hover:bg-emerald-950/30 text-slate-300 hover:text-neon-green text-xs font-mono transition-all disabled:opacity-40"
-                >
-                  <span>{item.icon}</span>
-                  <span>{item.label}</span>
-                </button>
-              ))}
-            </div>
+            {QUICK_PROMPTS.map((item, idx) => (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => sendMessage(item.prompt)}
+                disabled={busy}
+                className="shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-full bg-bunker-900/80 border border-bunker-700/70 hover:border-emerald-500/50 hover:bg-emerald-950/30 text-slate-300 hover:text-neon-green text-[11px] font-mono transition-all disabled:opacity-40"
+              >
+                <span>{item.icon}</span>
+                <span>{item.label}</span>
+              </button>
+            ))}
           </div>
 
           {/* Mesaj Yazma & Sesli Giriş Bölümü */}
@@ -1182,7 +1176,7 @@ function ChatPageInner() {
                 )}
               </div>
 
-              <div className="flex items-center justify-between text-[10px] text-bunker-muted mt-1 px-1 font-mono">
+              <div className="hidden sm:flex items-center justify-between text-[10px] text-bunker-muted mt-1 px-1 font-mono">
                 <span>💡 Enter: Gönder · Shift+Enter: Yeni Satır · 🎙️: Sesli Mesaj</span>
                 {input.length > 0 && <span>{input.length} karakter</span>}
               </div>
@@ -1192,8 +1186,17 @@ function ChatPageInner() {
           </div>
         </Card>
 
+        {/* Mobil Arka Plan Karartması (Akış açıkken) */}
+        {controlsOpen && (
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden"
+            onClick={() => setControlsOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+
         {/* Sağ Panel: Model Akışı & Arka Plan Etkinlikleri */}
-        <Card className={`chat-controls ${controlsOpen ? "is-open" : ""}`}>
+        <Card className={`chat-controls ${controlsOpen ? "is-open" : "is-closed"}`}>
           <div className="chat-controls-header flex items-center justify-between gap-2 pb-2 border-b border-bunker-800">
             <div>
               <p className="eyebrow">ARKA PLAN İŞLERİ</p>
@@ -1211,7 +1214,8 @@ function ChatPageInner() {
               <button
                 type="button"
                 onClick={() => setControlsOpen(false)}
-                className="md:hidden text-bunker-muted hover:text-white text-xs px-2 py-1 rounded bg-bunker-800"
+                className="text-bunker-muted hover:text-white text-xs px-2 py-1 rounded bg-bunker-800 hover:bg-bunker-700 transition-colors"
+                title="Paneli Kapat"
               >
                 ✕
               </button>
@@ -1287,7 +1291,7 @@ function ChatPageInner() {
         </Card>
       </div>
 
-      <footer className="chat-footer">
+      <footer className="chat-footer hidden sm:flex">
         <span>SCALPERAGENT · CHAT & SESLİ ASİSTAN</span>
         <span className="chat-footer-status">
           <span className="status-dot" /> PAPER ONLY · CANLI PUBLIC DATA

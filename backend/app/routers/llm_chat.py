@@ -451,6 +451,33 @@ def _normalize_turkish_search(value: str) -> str:
     }))
 
 
+def _extract_symbols_from_text(text: str) -> list[str]:
+    """Metinden Binance TR sembollerini (örn. GTRY, GTRY'yi, BTCTRY, G_TRY, G (Gravity)) yakalar."""
+    from app.binance_tr_symbols import is_binance_tr_symbol, map_to_tr_symbol
+    found = []
+    # Türkçe ekleri temizle: GTRY'yi -> GTRY, GTRYyi -> GTRY, GTRY'de -> GTRY
+    raw = str(text or "")
+    cleaned = re.sub(r"['’`](?:yi|ye|ya|yu|yü|de|da|den|dan|in|ın|un|ün|i|e|a|u|ü)\b", "", raw, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(TRY|USDT)(?:yi|ye|ya|yu|yü|de|da|den|dan|in|ın|un|ün|i|e|a|u|ü)\b", r"\1", cleaned, flags=re.IGNORECASE)
+    
+    # 1) Doğrudan *TRY çiftleri: GTRY, BTCTRY, 0GTRY, ETH/TRY, G_TRY (1 ila 12 karakter taban)
+    matches_try = re.findall(r"\b([A-Za-z0-9]{1,12})(?:[\s/_-]?TRY)\b", cleaned.upper())
+    for m in matches_try:
+        sym = f"{m}TRY"
+        if sym not in found:
+            found.append(sym)
+    # 2) Bulunamadıysa Binance TR baz varlık/coin isimlerini eşle
+    if not found:
+        words = re.findall(r"\b[A-Za-z0-9]{1,10}\b", cleaned.upper())
+        stop_words = {"TRY", "USDT", "TL", "AL", "SAT", "VE", "ILE", "BU", "SU", "NE", "KADAR", "DAHA", "UST", "DIRENC", "DESTEK", "NERDE", "NEREDE", "ANALIZ", "DURUM", "CIKAR", "INCELE", "HALA", "YINE", "GENE", "BULAMIYOR"}
+        for w in words:
+            if w in stop_words:
+                continue
+            mapped = map_to_tr_symbol(w)
+            if mapped and is_binance_tr_symbol(mapped) and mapped not in found:
+                found.append(mapped)
+    return found
+
 def _price_watch_symbol(messages: list[dict]) -> str | None:
     """Resolve an explicit live-price watch request without guessing a market."""
     if not messages:
@@ -464,12 +491,12 @@ def _price_watch_symbol(messages: list[dict]) -> str | None:
     ))
     if not watch_intent:
         return None
-    current_symbols = re.findall(r"\b[A-Z0-9]{2,15}TRY\b", last_text.upper())
+    current_symbols = re.findall(r"\b[A-Z0-9]{1,15}TRY\b", last_text.upper())
     if current_symbols:
         return current_symbols[-1]
     # "DODO fiyatı izle" gibi komutları yalnızca yapılandırılmış TRY evreniyle
     # doğrula; sıradan kelimeleri sembol diye tahmin etme.
-    prefix = re.search(r"\b([A-Z0-9]{2,12})\s+FIYATI(?:NI)?\s+(?:CANLI\s+)?IZLE\b", normalized.upper())
+    prefix = re.search(r"\b([A-Z0-9]{1,12})\s+FIYATI(?:NI)?\s+(?:CANLI\s+)?IZLE\b", normalized.upper())
     if prefix:
         candidate = f"{prefix.group(1)}TRY"
         if candidate in config.SYMBOLS:
@@ -477,7 +504,7 @@ def _price_watch_symbol(messages: list[dict]) -> str | None:
     for message in reversed(messages[:-1]):
         if not isinstance(message, dict):
             continue
-        prior = re.findall(r"\b[A-Z0-9]{2,15}TRY\b", str(message.get("content", "")).upper())
+        prior = re.findall(r"\b[A-Z0-9]{1,15}TRY\b", str(message.get("content", "")).upper())
         if prior:
             return prior[-1]
     return None
@@ -3416,7 +3443,7 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
     research_only_intent = bool(re.search(r"(geriye\s*dönük|geriye\s*donuk|backtest|back-test|tarihsel|geçmiş.*test|gecmis.*test|kaç\s+işlem.*olurdu|kaç\s+islem.*olurdu|simüle|simule|varsayımsal|varsayimsal)", last_text.lower()))
     if research_only_intent:
         trade_intent = False
-    requested_symbols = [token.upper() for token in re.findall(r"\b[A-Za-z]{2,12}TRY\b", last_text.upper())]
+    requested_symbols = _extract_symbols_from_text(last_text)
     _merge_body_symbols(requested_symbols, body)
     market_opportunity_intent = bool(re.search(
         r"(güncel|guncel|fırsat|firsat|piyasa|tarama|sembol|art(?:ar|ış|is)|%\s*5|h1|m30|30m|1h|momentum|yüksel|yuksel)",
@@ -3543,9 +3570,16 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
             context["market_scan"] = {"source": "live_binance_tr_public", "error": str(exc), "data_ready": False}
     if requested_symbols:
         requested = requested_symbols[0].replace("_", "")
-        if requested not in config.SYMBOLS:
-            context["symbol_data"] = {"symbol": requested, "data_ready": False, "error": f"{requested} etkin paper-trading sembol listesinde yok", "activation_required": True, "instruction": "Önce activate_coin tool'u ile Binance TR public TRY piyasasında doğrula; başarılı olursa deep_analyze_symbol ile güncel snapshot al.", "supported_symbols": config.SYMBOLS}
+        from app.binance_tr_symbols import is_binance_tr_symbol
+        is_tr = (requested in config.SYMBOLS) or is_binance_tr_symbol(requested)
+        if not is_tr:
+            context["symbol_data"] = {"symbol": requested, "data_ready": False, "error": f"{requested} Binance TR public TRY piyasasında işlem görmüyor", "activation_required": False, "supported_symbols": config.SYMBOLS}
         else:
+            if requested not in config.SYMBOLS:
+                config.SYMBOLS.append(requested)
+            if requested.lower() not in market.symbols:
+                market.symbols.append(requested.lower())
+                market.reconnect_requested = True
             try:
                 context["symbol_data"] = await deep_analyze_symbol({"symbol": requested, "timeframe": "5m"})
             except Exception as exc:
