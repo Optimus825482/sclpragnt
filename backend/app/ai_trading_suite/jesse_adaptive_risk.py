@@ -1,14 +1,5 @@
-"""Jesse Quantitative Trading Framework inspired Adaptive Risk & Execution Model.
-
-Features:
-- Dynamic ATR stop-loss and multi-stage Take-Profit optimizer
-- Genetic algorithm-inspired risk:reward ratio enforcement (R:R >= 1.50)
-- Volatility-adjusted trailing stop offsets
-- Algorithmic execution efficiency scoring.
-"""
-from __future__ import annotations
-
-from typing import Optional
+from dataclasses import dataclass
+from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 
@@ -34,10 +25,19 @@ def evaluate_jesse_risk(
     volatility_mode: str = "NORMAL"
 ) -> JesseRiskResult:
     """Calculates Jesse-inspired dynamic SL, TP and trailing parameters."""
-    px = max(entry_price, 0.000001)
-    effective_atr = max(atr, px * 0.005)
+    if isinstance(win_rate_estimate, str):
+        volatility_mode = win_rate_estimate
+        win_rate_estimate = 0.55
+    else:
+        try:
+            win_rate_estimate = float(win_rate_estimate)
+        except Exception:
+            win_rate_estimate = 0.55
 
-    mode = volatility_mode.upper()
+    px = max(float(entry_price), 0.000001)
+    effective_atr = max(float(atr), px * 0.005)
+
+    mode = str(volatility_mode).upper()
     if mode == "HIGH":
         sl_mult = 1.6
         tp1_mult = 2.5

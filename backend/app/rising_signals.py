@@ -462,6 +462,7 @@ def detect_rising_candidates(now: float | None = None) -> list[dict]:
         kdj_dip = bool(kdj.get("dip_buy"))
         if not kdj_dip and kdj.get("j") is not None:
             kdj_dip = bool(float(kdj.get("j", 50)) <= 15.0 and kdj.get("cross_up"))
+        kdj_buy = bool(kdj_dip or kdj.get("cross_up") or (kdj.get("j") is not None and float(kdj.get("j", 50)) <= 35.0))
 
         # SuperTrend kontrolü
         st_info = row.get("supertrend") or {}
