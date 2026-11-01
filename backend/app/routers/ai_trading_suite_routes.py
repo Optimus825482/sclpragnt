@@ -20,6 +20,12 @@ from app.ai_trading_suite import (
     evaluate_ttm_squeeze,
     evaluate_avellaneda_stoikov,
     evaluate_ppo_adaptive_policy,
+    evaluate_wyckoff_vsa,
+    evaluate_momentum_rotation,
+    evaluate_smart_rebalance,
+    evaluate_infinity_grid,
+    evaluate_obv_cmf_inflow,
+    evaluate_volume_breakout,
     AITradingSuiteOrchestrator,
     UnifiedEvaluationRequest,
     IndicatorEvaluation,
@@ -408,3 +414,48 @@ router_alias.add_api_route("/vwap-scalper", get_vwap_scalper, methods=["GET"])
 router_alias.add_api_route("/ttm-squeeze", get_ttm_squeeze, methods=["GET"])
 router_alias.add_api_route("/avellaneda-stoikov", get_avellaneda_stoikov, methods=["GET"])
 router_alias.add_api_route("/ppo-policy", get_ppo_policy, methods=["GET"])
+
+
+@router.get("/wyckoff-vsa")
+def get_wyckoff_vsa(symbol: str = "BTCUSDT", price: float = 0.0):
+    """Wyckoff Akümülasyonu ve Hacim Yayılım Analizi (VSA Absorption / Stopping Volume)."""
+    return evaluate_wyckoff_vsa(symbol=symbol, price=price)
+
+
+@router.get("/momentum-rotation")
+def get_momentum_rotation(symbols: str = "BTCTRY,ETHTRY,SOLTRY,AVAXTRY,NEARTRY,LINKTRY"):
+    """Çapraz-Kesit Momentum ve Lider Coin Rotasyon motoru (RS vs BTC & ROC)."""
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    return evaluate_momentum_rotation(universe_symbols=sym_list)
+
+
+@router.get("/smart-rebalance")
+def get_smart_rebalance(drift_tolerance: float = 5.0):
+    """Akıllı Eşikli Portföy Dengeleme (Tepede kâr realize edip dibe aktarma)."""
+    return evaluate_smart_rebalance(drift_tolerance_pct=drift_tolerance)
+
+
+@router.get("/infinity-grid")
+def get_infinity_grid(symbol: str = "BTCUSDT", price: float = 0.0, capital: float = 5000.0, grid_count: int = 8):
+    """Dinamik ATR Sonsuzluk Izgarası (Infinity Grid) spot scalper kademeleri."""
+    return evaluate_infinity_grid(symbol=symbol, price=price, total_capital_try=capital, grid_count=grid_count)
+
+
+@router.get("/obv-cmf-inflow")
+def get_obv_cmf_inflow(symbol: str = "BTCUSDT", price: float = 0.0):
+    """OBV ve Chaikin Money Flow (CMF) akıllı para akışı ve gizli pozitif uyumsuzluk tespiti."""
+    return evaluate_obv_cmf_inflow(symbol=symbol, price=price)
+
+
+@router.get("/volume-breakout")
+def get_volume_breakout(symbol: str = "BTCUSDT", price: float = 0.0):
+    """Konsolidasyon kutusu sıkışması ve 3x patlayıcı hacim kırılım radarı."""
+    return evaluate_volume_breakout(symbol=symbol, price=price)
+
+
+router_alias.add_api_route("/wyckoff-vsa", get_wyckoff_vsa, methods=["GET"])
+router_alias.add_api_route("/momentum-rotation", get_momentum_rotation, methods=["GET"])
+router_alias.add_api_route("/smart-rebalance", get_smart_rebalance, methods=["GET"])
+router_alias.add_api_route("/infinity-grid", get_infinity_grid, methods=["GET"])
+router_alias.add_api_route("/obv-cmf-inflow", get_obv_cmf_inflow, methods=["GET"])
+router_alias.add_api_route("/volume-breakout", get_volume_breakout, methods=["GET"])

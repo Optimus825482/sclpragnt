@@ -1761,6 +1761,9 @@ export default function ChartsPage() {
                     {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
 
+                {/* DİNAMİK OCTOBOT VE QLIB ALPHA PUANLARI (SEMBOLÜN HEMEN YANINDA DAİMA GÖRÜNÜR) */}
+                <ChartAiScoreHeader symbol={symbol} assetType="SPOT" className="flex items-center shrink-0" />
+
                 {isAdvanced && (
                   <>
                     <button
@@ -1785,11 +1788,6 @@ export default function ChartsPage() {
                     </button>
                   </>
                 )}
-              </div>
-
-              {/* DİNAMİK OCTOBOT VE QLIB ALPHA PUANLARI (HER İKİ MODDA DAİMA GÖRÜNÜR) */}
-              <div className="flex items-center gap-2">
-                <ChartAiScoreHeader symbol={symbol} assetType="SPOT" />
               </div>
             </div>
 

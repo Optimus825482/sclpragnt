@@ -98,8 +98,10 @@ def push_topic(tag) -> str | None:
     return cleaned or None
 
 
-def push_headers(tag) -> dict:
+def push_headers(tag, endpoint: str = "") -> dict:
     headers = {"Urgency": "high"}
+    if "apple.com" in str(endpoint or "").lower():
+        return headers
     topic = push_topic(tag)
     if topic:
         headers["Topic"] = topic
@@ -207,11 +209,13 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
 
         async def _send_one(subscription):
             async with gate:
+                endpoint = str((subscription or {}).get("endpoint", "") or "")
+                sub_headers = push_headers(tag, endpoint=endpoint)
                 try:
                     await asyncio.to_thread(webpush, subscription_info=subscription, data=payload,
                                             vapid_private_key=vapid_private,
                                             vapid_claims={"sub": subject},
-                                            ttl=ttl, headers=dict(headers), timeout=PUSH_TIMEOUT_SEC)
+                                            ttl=ttl, headers=dict(sub_headers), timeout=PUSH_TIMEOUT_SEC)
                     return subscription, None
                 except Exception as sub_exc:
                     return subscription, sub_exc

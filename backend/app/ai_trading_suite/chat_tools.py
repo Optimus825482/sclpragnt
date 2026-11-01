@@ -38,6 +38,12 @@ from app.ai_trading_suite import (
     evaluate_ttm_squeeze,
     evaluate_avellaneda_stoikov,
     evaluate_ppo_adaptive_policy,
+    evaluate_wyckoff_vsa,
+    evaluate_momentum_rotation,
+    evaluate_smart_rebalance,
+    evaluate_infinity_grid,
+    evaluate_obv_cmf_inflow,
+    evaluate_volume_breakout,
 )
 
 orchestrator = AITradingSuiteOrchestrator()
@@ -353,6 +359,119 @@ LLM_PPO_POLICY_TOOL = {
     }
 }
 
+LLM_WYCKOFF_VSA_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_wyckoff_vsa",
+        "description": (
+            "Wyckoff Akümülasyonu ve Hacim Yayılım Analizi (VSA). Akıllı paranın (Smart Money) gizli mal toplama "
+            "(Absorption), durdurucu hacim (Stopping Volume) ve silkeleme (Spring) formasyonlarını tespit eder."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol (ör. BTCTRY, SOLTRY)"},
+                "price": {"type": "number", "description": "Mevcut fiyat"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_MOMENTUM_ROTATION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_momentum_rotation",
+        "description": (
+            "Çapraz-Kesit Momentum ve Lider Coin Rotasyon motoru. Binance Spot evrenini BTC'ye karşı Göreceli Güç (RS) "
+            "ve Rate of Change (ROC) skoruna göre sıralayarak en güçlü lider coinleri seçer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbols": {"type": "string", "description": "Virgülle ayrılmış taranacak semboller listesi"}
+            },
+            "required": []
+        }
+    }
+}
+
+LLM_SMART_REBALANCE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_smart_rebalance",
+        "description": (
+            "Akıllı Eşikli Portföy Dengeleme (Smart Rebalancing & Drift Bands). Spot varlıklarda tepede kâr realize edip "
+            "dipteki varlıklara veya nakite aktarma kararı üretir."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "drift_tolerance": {"type": "number", "description": "Sapma toleransı yüzdesi (varsayılan: 5.0)"}
+            },
+            "required": []
+        }
+    }
+}
+
+LLM_INFINITY_GRID_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_infinity_grid",
+        "description": (
+            "Dinamik ATR Sonsuzluk Izgarası (Infinity Grid). Yatay ve dalgalı piyasada stop olmadan kademeli al-sat "
+            "seviyeleri oluşturarak sürekli micro-kâr toplar."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"},
+                "price": {"type": "number", "description": "Mevcut fiyat"},
+                "capital": {"type": "number", "description": "Toplam ızgara sermayesi (TRY)"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_OBV_CMF_INFLOW_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_obv_cmf_inflow",
+        "description": (
+            "OBV ve Chaikin Money Flow (CMF) akıllı para akışı dedektörü. Fiyat henüz yükselmeden önceki "
+            "kurumsal gizli spot toplama (Bullish Inflow Divergence) uyumsuzluğunu yakalar."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"},
+                "price": {"type": "number", "description": "Mevcut fiyat"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_VOLUME_BREAKOUT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_volume_breakout",
+        "description": (
+            "Ön-Patlama Hacim Anomalisi ve Konsolidasyon Kutusu Kırılım Radarı. Sıkışan fiyat kutusundan 3x hacim "
+            "patlamasıyla çıkan spot kırılımları ilk mumda yakalar."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"},
+                "price": {"type": "number", "description": "Mevcut fiyat"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
 AI_TRADING_SUITE_TOOLS = [
     LLM_AI_TRADING_SUITE_EVALUATE_TOOL,
     LLM_HEDGE_FUND_COUNCIL_TOOL,
@@ -369,6 +488,12 @@ AI_TRADING_SUITE_TOOLS = [
     LLM_TTM_SQUEEZE_TOOL,
     LLM_AVELLANEDA_STOIKOV_TOOL,
     LLM_PPO_POLICY_TOOL,
+    LLM_WYCKOFF_VSA_TOOL,
+    LLM_MOMENTUM_ROTATION_TOOL,
+    LLM_SMART_REBALANCE_TOOL,
+    LLM_INFINITY_GRID_TOOL,
+    LLM_OBV_CMF_INFLOW_TOOL,
+    LLM_VOLUME_BREAKOUT_TOOL,
 ]
 
 
@@ -650,6 +775,60 @@ async def execute_ppo_policy(args: dict) -> dict:
     dd = float(args.get("drawdown") or 0.5)
     atr = float(args.get("volatility_atr") or 1.4)
     res = evaluate_ppo_adaptive_policy(symbol=raw_sym, recent_win_rate_pct=wr, daily_drawdown_pct=dd, volatility_atr_pct=atr)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_wyckoff_vsa(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    px = float(args.get("price") or 0.0)
+    res = evaluate_wyckoff_vsa(symbol=raw_sym, price=px)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_momentum_rotation(args: dict) -> dict:
+    syms_raw = str(args.get("symbols") or "")
+    sym_list = [s.strip().upper() for s in syms_raw.split(",") if s.strip()] if syms_raw else None
+    res = evaluate_momentum_rotation(universe_symbols=sym_list)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_smart_rebalance(args: dict) -> dict:
+    tol = float(args.get("drift_tolerance") or 5.0)
+    res = evaluate_smart_rebalance(drift_tolerance_pct=tol)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_infinity_grid(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    px = float(args.get("price") or 0.0)
+    cap = float(args.get("capital") or 5000.0)
+    res = evaluate_infinity_grid(symbol=raw_sym, price=px, total_capital_try=cap)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_obv_cmf_inflow(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    px = float(args.get("price") or 0.0)
+    res = evaluate_obv_cmf_inflow(symbol=raw_sym, price=px)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_volume_breakout(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    px = float(args.get("price") or 0.0)
+    res = evaluate_volume_breakout(symbol=raw_sym, price=px)
     data = res.model_dump()
     data["ok"] = True
     return data

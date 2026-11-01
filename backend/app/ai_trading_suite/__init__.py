@@ -62,6 +62,12 @@ from .vwap_bands_scalper import evaluate_vwap_scalper, VWAPBandsResult
 from .ttm_squeeze_engine import evaluate_ttm_squeeze, TTMSqueezeResult
 from .avellaneda_stoikov_pmm import evaluate_avellaneda_stoikov, PMMQuoteResult
 from .ppo_adaptive_policy import evaluate_ppo_adaptive_policy, PPOPolicyAction
+from .wyckoff_vsa_absorption import evaluate_wyckoff_vsa, WyckoffVSAResult
+from .cross_sectional_momentum import evaluate_momentum_rotation, MomentumRotationResult
+from .smart_rebalance_drift import evaluate_smart_rebalance, SmartRebalanceResult
+from .infinity_grid_scalper import evaluate_infinity_grid, InfinityGridResult
+from .obv_cmf_smart_inflow import evaluate_obv_cmf_inflow, OBVCMFInflowResult
+from .volume_anomaly_breakout import evaluate_volume_breakout, VolumeBreakoutResult
 from .orchestrator import (
     AITradingSuiteOrchestrator,
     UnifiedEvaluationRequest,
@@ -144,6 +150,18 @@ __all__ = [
     "PMMQuoteResult",
     "evaluate_ppo_adaptive_policy",
     "PPOPolicyAction",
+    "evaluate_wyckoff_vsa",
+    "WyckoffVSAResult",
+    "evaluate_momentum_rotation",
+    "MomentumRotationResult",
+    "evaluate_smart_rebalance",
+    "SmartRebalanceResult",
+    "evaluate_infinity_grid",
+    "InfinityGridResult",
+    "evaluate_obv_cmf_inflow",
+    "OBVCMFInflowResult",
+    "evaluate_volume_breakout",
+    "VolumeBreakoutResult",
     "AITradingSuiteOrchestrator",
     "UnifiedEvaluationRequest",
     "UnifiedEvaluationResponse"

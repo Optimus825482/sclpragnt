@@ -760,6 +760,29 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         except Exception as trap_exc:
             logger.debug("auto_paper %s FinCon trap shield kontrolü atlandı: %s", symbol, trap_exc)
 
+        # Spot Akıllı Para ve Wyckoff VSA / OBV-CMF Dağıtım (Distribution) Savunma Kapısı:
+        try:
+            from app.ai_trading_suite import evaluate_wyckoff_vsa, evaluate_obv_cmf_inflow
+            # 1. OBV & Chaikin Money Flow (CMF) Kurumsal Para Çıkışı / Dağıtım Vetosu
+            obv_res = evaluate_obv_cmf_inflow(symbol=symbol)
+            if obv_res.divergence_type == "BEARISH_DISTRIBUTION" and obv_res.cmf_value < -0.15:
+                logger.warning("auto_paper %s: 🛑 OBV/CMF Kurumsal Dağıtım Uyarısı (CMF: %.2f) — işlem engellendi",
+                               symbol, obv_res.cmf_value)
+                return _blocked(symbol, "obv_cmf_bearish_distribution_veto",
+                                block_reason=f"OBV_CMF_DISTRIBUTION_{round(obv_res.cmf_value, 2)}",
+                                verdict="BEARISH_DISTRIBUTION")
+
+            # 2. Wyckoff VSA Sahte Zirve / UTAD Dağıtım Vetosu
+            wyckoff_res = evaluate_wyckoff_vsa(symbol=symbol)
+            if wyckoff_res.vsa_pattern in ("DISTRIBUTION_UTAD", "BUYING_CLIMAX_EXHAUSTION") or wyckoff_res.trade_action == "TAKE_PROFIT":
+                logger.warning("auto_paper %s: 🛑 Wyckoff VSA Zirve Tükeniş/Dağıtım Uyarısı (%s) — işlem engellendi",
+                               symbol, wyckoff_res.vsa_pattern)
+                return _blocked(symbol, f"wyckoff_distribution_veto:{wyckoff_res.vsa_pattern}",
+                                block_reason=f"WYCKOFF_{wyckoff_res.vsa_pattern}",
+                                verdict=wyckoff_res.vsa_pattern)
+        except Exception as spot_suite_err:
+            logger.debug("auto_paper %s Spot AI Suite kontrolü atlandı: %s", symbol, spot_suite_err)
+
         # R3-07 (P0): SESSİZ SAATLERDE otonom işlem DURDURULUR. Web push'un sessiz
         # saatlerde ertelenmesi monitoring._notify içinde zaten korunur (onun
         # ALTERNATİFİ değil, POSITION açılışında ek kapı). Aday bir sonraki taramada
@@ -1095,6 +1118,17 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
                 order_value = order_value * ppo_action.position_size_multiplier
         except Exception as ppo_err:
             logger.debug("auto_paper %s PPO adaptasyonu atlandı: %s", symbol, ppo_err)
+
+        # Wyckoff VSA & Volume Anomaly Breakout Hedef Adaptasyonu:
+        try:
+            from app.ai_trading_suite import evaluate_volume_breakout
+            vol_bo = evaluate_volume_breakout(symbol=symbol, price=current_price)
+            if vol_bo.is_box_breakout and vol_bo.take_profit > current_price:
+                bo_tp_pct = (vol_bo.take_profit - current_price) / current_price * 100.0
+                if bo_tp_pct > target_pct:
+                    target_pct = min(12.0, max(target_pct, bo_tp_pct))
+        except Exception as bo_err:
+            logger.debug("auto_paper %s Volume breakout adaptasyonu atlandı: %s", symbol, bo_err)
 
         if target_pct <= 0:
             target_pct = float(settings.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT))

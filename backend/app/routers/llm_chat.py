@@ -37,6 +37,12 @@ from app.ai_trading_suite.chat_tools import (
     execute_ttm_squeeze,
     execute_avellaneda_stoikov,
     execute_ppo_policy,
+    execute_wyckoff_vsa,
+    execute_momentum_rotation,
+    execute_smart_rebalance,
+    execute_infinity_grid,
+    execute_obv_cmf_inflow,
+    execute_volume_breakout,
 )
 from app.routers.llm_position_tools import (LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL,
                             LLM_CLOSE_POSITION_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
@@ -2976,6 +2982,12 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
         if name == "get_ttm_squeeze": return await execute_ttm_squeeze({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_avellaneda_stoikov": return await execute_avellaneda_stoikov({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_ppo_policy": return await execute_ppo_policy({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_wyckoff_vsa": return await execute_wyckoff_vsa({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_momentum_rotation": return await execute_momentum_rotation(args)
+        if name == "get_smart_rebalance": return await execute_smart_rebalance(args)
+        if name == "get_infinity_grid": return await execute_infinity_grid({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_obv_cmf_inflow": return await execute_obv_cmf_inflow({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_volume_breakout": return await execute_volume_breakout({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_master_surge_prediction": return await _get_master_surge_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_ml_price_forecast": return await _get_ml_forecast_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_surge_learning_bias": return await _get_surge_bias_tool({**args, "symbol": args.get("symbol") or symbol})
@@ -3107,6 +3119,12 @@ def _tool_activity_summary(name: str, args: dict) -> str:
     if name == "get_ttm_squeeze": return f"{symbol} için TTM Squeeze volatilite sıkışması ve kırılım taranıyor"
     if name == "get_avellaneda_stoikov": return f"{symbol} için Avellaneda-Stoikov Pure Market Making kotasyonları hesaplanıyor"
     if name == "get_ppo_policy": return f"{symbol} için PPO Reinforcement Learning dinamik TP/SL politikası optimize ediliyor"
+    if name == "get_wyckoff_vsa": return f"{symbol} için Wyckoff Akümülasyonu ve VSA taranıyor"
+    if name == "get_momentum_rotation": return "Çapraz-Kesit Momentum ve Lider Coin rotasyonu taranıyor"
+    if name == "get_smart_rebalance": return "Akıllı Eşikli Portföy Dengeleme hesaplanıyor"
+    if name == "get_infinity_grid": return f"{symbol} için Dinamik ATR Sonsuzluk Izgarası (Infinity Grid) seviyeleri hesaplanıyor"
+    if name == "get_obv_cmf_inflow": return f"{symbol} için OBV ve CMF akıllı para akışı uyumsuzluğu taranıyor"
+    if name == "get_volume_breakout": return f"{symbol} için Konsolidasyon Kutusu ve 3x hacim patlaması taranıyor"
     if name == "get_signals": return "Sinyal kayıtları okunuyor"
     if name == "get_decision_logs": return "Karar logları inceleniyor"
     if name == "get_strategy_stats": return "Strateji başarı istatistikleri hesaplanıyor"
@@ -3666,6 +3684,12 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         if name == "get_ttm_squeeze": return await execute_ttm_squeeze(args)
         if name == "get_avellaneda_stoikov": return await execute_avellaneda_stoikov(args)
         if name == "get_ppo_policy": return await execute_ppo_policy(args)
+        if name == "get_wyckoff_vsa": return await execute_wyckoff_vsa(args)
+        if name == "get_momentum_rotation": return await execute_momentum_rotation(args)
+        if name == "get_smart_rebalance": return await execute_smart_rebalance(args)
+        if name == "get_infinity_grid": return await execute_infinity_grid(args)
+        if name == "get_obv_cmf_inflow": return await execute_obv_cmf_inflow(args)
+        if name == "get_volume_breakout": return await execute_volume_breakout(args)
         if name == "get_master_surge_prediction": return await _get_master_surge_tool(args)
         if name == "get_ml_price_forecast": return await _get_ml_forecast_tool(args)
         if name == "get_surge_learning_bias": return await _get_surge_bias_tool(args)

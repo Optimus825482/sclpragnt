@@ -5330,7 +5330,7 @@ async def release_push_daily_count(symbol: str, day_key: str) -> int:
     tüketilip bildirim gitmediyse sembol günün geri kalanında boşuna kilitlenmesin.
     """
     def op(conn):
-        conn.execute("UPDATE push_daily_counter SET count = MAX(count - 1, 0) WHERE symbol = ? AND day_key = ?",
+        conn.execute("UPDATE push_daily_counter SET count = CASE WHEN count > 0 THEN count - 1 ELSE 0 END WHERE symbol = ? AND day_key = ?",
                      (symbol, day_key))
         row = conn.execute("SELECT count FROM push_daily_counter WHERE symbol = ? AND day_key = ?",
                            (symbol, day_key)).fetchone()
