@@ -1803,7 +1803,7 @@ export default function ChartsPage() {
                         </button>
                     ))}
                 </div>
-                <ChartAiScoreHeader symbol={symbol} assetType="SPOT" className="hidden sm:flex" />
+                <ChartAiScoreHeader symbol={symbol} assetType="SPOT" className="flex items-center shrink-0" />
                 {/* CANLI AKIS DURUMU (2026-09-16): grafik mum verisini Binance'den
                     değil backend'den alır. Son 15 sn içinde backend'den canlı mum
                     geldiyse CANLI (yeşil) rozeti; aksi halde (WS ölü / varsayılan

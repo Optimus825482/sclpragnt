@@ -806,8 +806,7 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                             </div>
                         )}
                     </div>
-                    <ChartAiScoreHeader symbol={config.symbol} assetType="SPOT" compact className="hidden sm:flex ml-1" />
-                    {priceData && (
+                                        {priceData && (
                         <div className="flex items-center gap-1.5 font-mono">
                             <span className="text-white font-bold text-xs">₺{formatPrice(priceData.last)}</span>
                             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${priceData.changePct >= 0 ? "bg-neon-green/15 text-neon-green border border-neon-green/30" : "bg-neon-red/15 text-neon-red border border-neon-red/30"}`}>
@@ -884,6 +883,8 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                             </div>
                         )}
                     </div>
+
+                    <ChartAiScoreHeader symbol={config.symbol} assetType="SPOT" compact className="flex items-center shrink-0" />
 
                     {/* Yenile */}
                     <button

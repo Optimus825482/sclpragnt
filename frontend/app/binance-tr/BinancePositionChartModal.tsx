@@ -1579,7 +1579,7 @@ export default function BinancePositionChartModal({
               </span>
             </div>
 
-            <ChartAiScoreHeader symbol={symbolConcat} assetType="SPOT" compact className="hidden sm:flex mr-2" />
+            <ChartAiScoreHeader symbol={symbolConcat} assetType="SPOT" compact className="flex items-center shrink-0 mr-2" />
             {/* Anlık Fiyat */}
             <div className="flex items-baseline gap-2 font-mono">
               <span

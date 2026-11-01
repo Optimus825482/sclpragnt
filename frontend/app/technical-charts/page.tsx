@@ -587,7 +587,7 @@ export default function TechnicalChartsPage() {
                             })}
                         </div>
 
-                        <ChartAiScoreHeader symbol={globalSymbol} assetType="SPOT" className="hidden lg:flex mr-2" />
+                        <ChartAiScoreHeader symbol={globalSymbol} assetType="SPOT" className="flex items-center shrink-0 mr-2" />
                         {/* Yenile */}
                         <button
                             type="button"
