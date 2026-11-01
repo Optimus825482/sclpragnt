@@ -530,11 +530,20 @@ export default function ChartsPage() {
                 body: JSON.stringify({ timeframe: interval, fresh })
             });
             const data = await res.json();
-            if (res.ok) { setForecast(data); setForecastError(null); }
-            else {
+            if (res.ok) {
+                setForecast(data);
+                setForecastError(null);
+            } else {
                 // 2026-10-18: sunucunun nedenini göster (ısınma / model yok), yalnız HTTP kodu değil.
                 const detail = typeof data?.detail === "string" ? data.detail : "";
-                setForecastError(`Üst tahmin alınamadı (HTTP ${res.status})${detail ? ` — ${detail}` : " — panel bayat olabilir."}`);
+                if (res.status === 503 && !fresh) {
+                    setForecastError(`Üst tahmin hazırlanıyor… (${detail || "ısınma bekleniyor"})`);
+                    setTimeout(() => {
+                        loadForecast(false);
+                    }, 3500);
+                } else {
+                    setForecastError(`Üst tahmin alınamadı (HTTP ${res.status})${detail ? ` — ${detail}` : " — panel bayat olabilir."}`);
+                }
             }
         } catch {
             setForecast(null);

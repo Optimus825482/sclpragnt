@@ -42,7 +42,7 @@ INFERENCE_BAR_MS = 300_000
 # bir bar araligi + pay kadar olmalidir. Sabit 180 sn kullanilirken 5
 # dakikalik pencerenin ~2 dakikasinda (olculdu: ~%40) yas > 180 olusuyor ve
 # canli sembolde bile 503 donuyordu (D-04 sonrasi tazelik hatasi).
-FRESHNESS_GRACE_SEC = 120
+FRESHNESS_GRACE_SEC = 600  # Düşük hacimli spot tahtalarda (ör. TRY) geçici mum boşlukları için tolerans 10 dk artırıldı
 
 
 async def collect_forecast_features(symbol: str) -> dict | None:

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { API_BASE, apiRequest } from "../lib/api";
 import { formatPrice, QUOTE_SYMBOL } from "../lib/format";
@@ -86,8 +86,12 @@ export default function MtfScannerPage() {
   const [search, setSearch] = useState("");
 
 
+  const scanningRef = useRef(false);
+
   const runScan = useCallback(
     async (targetScope: "active" | "all" = scope, force = true) => {
+      if (scanningRef.current) return;
+      scanningRef.current = true;
       setScanning(true);
       setError("");
       try {
@@ -95,6 +99,10 @@ export default function MtfScannerPage() {
           `${API_BASE}/api/macd-mtf/scan?scope=${targetScope}&force_refresh=${force}`,
           { method: "POST", cache: "no-store" }
         );
+        if (res.status === 409) {
+          setError("Tarama zaten arka planda çalışıyor, lütfen bekleyin…");
+          return;
+        }
         if (!res.ok) {
           throw new Error(`Tarama başarısız (HTTP ${res.status})`);
         }
@@ -103,6 +111,7 @@ export default function MtfScannerPage() {
       } catch (err) {
         setError(err instanceof Error ? err.message : "Tarama sırasında hata oluştu");
       } finally {
+        scanningRef.current = false;
         setScanning(false);
       }
     },

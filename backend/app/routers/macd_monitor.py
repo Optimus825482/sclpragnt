@@ -1841,8 +1841,13 @@ async def scan_macd_mtf_endpoint(
         # yalnız BİR zorunlu tarama çalışır (ikincisi 409 ile reddedilir).
         security.require_admin(request)
         if _force_scan_lock.locked():
-            raise HTTPException(status_code=409,
-                                detail="Zorunlu MACD taraması zaten çalışıyor; bitmesini bekleyin")
+            try:
+                async with asyncio.timeout(35):
+                    async with _force_scan_lock:
+                        return await macd_mtf.scan_market(force_refresh=False, **kwargs)
+            except (TimeoutError, asyncio.TimeoutError):
+                raise HTTPException(status_code=409,
+                                    detail="Zorunlu MACD taraması zaten çalışıyor; bitmesini bekleyin")
         async with _force_scan_lock:
             return await macd_mtf.scan_market(force_refresh=True, **kwargs)
     return await macd_mtf.scan_market(force_refresh=False, **kwargs)
