@@ -1,4 +1,5 @@
 "use client";
+import ChartAiScoreHeader from "../components/ChartAiScoreHeader";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -1802,6 +1803,7 @@ export default function ChartsPage() {
                         </button>
                     ))}
                 </div>
+                <ChartAiScoreHeader symbol={symbol} assetType="SPOT" className="hidden sm:flex" />
                 {/* CANLI AKIS DURUMU (2026-09-16): grafik mum verisini Binance'den
                     değil backend'den alır. Son 15 sn içinde backend'den canlı mum
                     geldiyse CANLI (yeşil) rozeti; aksi halde (WS ölü / varsayılan

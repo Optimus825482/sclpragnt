@@ -1,4 +1,5 @@
 "use client";
+import ChartAiScoreHeader from "../components/ChartAiScoreHeader";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
@@ -1578,6 +1579,7 @@ export default function BinancePositionChartModal({
               </span>
             </div>
 
+            <ChartAiScoreHeader symbol={symbolConcat} assetType="SPOT" compact className="hidden sm:flex mr-2" />
             {/* Anlık Fiyat */}
             <div className="flex items-baseline gap-2 font-mono">
               <span

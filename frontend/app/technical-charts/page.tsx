@@ -1,4 +1,5 @@
 "use client";
+import ChartAiScoreHeader from "../components/ChartAiScoreHeader";
 
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
@@ -586,6 +587,7 @@ export default function TechnicalChartsPage() {
                             })}
                         </div>
 
+                        <ChartAiScoreHeader symbol={globalSymbol} assetType="SPOT" className="hidden lg:flex mr-2" />
                         {/* Yenile */}
                         <button
                             type="button"

@@ -1,4 +1,5 @@
 "use client";
+import ChartAiScoreHeader from "../components/ChartAiScoreHeader";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -805,6 +806,7 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                             </div>
                         )}
                     </div>
+                    <ChartAiScoreHeader symbol={config.symbol} assetType="SPOT" compact className="hidden sm:flex ml-1" />
                     {priceData && (
                         <div className="flex items-center gap-1.5 font-mono">
                             <span className="text-white font-bold text-xs">₺{formatPrice(priceData.last)}</span>
