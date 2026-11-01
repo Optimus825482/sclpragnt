@@ -1749,9 +1749,9 @@ export default function ChartsPage() {
                 })}
             </section>
 
-            {/* Sembol seçimi, analiz ve zaman dilimi — grafiğin hemen üstünde */}
-            {!isAdvanced && (
-              <div className="flex items-center gap-2">
+            {/* Sembol seçimi, AI puanları ve araç çubuğu (Basit ve Gelişmiş modda daima görünür) */}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 <select
                     value={symbol}
                     onChange={(e) => changeSymbol(e.target.value)}
@@ -1760,38 +1760,41 @@ export default function ChartsPage() {
                 >
                     {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
+
+                {isAdvanced && (
+                  <>
+                    <button
+                        type="button"
+                        onClick={() => setAnalysisOpen(true)}
+                        className="px-3 py-2 rounded-lg border border-yellow-400/50 bg-yellow-400/10 font-mono text-xs text-yellow-300 hover:bg-yellow-400/20"
+                        title="Sembol analizi"
+                    >
+                        🔬 ANALİZ
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setAssistantOpen((prev) => !prev)}
+                        className={`px-3 py-2 rounded-lg border font-mono text-xs transition-all flex items-center gap-1.5 shadow-sm ${
+                            assistantOpen
+                                ? "border-cyan-400 bg-cyan-500/25 text-cyan-300 ring-2 ring-cyan-400/40"
+                                : "border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-400"
+                        }`}
+                        title="Grafik Asistanı (Sade Dille Sembol ve Tahmin Yorumu)"
+                    >
+                        🤖 ASİSTAN
+                    </button>
+                  </>
+                )}
               </div>
-            )}
+
+              {/* DİNAMİK OCTOBOT VE QLIB ALPHA PUANLARI (HER İKİ MODDA DAİMA GÖRÜNÜR) */}
+              <div className="flex items-center gap-2">
+                <ChartAiScoreHeader symbol={symbol} assetType="SPOT" />
+              </div>
+            </div>
+
             {isAdvanced && (
             <div className="chart-toolbar flex flex-wrap items-center gap-2 sm:gap-3">
-                <select
-                    value={symbol}
-                    onChange={(e) => changeSymbol(e.target.value)}
-                    aria-label="Sembol seç"
-                    className="chart-symbol-select bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
-                >
-                    {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-                <button
-                    type="button"
-                    onClick={() => setAnalysisOpen(true)}
-                    className="px-3 py-2 rounded-lg border border-yellow-400/50 bg-yellow-400/10 font-mono text-xs text-yellow-300 hover:bg-yellow-400/20"
-                    title="Sembol analizi"
-                >
-                    🔬 ANALİZ
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setAssistantOpen((prev) => !prev)}
-                    className={`px-3 py-2 rounded-lg border font-mono text-xs transition-all flex items-center gap-1.5 shadow-sm ${
-                        assistantOpen
-                            ? "border-cyan-400 bg-cyan-500/25 text-cyan-300 ring-2 ring-cyan-400/40"
-                            : "border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-400"
-                    }`}
-                    title="Grafik Asistanı (Sade Dille Sembol ve Tahmin Yorumu)"
-                >
-                    🤖 ASİSTAN
-                </button>
                 <div className="chart-intervals max-w-full overflow-x-auto flex rounded-lg border border-bunker-700">
                     {INTERVALS.map((i) => (
                         <button
@@ -1803,12 +1806,7 @@ export default function ChartsPage() {
                         </button>
                     ))}
                 </div>
-                <ChartAiScoreHeader symbol={symbol} assetType="SPOT" className="flex items-center shrink-0" />
-                {/* CANLI AKIS DURUMU (2026-09-16): grafik mum verisini Binance'den
-                    değil backend'den alır. Son 15 sn içinde backend'den canlı mum
-                    geldiyse CANLI (yeşil) rozeti; aksi halde (WS ölü / varsayılan
-                    sembolde mum üretilmiyor) TAZELEMEDE. P2-9: rozet artık gerçek
-                    duruma geri döner (tek yönlü değil). */}
+                {/* CANLI AKIS DURUMU (2026-09-16) */}
                 <span className={`rounded border px-2 py-1 font-mono text-[10px] font-bold ${
                     canli ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
                     : "border-yellow-400/40 bg-yellow-400/10 text-yellow-300"
