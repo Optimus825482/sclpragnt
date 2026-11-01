@@ -3834,6 +3834,14 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         etmez; eskiden bu yüzden `llm_tool_logs`'da "başarılı" görünüyor,
         maliyet/başarı analizi bozuluyordu. Dönen sözlükte `error` / `ok:False`
         varsa `success=False` sayılır.
+
+        DÖNÜŞ DEĞERİ (2026-11-01): sarmalayıcı `_dispatch_tool` sonucunu
+        MUTLAKA döndürmelidir. Telemetri eklenirken `return await _dispatch_tool(...)`
+        kalıbı `result = await _dispatch_tool(...)` + `finally` bloğuna
+        çevrilmiş, ancak `return result` satırı eklenmemişti: her araç çağrısı
+        modele `None` (JSON'da `null`) dönüyordu ve model "tüm canlı araçlar
+        boş döndü" diyerek veri yokken sinyal üretmiyordu. Sembol sohbeti yolu
+        bu hatadan muaftır (kendi `execute_tool`'u `return await ...` korur).
         """
         nonlocal tool_error_count
         started = time.perf_counter()
@@ -3872,6 +3880,7 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
                     "success": bool(success), "at": time.time()}})
             except Exception:
                 pass
+        return result
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL, LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL, LLM_DEACTIVATE_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL, LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL])
     tools.append({"type":"function","function":{"name":"activate_coin","description":"Binance TR public TRY piyasasındaki coini paper analiz evrenine ekler; gerçek emir açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}})
     tools.append({"type":"function","function":{"name":"place_paper_order","description":"Yalnızca sanal paper emir oluşturur; gerçek borsa emri göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"side":{"type":"string","enum":["BUY","SELL","LONG"]},"order_type":{"type":"string","enum":["MARKET","LIMIT","STOP_LIMIT","STOP_MARKET","OCO"]},"order_value_try":{"type":"number"},"price":{"type":"number"},"limit_price":{"type":"number"},"stop_price":{"type":"number"},"take_profit_pct":{"type":"number"},"stop_loss_pct":{"type":"number"},"max_hold_seconds":{"type":"integer"},"oco_group":{"type":"string"}},"required":["symbol","side","order_type"]}}})
