@@ -14,6 +14,12 @@ from app.ai_trading_suite import (
     evaluate_trap_shield,
     record_negative_episode,
     evaluate_vectorbt_optimal_params,
+    evaluate_ofi_scalper,
+    evaluate_stat_arb_pairs,
+    evaluate_vwap_scalper,
+    evaluate_ttm_squeeze,
+    evaluate_avellaneda_stoikov,
+    evaluate_ppo_adaptive_policy,
     AITradingSuiteOrchestrator,
     UnifiedEvaluationRequest,
     IndicatorEvaluation,
@@ -358,3 +364,47 @@ router_alias.add_api_route("/freqai-drift", get_freqai_drift, methods=["GET"])
 router_alias.add_api_route("/liquidation-radar", get_liquidation_radar, methods=["GET"])
 router_alias.add_api_route("/fincon-trap-shield", get_fincon_trap_shield, methods=["GET"])
 router_alias.add_api_route("/vectorbt-optimal-params", get_vectorbt_optimal_params, methods=["GET"])
+
+
+@router.get("/ofi-scalper")
+def get_ofi_scalper(symbol: str = "BTCUSDT", price: float = 0.0, asset_class: Optional[str] = None):
+    """Order Flow Imbalance (OFI) mikroyapı scalper sinyali ve derinlik analizi."""
+    return evaluate_ofi_scalper(symbol=symbol, price=price, asset_class=asset_class)
+
+
+@router.get("/stat-arb-pairs")
+def get_stat_arb_pairs(leg_a: str = "BTCTRY", leg_b: str = "ETHTRY", price_a: float = 0.0, price_b: float = 0.0):
+    """İstatistiki Arbitraj ve eşbütünleşme (cointegration) spread Z-skor sinyali."""
+    return evaluate_stat_arb_pairs(leg_a=leg_a, leg_b=leg_b, leg_a_price=price_a, leg_b_price=price_b)
+
+
+@router.get("/vwap-scalper")
+def get_vwap_scalper(symbol: str = "BTCUSDT", price: float = 0.0):
+    """Rolling VWAP ve +/- 1sigma, 2sigma, 3sigma standart sapma bantları scalpu."""
+    return evaluate_vwap_scalper(symbol=symbol, price=price)
+
+
+@router.get("/ttm-squeeze")
+def get_ttm_squeeze(symbol: str = "BTCUSDT", price: float = 0.0):
+    """John Carter TTM Squeeze volatilite sıkışması ve patlama momentum dedektörü."""
+    return evaluate_ttm_squeeze(symbol=symbol, price=price)
+
+
+@router.get("/avellaneda-stoikov")
+def get_avellaneda_stoikov(symbol: str = "BTCUSDT", mid_price: float = 0.0, inventory_qty: float = 0.0, order_size_try: float = 1000.0):
+    """Avellaneda-Stoikov Pure Market Making (PMM) optimal bid/ask ve rezervasyon fiyatı."""
+    return evaluate_avellaneda_stoikov(symbol=symbol, mid_price=mid_price, current_inventory_qty=inventory_qty, order_size_try=order_size_try)
+
+
+@router.get("/ppo-policy")
+def get_ppo_policy(symbol: str = "BTCUSDT", win_rate: float = 62.0, drawdown: float = 0.5, volatility_atr: float = 1.4, regime: str = "TRENDING", streak: int = 1):
+    """PPO Reinforcement Learning uyarlamalı dinamik TP/SL ve sermaye çarpanı politikası."""
+    return evaluate_ppo_adaptive_policy(symbol=symbol, recent_win_rate_pct=win_rate, daily_drawdown_pct=drawdown, volatility_atr_pct=volatility_atr, market_regime=regime, active_streak=streak)
+
+
+router_alias.add_api_route("/ofi-scalper", get_ofi_scalper, methods=["GET"])
+router_alias.add_api_route("/stat-arb-pairs", get_stat_arb_pairs, methods=["GET"])
+router_alias.add_api_route("/vwap-scalper", get_vwap_scalper, methods=["GET"])
+router_alias.add_api_route("/ttm-squeeze", get_ttm_squeeze, methods=["GET"])
+router_alias.add_api_route("/avellaneda-stoikov", get_avellaneda_stoikov, methods=["GET"])
+router_alias.add_api_route("/ppo-policy", get_ppo_policy, methods=["GET"])

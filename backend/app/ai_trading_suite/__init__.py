@@ -56,6 +56,12 @@ from .freqai_drift_detector import evaluate_freqai_drift, FreqAIDriftResult
 from .liquidation_stop_hunt_radar import evaluate_liquidation_radar, LiquidationRadarResult
 from .fincon_negative_memory import evaluate_trap_shield, record_negative_episode, TrapShieldVerdict
 from .vectorbt_optimizer import evaluate_vectorbt_optimal_params, VectorBTOptimizerResult
+from .ofi_microstructure_scalper import evaluate_ofi_scalper, OFIScalperResult
+from .stat_arb_cointegration import evaluate_stat_arb_pairs, StatArbPairResult
+from .vwap_bands_scalper import evaluate_vwap_scalper, VWAPBandsResult
+from .ttm_squeeze_engine import evaluate_ttm_squeeze, TTMSqueezeResult
+from .avellaneda_stoikov_pmm import evaluate_avellaneda_stoikov, PMMQuoteResult
+from .ppo_adaptive_policy import evaluate_ppo_adaptive_policy, PPOPolicyAction
 from .orchestrator import (
     AITradingSuiteOrchestrator,
     UnifiedEvaluationRequest,
@@ -126,6 +132,18 @@ __all__ = [
     "TrapShieldVerdict",
     "evaluate_vectorbt_optimal_params",
     "VectorBTOptimizerResult",
+    "evaluate_ofi_scalper",
+    "OFIScalperResult",
+    "evaluate_stat_arb_pairs",
+    "StatArbPairResult",
+    "evaluate_vwap_scalper",
+    "VWAPBandsResult",
+    "evaluate_ttm_squeeze",
+    "TTMSqueezeResult",
+    "evaluate_avellaneda_stoikov",
+    "PMMQuoteResult",
+    "evaluate_ppo_adaptive_policy",
+    "PPOPolicyAction",
     "AITradingSuiteOrchestrator",
     "UnifiedEvaluationRequest",
     "UnifiedEvaluationResponse"

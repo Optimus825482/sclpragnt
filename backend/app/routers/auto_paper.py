@@ -740,6 +740,26 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                 logger.warning("auto_paper %s: LLM DEVAM dedi ancak güven yetersiz (%%%s < %%%s) — açılmadı", symbol, llm_c, min_c)
                 return _blocked(symbol, "llm_low_confidence", block_reason="LLM_LOW_CONFIDENCE", verdict=llm_v, confidence=round(llm_c))
 
+        # FinCon Episodik Negatif Hafıza & Boğa Tuzağı Kalkanı Kapısı:
+        try:
+            from app.ai_trading_suite import evaluate_trap_shield
+            trap_verdict = evaluate_trap_shield(
+                symbol=symbol,
+                indicators={
+                    "rsi": float(notification.get("rsi") or 50.0),
+                    "volume_ratio": float(notification.get("volume_ratio") or 1.0),
+                    "adx": float(notification.get("adx") or 20.0),
+                }
+            )
+            if trap_verdict.protective_veto:
+                logger.warning("auto_paper %s: 🛡️ FinCon Tuzak Kalkanı VETOSU verdi (Benzerlik: %%%.0f, Tip: %s) — işlem engellendi",
+                               symbol, trap_verdict.highest_similarity_pct, trap_verdict.matching_failure_type)
+                return _blocked(symbol, f"fincon_trap_shield_veto:{trap_verdict.matching_failure_type}",
+                                block_reason=f"FINCON_TRAP_%{int(trap_verdict.highest_similarity_pct)}",
+                                verdict=trap_verdict.verdict)
+        except Exception as trap_exc:
+            logger.debug("auto_paper %s FinCon trap shield kontrolü atlandı: %s", symbol, trap_exc)
+
         # R3-07 (P0): SESSİZ SAATLERDE otonom işlem DURDURULUR. Web push'un sessiz
         # saatlerde ertelenmesi monitoring._notify içinde zaten korunur (onun
         # ALTERNATİFİ değil, POSITION açılışında ek kapı). Aday bir sonraki taramada
@@ -1059,6 +1079,23 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         if plan_exit is not None:
             sl_pct = plan_exit["stop_pct"] / 100.0
         target_pct = _effective_target_pct(notification)
+        # PPO Reinforcement Learning & Volatilite Uyarlamalı TP/SL Kalibratörü:
+        try:
+            from app.ai_trading_suite import evaluate_ppo_adaptive_policy
+            ppo_action = evaluate_ppo_adaptive_policy(
+                symbol=symbol,
+                volatility_atr_pct=effective_sl_pct * 100.0,
+                daily_drawdown_pct=0.5
+            )
+            if ppo_action.recommended_tp_pct > 0:
+                target_pct = max(target_pct, ppo_action.recommended_tp_pct * 100.0)
+            if ppo_action.recommended_sl_pct > 0:
+                effective_sl_pct = max(0.006, min(0.028, ppo_action.recommended_sl_pct))
+            if ppo_action.position_size_multiplier != 1.0:
+                order_value = order_value * ppo_action.position_size_multiplier
+        except Exception as ppo_err:
+            logger.debug("auto_paper %s PPO adaptasyonu atlandı: %s", symbol, ppo_err)
+
         if target_pct <= 0:
             target_pct = float(settings.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT))
 

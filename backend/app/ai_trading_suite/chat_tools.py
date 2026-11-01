@@ -32,6 +32,12 @@ from app.ai_trading_suite import (
     evaluate_trap_shield,
     record_negative_episode,
     evaluate_vectorbt_optimal_params,
+    evaluate_ofi_scalper,
+    evaluate_stat_arb_pairs,
+    evaluate_vwap_scalper,
+    evaluate_ttm_squeeze,
+    evaluate_avellaneda_stoikov,
+    evaluate_ppo_adaptive_policy,
 )
 
 orchestrator = AITradingSuiteOrchestrator()
@@ -233,6 +239,120 @@ LLM_VECTORBT_OPTIMAL_PARAMS_TOOL = {
     }
 }
 
+LLM_OFI_SCALPER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_ofi_scalper",
+        "description": (
+            "Order Flow Imbalance (OFI) mikroyapı scalper analizi. Tahtanın ilk kademelerindeki alıcı/satıcı "
+            "hacim dengesizliğini ölçerek 1m-3m mikro-scalp giriş ve çıkış hedefleri üretir."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"},
+                "price": {"type": "number", "description": "Mevcut fiyat"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_STAT_ARB_PAIRS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_stat_arb_pairs",
+        "description": (
+            "İstatistiki Arbitraj ve Eşbütünleşme (Cointegration) Pairs Scalper. İki korele parite arasındaki "
+            "(ör. BTCTRY/ETHTRY, SOLTRY/AVAXTRY, XAUUSD/XAGUSD) spread Z-skorunu ve ortalamaya dönüş sinyalini hesaplar."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "leg_a": {"type": "string", "description": "Birinci bacak sembolü (ör. BTCTRY)"},
+                "leg_b": {"type": "string", "description": "İkinci bacak sembolü (ör. ETHTRY)"}
+            },
+            "required": ["leg_a", "leg_b"]
+        }
+    }
+}
+
+LLM_VWAP_SCALPER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_vwap_scalper",
+        "description": (
+            "Rolling VWAP ve +/- 1sigma, 2sigma, 3sigma standart sapma bantları scalpu. Fiyatın aşırı satım veya "
+            "aşırı alım bantlarına çarpmasıyla merkeze dönüş (mean-reversion) işlemlerini modeller."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"},
+                "price": {"type": "number", "description": "Mevcut fiyat"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_TTM_SQUEEZE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_ttm_squeeze",
+        "description": (
+            "John Carter TTM Squeeze volatilite sıkışması ve patlama momentum dedektörü. Bollinger Bantlarının "
+            "Keltner Kanalı içine girmesiyle oluşan enerji sıkışmasını ve yönlü patlamaları yakalar."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"},
+                "price": {"type": "number", "description": "Mevcut fiyat"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_AVELLANEDA_STOIKOV_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_avellaneda_stoikov",
+        "description": (
+            "Avellaneda-Stoikov Pure Market Making (PMM) modeli. Envanter riskine göre düzeltilmiş rezervasyon fiyatı "
+            "ve optimal çift taraflı (bid/ask) spread tekliflerini hesaplar."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"},
+                "mid_price": {"type": "number", "description": "Mevcut fiyat"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_PPO_POLICY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_ppo_policy",
+        "description": (
+            "PPO Reinforcement Learning uyarlamalı dinamik politika motoru. Mevcut rejim, volatilite, win-rate ve "
+            "drawdown durumuna göre dinamik TP/SL ve sermaye çarpanı optimize eder."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"},
+                "win_rate": {"type": "number", "description": "Son işlem kazanma oranı %"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
 AI_TRADING_SUITE_TOOLS = [
     LLM_AI_TRADING_SUITE_EVALUATE_TOOL,
     LLM_HEDGE_FUND_COUNCIL_TOOL,
@@ -243,6 +363,12 @@ AI_TRADING_SUITE_TOOLS = [
     LLM_LIQUIDATION_RADAR_TOOL,
     LLM_FINCON_TRAP_SHIELD_TOOL,
     LLM_VECTORBT_OPTIMAL_PARAMS_TOOL,
+    LLM_OFI_SCALPER_TOOL,
+    LLM_STAT_ARB_PAIRS_TOOL,
+    LLM_VWAP_SCALPER_TOOL,
+    LLM_TTM_SQUEEZE_TOOL,
+    LLM_AVELLANEDA_STOIKOV_TOOL,
+    LLM_PPO_POLICY_TOOL,
 ]
 
 
@@ -465,6 +591,65 @@ async def execute_fincon_trap_shield(args: dict) -> dict:
 async def execute_vectorbt_optimal_params(args: dict) -> dict:
     raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
     res = evaluate_vectorbt_optimal_params(symbol=raw_sym)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_ofi_scalper(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    px = float(args.get("price") or 0.0)
+    res = evaluate_ofi_scalper(symbol=raw_sym, price=px)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_stat_arb_pairs(args: dict) -> dict:
+    leg_a = str(args.get("leg_a") or "BTCTRY").replace("_", "").upper()
+    leg_b = str(args.get("leg_b") or "ETHTRY").replace("_", "").upper()
+    pa = float(args.get("price_a") or 0.0)
+    pb = float(args.get("price_b") or 0.0)
+    res = evaluate_stat_arb_pairs(leg_a=leg_a, leg_b=leg_b, leg_a_price=pa, leg_b_price=pb)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_vwap_scalper(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    px = float(args.get("price") or 0.0)
+    res = evaluate_vwap_scalper(symbol=raw_sym, price=px)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_ttm_squeeze(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    px = float(args.get("price") or 0.0)
+    res = evaluate_ttm_squeeze(symbol=raw_sym, price=px)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_avellaneda_stoikov(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    mid_p = float(args.get("mid_price") or args.get("price") or 0.0)
+    inv_q = float(args.get("inventory_qty") or 0.0)
+    res = evaluate_avellaneda_stoikov(symbol=raw_sym, mid_price=mid_p, current_inventory_qty=inv_q)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_ppo_policy(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    wr = float(args.get("win_rate") or 62.0)
+    dd = float(args.get("drawdown") or 0.5)
+    atr = float(args.get("volatility_atr") or 1.4)
+    res = evaluate_ppo_adaptive_policy(symbol=raw_sym, recent_win_rate_pct=wr, daily_drawdown_pct=dd, volatility_atr_pct=atr)
     data = res.model_dump()
     data["ok"] = True
     return data
