@@ -29,7 +29,13 @@ from app.ai_trading_suite import (
     TradeAction,
     AssetClass,
     AITradingSuiteOrchestrator,
-    UnifiedEvaluationRequest
+    UnifiedEvaluationRequest,
+    evaluate_qlib_alpha,
+    evaluate_openbb_macro,
+    evaluate_jesse_risk,
+    evaluate_fingpt_sentiment,
+    evaluate_rd_agent_hypothesis,
+    evaluate_lean_portfolio
 )
 
 
@@ -255,6 +261,80 @@ def test_01_trading_agents_desk_veto():
     assert good_verdict.final_action == TradeAction.BUY
 
 
+
+# 11. Microsoft Qlib Tests
+def test_11_qlib_alpha_evaluator():
+    res = evaluate_qlib_alpha(
+        symbol="BTCUSDT",
+        price=65000.0,
+        indicators={"rsi": 58.0, "atr": 1000.0, "volume_ratio": 1.4, "adx": 26.0}
+    )
+    assert res.alpha_score >= 50.0
+    assert res.alpha_rank in ("STRONG_ALPHA", "MODERATE_ALPHA")
+    assert res.action_bias == "BUY"
+
+
+# 12. OpenBB Macro Tests
+def test_12_openbb_macro_intel():
+    res = evaluate_openbb_macro(
+        symbol="EURUSD",
+        asset_class="FOREX",
+        dxy_change_pct=-0.45,
+        minutes_to_next_major_event=240
+    )
+    assert res.macro_regime == "RISK_ON"
+    assert res.dxy_bias == "BEARISH"
+    assert res.safe_to_trade is True
+
+
+# 13. Jesse Dynamic Risk Tests
+def test_13_jesse_adaptive_risk():
+    res = evaluate_jesse_risk(
+        symbol="ETHUSDT",
+        entry_price=3000.0,
+        atr=40.0,
+        volatility_mode="NORMAL"
+    )
+    assert res.risk_reward_ratio >= 1.40
+    assert res.optimized_tp1 > 3000.0
+    assert res.optimized_sl < 3000.0
+    assert res.passes_jesse_standard is True
+
+
+# 14. FinGPT Financial NLP Tests
+def test_14_fingpt_sentiment():
+    titles = ["Bitcoin surges past key level as institutional inflows hit record", "Major bank upgrade for crypto"]
+    res = evaluate_fingpt_sentiment(symbol="BTCUSDT", news_titles=titles, social_volume_ratio=1.5)
+    assert res.sentiment_score > 0.30
+    assert res.narrative_type == "BULLISH_CATALYST"
+    assert res.veto_trade is False
+
+
+# 15. Microsoft RD-Agent Tests
+def test_15_rd_agent_discovery():
+    res = evaluate_rd_agent_hypothesis(
+        symbol="SOLUSDT",
+        setup_name="BREAKOUT",
+        metrics={"score": 80.0, "atr_pct": 2.0, "volume_ratio": 1.5, "consensus_pct": 75.0}
+    )
+    assert res.is_hypothesis_supported is True
+    assert res.empirical_confidence >= 65.0
+
+
+# 16. QuantConnect LEAN Portfolio Tests
+def test_16_lean_portfolio_engine():
+    res = evaluate_lean_portfolio(
+        symbol="BTCUSDT",
+        account_balance=10000.0,
+        risk_pct_per_trade=1.0,
+        atr_pct=2.0,
+        asset_class="CRYPTO"
+    )
+    assert res.allocated_risk_usd == 100.0
+    assert res.suggested_units_or_lot > 0.0
+    assert res.portfolio_approved is True
+
+
 # End-to-End Orchestrator Tests for Spot & Forex
 def test_master_orchestrator_spot():
     orchestrator = AITradingSuiteOrchestrator()
@@ -332,7 +412,7 @@ def test_api_routes_status_and_evaluation():
     # 1. Status route
     status = get_suite_status()
     assert status["status"] == "ONLINE"
-    assert len(status["integrated_architectures"]) == 10
+    assert len(status["integrated_architectures"]) == 16
 
     # 2. Evaluation route
     payload = EvaluationPayload(
@@ -366,4 +446,10 @@ def test_api_routes_status_and_evaluation():
     assert "microstructure" in res
     assert "protections_status" in res
     assert "hedge_fund_council" in res
+    assert "qlib_alpha" in res
+    assert "openbb_macro" in res
+    assert "jesse_risk" in res
+    assert "fingpt_sentiment" in res
+    assert "rd_agent" in res
+    assert "lean_portfolio" in res
 

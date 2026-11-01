@@ -42,6 +42,9 @@ def enrich_candidates_with_ai_suite(candidates: list[dict]) -> list[dict]:
         from app.ai_trading_suite.octobot_matrix import evaluate_octobot_matrix
         from app.ai_trading_suite.vibe_trading import evaluate_vibe_momentum
         from app.ai_trading_suite.ai_trader_reflection import audit_trade_reflection
+        from app.ai_trading_suite.qlib_alpha_evaluator import evaluate_qlib_alpha
+        from app.ai_trading_suite.jesse_adaptive_risk import evaluate_jesse_risk
+        from app.ai_trading_suite.fingpt_sentiment import evaluate_fingpt_sentiment
     except Exception as exc:
         logger.debug("AI trading suite import hatası: %s", exc)
         return candidates
@@ -71,6 +74,19 @@ def enrich_candidates_with_ai_suite(candidates: list[dict]) -> list[dict]:
             octo = evaluate_octobot_matrix(indicators=indicators, timeframe="5m")
             c["octobot_consensus_pct"] = round(octo.consensus_pct, 1)
             c["octobot_signal"] = octo.overall_signal
+
+            # Qlib Multi-Factor Alpha
+            qlib = evaluate_qlib_alpha(symbol=sym, price=price, indicators=indicators)
+            c["qlib_score"] = qlib.alpha_score
+            c["qlib_rank"] = qlib.alpha_rank
+
+            # Jesse Adaptive Risk & R:R
+            jesse = evaluate_jesse_risk(symbol=sym, entry_price=price, atr=price * (atr_pct / 100.0) if price > 0 else 1.0)
+            c["jesse_rr"] = jesse.risk_reward_ratio
+
+            # FinGPT Narrative
+            fingpt = evaluate_fingpt_sentiment(symbol=sym, social_volume_ratio=vr)
+            c["fingpt_narrative"] = fingpt.narrative_type
 
             vibe = evaluate_vibe_momentum(
                 symbol=sym,

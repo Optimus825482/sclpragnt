@@ -1,6 +1,6 @@
 """
 FastAPI Router for Scalper Global Agent AI Trading Suite.
-Exposes endpoints for the 10 integrated open-source AI trading architectures.
+Exposes endpoints for the 16 integrated open-source AI trading architectures.
 """
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List, Optional
@@ -58,17 +58,25 @@ class EvaluationPayload(BaseModel):
     daily_drawdown_pct: float = 0.0
     account_margin_used_pct: float = 5.0
     spread_pips_or_pct: float = 0.0005
+    dxy_change_pct: float = 0.0
+    account_balance: float = 10000.0
 
 
 @router.get("/status")
 def get_suite_status():
     """
-    Returns the registration status of all 10 AI trading frameworks.
+    Returns the registration status of all 16 AI trading frameworks.
     """
     return {
         "status": "ONLINE",
         "trading_mode": "PAPER / DEMO ACTIVE (NON-FUNDED)",
         "integrated_architectures": [
+            {"id": 16, "name": "QuantConnect LEAN", "role": "Cross-Asset Portfolio & Volatility Parity Sizing", "status": "ACTIVE"},
+            {"id": 15, "name": "Microsoft RD-Agent", "role": "Autonomous Hypothesis & Self-Correction R&D", "status": "ACTIVE"},
+            {"id": 14, "name": "FinGPT", "role": "Financial News Sentiment & Polarization NLP", "status": "ACTIVE"},
+            {"id": 13, "name": "Jesse", "role": "Dynamic Genetic Risk/Reward & Trailing Stop Optimizer", "status": "ACTIVE"},
+            {"id": 12, "name": "OpenBB", "role": "Macro Intelligence, DXY Bias & Event Risk Gate", "status": "ACTIVE"},
+            {"id": 11, "name": "Microsoft Qlib", "role": "Alpha158/Alpha360 Multi-Factor Quantitative Scoring", "status": "ACTIVE"},
             {"id": 10, "name": "OctoBot", "role": "Matrix Evaluator & Consensus Engine", "status": "ACTIVE"},
             {"id": 9, "name": "FinRobot", "role": "Macro News Sentiment & Calendar", "status": "ACTIVE"},
             {"id": 8, "name": "Vibe-Trading", "role": "Momentum Breakout & Social Vibe", "status": "ACTIVE"},
@@ -86,7 +94,7 @@ def get_suite_status():
 @router.post("/evaluate")
 def evaluate_symbol(payload: EvaluationPayload):
     """
-    Executes the end-to-end 10-model evaluation on a Spot or Forex symbol.
+    Executes the end-to-end 16-model evaluation on a Spot or Forex symbol.
     """
     try:
         # Convert inputs
@@ -143,7 +151,9 @@ def evaluate_symbol(payload: EvaluationPayload):
             proposed_action=payload.proposed_action,
             daily_drawdown_pct=payload.daily_drawdown_pct,
             account_margin_used_pct=payload.account_margin_used_pct,
-            spread_pips_or_pct=payload.spread_pips_or_pct
+            spread_pips_or_pct=payload.spread_pips_or_pct,
+            dxy_change_pct=payload.dxy_change_pct,
+            account_balance=payload.account_balance
         )
 
         response = orchestrator.evaluate(req)
@@ -158,4 +168,3 @@ def evaluate_symbol(payload: EvaluationPayload):
 # Aliases for /api/ai-trading-suite/... (without /v1)
 router_alias.add_api_route("/status", get_suite_status, methods=["GET"])
 router_alias.add_api_route("/evaluate", evaluate_symbol, methods=["POST"])
-

@@ -1,11 +1,16 @@
 """
-Scalper Global Agent - AI Trading Suite
-Incorporates proven mechanisms from:
-10. OctoBot (Matrix Evaluators)
-9. FinRobot (Macro News Sentiment)
+Scalper Global Agent - AI Trading Suite (16 Integrated Architectures):
+16. QuantConnect LEAN (Portfolio Parity & Clustered Risk Sizing)
+15. Microsoft RD-Agent (Autonomous Hypothesis & Self-Correction R&D)
+14. FinGPT (Financial News Sentiment & Polarization)
+13. Jesse (Genetic Dynamic Risk/Reward & Trailing Stop Optimizer)
+12. OpenBB (Global Macro & Economic Calendar Regime Intelligence)
+11. Microsoft Qlib (Alpha158/Alpha360 Multi-Factor Quantitative Scoring)
+10. OctoBot (Matrix Evaluators & Consensus)
+9. FinRobot (Macro News Sentiment & Calendar)
 8. Vibe-Trading (Market Vibe & Social Momentum)
 7. FinRL (Adaptive Trailing Exit & Fee Aware Policies)
-6. AI-Trader (Self-Reflection & Trap Defense)
+6. AI-Trader (Self-Reflection & Bull/Bear Trap Auditor)
 5. Hummingbot (High-Frequency Orderbook Imbalance)
 4. NautilusTrader (Realistic Execution & Latency Fill Models)
 3. Freqtrade (Protections & Dynamic ROI Table)
@@ -29,6 +34,12 @@ from .trading_agents_desk import (
     TradeAction,
     AssetClass
 )
+from .qlib_alpha_evaluator import evaluate_qlib_alpha, QlibAlphaResult
+from .openbb_macro_intel import evaluate_openbb_macro, OpenBBMacroResult
+from .jesse_adaptive_risk import evaluate_jesse_risk, JesseRiskResult
+from .fingpt_sentiment import evaluate_fingpt_sentiment, FinGPTSentimentResult
+from .rd_agent_discovery import evaluate_rd_agent_hypothesis, RDAgentDiscoveryResult
+from .lean_portfolio_engine import evaluate_lean_portfolio, LeanPortfolioResult
 from .orchestrator import (
     AITradingSuiteOrchestrator,
     UnifiedEvaluationRequest,
@@ -64,6 +75,18 @@ __all__ = [
     "VetoVerdict",
     "TradeAction",
     "AssetClass",
+    "evaluate_qlib_alpha",
+    "QlibAlphaResult",
+    "evaluate_openbb_macro",
+    "OpenBBMacroResult",
+    "evaluate_jesse_risk",
+    "JesseRiskResult",
+    "evaluate_fingpt_sentiment",
+    "FinGPTSentimentResult",
+    "evaluate_rd_agent_hypothesis",
+    "RDAgentDiscoveryResult",
+    "evaluate_lean_portfolio",
+    "LeanPortfolioResult",
     "AITradingSuiteOrchestrator",
     "UnifiedEvaluationRequest",
     "UnifiedEvaluationResponse"

@@ -64,6 +64,10 @@ type Candidate = {
   octobot_signal?: string | null;
   vibe_status?: string | null;
   trap_warning?: string | null;
+  qlib_score?: number | null;
+  qlib_rank?: string | null;
+  jesse_rr?: number | null;
+  fingpt_narrative?: string | null;
 };
 
 /** Teyit eşiğine yaklaşan ("ısınan") sembol — backend `state.warm` sözleşmesi. */
@@ -1423,6 +1427,15 @@ function AdminMonitoringPage() {
                             title={`OctoBot Ağırlıklı Uzlaşı: %${c.octobot_consensus_pct} (${c.octobot_signal || 'AL'})`}
                           >
                             🐙 %{c.octobot_consensus_pct}
+                          </span>
+                        )}
+
+                        {c.qlib_score != null && (
+                          <span
+                            className="shrink-0 rounded-md border border-sky-400/40 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-300"
+                            title={`Microsoft Qlib Alpha Skoru: ${c.qlib_score} (${c.qlib_rank || 'NORMAL'})`}
+                          >
+                            📊 Qlib {c.qlib_score}
                           </span>
                         )}
 
