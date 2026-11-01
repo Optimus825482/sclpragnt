@@ -35,7 +35,12 @@ from app.ai_trading_suite import (
     evaluate_jesse_risk,
     evaluate_fingpt_sentiment,
     evaluate_rd_agent_hypothesis,
-    evaluate_lean_portfolio
+    evaluate_lean_portfolio,
+    evaluate_kalman_trend,
+    evaluate_volume_profile,
+    evaluate_hmm_regime,
+    evaluate_kelly_sizing,
+    evaluate_cvd_order_flow
 )
 
 
@@ -335,6 +340,80 @@ def test_16_lean_portfolio_engine():
     assert res.portfolio_approved is True
 
 
+
+# 17. Kalman Filter Zero-Lag Tests
+def test_17_kalman_filter_trend():
+    prices = [65000.0, 65050.0, 65120.0, 65200.0, 65350.0]
+    res = evaluate_kalman_trend(symbol="BTCUSDT", prices=prices, current_atr=150.0)
+    assert res.kalman_price > 65000.0
+    assert res.kalman_velocity > 0.0
+    assert res.trend_state == "BULLISH_TREND"
+
+
+# 18. Volume Profile & POC Tests
+def test_18_volume_profile_poc():
+    candles = [
+        {"high": 2750.0, "low": 2730.0, "close": 2740.0, "volume": 100.0},
+        {"high": 2745.0, "low": 2735.0, "close": 2738.0, "volume": 500.0},  # Heavy node
+        {"high": 2760.0, "low": 2738.0, "close": 2755.0, "volume": 150.0}
+    ]
+    res = evaluate_volume_profile(symbol="XAUUSD", candles=candles, bins=10)
+    assert res.point_of_control >= 2730.0
+    assert res.value_area_high >= res.value_area_low
+    assert res.position_relative_to_value in ("ABOVE_VAH", "INSIDE_VALUE_AREA", "BELOW_VAL")
+
+
+# 19. Hidden Markov Models Tests
+def test_19_hmm_regime_classifier():
+    res = evaluate_hmm_regime(
+        symbol="EURUSD",
+        returns_series=[0.002, 0.003, 0.001, 0.004, 0.002],
+        volatility_ratio=1.1,
+        adx=28.0
+    )
+    assert res.active_regime == "TRENDING_EXPANSION"
+    assert res.prob_trending > 0.40
+
+
+# 20. Kelly Criterion Sizing Tests
+def test_20_kelly_criterion_sizer():
+    res = evaluate_kelly_sizing(
+        symbol="BTCUSDT",
+        account_balance=10000.0,
+        win_rate=0.60,
+        reward_to_risk=2.0
+    )
+    assert res.is_positive_expectancy is True
+    assert res.full_kelly_fraction == 0.40  # (0.6*2 - 0.4)/2 = 0.40
+    assert res.quarter_kelly_fraction == 0.10
+    assert res.suggested_trade_usd == 1000.0
+
+
+# 21. CVD Order Flow Absorption Tests
+def test_21_cvd_order_flow():
+    # Bull Absorption Test: heavy selling, but price held flat
+    res = evaluate_cvd_order_flow(
+        symbol="BTCUSDT",
+        current_price=68000.0,
+        recent_price_change_pct=0.01,
+        buy_volume=20.0,
+        sell_volume=80.0
+    )
+    assert res.absorption_detected == "BULL_ABSORPTION"
+    assert res.order_flow_confirmed is True
+
+    # Bear Absorption Test: heavy buying, but price failed to rise
+    res_bear = evaluate_cvd_order_flow(
+        symbol="BTCUSDT",
+        current_price=68000.0,
+        recent_price_change_pct=-0.02,
+        buy_volume=90.0,
+        sell_volume=15.0
+    )
+    assert res_bear.absorption_detected == "BEAR_ABSORPTION"
+    assert res_bear.order_flow_confirmed is False
+
+
 # End-to-End Orchestrator Tests for Spot & Forex
 def test_master_orchestrator_spot():
     orchestrator = AITradingSuiteOrchestrator()
@@ -369,6 +448,9 @@ def test_master_orchestrator_spot():
     assert resp.final_verdict == "APPROVED_BUY"
     assert resp.risk_chief_approved is True
     assert resp.simulated_execution is not None
+    assert resp.kalman_trend["kalman_price"] > 0.0
+    assert resp.volume_profile["point_of_control"] > 0.0
+    assert resp.kelly_sizing["suggested_trade_usd"] > 0.0
 
 
 def test_master_orchestrator_forex_news_veto():
@@ -412,7 +494,7 @@ def test_api_routes_status_and_evaluation():
     # 1. Status route
     status = get_suite_status()
     assert status["status"] == "ONLINE"
-    assert len(status["integrated_architectures"]) == 16
+    assert len(status["integrated_architectures"]) == 21
 
     # 2. Evaluation route
     payload = EvaluationPayload(
@@ -452,4 +534,9 @@ def test_api_routes_status_and_evaluation():
     assert "fingpt_sentiment" in res
     assert "rd_agent" in res
     assert "lean_portfolio" in res
+    assert "kalman_trend" in res
+    assert "volume_profile" in res
+    assert "hmm_regime" in res
+    assert "kelly_sizing" in res
+    assert "cvd_order_flow" in res
 

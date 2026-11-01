@@ -1,5 +1,10 @@
 """
-Scalper Global Agent - AI Trading Suite (16 Integrated Architectures):
+Scalper Global Agent - AI & Quantitative Trading Suite (21 Integrated Architectures & Models):
+21. CVD & Order Flow Absorption (Cumulative Volume Delta & Iceberg Detection)
+20. Kelly Criterion Sizing (Optimal Capital Growth & Ruin Barrier)
+19. Hidden Markov Models (HMM Latent Market Regime Classifier)
+18. Institutional Volume Profile & POC (Point of Control & Value Area VAH/VAL)
+17. Kalman Filter Zero-Lag Trend (Noise-Filtered State Velocity)
 16. QuantConnect LEAN (Portfolio Parity & Clustered Risk Sizing)
 15. Microsoft RD-Agent (Autonomous Hypothesis & Self-Correction R&D)
 14. FinGPT (Financial News Sentiment & Polarization)
@@ -40,6 +45,11 @@ from .jesse_adaptive_risk import evaluate_jesse_risk, JesseRiskResult
 from .fingpt_sentiment import evaluate_fingpt_sentiment, FinGPTSentimentResult
 from .rd_agent_discovery import evaluate_rd_agent_hypothesis, RDAgentDiscoveryResult
 from .lean_portfolio_engine import evaluate_lean_portfolio, LeanPortfolioResult
+from .kalman_filter_trend import evaluate_kalman_trend, KalmanTrendResult
+from .volume_profile_poc import evaluate_volume_profile, VolumeProfileResult
+from .hmm_regime_classifier import evaluate_hmm_regime, HMMRegimeResult
+from .kelly_criterion_sizer import evaluate_kelly_sizing, KellySizingResult
+from .cvd_order_flow import evaluate_cvd_order_flow, CVDOrderFlowResult
 from .orchestrator import (
     AITradingSuiteOrchestrator,
     UnifiedEvaluationRequest,
@@ -87,6 +97,16 @@ __all__ = [
     "RDAgentDiscoveryResult",
     "evaluate_lean_portfolio",
     "LeanPortfolioResult",
+    "evaluate_kalman_trend",
+    "KalmanTrendResult",
+    "evaluate_volume_profile",
+    "VolumeProfileResult",
+    "evaluate_hmm_regime",
+    "HMMRegimeResult",
+    "evaluate_kelly_sizing",
+    "KellySizingResult",
+    "evaluate_cvd_order_flow",
+    "CVDOrderFlowResult",
     "AITradingSuiteOrchestrator",
     "UnifiedEvaluationRequest",
     "UnifiedEvaluationResponse"

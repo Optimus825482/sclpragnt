@@ -1,6 +1,6 @@
 """
-FastAPI Router for Scalper Global Agent AI Trading Suite.
-Exposes endpoints for the 16 integrated open-source AI trading architectures.
+FastAPI Router for Scalper Global Agent AI & Quantitative Trading Suite.
+Exposes endpoints for the 21 integrated open-source AI and quant trading architectures.
 """
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List, Optional
@@ -65,12 +65,17 @@ class EvaluationPayload(BaseModel):
 @router.get("/status")
 def get_suite_status():
     """
-    Returns the registration status of all 16 AI trading frameworks.
+    Returns the registration status of all 21 AI and quant trading frameworks.
     """
     return {
         "status": "ONLINE",
         "trading_mode": "PAPER / DEMO ACTIVE (NON-FUNDED)",
         "integrated_architectures": [
+            {"id": 21, "name": "CVD Order Flow", "role": "Cumulative Volume Delta & Iceberg Absorption Detection", "status": "ACTIVE"},
+            {"id": 20, "name": "Kelly Criterion Sizer", "role": "Ed Thorp Optimal Capital Growth & Ruin Barrier", "status": "ACTIVE"},
+            {"id": 19, "name": "Hidden Markov Models (HMM)", "role": "Unsupervised Latent Market Regime Classifier", "status": "ACTIVE"},
+            {"id": 18, "name": "Volume Profile & POC", "role": "Point of Control & Value Area High/Low Distribution", "status": "ACTIVE"},
+            {"id": 17, "name": "Kalman Filter Trend", "role": "Zero-Lag True Price & Dynamic Velocity State Estimator", "status": "ACTIVE"},
             {"id": 16, "name": "QuantConnect LEAN", "role": "Cross-Asset Portfolio & Volatility Parity Sizing", "status": "ACTIVE"},
             {"id": 15, "name": "Microsoft RD-Agent", "role": "Autonomous Hypothesis & Self-Correction R&D", "status": "ACTIVE"},
             {"id": 14, "name": "FinGPT", "role": "Financial News Sentiment & Polarization NLP", "status": "ACTIVE"},
@@ -94,10 +99,9 @@ def get_suite_status():
 @router.post("/evaluate")
 def evaluate_symbol(payload: EvaluationPayload):
     """
-    Executes the end-to-end 16-model evaluation on a Spot or Forex symbol.
+    Executes the end-to-end 21-model evaluation on a Spot or Forex symbol.
     """
     try:
-        # Convert inputs
         indicators = [
             IndicatorEvaluation(
                 indicator_name=i.indicator_name,
@@ -121,7 +125,6 @@ def evaluate_symbol(payload: EvaluationPayload):
                 for m in payload.macro_events
             ]
 
-        # Orderbook defaults if omitted
         bids = [(float(b[0]), float(b[1])) for b in payload.orderbook_bids] if payload.orderbook_bids else [
             (payload.current_price * 0.9998, 5.0),
             (payload.current_price * 0.9995, 12.0),
@@ -165,6 +168,5 @@ def evaluate_symbol(payload: EvaluationPayload):
         raise HTTPException(status_code=500, detail=f"Orchestrator evaluation error: {str(e)}")
 
 
-# Aliases for /api/ai-trading-suite/... (without /v1)
 router_alias.add_api_route("/status", get_suite_status, methods=["GET"])
 router_alias.add_api_route("/evaluate", evaluate_symbol, methods=["POST"])

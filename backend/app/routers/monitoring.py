@@ -45,6 +45,8 @@ def enrich_candidates_with_ai_suite(candidates: list[dict]) -> list[dict]:
         from app.ai_trading_suite.qlib_alpha_evaluator import evaluate_qlib_alpha
         from app.ai_trading_suite.jesse_adaptive_risk import evaluate_jesse_risk
         from app.ai_trading_suite.fingpt_sentiment import evaluate_fingpt_sentiment
+        from app.ai_trading_suite.kalman_filter_trend import evaluate_kalman_trend
+        from app.ai_trading_suite.volume_profile_poc import evaluate_volume_profile
     except Exception as exc:
         logger.debug("AI trading suite import hatası: %s", exc)
         return candidates
@@ -87,6 +89,15 @@ def enrich_candidates_with_ai_suite(candidates: list[dict]) -> list[dict]:
             # FinGPT Narrative
             fingpt = evaluate_fingpt_sentiment(symbol=sym, social_volume_ratio=vr)
             c["fingpt_narrative"] = fingpt.narrative_type
+
+            # Kalman Zero-Lag Trend
+            kalman = evaluate_kalman_trend(symbol=sym, prices=[price * 0.996, price * 0.998, price], current_atr=price * (atr_pct / 100.0) if price > 0 else 1.0)
+            c["kalman_trend"] = kalman.trend_state
+            c["kalman_velocity"] = kalman.kalman_velocity
+
+            # Volume Profile POC
+            vp = evaluate_volume_profile(symbol=sym, candles=[{"high": price * 1.003, "low": price * 0.997, "close": price, "volume": vr * 50.0}])
+            c["poc_price"] = vp.point_of_control
 
             vibe = evaluate_vibe_momentum(
                 symbol=sym,

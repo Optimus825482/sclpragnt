@@ -1,6 +1,11 @@
 """
 AI Trading Suite Master Orchestrator for Scalper Global Agent.
-Unifies all 16 open-source AI trading architectures into a single pipeline for Spot and Forex:
+Unifies all 21 open-source AI & Quantitative trading architectures into a single pipeline for Spot and Forex:
+21. CVD & Order Flow Absorption (Cumulative Volume Delta & Iceberg Detection)
+20. Kelly Criterion Sizing (Optimal Capital Growth & Ruin Barrier)
+19. Hidden Markov Models (HMM Latent Market Regime Classifier)
+18. Institutional Volume Profile & POC (Point of Control & Value Area VAH/VAL)
+17. Kalman Filter Zero-Lag Trend (Noise-Filtered State Velocity)
 16. QuantConnect LEAN (Portfolio Parity & Clustered Risk Sizing)
 15. Microsoft RD-Agent (Autonomous Hypothesis & Self-Correction R&D)
 14. FinGPT (Financial News Sentiment & Polarization)
@@ -44,6 +49,11 @@ from .jesse_adaptive_risk import evaluate_jesse_risk, JesseRiskResult
 from .fingpt_sentiment import evaluate_fingpt_sentiment, FinGPTSentimentResult
 from .rd_agent_discovery import evaluate_rd_agent_hypothesis, RDAgentDiscoveryResult
 from .lean_portfolio_engine import evaluate_lean_portfolio, LeanPortfolioResult
+from .kalman_filter_trend import evaluate_kalman_trend, KalmanTrendResult
+from .volume_profile_poc import evaluate_volume_profile, VolumeProfileResult
+from .hmm_regime_classifier import evaluate_hmm_regime, HMMRegimeResult
+from .kelly_criterion_sizer import evaluate_kelly_sizing, KellySizingResult
+from .cvd_order_flow import evaluate_cvd_order_flow, CVDOrderFlowResult
 
 
 @dataclass
@@ -94,13 +104,18 @@ class UnifiedEvaluationResponse:
     fingpt_sentiment: dict
     rd_agent: dict
     lean_portfolio: dict
+    kalman_trend: dict
+    volume_profile: dict
+    hmm_regime: dict
+    kelly_sizing: dict
+    cvd_order_flow: dict
     simulated_execution: Optional[dict]
     execution_directive: str
 
 
 class AITradingSuiteOrchestrator:
     """
-    Master coordinator orchestrating all 16 trading AI subsystems.
+    Master coordinator orchestrating all 21 trading AI & Quant subsystems.
     """
 
     def __init__(self):
@@ -197,7 +212,7 @@ class AITradingSuiteOrchestrator:
             side=req.proposed_action
         )
 
-        # 9. (NEW) Microsoft Qlib Multi-Factor Alpha Evaluator
+        # 9. Microsoft Qlib Multi-Factor Alpha Evaluator
         qlib_ind = {
             "rsi": req.rsi_value,
             "atr": req.atr,
@@ -210,7 +225,7 @@ class AITradingSuiteOrchestrator:
             indicators=qlib_ind
         )
 
-        # 10. (NEW) OpenBB Macroeconomic & Event Intelligence
+        # 10. OpenBB Macroeconomic & Event Intelligence
         minutes_to_next = req.macro_events[0].minutes_until_event if req.macro_events else None
         openbb_res = evaluate_openbb_macro(
             symbol=req.symbol,
@@ -219,7 +234,7 @@ class AITradingSuiteOrchestrator:
             minutes_to_next_major_event=minutes_to_next
         )
 
-        # 11. (NEW) Jesse Adaptive Risk & Execution Model
+        # 11. Jesse Adaptive Risk & Execution Model
         jesse_res = evaluate_jesse_risk(
             symbol=req.symbol,
             entry_price=req.current_price,
@@ -227,14 +242,14 @@ class AITradingSuiteOrchestrator:
             volatility_mode="HIGH" if abs(req.price_change_pct) > 4.0 else "NORMAL"
         )
 
-        # 12. (NEW) FinGPT Financial Sentiment & Narrative Analyzer
+        # 12. FinGPT Financial Sentiment & Narrative Analyzer
         fingpt_res = evaluate_fingpt_sentiment(
             symbol=req.symbol,
             social_volume_ratio=req.volume_ratio,
             sentiment_hint=macro_res.macro_sentiment_score
         )
 
-        # 13. (NEW) Microsoft RD-Agent Hypothesis & Feedback Engine
+        # 13. Microsoft RD-Agent Hypothesis & Feedback Engine
         rd_metrics = {
             "score": matrix_res.consensus_confidence * 100.0,
             "atr_pct": (req.atr / max(req.current_price, 0.0001)) * 100.0,
@@ -247,7 +262,7 @@ class AITradingSuiteOrchestrator:
             metrics=rd_metrics
         )
 
-        # 14. (NEW) QuantConnect LEAN Portfolio & Volatility Parity Sizing
+        # 14. QuantConnect LEAN Portfolio & Volatility Parity Sizing
         lean_res = evaluate_lean_portfolio(
             symbol=req.symbol,
             account_balance=req.account_balance,
@@ -256,7 +271,54 @@ class AITradingSuiteOrchestrator:
             asset_class=req.asset_type
         )
 
-        # 15. TradingAgents Institutional Contract & Risk Chief Veto
+        # 15. (NEW) Kalman Filter Zero-Lag Trend & Velocity
+        synthetic_prices = [
+            req.current_price * (1.0 - (req.price_change_pct / 100.0) * 0.5),
+            req.current_price * (1.0 - (req.price_change_pct / 100.0) * 0.2),
+            req.current_price
+        ]
+        kalman_res = evaluate_kalman_trend(
+            symbol=req.symbol,
+            prices=synthetic_prices,
+            current_atr=req.atr
+        )
+
+        # 16. (NEW) Institutional Volume Profile & POC
+        synthetic_candles = [
+            {"high": req.current_price * 1.004, "low": req.current_price * 0.996, "close": req.current_price, "volume": req.volume_ratio * 50.0},
+            {"high": req.current_price * 1.002, "low": req.current_price * 0.998, "close": req.current_price, "volume": req.volume_ratio * 80.0}
+        ]
+        vp_res = evaluate_volume_profile(
+            symbol=req.symbol,
+            candles=synthetic_candles
+        )
+
+        # 17. (NEW) Hidden Markov Models (HMM) Regime Classifier
+        hmm_res = evaluate_hmm_regime(
+            symbol=req.symbol,
+            returns_series=[req.price_change_pct / 100.0],
+            volatility_ratio=1.0 if abs(req.price_change_pct) < 3.0 else 1.8,
+            adx=26.0
+        )
+
+        # 18. (NEW) Ed Thorp Kelly Criterion Optimal Sizing
+        kelly_res = evaluate_kelly_sizing(
+            symbol=req.symbol,
+            account_balance=req.account_balance,
+            win_rate=0.60,
+            reward_to_risk=jesse_res.risk_reward_ratio
+        )
+
+        # 19. (NEW) Cumulative Volume Delta (CVD) & Iceberg Absorption Auditor
+        cvd_res = evaluate_cvd_order_flow(
+            symbol=req.symbol,
+            current_price=req.current_price,
+            recent_price_change_pct=req.price_change_pct,
+            buy_volume=max(10.0, req.volume_ratio * 60.0),
+            sell_volume=40.0
+        )
+
+        # 20. TradingAgents Institutional Contract & Risk Chief Veto
         action_enum = TradeAction.BUY if req.proposed_action == "BUY" else (
             TradeAction.SELL if req.proposed_action == "SELL" else TradeAction.WAIT
         )
@@ -324,8 +386,16 @@ class AITradingSuiteOrchestrator:
             veto_res.approved = False
             veto_res.final_action = TradeAction.WAIT
             veto_res.veto_reasons.append(f"QuantConnect LEAN Vetosu: {lean_res.cluster_warning}")
+        if hmm_res.active_regime == "PANIC_VOLATILITY":
+            veto_res.approved = False
+            veto_res.final_action = TradeAction.WAIT
+            veto_res.veto_reasons.append(f"HMM Rejim Vetosu: {hmm_res.verdict}")
+        if cvd_res.absorption_detected == "BEAR_ABSORPTION":
+            veto_res.approved = False
+            veto_res.final_action = TradeAction.WAIT
+            veto_res.veto_reasons.append(f"CVD Emir Akışı Vetosu: {cvd_res.absorption_warning}")
 
-        # 16. NautilusTrader Realistic Latency & Slippage Fill Simulation
+        # 21. NautilusTrader Realistic Latency & Slippage Fill Simulation
         simulated_fill = None
         if veto_res.approved and veto_res.final_action in (TradeAction.BUY, TradeAction.SELL):
             simulated_fill = self.nautilus.simulate_fill(
@@ -338,10 +408,15 @@ class AITradingSuiteOrchestrator:
 
         if veto_res.approved and veto_res.final_action == TradeAction.BUY:
             final_verdict = "APPROVED_BUY"
-            directive = f"16-Yapay Zeka Mimarisi Onayladı: {req.current_price:.4f} seviyesinde alım. Stop: {stop_loss:.4f}, TP1: {tp1:.4f} (R:R: {target_risk_reward:.2f})."
+            directive = (
+                f"21-Yapay Zeka ve Kantitatif Motor Onayladı: {req.current_price:.4f} seviyesinde alım. "
+                f"Stop: {stop_loss:.4f}, TP1: {tp1:.4f} (R:R: {target_risk_reward:.2f}). "
+                f"Kalman Hızı: +{kalman_res.kalman_velocity:.4f}, POC: {vp_res.point_of_control:.4f}, "
+                f"Kelly Büyüklüğü: ${kelly_res.suggested_trade_usd:.2f}."
+            )
         elif veto_res.approved and veto_res.final_action == TradeAction.SELL:
             final_verdict = "APPROVED_SELL"
-            directive = f"16-Yapay Zeka Mimarisi Onayladı: {req.current_price:.4f} seviyesinde satım. Stop: {stop_loss:.4f}, TP1: {tp1:.4f}."
+            directive = f"21-Yapay Zeka ve Kantitatif Motor Onayladı: {req.current_price:.4f} seviyesinde satım. Stop: {stop_loss:.4f}, TP1: {tp1:.4f}."
         elif not veto_res.approved:
             final_verdict = "VETOED"
             directive = f"Risk Şefi Vetosu: {', '.join(veto_res.veto_reasons)}"
@@ -372,6 +447,11 @@ class AITradingSuiteOrchestrator:
             fingpt_sentiment=fingpt_res.model_dump(),
             rd_agent=rd_res.model_dump(),
             lean_portfolio=lean_res.model_dump(),
+            kalman_trend=kalman_res.model_dump(),
+            volume_profile=vp_res.model_dump(),
+            hmm_regime=hmm_res.model_dump(),
+            kelly_sizing=kelly_res.model_dump(),
+            cvd_order_flow=cvd_res.model_dump(),
             simulated_execution=asdict(simulated_fill) if simulated_fill else None,
             execution_directive=directive
         )
