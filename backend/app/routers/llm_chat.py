@@ -1181,6 +1181,12 @@ async def _upside_scout_impl():
         return {"enabled": False, "status": "data_not_ready", "symbols": symbols,
                 "error": "Aday semboller için fiyat verisi hazır değil"}
 
+    try:
+        from app.routers.monitoring import enrich_candidates_with_ai_suite
+        candidates_ctx = enrich_candidates_with_ai_suite(candidates_ctx)
+    except Exception:
+        pass
+
     scout_context = {
         "type": "upside_scout", "paper_only": True,
         "instruction": (

@@ -60,6 +60,10 @@ type Candidate = {
   tp1_scalp_pct?: number | null;
   tp2_runner_pct?: number | null;
   master_surge?: any;
+  octobot_consensus_pct?: number | null;
+  octobot_signal?: string | null;
+  vibe_status?: string | null;
+  trap_warning?: string | null;
 };
 
 /** Teyit eşiğine yaklaşan ("ısınan") sembol — backend `state.warm` sözleşmesi. */
@@ -567,6 +571,18 @@ const CandidateDetail = ({ c, kind, onClose }: { c: Candidate; kind: "radar" | "
             <p className="eyebrow text-bunker-muted">ML İSABET ORANI</p>
             <p className="mt-1 font-mono text-sm font-bold text-violet-300" title={ML_PROB_TITLE}>
               {formatMlProbability(c.ml_hit_probability)}
+            </p>
+          </div>
+          <div className="rounded-xl border border-cyan-800/60 bg-cyan-950/30 p-3 text-center">
+            <p className="eyebrow text-cyan-400">OCTOBOT UZLAŞISI</p>
+            <p className="mt-1 font-mono text-sm font-bold text-cyan-300">
+              {c.octobot_consensus_pct != null ? `%${c.octobot_consensus_pct}` : "—"}
+            </p>
+          </div>
+          <div className="rounded-xl border border-bunker-800 bg-bunker-900/60 p-3 text-center">
+            <p className="eyebrow text-bunker-muted">VİBE & TUZAK</p>
+            <p className={`mt-1 font-mono text-xs font-bold ${c.trap_warning ? "text-rose-400 animate-pulse" : "text-emerald-400"}`}>
+              {c.trap_warning ? `⚠️ ${c.trap_warning}` : (c.vibe_status || "Onaylı Hacim")}
             </p>
           </div>
         </div>
@@ -1400,6 +1416,31 @@ function AdminMonitoringPage() {
                             ML %{((c.ml_hit_probability ?? 0) * 100).toFixed(0)}
                           </span>
                         )}
+
+                        {c.octobot_consensus_pct != null && (
+                          <span
+                            className="shrink-0 rounded-md border border-cyan-400/40 bg-cyan-400/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-cyan-300"
+                            title={`OctoBot Ağırlıklı Uzlaşı: %${c.octobot_consensus_pct} (${c.octobot_signal || 'AL'})`}
+                          >
+                            🐙 %{c.octobot_consensus_pct}
+                          </span>
+                        )}
+
+                        {c.trap_warning ? (
+                          <span
+                            className="shrink-0 rounded-md border border-rose-500/50 bg-rose-500/20 px-1.5 py-0.5 font-mono text-[10px] font-bold text-rose-300 animate-pulse"
+                            title={`Tuzak Uyarısı: ${c.trap_warning}`}
+                          >
+                            ⚠️ {c.trap_warning}
+                          </span>
+                        ) : c.vibe_status ? (
+                          <span
+                            className="shrink-0 rounded-md border border-emerald-400/40 bg-emerald-400/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-300"
+                            title={`Vibe / Momentumu: ${c.vibe_status}`}
+                          >
+                            ✨ {c.vibe_status}
+                          </span>
+                        ) : null}
                       </div>
 
                       {/* Mobil Üst Sağ Durum */}

@@ -552,6 +552,12 @@ async def scan_market(
         )
     )
 
+    try:
+        from app.routers.monitoring import enrich_candidates_with_ai_suite
+        filtered = enrich_candidates_with_ai_suite(filtered)
+    except Exception:
+        pass
+
     return {
         "total_scanned": len(target_symbols),
         "valid_count": len(valid_items),

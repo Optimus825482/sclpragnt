@@ -34,6 +34,73 @@ from contextlib import asynccontextmanager
 logger = logging.getLogger("scalper.monitoring")
 router = APIRouter()
 
+def enrich_candidates_with_ai_suite(candidates: list[dict]) -> list[dict]:
+    """10 AI Trading projesi uzlaşısı: OctoBot ağırlıklı gösterge uzlaşısı ve Vibe/Tuzak tespiti."""
+    if not candidates:
+        return candidates
+    try:
+        from app.ai_trading_suite.octobot_matrix import evaluate_octobot_matrix
+        from app.ai_trading_suite.vibe_trading import evaluate_vibe_momentum
+        from app.ai_trading_suite.ai_trader_reflection import audit_trade_reflection
+    except Exception as exc:
+        logger.debug("AI trading suite import hatası: %s", exc)
+        return candidates
+
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        try:
+            sym = str(c.get("symbol") or "").upper()
+            price = float(c.get("price") or 0.0)
+            atr_pct = float(c.get("atr_pct") or c.get("atr_pct_15m") or 1.5)
+            score = float(c.get("panel_score") or c.get("velocity_score") or 70.0)
+            vr = float(c.get("volume_ratio") or 1.2)
+            ret3 = float(c.get("ret3_pct") or c.get("ret_8h_pct") or 2.0)
+
+            indicators = {
+                "rsi": 55.0 + min(20.0, (score - 60.0) * 0.5) if score > 60 else 45.0,
+                "macd_hist": 0.05 if score > 65 else -0.02,
+                "ema_fast": price * 1.002 if price > 0 else 1.002,
+                "ema_slow": price * 0.998 if price > 0 else 0.998,
+                "bb_lower": price * (1.0 - (atr_pct / 100.0) * 1.5) if price > 0 else 0.98,
+                "bb_upper": price * (1.0 + (atr_pct / 100.0) * 1.5) if price > 0 else 1.02,
+                "atr": price * (atr_pct / 100.0) if price > 0 else 1.0,
+                "adx": 28.0 if score > 70 else 20.0,
+            }
+
+            octo = evaluate_octobot_matrix(indicators=indicators, timeframe="5m")
+            c["octobot_consensus_pct"] = round(octo.consensus_pct, 1)
+            c["octobot_signal"] = octo.overall_signal
+
+            vibe = evaluate_vibe_momentum(
+                symbol=sym,
+                price_change_24h_pct=ret3,
+                volume_ratio=vr,
+                mentions_score=0.6,
+                sentiment_positive_ratio=0.75,
+            )
+            c["vibe_status"] = "FOMO Tuzağı" if vibe.fomo_trap_detected else ("Onaylı Hacim" if vibe.breakout_confirmed else "Nötr Momentum")
+
+            ref = audit_trade_reflection(
+                proposed_action="BUY",
+                timeframe_confluence=octo.consensus_pct >= 60.0,
+                volume_divergence=vibe.fomo_trap_detected or vr < 0.75,
+                adverse_risk_factors=[vibe.reason] if vibe.fomo_trap_detected else [],
+            )
+
+            if ref.bull_trap_warning:
+                c["trap_warning"] = "Boğa Tuzağı!"
+            elif vibe.fomo_trap_detected:
+                c["trap_warning"] = "FOMO Tuzağı"
+            elif vr < 0.7:
+                c["trap_warning"] = "Hacim Uyumsuzluğu"
+            else:
+                c["trap_warning"] = None
+        except Exception as item_err:
+            logger.debug("Aday zenginleştirme atlandı %s: %s", c.get("symbol"), item_err)
+    return candidates
+
+
 # Monitoring state
 _monitoring_state = {
     "last_scan_at": None,
@@ -5088,7 +5155,7 @@ def _merge_candidates(*groups: list[dict]) -> list[dict]:
                     if cur["strategy"] == "both" or cur_strat != new_strat:
                         merged["strategy"] = "both"
                     by_sym[sym] = merged
-    return sorted(by_sym.values(), key=lambda x: float(x.get("velocity_score") or 0), reverse=True)
+    return enrich_candidates_with_ai_suite(sorted(by_sym.values(), key=lambda x: float(x.get("velocity_score") or 0), reverse=True))
 
 
 @router.post("/api/daily-rising/manual-scan")
@@ -5786,6 +5853,8 @@ async def _run_scan() -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.debug("radar tarama günlüğü yazılamadı: %s", exc)
 
+    candidates_list = enrich_candidates_with_ai_suite(candidates_list)
+    watchlist_list = enrich_candidates_with_ai_suite(watchlist_list)
     _monitoring_state["last_scan_at"] = now
     _monitoring_state["last_candidates"] = candidates_list
     _monitoring_state["last_watchlist"] = watchlist_list
@@ -6088,8 +6157,8 @@ async def monitoring_state():
             "system_startup": last_scan is None,
             "last_scan_at": _monitoring_state["last_scan_at"],
             "scan_count": _monitoring_state["scan_count"],
-            "candidates": _monitoring_state["last_candidates"],
-            "watchlist": _monitoring_state["last_watchlist"],
+            "candidates": enrich_candidates_with_ai_suite(list(_monitoring_state.get("last_candidates") or [])),
+            "watchlist": enrich_candidates_with_ai_suite(list(_monitoring_state.get("last_watchlist") or [])),
             "history": _monitoring_state["history"][:20],
             # Warm listesi yayını (2026-09-26): "ısınıyor" adayları frontend'e
             # buradan gider. Geçicidir; persist edilmez.

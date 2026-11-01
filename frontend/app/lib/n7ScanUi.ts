@@ -31,6 +31,10 @@ export type N7Pick = {
   hl: number | null;
   atr15: number | null;
   qv24: number | null;
+  octobot_consensus_pct?: number | null;
+  octobot_signal?: string | null;
+  vibe_status?: string | null;
+  trap_warning?: string | null;
 };
 
 export type N7Result = {
@@ -87,6 +91,10 @@ export function normalizePick(raw: unknown): N7Pick | null {
     hl: num(r.hl),
     atr15: num(r.atr15),
     qv24: num(r.qv24),
+    octobot_consensus_pct: num(r.octobot_consensus_pct),
+    octobot_signal: str(r.octobot_signal),
+    vibe_status: str(r.vibe_status),
+    trap_warning: str(r.trap_warning),
   };
 }
 

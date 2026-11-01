@@ -49,6 +49,10 @@ type ScanItem = {
   kdj_bullish_count?: number;
   coverage: number;
   tfs: TfCell[];
+  octobot_consensus_pct?: number | null;
+  octobot_signal?: string | null;
+  vibe_status?: string | null;
+  trap_warning?: string | null;
 };
 
 type ScanResponse = {
@@ -484,6 +488,7 @@ export default function MtfScannerPage() {
                     <th className="py-3 px-2 text-right">24S DEĞİŞİM</th>
                     <th className="py-3 px-3 text-center">KARAR</th>
                     <th className="py-3 px-2 text-center">SKOR</th>
+                    <th className="py-3 px-2 text-center">AI TEYİT (OctoBot / Vibe)</th>
                     <th className="py-3 px-2 text-center">ÖNCÜ SİNYAL</th>
                     <th className="py-3 px-3 text-center">ZAMAN DİLİMLERİ (M1 · M3 · M5 · M15 · M30)</th>
                     <th className="py-3 px-2 text-center">TAZE KESİŞİM</th>
@@ -550,6 +555,28 @@ export default function MtfScannerPage() {
                             >
                               {item.confluence != null ? item.confluence : "—"}
                             </span>
+                          </div>
+                        </td>
+
+                        {/* AI Teyit (OctoBot / Vibe) */}
+                        <td className="py-3 px-2 text-center">
+                          <div className="inline-flex items-center gap-1.5 justify-center">
+                            {item.octobot_consensus_pct != null && (
+                              <span className="rounded bg-cyan-950/60 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300 border border-cyan-800/50" title={`OctoBot Uzlaşısı: %${item.octobot_consensus_pct}`}>
+                                🐙 %{item.octobot_consensus_pct}
+                              </span>
+                            )}
+                            {item.trap_warning ? (
+                              <span className="rounded bg-rose-950/60 px-1.5 py-0.5 text-[10px] font-bold text-rose-300 border border-rose-800/50 animate-pulse" title={item.trap_warning}>
+                                ⚠️ {item.trap_warning}
+                              </span>
+                            ) : item.vibe_status ? (
+                              <span className="rounded bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300 border border-emerald-800/50">
+                                ✨ {item.vibe_status}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-bunker-muted">—</span>
+                            )}
                           </div>
                         </td>
 

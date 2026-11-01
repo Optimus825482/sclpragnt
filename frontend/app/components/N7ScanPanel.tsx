@@ -216,6 +216,7 @@ export default function N7ScanPanel() {
                   <th className={TH}>Sembol</th>
                   <th className={`${TH} text-right`}>Giriş</th>
                   <th className={`${TH} text-right`}>Skor</th>
+                  <th className={`${TH} text-center`}>AI Analiz (OctoBot / Vibe)</th>
                   <th className={`${TH} text-right`}>1 sa / 4 sa</th>
                   <th className={`${TH} text-right`}>Hacim</th>
                   <th className={`${TH} text-right`}>VWAP</th>
@@ -246,6 +247,26 @@ export default function N7ScanPanel() {
                       </td>
                       <td className={`${TD} text-right text-white`}>{formatPrice(p.px)}</td>
                       <td className={`${TD} text-right text-sm font-black text-white`}>{fmtScore(p.score)}</td>
+                      <td className={`${TD} text-center`}>
+                        <div className="inline-flex items-center justify-center gap-1.5">
+                          {p.octobot_consensus_pct != null && (
+                            <span className="rounded bg-cyan-950/60 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300 border border-cyan-800/50" title={`OctoBot Uzlaşısı: %${p.octobot_consensus_pct}`}>
+                              🐙 %{p.octobot_consensus_pct}
+                            </span>
+                          )}
+                          {p.trap_warning ? (
+                            <span className="rounded bg-rose-950/60 px-1.5 py-0.5 text-[10px] font-bold text-rose-300 border border-rose-800/50 animate-pulse" title={p.trap_warning}>
+                              ⚠️ {p.trap_warning}
+                            </span>
+                          ) : p.vibe_status ? (
+                            <span className="rounded bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300 border border-emerald-800/50">
+                              ✨ {p.vibe_status}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-bunker-muted">—</span>
+                          )}
+                        </div>
+                      </td>
                       <td className={`${TD} text-right`}>
                         <span className={pctTone(p.r1)}>{fmtSignedPct(p.r1)}</span>
                         <span className="text-bunker-muted"> / </span>

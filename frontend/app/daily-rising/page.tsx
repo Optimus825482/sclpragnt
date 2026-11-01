@@ -38,6 +38,10 @@ type Cand = {
   potential_price?: number | null;
   potential_pct?: number | null;
   potential_levels?: number[] | null;
+  octobot_consensus_pct?: number | null;
+  octobot_signal?: string | null;
+  vibe_status?: string | null;
+  trap_warning?: string | null;
 };
 
 type Watch = {
@@ -461,6 +465,7 @@ export default function DailyRisingPage() {
                     <th className="p-2 text-right">ADX</th>
                     <th className="p-2 text-right">Eğim</th>
                     <th className="p-2 text-right">Skor</th>
+                    <th className="p-2 text-center">AI Doğrulama (OctoBot / Vibe)</th>
                     <th className="p-2 text-center">Takibe Al</th>
                   </tr>
                 </thead>
@@ -492,6 +497,26 @@ export default function DailyRisingPage() {
                       <td className="p-2 text-right">{c.adx_14 != null ? formatNumber2(c.adx_14) : "—"}</td>
                       <td className="p-2 text-right">{c.slope_15m != null ? formatNumber2(c.slope_15m) : "—"}</td>
                       <td className="p-2 text-right">{c.panel_score != null ? formatNumber2(c.panel_score) : "—"}</td>
+                      <td className="p-2 text-center">
+                        <div className="inline-flex items-center gap-1.5 justify-center">
+                          {c.octobot_consensus_pct != null && (
+                            <span className="rounded bg-cyan-950/60 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300 border border-cyan-800/50" title={`OctoBot Uzlaşısı: %${c.octobot_consensus_pct}`}>
+                              🐙 %{c.octobot_consensus_pct}
+                            </span>
+                          )}
+                          {c.trap_warning ? (
+                            <span className="rounded bg-rose-950/60 px-1.5 py-0.5 text-[10px] font-bold text-rose-300 border border-rose-800/50 animate-pulse" title={c.trap_warning}>
+                              ⚠️ {c.trap_warning}
+                            </span>
+                          ) : c.vibe_status ? (
+                            <span className="rounded bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300 border border-emerald-800/50">
+                              ✨ {c.vibe_status}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-bunker-muted">—</span>
+                          )}
+                        </div>
+                      </td>
                       <td className="p-2 text-center">
                         {watchSyms.has(c.symbol) ? (
                           <Badge tone="positive">Listede</Badge>

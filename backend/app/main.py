@@ -219,6 +219,9 @@ from app.routers import radar_log as radar_log_routes
 app.include_router(radar_log_routes.router)
 from app.routers import n7_scan as n7_scan_routes
 app.include_router(n7_scan_routes.router)
+from app.routers import ai_trading_suite_routes
+app.include_router(ai_trading_suite_routes.router)
+app.include_router(ai_trading_suite_routes.router_alias)
 
 
 _TTS_VOICE = "tr-TR-EmelNeural"
@@ -278,7 +281,7 @@ async def edge_tts_audio(payload: dict, request: Request = None):
 
 @app.middleware("http")
 async def require_admin_session(request: Request, call_next):
-    public_paths = {"/health", "/api/auth/status", "/api/auth/login"}
+    public_paths = {"/health", "/api/auth/status", "/api/auth/login", "/api/v1/ai-trading-suite/status", "/api/ai-trading-suite/status"}
     if request.method == "OPTIONS" or request.url.path in public_paths:
         return await call_next(request)
     if not security.auth_configured():

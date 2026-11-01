@@ -61,9 +61,17 @@ def is_running() -> bool:
 
 def snapshot() -> dict:
     """GET cevabı: durum + ilerleme + son sonuç (kopya; çağıran değiştiremez)."""
+    res = _state["result"]
+    if res and isinstance(res, dict) and "picked" in res:
+        try:
+            from app.routers.monitoring import enrich_candidates_with_ai_suite
+            res = dict(res)
+            res["picked"] = enrich_candidates_with_ai_suite(list(res["picked"]))
+        except Exception:
+            pass
     return {"status": _state["status"], "started_at": _state["started_at"], "finished_at": _state["finished_at"],
             "progress": dict(_state["progress"]), "error": _state["error"], "top": _state["top"],
-            "result": _state["result"]}
+            "result": res}
 
 
 def _progress(done: int, total: int) -> None:
@@ -80,6 +88,12 @@ async def _run(cutoff_ms: int, top: int) -> None:
     """Taramayı çalıştırır; sonucu ya da hatayı duruma yazar. Hiç istisna sızdırmaz."""
     try:
         result = await momentum_scan.scan(cutoff_ms, top, progress=_progress)
+        try:
+            from app.routers.monitoring import enrich_candidates_with_ai_suite
+            if result and isinstance(result, dict) and "picked" in result:
+                result["picked"] = enrich_candidates_with_ai_suite(list(result["picked"]))
+        except Exception:
+            pass
         _state["result"] = result
         _state["status"] = "done"
         _state["error"] = None
