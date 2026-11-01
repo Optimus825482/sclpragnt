@@ -50,6 +50,12 @@ from .volume_profile_poc import evaluate_volume_profile, VolumeProfileResult
 from .hmm_regime_classifier import evaluate_hmm_regime, HMMRegimeResult
 from .kelly_criterion_sizer import evaluate_kelly_sizing, KellySizingResult
 from .cvd_order_flow import evaluate_cvd_order_flow, CVDOrderFlowResult
+from .bull_bear_debate import evaluate_bull_bear_debate, DebateVerdict
+from .riskfolio_portfolio_cvar import evaluate_riskfolio_allocation, RiskfolioPortfolioResult
+from .freqai_drift_detector import evaluate_freqai_drift, FreqAIDriftResult
+from .liquidation_stop_hunt_radar import evaluate_liquidation_radar, LiquidationRadarResult
+from .fincon_negative_memory import evaluate_trap_shield, record_negative_episode, TrapShieldVerdict
+from .vectorbt_optimizer import evaluate_vectorbt_optimal_params, VectorBTOptimizerResult
 from .orchestrator import (
     AITradingSuiteOrchestrator,
     UnifiedEvaluationRequest,
@@ -107,6 +113,19 @@ __all__ = [
     "KellySizingResult",
     "evaluate_cvd_order_flow",
     "CVDOrderFlowResult",
+    "evaluate_bull_bear_debate",
+    "DebateVerdict",
+    "evaluate_riskfolio_allocation",
+    "RiskfolioPortfolioResult",
+    "evaluate_freqai_drift",
+    "FreqAIDriftResult",
+    "evaluate_liquidation_radar",
+    "LiquidationRadarResult",
+    "evaluate_trap_shield",
+    "record_negative_episode",
+    "TrapShieldVerdict",
+    "evaluate_vectorbt_optimal_params",
+    "VectorBTOptimizerResult",
     "AITradingSuiteOrchestrator",
     "UnifiedEvaluationRequest",
     "UnifiedEvaluationResponse"

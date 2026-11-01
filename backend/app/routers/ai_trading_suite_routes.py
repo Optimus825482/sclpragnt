@@ -7,6 +7,13 @@ from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
 from app.ai_trading_suite import (
+    evaluate_bull_bear_debate,
+    evaluate_riskfolio_allocation,
+    evaluate_freqai_drift,
+    evaluate_liquidation_radar,
+    evaluate_trap_shield,
+    record_negative_episode,
+    evaluate_vectorbt_optimal_params,
     AITradingSuiteOrchestrator,
     UnifiedEvaluationRequest,
     IndicatorEvaluation,
@@ -304,3 +311,50 @@ def get_chart_score(symbol: str = "BTCUSDT", asset_type: str = "SPOT"):
 router_alias.add_api_route("/evaluate", evaluate_symbol, methods=["POST"])
 
 router_alias.add_api_route("/chart-score", get_chart_score, methods=["GET"])
+
+
+@router.get("/bull-bear-debate")
+def get_bull_bear_debate(symbol: str = "BTCUSDT", price: float = 0.0):
+    """Boğa vs Ayı münazara protokolü (virattt/ai-hedge-fund & TradingAgents)."""
+    px = price if price > 0 else 100.0
+    return evaluate_bull_bear_debate(symbol=symbol, price=px)
+
+
+@router.get("/riskfolio-allocation")
+def get_riskfolio_allocation(symbols: str = "BTCTRY,ETHTRY,SOLTRY", capital: float = 10000.0):
+    """Riskfolio HRP ve CVaR portföy optimizasyonu."""
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    return evaluate_riskfolio_allocation(symbols=sym_list, total_capital=capital)
+
+
+@router.get("/freqai-drift")
+def get_freqai_drift(symbol: str = "BTCUSDT"):
+    """FreqAI Dissimilarity Index ve konsept kayması denetimi."""
+    return evaluate_freqai_drift(symbol=symbol)
+
+
+@router.get("/liquidation-radar")
+def get_liquidation_radar(symbol: str = "BTCUSDT", price: float = 0.0):
+    """Likidasyon bantları ve stop avı radar hedefi."""
+    px = price if price > 0 else 100.0
+    return evaluate_liquidation_radar(symbol=symbol, price=px)
+
+
+@router.get("/fincon-trap-shield")
+def get_fincon_trap_shield(symbol: str = "BTCUSDT", rsi: float = 50.0, volume_ratio: float = 1.0, adx: float = 20.0):
+    """FinCon negatif tuzak hafızası ve kalkan vetosu."""
+    return evaluate_trap_shield(symbol=symbol, indicators={"rsi": rsi, "volume_ratio": volume_ratio, "adx": adx})
+
+
+@router.get("/vectorbt-optimal-params")
+def get_vectorbt_optimal_params(symbol: str = "BTCUSDT"):
+    """VectorBT hızlı parametre kalibrasyonu."""
+    return evaluate_vectorbt_optimal_params(symbol=symbol)
+
+
+router_alias.add_api_route("/bull-bear-debate", get_bull_bear_debate, methods=["GET"])
+router_alias.add_api_route("/riskfolio-allocation", get_riskfolio_allocation, methods=["GET"])
+router_alias.add_api_route("/freqai-drift", get_freqai_drift, methods=["GET"])
+router_alias.add_api_route("/liquidation-radar", get_liquidation_radar, methods=["GET"])
+router_alias.add_api_route("/fincon-trap-shield", get_fincon_trap_shield, methods=["GET"])
+router_alias.add_api_route("/vectorbt-optimal-params", get_vectorbt_optimal_params, methods=["GET"])

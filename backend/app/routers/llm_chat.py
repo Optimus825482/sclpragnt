@@ -20,6 +20,18 @@ from app import database
 from app.state import market, analyzer
 from app.api_common import (_start_background, _fresh_public_price, _main_pg_pool, _llm_guard_block_reason,
                             rate_limit)
+from app.ai_trading_suite.chat_tools import (
+    AI_TRADING_SUITE_TOOLS,
+    execute_ai_trading_suite_evaluation,
+    execute_hedge_fund_council,
+    execute_risk_chief_veto,
+    execute_bull_bear_debate,
+    execute_riskfolio_allocation,
+    execute_freqai_drift,
+    execute_liquidation_radar,
+    execute_fincon_trap_shield,
+    execute_vectorbt_optimal_params,
+)
 from app.routers.llm_position_tools import (LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL,
                             LLM_CLOSE_POSITION_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
                             LLM_LIST_SYMBOL_GUARDS_TOOL)
@@ -2931,9 +2943,9 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
                   LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL,
                   LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
                   LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
-                  LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL,
+                  LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL, *AI_TRADING_SUITE_TOOLS,
                   LLM_DERIVATIVES_TOOL, LLM_MACRO_SENTIMENT_TOOL, LLM_ORDERBOOK_PRESSURE_TOOL,
-                  LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL])
+                  LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL, *AI_TRADING_SUITE_TOOLS])
 
     async def execute_tool(name, args):
         denied = _admin_only_denied(name, auth_user)
@@ -2943,6 +2955,15 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
         if name == "get_orderbook_pressure": return await _get_orderbook_pressure_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_symbol_recent_outcomes": return await _get_recent_outcomes_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_crypto_news_catalysts": return await _get_crypto_news_tool({**args, "symbol": args.get("symbol") or symbol})
+        if name == "run_ai_trading_suite_evaluation": return await execute_ai_trading_suite_evaluation({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_hedge_fund_council_deliberation": return await execute_hedge_fund_council({**args, "symbol": args.get("symbol") or symbol})
+        if name == "check_risk_chief_veto": return await execute_risk_chief_veto({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_bull_bear_debate": return await execute_bull_bear_debate({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_riskfolio_allocation": return await execute_riskfolio_allocation(args)
+        if name == "get_freqai_drift": return await execute_freqai_drift({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_liquidation_radar": return await execute_liquidation_radar({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_fincon_trap_shield": return await execute_fincon_trap_shield({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_vectorbt_optimal_params": return await execute_vectorbt_optimal_params({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_master_surge_prediction": return await _get_master_surge_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_ml_price_forecast": return await _get_ml_forecast_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_surge_learning_bias": return await _get_surge_bias_tool({**args, "symbol": args.get("symbol") or symbol})
@@ -3059,6 +3080,15 @@ def _tool_activity_summary(name: str, args: dict) -> str:
     if name == "get_orderbook_pressure": return f"{symbol} tahta alış/satış dengesi analiz ediliyor"
     if name == "get_symbol_recent_outcomes": return f"{symbol} son işlem ve başarı geçmişi inceleniyor"
     if name == "get_crypto_news_catalysts": return f"{symbol} son haberler ve katalizörler taranıyor"
+    if name == "run_ai_trading_suite_evaluation": return f"{symbol} için 10 AI ticaret mimarisi çalıştırılıyor (OctoBot, Freqtrade, Soros/Simons...)"
+    if name == "get_hedge_fund_council_deliberation": return f"{symbol} için George Soros, Jim Simons ve Ray Dalio konseyi toplanıyor"
+    if name == "check_risk_chief_veto": return f"{symbol} için TradingAgents & Freqtrade Risk Masası denetimi yapılıyor"
+    if name == "get_bull_bear_debate": return f"{symbol} için Boğa vs Ayı münazara protokolü yürütülüyor"
+    if name == "get_riskfolio_allocation": return "Riskfolio HRP ve CVaR portföy optimizasyonu hesaplanıyor"
+    if name == "get_freqai_drift": return f"{symbol} için FreqAI konsept kayması ve anomali taranıyor"
+    if name == "get_liquidation_radar": return f"{symbol} için 25x/50x/100x likidasyon ve stop avı radarı taranıyor"
+    if name == "get_fincon_trap_shield": return f"{symbol} için FinCon negatif epizodik hafıza ve tuzak kalkanı denetleniyor"
+    if name == "get_vectorbt_optimal_params": return f"{symbol} için VectorBT hızlı parametre simülasyonu yapılıyor"
     if name == "get_signals": return "Sinyal kayıtları okunuyor"
     if name == "get_decision_logs": return "Karar logları inceleniyor"
     if name == "get_strategy_stats": return "Strateji başarı istatistikleri hesaplanıyor"
@@ -3603,6 +3633,15 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         if name == "get_orderbook_pressure": return await _get_orderbook_pressure_tool(args)
         if name == "get_symbol_recent_outcomes": return await _get_recent_outcomes_tool(args)
         if name == "get_crypto_news_catalysts": return await _get_crypto_news_tool(args)
+        if name == "run_ai_trading_suite_evaluation": return await execute_ai_trading_suite_evaluation(args)
+        if name == "get_hedge_fund_council_deliberation": return await execute_hedge_fund_council(args)
+        if name == "check_risk_chief_veto": return await execute_risk_chief_veto(args)
+        if name == "get_bull_bear_debate": return await execute_bull_bear_debate(args)
+        if name == "get_riskfolio_allocation": return await execute_riskfolio_allocation(args)
+        if name == "get_freqai_drift": return await execute_freqai_drift(args)
+        if name == "get_liquidation_radar": return await execute_liquidation_radar(args)
+        if name == "get_fincon_trap_shield": return await execute_fincon_trap_shield(args)
+        if name == "get_vectorbt_optimal_params": return await execute_vectorbt_optimal_params(args)
         if name == "get_master_surge_prediction": return await _get_master_surge_tool(args)
         if name == "get_ml_price_forecast": return await _get_ml_forecast_tool(args)
         if name == "get_surge_learning_bias": return await _get_surge_bias_tool(args)

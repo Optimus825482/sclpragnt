@@ -4,6 +4,12 @@ Provides callable tool interfaces for the chat model to query:
 - 10-Model AI Trading Suite Full Evaluation
 - Hedge Fund Investment Council (Soros, Simons, Dalio)
 - TradingAgents & Freqtrade Risk Chief Veto
+- Bull vs Bear Debate Protocol
+- Riskfolio-Lib HRP Portfolio & CVaR Optimizer
+- FreqAI Dissimilarity & Concept Drift Detector
+- Liquidation Heatmap & Stop-Hunt Radar
+- FinCon Episodic Negative Memory & Trap Shield
+- VectorBT Pro Rapid Parameter Optimizer
 """
 import time
 from typing import Dict, Any, List, Optional
@@ -18,7 +24,14 @@ from app.ai_trading_suite import (
     RiskChiefVetoEngine,
     HedgeFundCouncil,
     AssetClass,
-    TradeAction
+    TradeAction,
+    evaluate_bull_bear_debate,
+    evaluate_riskfolio_allocation,
+    evaluate_freqai_drift,
+    evaluate_liquidation_radar,
+    evaluate_trap_shield,
+    record_negative_episode,
+    evaluate_vectorbt_optimal_params,
 )
 
 orchestrator = AITradingSuiteOrchestrator()
@@ -104,10 +117,132 @@ LLM_RISK_CHIEF_VETO_TOOL = {
     }
 }
 
+LLM_BULL_BEAR_DEBATE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_bull_bear_debate",
+        "description": (
+            "virattt/ai-hedge-fund ve TradingAgents protokolü: Boğa Araştırmacısı ile Ayı Sorgulayıcısı "
+            "arasında çoklu-ajan çapraz sorgu münazarası yürütür. Arbitratör hakem kararını, zıt tezleri, "
+            "net ikna puanını ve pozisyon iskonto katsayısını döner. Salt okunur."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol (ör. BTCUSDT, GTRY)"},
+                "price": {"type": "number", "description": "Mevcut fiyat (isteğe bağlı)"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_RISKFOLIO_ALLOCATION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_riskfolio_allocation",
+        "description": (
+            "Riskfolio-Lib tabanlı Hierarchical Risk Parity (HRP) ve CVaR (Expected Shortfall %95) "
+            "kuyruk riski portföy optimizasyonu. Verilen sembol listesi için ters varyanslı sermaye "
+            "ağırlıklarını ve risk dağılımını hesaplar. Salt okunur."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbols": {"type": "string", "description": "Virgülle ayrılmış sembol listesi (ör. BTCTRY,ETHTRY,SOLTRY)"},
+                "capital": {"type": "number", "description": "Toplam portföy sermayesi (TRY)"}
+            },
+            "required": ["symbols"]
+        }
+    }
+}
+
+LLM_FREQAI_DRIFT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_freqai_drift",
+        "description": (
+            "FreqAI tabanlı Dissimilarity Index (DI) ve konsept kayması (concept drift) tespiti. "
+            "Piyasa anomalisini ve model güvenilirlik sınırını Mahalanobis/Z-skor metrikleriyle denetler. Salt okunur."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol (ör. BTCUSDT)"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_LIQUIDATION_RADAR_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_liquidation_radar",
+        "description": (
+            "Likidasyon Haritası ve Kurumsal Stop Avı Radarı (Open-Perp-Tracker). "
+            "25x, 50x, 100x kaldıraçlı likidasyon yoğunlaşmalarını ve piyasa yapıcı mıknatıs hedeflerini modeller. Salt okunur."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"},
+                "price": {"type": "number", "description": "Mevcut fiyat"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_FINCON_TRAP_SHIELD_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_fincon_trap_shield",
+        "description": (
+            "FinCon Episodik Negatif Hafıza ve Tuzak Kalkanı. Geçmişte stop-out veya boğa tuzağı (bull trap) "
+            "yaratan formasyonlarla vektörel kosinüs benzerliği kurar ve benzer kayıp paternlerinde girişe koruyucu VETO verir."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"},
+                "rsi": {"type": "number", "description": "RSI değeri"},
+                "volume_ratio": {"type": "number", "description": "Hacim oranı"},
+                "adx": {"type": "number", "description": "ADX trend gücü"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_VECTORBT_OPTIMAL_PARAMS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_vectorbt_optimal_params",
+        "description": (
+            "VectorBT Pro hızlı parametre simülasyonu ve optimizasyonu. Sembolün son barları üzerinde "
+            "vektörize grid taraması yaparak en yüksek Sharpe ve kâr faktörüne sahip TP/SL ve RSI parametrelerini bulur."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
 AI_TRADING_SUITE_TOOLS = [
     LLM_AI_TRADING_SUITE_EVALUATE_TOOL,
     LLM_HEDGE_FUND_COUNCIL_TOOL,
-    LLM_RISK_CHIEF_VETO_TOOL
+    LLM_RISK_CHIEF_VETO_TOOL,
+    LLM_BULL_BEAR_DEBATE_TOOL,
+    LLM_RISKFOLIO_ALLOCATION_TOOL,
+    LLM_FREQAI_DRIFT_TOOL,
+    LLM_LIQUIDATION_RADAR_TOOL,
+    LLM_FINCON_TRAP_SHIELD_TOOL,
+    LLM_VECTORBT_OPTIMAL_PARAMS_TOOL,
 ]
 
 
@@ -124,18 +259,13 @@ def _detect_asset_type(symbol: str, explicit: Optional[str] = None) -> str:
 
 
 async def execute_ai_trading_suite_evaluation(args: dict) -> dict:
-    """
-    Executes the 10-architecture AI Trading Suite on the requested symbol.
-    """
     raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
     asset_type = _detect_asset_type(raw_sym, args.get("asset_type"))
     proposed_action = str(args.get("proposed_action") or "BUY").upper()
 
-    # Retrieve live/cached price and ATR if available
     price = 68000.0 if "BTC" in raw_sym else (2750.0 if "XAU" in raw_sym else (1.0850 if "EUR" in raw_sym else 100.0))
     atr = price * 0.008
 
-    # Attempt to pull live data from system if present
     try:
         from app import analyzer
         if asset_type == "SPOT":
@@ -151,7 +281,6 @@ async def execute_ai_trading_suite_evaluation(args: dict) -> dict:
     except Exception:
         pass
 
-    # Build standard multi-indicator matrix inputs
     indicators = [
         IndicatorEvaluation(indicator_name="ZL_MACD", signal=0.75, weight=1.5),
         IndicatorEvaluation(indicator_name="WaveTrend", signal=0.70, weight=1.2),
@@ -159,7 +288,6 @@ async def execute_ai_trading_suite_evaluation(args: dict) -> dict:
         IndicatorEvaluation(indicator_name="StochRSI", signal=0.60, weight=0.8),
     ]
 
-    # Check macro calendar proximity
     macro_events = []
     try:
         from app.forex_news import get_economic_calendar
@@ -263,5 +391,80 @@ async def execute_risk_chief_veto(args: dict) -> dict:
     data = verdict.model_dump()
     data["symbol"] = raw_sym
     data["asset_type"] = asset_type
+    data["ok"] = True
+    return data
+
+
+async def execute_bull_bear_debate(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    px = float(args.get("price") or 0.0)
+    if px <= 0:
+        try:
+            from app import analyzer
+            c = analyzer.candles.get(raw_sym, [])
+            if c:
+                px = float(c[-1].get("close") or 100.0)
+        except Exception:
+            pass
+    if px <= 0:
+        px = 100.0
+    res = evaluate_bull_bear_debate(symbol=raw_sym, price=px)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_riskfolio_allocation(args: dict) -> dict:
+    syms_raw = str(args.get("symbols") or "BTCTRY,ETHTRY,SOLTRY")
+    sym_list = [s.strip().upper() for s in syms_raw.split(",") if s.strip()]
+    cap = float(args.get("capital") or 10000.0)
+    res = evaluate_riskfolio_allocation(symbols=sym_list, total_capital=cap)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_freqai_drift(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    res = evaluate_freqai_drift(symbol=raw_sym)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_liquidation_radar(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    px = float(args.get("price") or 0.0)
+    if px <= 0:
+        try:
+            from app import analyzer
+            c = analyzer.candles.get(raw_sym, [])
+            if c:
+                px = float(c[-1].get("close") or 100.0)
+        except Exception:
+            pass
+    if px <= 0:
+        px = 100.0
+    res = evaluate_liquidation_radar(symbol=raw_sym, price=px)
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_fincon_trap_shield(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    rsi = float(args.get("rsi") or 50.0)
+    vol = float(args.get("volume_ratio") or 1.0)
+    adx = float(args.get("adx") or 20.0)
+    res = evaluate_trap_shield(symbol=raw_sym, indicators={"rsi": rsi, "volume_ratio": vol, "adx": adx})
+    data = res.model_dump()
+    data["ok"] = True
+    return data
+
+
+async def execute_vectorbt_optimal_params(args: dict) -> dict:
+    raw_sym = str(args.get("symbol") or "BTCUSDT").replace("_", "").upper()
+    res = evaluate_vectorbt_optimal_params(symbol=raw_sym)
+    data = res.model_dump()
     data["ok"] = True
     return data

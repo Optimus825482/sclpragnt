@@ -6,7 +6,7 @@ import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "./types";
 
 export { formatPrice, pricePrecision };
 
-export const FALLBACK_SYMBOLS = ["BTCTRY", "ETHTRY", "SOLTRY"];
+export const FALLBACK_SYMBOLS = ["BTCTRY", "ETHTRY", "SOLTRY", "GTRY"];
 export const INTERVALS = [
     { v: "1m", l: "1M" }, { v: "5m", l: "5M" }, { v: "15m", l: "15M" },
     { v: "30m", l: "M30" }, { v: "1h", l: "1H" }, { v: "4h", l: "4H" }, { v: "1d", l: "D1" }
