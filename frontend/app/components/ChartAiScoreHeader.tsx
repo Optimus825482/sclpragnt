@@ -116,17 +116,17 @@ export default function ChartAiScoreHeader({
 
   const octoToneClass =
     displayData.octobot.tone === "positive"
-      ? "bg-emerald-950/80 text-emerald-300 border-emerald-700/60"
+      ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/40 font-semibold"
       : displayData.octobot.tone === "negative"
-      ? "bg-rose-950/80 text-rose-300 border-rose-700/60"
-      : "bg-bunker-900 text-slate-300 border-bunker-750";
+      ? "bg-rose-500/15 text-rose-400 border-rose-500/40 font-semibold"
+      : "bg-slate-500/10 text-slate-300 border-slate-500/30";
 
   const qlibToneClass =
     displayData.qlib.tone === "positive"
-      ? "bg-cyan-950/80 text-cyan-300 border-cyan-700/60"
+      ? "bg-cyan-500/15 text-cyan-400 border-cyan-500/40 font-semibold"
       : displayData.qlib.tone === "negative"
-      ? "bg-amber-950/80 text-amber-300 border-amber-700/60"
-      : "bg-bunker-900 text-slate-300 border-bunker-750";
+      ? "bg-amber-500/15 text-amber-400 border-amber-500/40 font-semibold"
+      : "bg-slate-500/10 text-slate-300 border-slate-500/30";
 
   if (compact) {
     return (
@@ -173,7 +173,7 @@ export default function ChartAiScoreHeader({
         <span className="text-[11px]">📊</span>
         <span className="font-bold">Qlib Alpha:</span>
         <span className="font-semibold">{displayData.qlib.score}</span>
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/40 font-medium">
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/30 text-white font-medium">
           {displayData.qlib.rank_label}
         </span>
       </div>
