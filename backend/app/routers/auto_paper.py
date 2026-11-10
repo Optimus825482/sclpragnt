@@ -105,7 +105,12 @@ def _stale_ticker_log_gate(symbol: str, now: float) -> bool:
     """Bayat-ticker log satırlarını sembol başına aralıkta bir geçirir (True=logla).
 
     Ticari davranışa DOKUNMAZ: REST fiyat yedeği bu kapıdan bağımsız her turda
-    denenmeye devam eder. Ticker tazelenince sembolün sayacı temizlenir.
+    denenmeye devam eder. Kapı YAPIŞKANDIR: tazelik 15 sn sınırında oynayıp
+    kısa süreliğine "taze" olsa bile sayaç sıfırlanmaz (2026-11-10 flap
+    düzeltmesi — AVAXTRY gibi sembollerde miniTicker ~15-20 sn kadansla
+    geldiği için yaş 15 sn'nin hemen üstünde salınıyor ve sayaç sürekli
+    temizlenip her turda log basılıyordu). Aralık dolduğunda bir sonraki
+    bayat turda tekrar loglanır.
     """
     last = float(_STALE_TICKER_LOG_AT.get(symbol, 0.0) or 0.0)
     if now - last >= _STALE_TICKER_LOG_INTERVAL_SEC:
@@ -1547,8 +1552,10 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # Son bilinen fiyat (bayat ticker, yoksa DB tepe/giriş) — yalnız aşağıdaki
     # zorla kapanışta kullanılır.
     last_known_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
-    # Log gürültü kapısı (2026-11-10): likit olmayan sembollerde her tur uyarı
-    # yerine sembol başına aralıkta bir. REST yedeği her turda çalışır.
+    # Log gürültü kapısı (2026-11-10, flap düzeltmesi): likit olmayan/15-20 sn
+    # kadanslı sembollerde her tur uyarı yerine sembol başına aralıkta bir.
+    # Sayaç YAPIŞKANDIR — ara tazelik anları sıfırlamaz. REST yedeği her turda
+    # çalışır.
     _stale_logged = False
     if current_price > 0 and not price_is_fresh:
         _stale_logged = _stale_ticker_log_gate(symbol, now)
@@ -1556,9 +1563,6 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
             logger.warning("auto_paper %s: ticker BAYAT (yaş=%.1fs > %ss) — REST fiyat yedeği deneniyor (bu satır sembol başına %d sn'de bir)",
                            symbol, (now * 1000 - ticker_ts) / 1000.0, config.MAX_TICKER_AGE_SEC,
                            int(_STALE_TICKER_LOG_INTERVAL_SEC))
-    elif price_is_fresh:
-        # Ticker tazelendi: sayacı temizle (bir sonraki bayatlıkta ilk turda loglasın).
-        _STALE_TICKER_LOG_AT.pop(symbol, None)
 
     # 2026-10-15 (denetim düzeltmesi, madde 1): ticker bayat/eksikse ESKİDEN bu
     # tur erken dönülüyor, SL/trailing/max_hold hiç çalışmıyordu (WS akışında

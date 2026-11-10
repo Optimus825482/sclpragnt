@@ -1484,13 +1484,24 @@ class StaleTickerLogGateTests(unittest.TestCase):
         # Aralık dolduğunda tekrar loglanır.
         self.assertTrue(auto_paper._stale_ticker_log_gate("HAEDALTRY", now + 300))
 
-    def test_symbols_are_independent_and_reset_allows_logging(self):
+    def test_symbols_are_independent(self):
         now = 1000.0
         self.assertTrue(auto_paper._stale_ticker_log_gate("HAEDALTRY", now))
         self.assertTrue(auto_paper._stale_ticker_log_gate("MITOTRY", now))
-        # Ticker tazelenince yönetim turu sayacı siler → sonraki bayatlık ilk turda loglanır.
-        auto_paper._STALE_TICKER_LOG_AT.pop("HAEDALTRY", None)
-        self.assertTrue(auto_paper._stale_ticker_log_gate("HAEDALTRY", now + 1))
+        self.assertFalse(auto_paper._stale_ticker_log_gate("HAEDALTRY", now + 1))
+
+    def test_gate_is_sticky_across_freshness_flaps(self):
+        # 2026-11-10 flap düzeltmesi: ara "taze" anlar sayacı SIFIRLAMAZ.
+        # AVAXTRY'de miniTicker ~15-20 sn kadansla geldiği için ticker yaşı 15
+        # sn eşiğinin hemen üstünde salınıyor; eski pop davranışıyla sayaç her
+        # taze turda temizlenip uyarı yine her turda basılıyordu.
+        now = 1000.0
+        self.assertTrue(auto_paper._stale_ticker_log_gate("AVAXTRY", now))
+        self.assertFalse(auto_paper._stale_ticker_log_gate("AVAXTRY", now + 10))
+        self.assertFalse(auto_paper._stale_ticker_log_gate("AVAXTRY", now + 200))
+        self.assertFalse(auto_paper._stale_ticker_log_gate("AVAXTRY", now + 299))
+        # Aralık dolduğunda bir sonraki bayat turda tekrar loglanır.
+        self.assertTrue(auto_paper._stale_ticker_log_gate("AVAXTRY", now + 300))
 
 
 if __name__ == "__main__":

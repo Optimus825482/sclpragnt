@@ -631,7 +631,14 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict],
 
     os.makedirs(config.ML_MODELS_DIR, exist_ok=True)
     path = os.path.join(config.ML_MODELS_DIR, f"upside_{FEATURE_VERSION}.joblib")
-    joblib.dump(artifact, path, compress=3)
+    # 2026-11-10: atomik yazım — `joblib.dump` eskiden doğrudan son yola yazıyordu;
+    # dump sürerken gelen bir `load_model()` (ör. chart forecast isteği) yarım
+    # dosyayı okuyup EOFError ile ASGI 500 üretiyordu (üretimde görüldü). Önce
+    # .tmp'ye yaz, sonra tek `os.replace` ile taşı (aynı FS'de atomiktir) —
+    # okuyucular ya eski ya tam dosyayı görür, asla yarığını değil.
+    tmp_path = f"{path}.tmp"
+    joblib.dump(artifact, tmp_path, compress=3)
+    os.replace(tmp_path, path)
     total = sum(int(m.get("samples") or 0) for m in metrics["per_horizon"].values())
     logger.info("[ML] eğitim tamam: %s örnek, %s sembol -> %s", total, len(symbol_codes), path)
     return {"created_at": time.time(), "horizons": list(HORIZONS), "sample_count": int(total),
@@ -677,7 +684,17 @@ def load_model(max_age_seconds: int = 86400) -> dict[str, Any] | None:
         return _MODEL_CACHE["artifact"]
     if not os.path.exists(path):
         return None
-    artifact = joblib.load(path)
+    try:
+        artifact = joblib.load(path)
+    except Exception as exc:
+        # 2026-11-10: bozuk/yarım artifact — eskiden EOFError ASGI 500 olarak
+        # yükseliyordu (üretim trace'i: chart_forecast → load_model → EOFError).
+        # "Model yok" gibi davran: predict_target None döner, uç noktalar temiz
+        # cevap verir; eğitim tamamlayınca dosya atomik olarak ezilir.
+        logger.error("[ML] artifact okunamadı (bozuk/yarım dosya): %s: %s", path, exc)
+        _MODEL_CACHE["artifact"] = None
+        _MODEL_CACHE["stamp"] = None
+        return None
     training_bars = artifact.get("training_bar_minutes")
     training_ok = training_bars is None or int(training_bars) == TRAINING_BAR_MINUTES
     if artifact.get("feature_version") != FEATURE_VERSION \

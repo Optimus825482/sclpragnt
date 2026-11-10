@@ -151,7 +151,7 @@ Off-box kopya için host'ta `docker volume inspect scalper_pg_backups` ile mount
   docker run --rm -v scalper_data:/data alpine chown -R 10001:10001 /data
   ```
 
-  Sonra backend'i yeniden başlatın; `entrypoint.sh` yazımprobe'u geçer ve kalıcı dizine döner. (Yeni volume'larda gerek yok — Dockerfile `/data`'yı 10001'e chown eder.)
+  Sonra backend'i yeniden başlatın; `entrypoint.sh` yazımprobe'u geçer ve kalıcı dizine döner. (Yeni volume'larda gerek yok — Dockerfile `/data`'yı 10001'e chown eder.) Model dosyası artık atomik yazılır (`os.replace`) ve bozuk/yarım artifact 500 üretmez — `load_model` temiz `None` döner, eğitim tamamlayınca dosya ezilir (2026-11-10 üretim EOFError vakası).
 - **`auto_paper <SYM>: ticker BAYAT … REST fiyat yedeği`:** Likit olmayan sembollerde (HAEDAL/MITO/AVAX gibi) miniTicker akışı yalnız işlem olduğunda satır taşır; 15 sn tazelik kapısı (güvenlik kontrolü, değişmez) bu yüzden açılır. REST yedeği tasarlanan davranıştır ve her turda çalışır — log satırları sembol başına 5 dakikada bir düşürülecek şekilde sınırlandırıldı (yalnız log sıklığı; ticari davranış aynı).
 - **`WhatsApp köprüsüne ulaşılamadı: HTTP 503`:** KÖPRÜ KALDIRILDI (2026-11-10, Erkan kararı — artık kullanılmıyor). `whatsapp-bridge` servisi ve `whatsapp_auth` volume'u compose'dan çıkarıldı; backend `whatsapp_notify.py` modülü fail-safe kalır, varsayılan olarak hiçbir şey göndermez. Bu uyarıyı görüyorsan production panelindeki `.env`'de hâlâ `WHATSAPP_NOTIFY_ENABLED=true` var demektir — artık konteynere ulaşmaz (compose geçişi kaldırıldı); panelde temizlenebilir. Eski `whatsapp_auth` volume'unu da silebilirsin: `docker volume rm whatsapp-bridge_whatsapp_auth`.
 

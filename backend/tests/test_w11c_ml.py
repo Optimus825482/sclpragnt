@@ -325,6 +325,15 @@ class SymbolCodeStabilityTests(unittest.TestCase):
         captured = {}
         with tempfile.TemporaryDirectory() as tmp:
             import sklearn.ensemble as sk_ensemble
+
+            def _stub_dump(obj, path, **kw):
+                # 2026-11-10: train() artık dump sonrası GERÇEK `os.replace` ile
+                # atomik taşıma yapıyor — stub da tmp dosyasını oluşturmalı,
+                # aksi halde replace FileNotFoundError atar.
+                with open(path, "wb") as fh:
+                    fh.write(b"stub")
+                captured.update(obj)
+
             with mock.patch.object(ml_forecast, "_merge_symbol_codes",
                                    side_effect=spy), \
                  mock.patch.object(ml_forecast.config, "ML_MODELS_DIR", tmp), \
@@ -332,9 +341,13 @@ class SymbolCodeStabilityTests(unittest.TestCase):
                                    _StubEstimator), \
                  mock.patch.object(sk_ensemble, "HistGradientBoostingClassifier",
                                    _StubEstimator), \
-                 mock.patch.object(joblib, "dump",
-                                   lambda obj, path, **kw: captured.update(obj)):
+                 mock.patch.object(joblib, "dump", _stub_dump):
                 ml_forecast.train(candles, [], previous)
+                # Atomik kayıt: artifact son yolda DURUYOR (tmp değil).
+                final_path = os.path.join(
+                    tmp, f"upside_{ml_forecast.FEATURE_VERSION}.joblib")
+                assert os.path.exists(final_path), "artifact son yola taşınmalı"
+                assert not os.path.exists(f"{final_path}.tmp"), ".tmp kalıntısı kalmamalı"
 
         assert calls, "train() _merge_symbol_codes'u cagirmali"
         assert calls[0][0] == ["AAAUSDT", "BBBUSDT"]

@@ -87,6 +87,25 @@ def test_load_model_accepts_legacy_artifact_without_training_bar(tmp_path, monke
     assert ml_forecast.load_model(max_age_seconds=0) is not None
 
 
+def test_load_model_returns_none_on_corrupt_artifact(tmp_path, monkeypatch):
+    """2026-11-10: bozuk/yarım artifact EOFError YÜKSELTMEMELİ — None döner.
+
+    Üretim vakası: `joblib.dump` son yola atomik OLMAYAN yazıyordu; dump
+    sürerken gelen chart-forecast isteği yarım dosyayı okuyup EOFError ile
+    ASGI 500 üretiyordu. load_model artık "model yok" gibi davranır; eğitim
+    tamamlayınca dosya atomik (os.replace) olarak ezilir.
+    """
+    monkeypatch.setattr(cfg, "ML_MODELS_DIR", str(tmp_path))
+    path = tmp_path / f"upside_{FEATURE_VERSION}.joblib"
+    path.write_bytes(b"\x80\x04\x95partial-truncated-pickle")
+    ml_forecast._MODEL_CACHE["artifact"] = None
+    ml_forecast._MODEL_CACHE["loaded_at"] = 0.0
+    ml_forecast._MODEL_CACHE["stamp"] = None
+    assert ml_forecast.load_model(max_age_seconds=0) is None
+    # Cache bozulmadan kalır; sonraki çağrı da temiz None döner (500 yok).
+    assert ml_forecast.load_model(max_age_seconds=0) is None
+
+
 def test_bollinger_width_uses_canonical_ddof0():
     """I-02: _velocity_bollinger_width kanonik ddof=0 (eğitimle aynı)."""
     from app.routers.velocity import _velocity_bollinger_width
