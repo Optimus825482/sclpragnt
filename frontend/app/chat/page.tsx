@@ -132,6 +132,11 @@ const ALL_TOOLS = TOOL_GROUPS.flatMap(([, names]) => names);
 
 const QUICK_PROMPTS = [
   {
+    icon: "🚀",
+    label: "En Hızlı Hangisi?",
+    prompt: "En kısa sürede en hızlı ve en çok yükselebilecek sembol veya semboller hangileri? Hız kısa listesindeki adayları upside_rank sırasına göre gerekçeleriyle karşılaştır; bayat veri varsa söyle.",
+  },
+  {
     icon: "📈",
     label: "Piyasa Özeti & Trendler",
     prompt: "Binance TR piyasasındaki güncel görünümü, güçlü yükseliş trendinde olan sembolleri ve genel piyasa yapısını bir trader gözüyle özetle.",

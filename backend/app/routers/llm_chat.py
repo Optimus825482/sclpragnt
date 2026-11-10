@@ -1712,6 +1712,120 @@ async def scan_market_snapshots(args: dict | None = None):
     _llm_market_scan_cache[cache_key] = {"generated_at": result["generated_at"], "result": result}
     return result
 
+async def _build_fast_rise_brief(limit: int | None = None) -> dict:
+    """Chat için 'en hızlı yükseliş' kısa listesi — yalnız önbellek, SIFIR REST.
+
+    Amaç (bkz. docs/CHAT_MODEL_HIZLI_YUKSELIS_VERI_ARASTIRMASI_2026-11-10.md):
+    'en kısa sürede en hızlı yükselen' sorusunda modelin araç turu atmadan
+    ölçülmüş listeyle başlaması. Üç katman:
+      1. velocity_top  — radar son turun geçen adayları, upside_rank sıralı
+                         (dakika başına beklenen yükseliş × hız × kalite × mikro).
+      2. discovery_top — early_discovery ilk-dakika hareketleri (1 sn örnekleme,
+                         1m bar çoğu zaman henüz kapanmamıştır → teyitsiz katman).
+      3. microflow_top — velocity ilk-2 adayın sıcak akış özeti (CVD/whale/derinlik;
+                         `market.get_microstructure` bellek-içidir, ağ çağrısı yapmaz).
+    Hata tek kaynağa iner; blok asla chat akışını düşürmez. Rejim/kalkan alanları
+    (`risk_off`) soft bilgidir; hard paper risk kuralları merkezi kalır.
+    """
+    now = time.time()
+    lim = int(limit or getattr(config, "CHAT_FAST_RISE_BRIEF_LIMIT", 5))
+    brief: dict = {"source": "cache_only", "rest_calls": 0, "generated_at": now}
+
+    # Katman 1 — velocity radar son tur (monitoring 30 sn döngüsünün belleği).
+    radar_age = None
+    try:
+        from app.routers.monitoring import get_cached_radar_candidates
+        radar = get_cached_radar_candidates()
+        scan_at = radar.get("scan_at")
+        if scan_at:
+            radar_age = round(max(0.0, now - float(scan_at)), 1)
+        brief["risk_off"] = radar.get("risk_off")
+        brief["risk_off_unknown"] = radar.get("risk_off_unknown")
+        open_pos = set(analyzer.positions)
+        ranked = []
+        for cand in radar.get("candidates") or []:
+            sym = str(cand.get("symbol") or "").upper()
+            if not sym or sym in open_pos:
+                continue
+            # Journal kalitesi özeti (touch_rates) tam-tablo agregasyonu ister;
+            # brief için nötr geçilir (kalite çarpanı 1.0) — sıralama anahtarı
+            # yine upside_rank: dakika başına beklenen yükseliş × hız × mikro.
+            try:
+                ranked.append((float(upside_rank_score(cand)), cand))
+            except Exception:
+                ranked.append((0.0, cand))
+        ranked.sort(key=lambda pair: pair[0], reverse=True)
+        rows = []
+        for rank, cand in ranked[:lim]:
+            rows.append({"symbol": cand.get("symbol"), "upside_rank": round(rank, 2),
+                         "price": cand.get("price"), "velocity_score": cand.get("velocity_score"),
+                         "horizon_minutes": cand.get("horizon_minutes"), "target_pct": cand.get("target_pct"),
+                         "mode": cand.get("mode"), "ret3_pct": cand.get("ret3_pct"),
+                         "ret5_pct": cand.get("ret5_pct"), "atr_pct": cand.get("atr_pct"),
+                         "bb_width_pct": cand.get("bb_width_pct"), "rsi": cand.get("rsi"),
+                         "mfi": cand.get("mfi"), "linreg_slope10_pct": cand.get("linreg_slope10_pct"),
+                         "volume_ratio": cand.get("volume_ratio"), "spread_pct": cand.get("spread_pct"),
+                         "pool_source": cand.get("pool_source")})
+        if rows:
+            brief["velocity_top"] = rows
+    except Exception as exc:
+        logger.debug("fast_rise_brief velocity katmanı kurulamadı: %s", exc)
+        brief["velocity_error"] = str(exc)[:120]
+    if radar_age is not None:
+        brief["radar_age_sec"] = radar_age
+
+    # Katman 2 — keşif kanalı: henüz velocity'ye düşmemiş ilk-dakika hareketleri.
+    try:
+        from app.early_discovery import top_candidates
+        disc_rows = top_candidates(limit=lim) or []
+        if disc_rows:
+            brief["discovery_top"] = disc_rows
+    except Exception as exc:
+        logger.debug("fast_rise_brief discovery katmanı kurulamadı: %s", exc)
+
+    # Katman 3 — velocity ilk-2 adayın sıcak mikro-yapısı (bellek-içi; sıfır ağ).
+    flow_rows = []
+    for row in (brief.get("velocity_top") or [])[:2]:
+        sym = str(row.get("symbol") or "").upper()
+        try:
+            flow = market.get_microstructure(sym, row.get("price"))
+        except Exception as exc:
+            logger.debug("fast_rise_brief microflow %s: %s", sym, exc)
+            continue
+        if not isinstance(flow, dict) or not flow:
+            continue
+        trade_flow = flow.get("trade_flow") if isinstance(flow.get("trade_flow"), dict) else {}
+        freshness = flow.get("freshness") if isinstance(flow.get("freshness"), dict) else {}
+        flow_rows.append({"symbol": sym, "spread_pct": flow.get("spread_pct"),
+                          "depth_imbalance": flow.get("depth_imbalance"),
+                          "cvd_try": trade_flow.get("cvd_try"),
+                          "trade_imbalance": trade_flow.get("trade_imbalance"),
+                          "trade_rate_per_min": trade_flow.get("trade_rate_per_min"),
+                          "whale_buys": trade_flow.get("whale_buys"),
+                          "whale_sells": trade_flow.get("whale_sells"),
+                          "whale_verdict": (trade_flow.get("whale_activity") or {}).get("verdict"),
+                          "orderbook_age_sec": freshness.get("orderbook_age_sec"),
+                          "trade_flow_age_sec": freshness.get("trade_flow_age_sec"),
+                          "flags": flow.get("flags")})
+    if flow_rows:
+        brief["microflow_top"] = flow_rows
+
+    if not brief.get("velocity_top") and not brief.get("discovery_top"):
+        brief["data_ready"] = False
+        brief["note"] = "hız kısa listesi boş: radar henüz tur atmadı ya da geçen aday yok"
+    brief["instruction"] = (
+        "Ölçülmüş hız kısa listesi — bağlamdır, tahmin/garanti değildir (paper-only). "
+        "'En hızlı / en kısa sürede yükseliş' sorularında velocity_top sıralamasını temel al: "
+        "upside_rank = dakika başına beklenen yükseliş × hız × mikro-yapı çarpanı. "
+        "discovery_top henüz 1m barı kapanmamış ilk-dakika hareketidir; teyitsiz olduğunu açıkça söyle. "
+        "radar_age_sec veya sample_age_sec yüksekse (ör. >60 sn) verinin bayat olduğunu belirt. "
+        "risk_off doğruysa listeyi öne çıkarma, önce riski anlat. Kesin karar için "
+        "calculate_trade_economics ve deep_analyze_symbol araçlarını kullan; kullanıcıya gösterge "
+        "dökümü yapma kuralın burada da geçerlidir — veriyi içeride kullan, sade dilde sun."
+    )
+    return brief
+
+
 async def deep_analyze_symbol(args: dict):
     symbol = str(args.get("symbol", "")).replace("_", "").upper()
     if not symbol: return {"error": "symbol gerekli"}
@@ -3634,6 +3748,18 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
             }
         except Exception as exc:
             context["market_scan"] = {"source": "live_binance_tr_public", "error": str(exc), "data_ready": False}
+    # HIZLI YÜKSELİŞ KISA LİSTESİ (2026-11-10): aynı niyette 15m/30m/1h market_scan
+    # yanına, önbelleklerden kurulan ölçülmüş fast_rise_brief eklenir — 'en kısa
+    # sürede en hızlı yükselen' sorusunda modelin araç turu atmadan kanıtlı listeyle
+    # başlaması için (bkz. docs/CHAT_MODEL_HIZLI_YUKSELIS_VERI_ARASTIRMASI_2026-11-10.md).
+    # A/B: CHAT_FAST_RISE_BRIEF=false → blok hiç kurulmaz (DENEY_KAYDI satırı ile).
+    if market_opportunity_intent and not requested_symbols and getattr(config, "CHAT_FAST_RISE_BRIEF", True):
+        try:
+            brief = await _build_fast_rise_brief()
+            if brief:
+                context["fast_rise_brief"] = brief
+        except Exception as exc:
+            logger.debug("fast_rise_brief context'e eklenemedi: %s", exc)
     if requested_symbols:
         requested = requested_symbols[0].replace("_", "")
         from app.binance_tr_symbols import is_binance_tr_symbol

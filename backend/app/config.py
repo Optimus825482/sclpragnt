@@ -1141,6 +1141,13 @@ class Config:
     LLM_PROFIT_REENTRY_COOLDOWN_SEC = max(60, int(os.getenv("LLM_PROFIT_REENTRY_COOLDOWN_SEC", str(5 * 60))))
     LLM_REENTRY_MIN_MOVE_PCT = max(0.001, float(os.getenv("LLM_REENTRY_MIN_MOVE_PCT", "0.005")))
     LLM_MARKET_SCAN_CACHE_SEC = max(0, int(os.getenv("LLM_MARKET_SCAN_CACHE_SEC", "5")))
+    # HIZLI YÜKSELİŞ KISA LİSTESİ (2026-11-10): "en hızlı / en kısa sürede yükseliş"
+    # niyetinde chat context'ine baştan eklenen ölçülmüş fast_rise_brief bloğu.
+    # Yalnız önbellek okur (sıfır REST); A/B kapatma anahtarı:
+    # CHAT_FAST_RISE_BRIEF=false → blok kurulmaz. Ölçüm planı ve gerekçe:
+    # docs/CHAT_MODEL_HIZLI_YUKSELIS_VERI_ARASTIRMASI_2026-11-10.md
+    CHAT_FAST_RISE_BRIEF = os.getenv("CHAT_FAST_RISE_BRIEF", "true").lower() == "true"
+    CHAT_FAST_RISE_BRIEF_LIMIT = max(1, min(10, int(os.getenv("CHAT_FAST_RISE_BRIEF_LIMIT", "5"))))
     # HIZLI ŞERİT (2026-09-17): tek sembol + durum sorusu ağır yolu (7× snapshot,
     # embedding/pgvector, journal agregasyonu, araç döngüsü) ATLAR; tek provider
     # çağrısı yapar ve araçsız yolda sağlayıcı akışı jeton jeton akar. Kısa yanıt

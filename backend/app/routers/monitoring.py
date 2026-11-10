@@ -593,6 +593,20 @@ def _notified_wall_from_mono(values) -> dict[str, float]:
     return out
 
 
+def get_cached_radar_candidates() -> dict:
+    """Son radar taramasının 'uygun adaylar' listesi + tazelik (salt-okunur kopya).
+
+    Chat `fast_rise_brief` kaynağı (2026-11-10): karar yolu hiçbir şekilde
+    etkilenmez; yalnız `_monitoring_state` bellek-içi son tur okunur.
+    DÖNÜŞ: {"scan_at", "candidates", "watchlist", "risk_off", "risk_off_unknown"}.
+    """
+    return {"scan_at": _monitoring_state.get("last_scan_at"),
+            "candidates": list(_monitoring_state.get("last_candidates") or []),
+            "watchlist": list(_monitoring_state.get("last_watchlist") or []),
+            "risk_off": bool(_monitoring_state.get("risk_off")),
+            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False))}
+
+
 def get_cached_radar_candidate(symbol: str) -> dict | None:
     """Son taramanın 'uygun adaylar' listesinden sembolün aday kaydını döndür.
 
