@@ -119,7 +119,7 @@ Kaynaklı araştırma ve uygulama eşlemesi: [`docs/SCALPER_RESEARCH_EVIDENCE.md
 Varsayılan çalışma modunda sistem yalnızca paper trading yapar; sanal cüzdanda işlem yapar ve API anahtarı gerektirmez. Gerçek satış yalnız kullanıcı tarafından bilinçli olarak açılan üç katmanlı bir kapının arkasındadır — bkz. [Gerçek satış kapısı](#-gerçek-satış-kapısı-2026-09-26-düzeltmesi).
 ## Production deployment (Coolify / Docker Compose)
 
-`docker-compose.yaml` sekiz servis tanımlar (2026-10-15 denetim düzeltmesi — eski metin "üç konteyner" diyordu):
+`docker-compose.yaml` yedi servis tanımlar (2026-11-10: `whatsapp-bridge` kaldırıldı — kullanılmıyor; 2026-10-15 denetim düzeltmesi — eski metin "üç konteyner" diyordu):
 
 | Servis | Görev | Not |
 |--------|-------|-----|
@@ -127,7 +127,6 @@ Varsayılan çalışma modunda sistem yalnızca paper trading yapar; sanal cüzd
 | `backend` | FastAPI + tarayıcı/strateji döngüleri (port 8004, yalnız iç ağ) | `/health` döngü kaydına bakar, kritik döngü ölü/bayat ise **503** (`SCALPER_HEALTH_STALE_SEC`, varsayılan 120); `autoheal=true` etiketi |
 | `frontend` | Eski Next.js arayüzü (3004) | |
 | `gateway` | nginx: `/api`, `/health`, `/ws` → backend; `/` → frontend; rate-limit, güvenlik başlıkları, gerçek istemci IP'si (`set_real_ip_from`) | Tek dışa açık servis (Traefik → :80). Upstream'ler yeniden başlayınca `depends_on … restart: true` ile kendisi de yeniden başlar |
-| `whatsapp-bridge` | Baileys WhatsApp köprüsü (3001, yalnız iç ağ) | Oturum `whatsapp_auth` volume'unda |
 | `db-backup` | Günde bir `pg_dump -Fc` → `scalper_pg_backups` volume'u, son 14 dosya (`scripts/pg_backup.sh`) | Postgres ile aynı imaj |
 | `autoheal` | `autoheal=true` etiketli unhealthy konteyneri yeniden başlatır (docker socket salt-okunur) | Docker tek başına unhealthy'yi restart ETMEZ |
 
@@ -154,7 +153,7 @@ Off-box kopya için host'ta `docker volume inspect scalper_pg_backups` ile mount
 
   Sonra backend'i yeniden başlatın; `entrypoint.sh` yazımprobe'u geçer ve kalıcı dizine döner. (Yeni volume'larda gerek yok — Dockerfile `/data`'yı 10001'e chown eder.)
 - **`auto_paper <SYM>: ticker BAYAT … REST fiyat yedeği`:** Likit olmayan sembollerde (HAEDAL/MITO/AVAX gibi) miniTicker akışı yalnız işlem olduğunda satır taşır; 15 sn tazelik kapısı (güvenlik kontrolü, değişmez) bu yüzden açılır. REST yedeği tasarlanan davranıştır ve her turda çalışır — log satırları sembol başına 5 dakikada bir düşürülecek şekilde sınırlandırıldı (yalnız log sıklığı; ticari davranış aynı).
-- **`WhatsApp köprüsüne ulaşılamadı: HTTP 503`:** Köprünün kendi `/send` ucu `503 "WhatsApp bağlı değil"` döner — yani backend değil, `whatsapp-bridge` içindeki Baileys oturumu kopmuş demektir. `docker compose restart whatsapp-bridge` (gerekirse QR yeniden taratın; oturum `whatsapp_auth` volume'unda). Backend tarafı fail-safe'tir, akış etkilenmez.
+- **`WhatsApp köprüsüne ulaşılamadı: HTTP 503`:** KÖPRÜ KALDIRILDI (2026-11-10, Erkan kararı — artık kullanılmıyor). `whatsapp-bridge` servisi ve `whatsapp_auth` volume'u compose'dan çıkarıldı; backend `whatsapp_notify.py` modülü fail-safe kalır, varsayılan olarak hiçbir şey göndermez. Bu uyarıyı görüyorsan production panelindeki `.env`'de hâlâ `WHATSAPP_NOTIFY_ENABLED=true` var demektir — artık konteynere ulaşmaz (compose geçişi kaldırıldı); panelde temizlenebilir. Eski `whatsapp_auth` volume'unu da silebilirsin: `docker volume rm whatsapp-bridge_whatsapp_auth`.
 
 ### LLM salt-okunur rol (deploy notu — 2026-10-15 denetimi)
 
