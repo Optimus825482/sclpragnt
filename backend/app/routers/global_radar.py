@@ -41,6 +41,37 @@ _status: dict = {
     "last_candidates": 0,
 }
 
+# Son lead-lag tespitlerinin halka tamponu (2026-11-10): chat `fast_rise_brief`
+# v2 kaynağı. YALNIZ GÖZLEM — karar yolu buradan okumaz, UI'ya yayınlanmaz;
+# döngü kapalıyken (GLOBAL_SCAN_ENABLED=false) boş kalır.
+_RECENT_LEADLAG: list[dict] = []
+_RECENT_LEADLAG_MAX = 60
+
+
+def get_recent_leadlag_signals(max_age_sec: float = 900.0) -> list[dict]:
+    """Son Global→TR lead-lag tespitleri (salt-okunur kopya, yaş filtreli).
+
+    DÖNÜŞ: en yeniden eskiye sıralı [{"ts", "symbol", "residual_pct",
+    "panel_score", "horizon_minutes", "target_pct", "age_sec"}]. `residual_pct`
+    Global 5m getirisinin TR aynı-bara açıklanmayan kısmıdır (yüzde puan);
+    ölçülmüş tek gerçek öncüdür (fwd korelasyon +0.144) ama işlem kenarı
+    değil — bağlam olarak kullanılır (bkz. docs/USD_LEADLAG_ARASTIRMASI_2026-10-12.md).
+    """
+    now = time.time()
+    out = []
+    for row in list(_RECENT_LEADLAG):
+        try:
+            age = now - float(row.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if age < 0 or age > max_age_sec:
+            continue
+        item = dict(row)
+        item["age_sec"] = round(age, 1)
+        out.append(item)
+    out.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
+    return out
+
 
 def get_status() -> dict:
     """İçsel durum (teşhis). Arayüzde gösterilmez."""
@@ -117,6 +148,17 @@ async def _scan_once() -> int:
                          "score": _leadlag_panel_score(c.get("residual")),
                          "target_pct": 2.0, "horizon_minutes": 15,
                          "_lead_lag": c})
+        # Halka tampon: chat fast_rise_brief v2 okur (yalnız gözlem; yukarıdaki
+        # tarama/karar yolunu etkilemez).
+        _ll_ts = time.time()
+        for c in ll:
+            _RECENT_LEADLAG.append({
+                "ts": _ll_ts, "symbol": str(c.get("symbol") or "").upper(),
+                "residual_pct": c.get("residual"),
+                "panel_score": _leadlag_panel_score(c.get("residual")),
+                "horizon_minutes": 15, "target_pct": 2.0})
+        while len(_RECENT_LEADLAG) > _RECENT_LEADLAG_MAX:
+            _RECENT_LEADLAG.pop(0)
     except Exception as exc:
         logger.debug("global_radar: lead-lag taraması atlandı: %s", exc)
 

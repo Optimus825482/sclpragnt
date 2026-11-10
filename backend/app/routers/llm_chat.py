@@ -1084,6 +1084,101 @@ async def llm_upside_scout(payload: dict = None):
         return {"enabled": False, "status": "error", "error": f"Keşif hatası: {exc}"}
 
 
+async def _journal_fast_riser_forecasts(rows: list[dict], brief: dict, observed_at: float,
+                                        summary_text: str, model_name: str | None = None) -> int:
+    """fast-risers adaylarını `prompt_version="fast-risers-v1"` ile journal'a yazar.
+
+    Ölçüm sözleşmesi upside-scout ile aynıdır (kapanmış M1'den değerlendirme,
+    kanonik label_policy); AYRI etiket taşır → chat lane A/B'sini kirletmez.
+    """
+    now = time.time()
+    group_id = uuid.uuid4().hex
+    forecasts = []
+    for row in rows:
+        price = float(row.get("price") or 0)
+        horizon = int(row.get("horizon_minutes") or 0)
+        target_pct = float(row.get("target_pct") or 0)
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol or price <= 0 or target_pct <= 0 or horizon <= 0:
+            continue
+        velocity_score = float(row.get("velocity_score") or 0)
+        confidence = max(30.0, min(65.0, 35.0 + velocity_score * 0.5))
+        # REP-01: ölçüm etiketi replay ile AYNI formülden (kanonik label_policy).
+        policy = label_policy(horizon, (row.get("atr_pct") or 0) / 100.0)
+        snapshot = dict(row)
+        snapshot.update({"paper_only": True, "generated_at": now, "source": "fast_risers",
+                         "price_observed_at": observed_at, "risk_off": brief.get("risk_off"),
+                         "discovery_attached": bool(brief.get("discovery_top"))})
+        forecasts.append({
+            "forecast_id": uuid.uuid4().hex, "forecast_group_id": group_id,
+            "symbol": symbol, "created_at": now, "decided_at": observed_at,
+            "horizon_minutes": horizon, "entry_price": price, "direction": "up",
+            "confidence": confidence, "invalidation_price": None,
+            "min_move_pct": policy["min_move_pct"], "regime": "velocity",
+            "timeframe_context": {"profile": f"{horizon}dk", "source": "fast_risers_brief"},
+            "scenario": (f"fast-risers: {symbol} upside sıra {row.get('upside_rank')}; "
+                         f"{horizon}dk içinde %{target_pct:g} hedef"),
+            "counter_scenario": None, "summary": summary_text or "",
+            "model": model_name, "prompt_version": "fast-risers-v1",
+            "snapshot_hash": hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest(),
+            "snapshot": snapshot,
+        })
+    if forecasts:
+        await database.save_llm_forecasts(forecasts)
+    return len(forecasts)
+
+
+@router.post("/api/llm/fast-risers")
+async def llm_fast_risers(payload: dict = None):
+    """'🚀 En Hızlı Hangisi?' tek-tık özeti: deterministik kısa liste + kısa LLM yorumu.
+
+    Chat lane'inden BAĞIMSIZ hızlı yol: kısa liste önbelleklerden kurulur (sıfır
+    REST; radar top + keşif + mikro-akış + lead-lag), yorum tek LLM çağrısıdır.
+    Adaylar `fast-risers-v1` etiketiyle journal'a yazılır → upside-scout
+    (`upside-scout-v2-blend`) ile yan yana ölçülür. Salt-okunur; pozisyon açmaz.
+    """
+    try:
+        brief = await _build_fast_rise_brief()
+    except Exception as exc:
+        logger.exception("fast-risers beklenmeyen hata")
+        return {"enabled": False, "status": "error", "error": f"Kısa liste hatası: {exc}"}
+    rows = list(brief.get("velocity_top") or [])
+    if not rows:
+        return {"enabled": False, "status": "no_candidates", "error":
+                "Şu an radar listesinde geçen aday yok; tarama henüz ısınıyor olabilir."}
+    observed_at = time.time()
+    fast_context = {
+        "type": "fast_risers", "paper_only": True,
+        "instruction": (
+            "Bu liste, 'en kısa sürede en hızlı yükseliş' sorusuna ölçülmüş cevaptır: "
+            "velocity_top upside_rank'a göre sıralı (dakika başına beklenen yükseliş × hız × "
+            "journal kalitesi × mikro-yapı). EN ÇOK 3 aday için tam 4 kısa satır üret, verilen "
+            "sırayı koru, bloklar arasına boş satır koy: 'Sembol:', 'Anlık fiyat:', "
+            "'Tahmini artış:' (target_pct'in 0.5-1.5 katı), 'Tahmini süre ve hedef fiyat:' "
+            "(horizon_minutes ve fiyat × (1 + artış/100)). discovery_top/lead_lag_active yalnız "
+            "anıtsal bir uyum varsa tek cümleyle an; gösterge dökümü YAPMA; garanti dili KULLANMA; "
+            "risk_off doğruysa en başta tek cümleyle uyar."),
+        "fast_rise_brief": brief,
+        "data_policy": "Yalnızca sağlanan public veri ve öğrenilmiş kayıtlar kullanılır; eksik alan 'bilinmiyor' kalır.",
+    }
+    result = await llm_analysis.analyze(fast_context, max_tokens=800)
+    analysis_text = ""
+    if result.get("enabled") and result.get("status") == "ok":
+        analysis_text = result.get("text", "") or ""
+    else:
+        # LLM yoksa deterministik liste yine döner (fail-open) — hata bilgi olarak.
+        analysis_text = ""
+    journal_saved = await _journal_fast_riser_forecasts(
+        rows, brief, observed_at, analysis_text, result.get("model"))
+    return {"enabled": True, "paper_only": True, "prompt_version": "fast-risers-v1",
+            "generated_at": brief.get("generated_at"), "risk_off": brief.get("risk_off"),
+            "radar_age_sec": brief.get("radar_age_sec"),
+            "velocity_top": rows, "discovery_top": brief.get("discovery_top") or [],
+            "microflow_top": brief.get("microflow_top") or [],
+            "lead_lag_active": brief.get("lead_lag_active") or [],
+            "analysis": analysis_text or None, "journal_saved": journal_saved}
+
+
 def _upside_target_pct(horizon_minutes: int) -> float:
     return 2.0 if int(horizon_minutes) <= 5 else 3.0
 
@@ -1712,18 +1807,41 @@ async def scan_market_snapshots(args: dict | None = None):
     _llm_market_scan_cache[cache_key] = {"generated_at": result["generated_at"], "result": result}
     return result
 
+# Journal dokunuş oranlarının TTL'li önbelleği (2026-11-10, brief v2).
+# `_journal_touch_rates` tam-tablo agregasyondur; brief HER kurulduğunda
+# çalıştırılmaz (chat gecikmesi). TTL dolunca tazelenir; hata eski değerle
+# devam eder (fail-open). Testler doğrudan cache'e yazabilir.
+_fast_rise_touch_cache: dict = {"at": 0.0, "rates": {}}
+
+
+async def _fast_rise_touch_rates() -> dict[str, float]:
+    ttl = float(getattr(config, "CHAT_FAST_RISE_BRIEF_TOUCH_TTL_SEC", 300))
+    now = time.time()
+    if now - float(_fast_rise_touch_cache.get("at") or 0) > ttl:
+        try:
+            rates = await _journal_touch_rates()
+            if rates:
+                _fast_rise_touch_cache["rates"] = rates
+                _fast_rise_touch_cache["at"] = now
+        except Exception as exc:
+            logger.debug("fast_rise_brief touch-rate tazeleme başarısız: %s", exc)
+    return _fast_rise_touch_cache.get("rates") or {}
+
+
 async def _build_fast_rise_brief(limit: int | None = None) -> dict:
     """Chat için 'en hızlı yükseliş' kısa listesi — yalnız önbellek, SIFIR REST.
 
     Amaç (bkz. docs/CHAT_MODEL_HIZLI_YUKSELIS_VERI_ARASTIRMASI_2026-11-10.md):
     'en kısa sürede en hızlı yükselen' sorusunda modelin araç turu atmadan
-    ölçülmüş listeyle başlaması. Üç katman:
+    ölçülmüş listeyle başlaması. Dört katman:
       1. velocity_top  — radar son turun geçen adayları, upside_rank sıralı
                          (dakika başına beklenen yükseliş × hız × kalite × mikro).
       2. discovery_top — early_discovery ilk-dakika hareketleri (1 sn örnekleme,
                          1m bar çoğu zaman henüz kapanmamıştır → teyitsiz katman).
       3. microflow_top — velocity ilk-2 adayın sıcak akış özeti (CVD/whale/derinlik;
                          `market.get_microstructure` bellek-içidir, ağ çağrısı yapmaz).
+      4. lead_lag_active — Global→TR rezidüel sinyaller (ölçülmüş tek gerçek öncü;
+                         bağlam; GLOBAL_SCAN_ENABLED kapalıysa boş).
     Hata tek kaynağa iner; blok asla chat akışını düşürmez. Rejim/kalkan alanları
     (`risk_off`) soft bilgidir; hard paper risk kuralları merkezi kalır.
     """
@@ -1733,6 +1851,7 @@ async def _build_fast_rise_brief(limit: int | None = None) -> dict:
 
     # Katman 1 — velocity radar son tur (monitoring 30 sn döngüsünün belleği).
     radar_age = None
+    touch_rates = await _fast_rise_touch_rates()
     try:
         from app.routers.monitoring import get_cached_radar_candidates
         radar = get_cached_radar_candidates()
@@ -1747,11 +1866,12 @@ async def _build_fast_rise_brief(limit: int | None = None) -> dict:
             sym = str(cand.get("symbol") or "").upper()
             if not sym or sym in open_pos:
                 continue
-            # Journal kalitesi özeti (touch_rates) tam-tablo agregasyonu ister;
-            # brief için nötr geçilir (kalite çarpanı 1.0) — sıralama anahtarı
-            # yine upside_rank: dakika başına beklenen yükseliş × hız × mikro.
+            # Journal kalitesi (touch_rate) TTL'li önbellekten gelir: yeterli
+            # örneklemi olan semboller kalite çarpanıyla öne/geriye taşınır
+            # (bkz. velocity._quality_multiplier). Sıralama anahtarı yine
+            # upside_rank: dakika başına beklenen yükseliş × hız × kalite × mikro.
             try:
-                ranked.append((float(upside_rank_score(cand)), cand))
+                ranked.append((float(upside_rank_score(cand, touch_rates)), cand))
             except Exception:
                 ranked.append((0.0, cand))
         ranked.sort(key=lambda pair: pair[0], reverse=True)
@@ -1765,6 +1885,7 @@ async def _build_fast_rise_brief(limit: int | None = None) -> dict:
                          "bb_width_pct": cand.get("bb_width_pct"), "rsi": cand.get("rsi"),
                          "mfi": cand.get("mfi"), "linreg_slope10_pct": cand.get("linreg_slope10_pct"),
                          "volume_ratio": cand.get("volume_ratio"), "spread_pct": cand.get("spread_pct"),
+                         "touch_rate": touch_rates.get(str(cand.get("symbol") or "").upper()),
                          "pool_source": cand.get("pool_source")})
         if rows:
             brief["velocity_top"] = rows
@@ -1810,14 +1931,26 @@ async def _build_fast_rise_brief(limit: int | None = None) -> dict:
     if flow_rows:
         brief["microflow_top"] = flow_rows
 
+    # Katman 4 — ölçülmüş tek gerçek öncü: Global→TR rezidüel lead-lag (bağlam).
+    try:
+        from app.routers.global_radar import get_recent_leadlag_signals
+        ll_rows = get_recent_leadlag_signals(max_age_sec=900)[:lim]
+        if ll_rows:
+            brief["lead_lag_active"] = ll_rows
+    except Exception as exc:
+        logger.debug("fast_rise_brief lead-lag katmanı kurulamadı: %s", exc)
+
     if not brief.get("velocity_top") and not brief.get("discovery_top"):
         brief["data_ready"] = False
         brief["note"] = "hız kısa listesi boş: radar henüz tur atmadı ya da geçen aday yok"
     brief["instruction"] = (
         "Ölçülmüş hız kısa listesi — bağlamdır, tahmin/garanti değildir (paper-only). "
         "'En hızlı / en kısa sürede yükseliş' sorularında velocity_top sıralamasını temel al: "
-        "upside_rank = dakika başına beklenen yükseliş × hız × mikro-yapı çarpanı. "
+        "upside_rank = dakika başına beklenen yükseliş × hız × journal kalitesi × mikro-yapı çarpanı; "
+        "touch_rate sembolun geçmiş dokunuş oranıdır (yeterli örneklemi olmayanda yoktur). "
         "discovery_top henüz 1m barı kapanmamış ilk-dakika hareketidir; teyitsiz olduğunu açıkça söyle. "
+        "lead_lag_active varsa: Global'de başlayıp TR'ye henüz yansımayan hareket demektir — tek "
+        "ölçülmüş öncüdür ama maliyetle sınırlıdır; teyit bağlamı olarak an, tek başına öneri yapma. "
         "radar_age_sec veya sample_age_sec yüksekse (ör. >60 sn) verinin bayat olduğunu belirt. "
         "risk_off doğruysa listeyi öne çıkarma, önce riski anlat. Kesin karar için "
         "calculate_trade_economics ve deep_analyze_symbol araçlarını kullan; kullanıcıya gösterge "

@@ -100,7 +100,12 @@ Tasarım gerekçeleri:
 
 ### Verinin nereden okunacağı (uygulama notu)
 
-> **Uygulama durumu (2026-11-10): v1 devrede.** `_build_fast_rise_brief` (`llm_chat.py`), `market_opportunity_intent` niyetinde `market_scan`'in yanına `context["fast_rise_brief"]` olarak eklenir. Kaynaklar: `monitoring.get_cached_radar_candidates()` (yeni salt-okunur erişimci) + `early_discovery.top_candidates()` + `market.get_microstructure()` (bellek-içi). A/B anahtarı: `CHAT_FAST_RISE_BRIEF=false`; sınır: `CHAT_FAST_RISE_BRIEF_LIMIT` (varsayılan 5). Test: `backend/tests/test_chat_fast_rise_brief.py`. Kayıt: `docs/DENEY_KAYDI.md` 2026-11-10 satırı. v1'de olmayanı: journal touch-rate özeti (tam-tablo agregasyonu chat gecikmesine ekler; nötr 1.0 ile geçilir) ve lead-lag aktif sinyalleri (önbellek erişimcisi henüz yok — takip işi).
+> **Uygulama durumu (2026-11-10): v2 devrede.**
+> - **v1:** `_build_fast_rise_brief` (`llm_chat.py`), `market_opportunity_intent` niyetinde `market_scan`'in yanına `context["fast_rise_brief"]` olarak eklenir. Kaynaklar: `monitoring.get_cached_radar_candidates()` (yeni salt-okunur erişimci) + `early_discovery.top_candidates()` + `market.get_microstructure()` (bellek-içi). Test: `backend/tests/test_chat_fast_rise_brief.py`.
+> - **v2:** (a) journal touch-rate TTL'li önbellekle sıralamaya girdi (`_fast_rise_touch_rates`, `CHAT_FAST_RISE_BRIEF_TOUCH_TTL_SEC=300`); (b) lead-lag aktif sinyalleri katman 4 olarak eklendi (`global_radar.get_recent_leadlag_signals` — yeni halka tampon; `GLOBAL_SCAN_ENABLED` kapalıysa boş); (c) tek-tık yolu: `POST /api/llm/fast-risers` (deterministik kısa liste + kısa LLM yorumu; adaylar `prompt_version="fast-risers-v1"` ile journal'a yazılır — chat lane A/B'sini kirletmez) + chat'te `FastRiseCard` görsel kartı ve "🚀 EN HIZLI HANGİSİ" düğmesi.
+> - **Ölçüm:** `backend/scripts/chat_prediction_ab_report.py` — `llm_forecasts`'ı prompt_version'a göre kırar (`fast-risers-v1` vs `upside-scout-%`); hit = `direction_correct`, getiri brüt. A/B anahtarları: `CHAT_FAST_RISE_BRIEF=false`. Kayıt: `docs/DENEY_KAYDI.md` 2026-11-10 satırı.
+> - v1'de olmayıp v2'de girenler: journal touch-rate özeti (önbellekli) ve lead-lag sinyalleri (tampon erişimcisi). `get_fast_risers` tek-araç seçeneği hâlâ açık — uç nokta kısa liste ürettiği için şimdilik gerek görülmedi.
+
 
 - **Velocity top:** radar döngüsü (`routers/monitoring.py`, `SCAN_INTERVAL_SEC=30`) zaten her tur `detect_velocity_candidates` çalıştırıp sonuçları DB'ye yazıyor. Ya DB'den son turun passing adayları çekilir ya da döngüye in-memory top-N kopyası eklenir (en düşük gecikme: ikincisi).
 - **Discovery:** `early_discovery.top_candidates(limit=5)` hazır, in-memory.

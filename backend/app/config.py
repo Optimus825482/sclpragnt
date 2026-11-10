@@ -1148,6 +1148,9 @@ class Config:
     # docs/CHAT_MODEL_HIZLI_YUKSELIS_VERI_ARASTIRMASI_2026-11-10.md
     CHAT_FAST_RISE_BRIEF = os.getenv("CHAT_FAST_RISE_BRIEF", "true").lower() == "true"
     CHAT_FAST_RISE_BRIEF_LIMIT = max(1, min(10, int(os.getenv("CHAT_FAST_RISE_BRIEF_LIMIT", "5"))))
+    # Journal dokunuş oranlarının brief sıralaması için tazeleme aralığı (tam-tablo
+    # agregasyonu istek başına çalıştırılmaz; bkz. llm_chat._fast_rise_touch_rates).
+    CHAT_FAST_RISE_BRIEF_TOUCH_TTL_SEC = max(30, int(os.getenv("CHAT_FAST_RISE_BRIEF_TOUCH_TTL_SEC", "300")))
     # HIZLI ŞERİT (2026-09-17): tek sembol + durum sorusu ağır yolu (7× snapshot,
     # embedding/pgvector, journal agregasyonu, araç döngüsü) ATLAR; tek provider
     # çağrısı yapar ve araçsız yolda sağlayıcı akışı jeton jeton akar. Kısa yanıt

@@ -47,10 +47,44 @@ type ScoutResult = {
   journal_saved?: number;
 };
 
+type FastRiseRow = {
+  symbol?: string;
+  price?: number | null;
+  upside_rank?: number | null;
+  velocity_score?: number | null;
+  horizon_minutes?: number | null;
+  target_pct?: number | null;
+  touch_rate?: number | null;
+  ret3_pct?: number | null;
+  atr_pct?: number | null;
+};
+
+type FastRiseResult = {
+  velocity_top?: FastRiseRow[];
+  discovery_top?: Array<{
+    symbol?: string;
+    return_1m_pct?: number | null;
+    return_20s_pct?: number | null;
+    volume_burst?: number | null;
+    sample_age_sec?: number | null;
+  }>;
+  lead_lag_active?: Array<{
+    symbol?: string;
+    residual_pct?: number | null;
+    panel_score?: number | null;
+    age_sec?: number | null;
+  }>;
+  risk_off?: boolean;
+  radar_age_sec?: number | null;
+  generated_at?: number;
+  journal_saved?: number;
+};
+
 type Message = {
   role: "user" | "assistant";
   content: string;
   scout?: ScoutResult;
+  fast_rise?: FastRiseResult;
   time?: string;
 };
 
@@ -255,6 +289,94 @@ function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
   );
 }
 
+function FastRiseCard({ fastRise }: { fastRise: FastRiseResult }) {
+  const rows = fastRise.velocity_top || [];
+  const discovery = fastRise.discovery_top || [];
+  const leadLag = fastRise.lead_lag_active || [];
+  if (!rows.length && !discovery.length) return null;
+  return (
+    <div className="card mb-3 border-amber-500/30 bg-amber-950/10 p-3 text-xs font-mono">
+      <div className="flex items-center justify-between gap-2 border-b border-bunker-700/60 pb-2">
+        <span className="font-bold text-amber-300 flex items-center gap-1.5">
+          <span>🚀</span>
+          <span>EN HIZLI HANGİSİ? (ÖLÇÜLMÜŞ KISA LİSTE)</span>
+        </span>
+        <div className="flex items-center gap-2">
+          {fastRise.risk_off && (
+            <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] font-bold text-red-300">
+              RİSK-OFF
+            </span>
+          )}
+          {fastRise.generated_at && (
+            <span className="text-[10px] text-bunker-muted">
+              {new Date(toMs(fastRise.generated_at)).toLocaleTimeString("tr-TR")}
+              {fastRise.radar_age_sec != null
+                ? ` · radar ${Math.round(Number(fastRise.radar_age_sec))} sn`
+                : ""}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {rows.map((row, i) => (
+          <div
+            key={row.symbol || i}
+            className="rounded border border-bunker-700/80 bg-bunker-900/60 p-2 text-[11px]"
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-white">
+                <SymbolLink symbol={String(row.symbol || "")} />
+              </span>
+              <span className="rounded bg-amber-400/10 px-1.5 py-0.5 font-bold text-amber-300">
+                {Number(row.upside_rank || 0).toFixed(1)} puan
+              </span>
+            </div>
+            <div className="mt-1 flex items-center justify-between text-bunker-muted">
+              <span>Anlık: ₺{fmtScoutPrice(row.price)}</span>
+              <span>
+                Hedef: +%{Number(row.target_pct || 0).toFixed(2)} / {Number(row.horizon_minutes || 0)}dk
+              </span>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-bunker-muted">
+              <span>Hız: {Number(row.velocity_score || 0).toFixed(1)}</span>
+              <span>ret3: %{Number(row.ret3_pct || 0).toFixed(2)}</span>
+              <span>
+                Dokunuş: {row.touch_rate != null ? `%${(Number(row.touch_rate) * 100).toFixed(0)}` : "—"}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {discovery.length > 0 && (
+        <div className="mt-2 rounded border border-bunker-700/60 bg-bunker-900/40 p-2 text-[10px] text-bunker-muted">
+          <span className="font-bold text-slate-300">İlk dakika (teyitsiz): </span>
+          {discovery
+            .map(
+              (d) =>
+                `${d.symbol} +%${Number(d.return_1m_pct || 0).toFixed(2)}/dk · ${Number(
+                  d.volume_burst || 0,
+                ).toFixed(1)}× hacim`,
+            )
+            .join(" · ")}
+        </div>
+      )}
+      {leadLag.length > 0 && (
+        <div className="mt-1 text-[10px] text-emerald-400/80">
+          Global→TR lead-lag (öncü, teyit bağlamı):{" "}
+          {leadLag
+            .map((l) => `${l.symbol} (+%${Number(l.residual_pct || 0).toFixed(2)} yansımayan)`)
+            .join(" · ")}
+        </div>
+      )}
+      <p className="text-[10px] text-bunker-muted mt-2">
+        upside_rank = dakika başına beklenen yükseliş × hız × journal kalitesi × mikro-yapı ·
+        tahmin/garanti değildir · {fastRise.journal_saved ?? rows.length} tahmin journal&apos;a
+        kaydedildi.
+      </p>
+    </div>
+  );
+}
+
 function ChatPageInner() {
   const { username, role } = useAuth();
   const [messages, setMessages] = useState<Message[]>(starter);
@@ -276,6 +398,7 @@ function ChatPageInner() {
   const [sessionId, setSessionId] = useState("chat:main");
   const [livePriceWatch, setLivePriceWatch] = useState<LivePriceWatch | null>(null);
   const [upsideScoutBusy, setUpsideScoutBusy] = useState(false);
+  const [fastRiseBusy, setFastRiseBusy] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   // Sesli mesaj (Speech-to-Text) state'leri
@@ -777,6 +900,62 @@ function ChatPageInner() {
     }
   };
 
+  const runFastRise = async () => {
+    if (fastRiseBusy || busy) return;
+    setFastRiseBusy(true);
+    setError("");
+    try {
+      const response = await apiRequest(`${API_BASE}/api/llm/fast-risers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      let data: any;
+      try {
+        data = await response.json();
+      } catch {
+        const text = await response.text().catch(() => "");
+        throw new Error(text.slice(0, 200) || `Sunucu hatası (HTTP ${response.status})`);
+      }
+      if (!response.ok || data.enabled === false) {
+        throw new Error(data.detail || data.error || "Hız kısa listesi başarısız");
+      }
+      const fastRise: FastRiseResult = {
+        velocity_top: Array.isArray(data.velocity_top) ? data.velocity_top : [],
+        discovery_top: Array.isArray(data.discovery_top) ? data.discovery_top : [],
+        lead_lag_active: Array.isArray(data.lead_lag_active) ? data.lead_lag_active : [],
+        risk_off: data.risk_off,
+        radar_age_sec: data.radar_age_sec,
+        generated_at: data.generated_at,
+        journal_saved: data.journal_saved,
+      };
+      const scoreText = fastRise.velocity_top
+        ? fastRise.velocity_top
+            .map((c) => `${c.symbol} (${Number(c.upside_rank).toFixed(1)} puan)`)
+            .join(", ")
+        : "";
+      const nowTime = new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+      setMessages((current) => [
+        ...current,
+        {
+          role: "user" as const,
+          content: `🚀 EN HIZLI HANGİSİ? ${scoreText}`,
+          time: nowTime,
+        },
+        {
+          role: "assistant" as const,
+          content: data.analysis || "Ölçülmüş kısa liste hazır; gerekçe için sorabilirsin.",
+          fast_rise: fastRise,
+          time: nowTime,
+        },
+      ]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Hız kısa listesi başarısız");
+    } finally {
+      setFastRiseBusy(false);
+    }
+  };
+
   const stopLiveWatch = () => {
     streamAbortRef.current?.abort();
     setLivePriceWatch((current) => current ? { ...current, status: "stopped" } : current);
@@ -940,6 +1119,11 @@ function ChatPageInner() {
                           <UpsideScoutCard scout={message.scout} />
                           {message.content && <MarkdownMessage content={message.content} />}
                         </div>
+                      ) : message.fast_rise ? (
+                        <div className="space-y-2.5">
+                          <FastRiseCard fastRise={message.fast_rise} />
+                          {message.content && <MarkdownMessage content={message.content} />}
+                        </div>
                       ) : (
                         <MarkdownMessage content={message.content} />
                       )}
@@ -1046,6 +1230,26 @@ function ChatPageInner() {
                 <span className="flex items-center gap-1">
                   <span>🎯</span>
                   <span>5D+15D YÜKSELİŞ KEŞFİ</span>
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              className="shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 hover:bg-amber-500/30 text-amber-300 text-[11px] font-mono font-bold transition-all disabled:opacity-40 shadow-sm"
+              onClick={runFastRise}
+              disabled={fastRiseBusy || busy}
+              title="En Hızlı Hangisi? (ölçülmüş kısa liste + kısa yorum)"
+            >
+              {fastRiseBusy ? (
+                <span className="flex items-center gap-1">
+                  <span className="upside-scout-spinner" />
+                  <span>HESAPLANIYOR…</span>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1">
+                  <span>🚀</span>
+                  <span>EN HIZLI HANGİSİ</span>
                 </span>
               )}
             </button>
