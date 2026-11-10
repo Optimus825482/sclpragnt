@@ -90,6 +90,28 @@ def _exit_defaults() -> dict:
     }
 #: Madde 1: REST de başarısızken zorla kapanış için max_hold çarpanı.
 _STALE_FORCE_CLOSE_FACTOR = float(getattr(config, "AUTO_PAPER_STALE_FORCE_CLOSE_FACTOR", 1.5))
+
+# 2026-11-10 (log gürültü kontrolü): likit olmayan sembollerde (HAEDAL/MITO/AVAX
+# gibi) miniTicker akışı yalnız işlem olduğunda satır taşır; 15 sn tazelik
+# kapısı (MAX_TICKER_AGE_SEC) her 5 sn'lik yönetim turunda uyarı üretir.
+# BAYAT uyarısı + REST yedeği sonuç satırları sembol başına BU aralıkta bir
+# düşer; REST yedeği HER TURDA AYNI ÇALIŞIR (yalnız log sıklığı — ticari
+# davranış, eşik veya bayraK değişikliği yok; DENEY_KAYDI gerektirmez).
+_STALE_TICKER_LOG_INTERVAL_SEC = 300.0
+_STALE_TICKER_LOG_AT: dict[str, float] = {}
+
+
+def _stale_ticker_log_gate(symbol: str, now: float) -> bool:
+    """Bayat-ticker log satırlarını sembol başına aralıkta bir geçirir (True=logla).
+
+    Ticari davranışa DOKUNMAZ: REST fiyat yedeği bu kapıdan bağımsız her turda
+    denenmeye devam eder. Ticker tazelenince sembolün sayacı temizlenir.
+    """
+    last = float(_STALE_TICKER_LOG_AT.get(symbol, 0.0) or 0.0)
+    if now - last >= _STALE_TICKER_LOG_INTERVAL_SEC:
+        _STALE_TICKER_LOG_AT[symbol] = now
+        return True
+    return False
 # 2026-10-15 (radar iyileştirme): zaman-durdurma (time-stop) — VARSAYILAN KAPALI (0).
 # AUTO_PAPER_TIME_STOP_MIN dk sonra kâr, AUTO_PAPER_TIME_STOP_MIN_PROFIT_PCT'in
 # altındaysa pozisyon kapatılır (reason="time_stop"). Önce simülatörde ölçülür.
@@ -1525,9 +1547,18 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # Son bilinen fiyat (bayat ticker, yoksa DB tepe/giriş) — yalnız aşağıdaki
     # zorla kapanışta kullanılır.
     last_known_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
+    # Log gürültü kapısı (2026-11-10): likit olmayan sembollerde her tur uyarı
+    # yerine sembol başına aralıkta bir. REST yedeği her turda çalışır.
+    _stale_logged = False
     if current_price > 0 and not price_is_fresh:
-        logger.warning("auto_paper %s: ticker BAYAT (yaş=%.1fs > %ss) — REST fiyat yedeği deneniyor",
-                       symbol, (now * 1000 - ticker_ts) / 1000.0, config.MAX_TICKER_AGE_SEC)
+        _stale_logged = _stale_ticker_log_gate(symbol, now)
+        if _stale_logged:
+            logger.warning("auto_paper %s: ticker BAYAT (yaş=%.1fs > %ss) — REST fiyat yedeği deneniyor (bu satır sembol başına %d sn'de bir)",
+                           symbol, (now * 1000 - ticker_ts) / 1000.0, config.MAX_TICKER_AGE_SEC,
+                           int(_STALE_TICKER_LOG_INTERVAL_SEC))
+    elif price_is_fresh:
+        # Ticker tazelendi: sayacı temizle (bir sonraki bayatlıkta ilk turda loglasın).
+        _STALE_TICKER_LOG_AT.pop(symbol, None)
 
     # 2026-10-15 (denetim düzeltmesi, madde 1): ticker bayat/eksikse ESKİDEN bu
     # tur erken dönülüyor, SL/trailing/max_hold hiç çalışmıyordu (WS akışında
@@ -1540,12 +1571,16 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         try:
             rest_price, _rest_info = await _fresh_public_price(symbol)
         except Exception as rest_exc:
-            logger.warning("auto_paper %s: REST fiyat yedeği hatası: %s", symbol, rest_exc)
+            if _stale_logged:
+                logger.warning("auto_paper %s: REST fiyat yedeği hatası: %s", symbol, rest_exc)
+            else:
+                logger.debug("auto_paper %s: REST fiyat yedeği hatası (tekrar): %s", symbol, rest_exc)
         if rest_price and float(rest_price) > 0:
             current_price = float(rest_price)
             price_is_fresh = True
-            logger.info("auto_paper %s: bayat/eksik ticker yerine REST fiyatı kullanıldı (%.6f)",
-                        symbol, current_price)
+            if _stale_logged:
+                logger.info("auto_paper %s: bayat/eksik ticker yerine REST fiyatı kullanıldı (%.6f)",
+                            symbol, current_price)
 
     # 1. SÜRE KONTROLÜ: varsayılan `config.AUTO_PAPER_MAX_HOLD_MINUTES` (120 dk;
     # 2026-09-21 Erkan kararı 60 dk idi, 2026-10-07 optimizasyonuyla 120'ye

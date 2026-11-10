@@ -144,6 +144,18 @@ docker compose start backend
 
 Off-box kopya için host'ta `docker volume inspect scalper_pg_backups` ile mountpoint'i bulup cron/rsync ile dışarı alın.
 
+### Bilinen üretim uyarıları (2026-11-10)
+
+- **`/data/ml_models` yazılamıyor → `/tmp/ml_models` düşüşü:** Eski (root sahipliğiyle oluşturulmuş) `scalper_data` volume'u, non-root (uid 10001) backend konteynerine yazım vermez; ML modeli restart'ta kaybolur. Host'ta BİR KEZ çalıştırın:
+
+  ```bash
+  docker run --rm -v scalper_data:/data alpine chown -R 10001:10001 /data
+  ```
+
+  Sonra backend'i yeniden başlatın; `entrypoint.sh` yazımprobe'u geçer ve kalıcı dizine döner. (Yeni volume'larda gerek yok — Dockerfile `/data`'yı 10001'e chown eder.)
+- **`auto_paper <SYM>: ticker BAYAT … REST fiyat yedeği`:** Likit olmayan sembollerde (HAEDAL/MITO/AVAX gibi) miniTicker akışı yalnız işlem olduğunda satır taşır; 15 sn tazelik kapısı (güvenlik kontrolü, değişmez) bu yüzden açılır. REST yedeği tasarlanan davranıştır ve her turda çalışır — log satırları sembol başına 5 dakikada bir düşürülecek şekilde sınırlandırıldı (yalnız log sıklığı; ticari davranış aynı).
+- **`WhatsApp köprüsüne ulaşılamadı: HTTP 503`:** Köprünün kendi `/send` ucu `503 "WhatsApp bağlı değil"` döner — yani backend değil, `whatsapp-bridge` içindeki Baileys oturumu kopmuş demektir. `docker compose restart whatsapp-bridge` (gerekirse QR yeniden taratın; oturum `whatsapp_auth` volume'unda). Backend tarafı fail-safe'tir, akış etkilenmez.
+
 ### LLM salt-okunur rol (deploy notu — 2026-10-15 denetimi)
 
 LLM'in `read_only_sql` aracı sqlglot AST doğrulamasından geçer (`backend/app/sql_guard.py`), sorgu `READ ONLY` ve `statement_timeout = 5s` ile koşar ve `llm_readonly` rolüne (migration `014_llm_readonly_role.sql`) geçer. Migration rolü ve sütun bazlı SELECT yetkilerini oluşturur; ancak aşağıdakiler **deploy kararıdır** ve otomatik yapılmaz:

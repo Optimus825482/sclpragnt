@@ -1460,6 +1460,39 @@ class AutoPaperTradePlanFixRound1Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({}, trade)
 
 
+class StaleTickerLogGateTests(unittest.TestCase):
+    """2026-11-10: bayat-ticker log gürültü kapısı (yalnız log sıklığı).
+
+    Likit olmayan sembollerde miniTicker yalnız işlem olunca satır taşır;
+    15 sn tazelik kapısı her 5 sn'lik yönetim turunda uyarı basardı
+    (HAEDAL/MITO/AVAX). Kapı log satırlarını sembol başına 5 dk'da bir
+    geçirir; REST fiyat yedeği HER TURDA çalışmaya devam eder.
+    """
+
+    def setUp(self):
+        auto_paper._STALE_TICKER_LOG_AT.clear()
+
+    def tearDown(self):
+        auto_paper._STALE_TICKER_LOG_AT.clear()
+
+    def test_first_call_logs_then_silenced_until_interval(self):
+        now = 1000.0
+        self.assertTrue(auto_paper._stale_ticker_log_gate("HAEDALTRY", now))
+        # Aralık içindeki turlar sessiz kalır (ticari davranış değişmez).
+        self.assertFalse(auto_paper._stale_ticker_log_gate("HAEDALTRY", now + 5))
+        self.assertFalse(auto_paper._stale_ticker_log_gate("HAEDALTRY", now + 299))
+        # Aralık dolduğunda tekrar loglanır.
+        self.assertTrue(auto_paper._stale_ticker_log_gate("HAEDALTRY", now + 300))
+
+    def test_symbols_are_independent_and_reset_allows_logging(self):
+        now = 1000.0
+        self.assertTrue(auto_paper._stale_ticker_log_gate("HAEDALTRY", now))
+        self.assertTrue(auto_paper._stale_ticker_log_gate("MITOTRY", now))
+        # Ticker tazelenince yönetim turu sayacı siler → sonraki bayatlık ilk turda loglanır.
+        auto_paper._STALE_TICKER_LOG_AT.pop("HAEDALTRY", None)
+        self.assertTrue(auto_paper._stale_ticker_log_gate("HAEDALTRY", now + 1))
+
+
 if __name__ == "__main__":
     unittest.main()
 
