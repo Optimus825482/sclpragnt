@@ -174,9 +174,12 @@ def test_combined_quality_score_monotonic_in_confirmations():
 def test_send_combined_list_quality_gate():
     import inspect
     from app.routers import monitoring as mo
+    # 2026-11-10 refactor: eşik/top-n seçimi `_combined_list_select`'e taşındı;
+    # gönderim/kayıt akışı `_send_combined_list`'te kaldı.
     src = inspect.getsource(mo._send_combined_list)
-    assert 'cfg.get("min_score"' in src
-    assert 'cfg.get("top_n"' in src
+    select_src = inspect.getsource(mo._combined_list_select)
+    assert 'cfg.get("min_score"' in select_src
+    assert 'cfg.get("top_n"' in select_src
     assert "format_combined_list" in src
     assert "save_daily_rising_report" in src
 
@@ -210,8 +213,10 @@ def test_send_combined_status_uses_notify_price():
     import inspect
     from app.routers import monitoring as mo
     src = inspect.getsource(mo._send_combined_status)
+    # 2026-11-10 refactor: satır kurulumu `_status_build_rows`'a taşındı.
+    rows_src = inspect.getsource(mo._status_build_rows)
     assert "COMBINED_LIST_KIND" in src
-    assert "notify_price" in src
+    assert "notify_price" in rows_src
     assert "format_combined_status" in src
 
 
@@ -265,10 +270,12 @@ def test_combined_loop_first_attempt_db_cooldown_guarded():
     loop_src = inspect.getsource(mo.daily_rising_combined_loop)
     assert "startup_attempted" in loop_src
     assert "_send_combined_list" in loop_src
+    # 2026-11-10 refactor: DB-yaş koruması `_combined_list_rate_gate`'e taşındı.
     send_src = inspect.getsource(mo._send_combined_list)
+    gate_src = inspect.getsource(mo._combined_list_rate_gate)
     # DB-temelli koruma: son gönderim yaşı periyotla karşılaştırılır.
-    assert "last_daily_rising_report" in send_src
-    assert "force" in send_src        # elle gönderim korumayı atlar
+    assert "last_daily_rising_report" in gate_src
+    assert "force" in gate_src        # elle gönderim korumayı atlar
     assert "sent_at" in send_src
 
 

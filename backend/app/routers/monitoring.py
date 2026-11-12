@@ -1138,6 +1138,71 @@ async def _broadcast_user_whatsapp(notif: dict) -> None:
         logger.debug("kullanıcı WhatsApp fan-out atlandı: %s", exc)
 
 
+def _deferred_is_stale(notif: dict, now: float) -> bool:
+    """TTL kontrolü: hedef ufku (+2 dk tolerans) geçtiyse bayat push gönderilmez."""
+    try:
+        detected = float(notif.get("detected_at") or 0)
+        horizon = int(notif.get("horizon_minutes") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(detected and horizon and (now - detected) > (horizon + 2) * 60)
+
+
+async def _deferred_deliver_one(notif: dict) -> bool | None:
+    """Tek ertelenmiş bildirimi push'lar + kaydı/etiketleri işler.
+
+    Döner: `True` gönderildi, `False` başarısız (yeniden denenir),
+    `None` politika bloğu (KALICI düşür).
+    """
+    is_alarm = bool(notif.get("deferred_alert"))
+    # Radar bildirimi (kaydı `monitoring_notifications`'ta tutulan) mi? Alarm zarfı
+    # ve yükseliş (kanıt tablosu `rising_alerts`) bildirimi o tabloya yazılmaz.
+    recordable = (not is_alarm) and str(notif.get("source") or "") != "rising"
+    first_attempt = not notif.get("push_attempted")
+    if first_attempt and not is_alarm:
+        # Sink politikası (kayıt yazılmadan önce push'u da keser).
+        _reason = _notification_policy.evaluate(notif)
+        if _reason:
+            logger.info("ertelenen bildirim politikayla düşürüldü %s: %s",
+                        notif.get("symbol"), _reason)
+            return None
+    ok = await _send_push(notif)
+    notif["push_success"] = ok
+    notif["push_attempted"] = True
+    if ok:
+        notif["sent_via_push"] = True
+    if recordable and not notif.get("id"):
+        # İLK deneme: bildirim şimdi (push denendiği için) kaydedilir; etiket gerçek sonuçtur.
+        notif["sent_via_push"] = bool(ok)
+        await _record_history([notif])
+        if not notif.get("policy_blocked"):
+            _link_pending_notification(notif)
+            _monitoring_state["history"] = ([notif] + _monitoring_state["history"])[:HISTORY_LIMIT]
+    elif ok and notif.get("id"):
+        # Ertelenen push gerçekten gönderildi → DB etiketini düzelt
+        try:
+            await database.mark_monitoring_push_sent(notif.get("id"))
+        except Exception as exc:
+            logger.warning("push etiketi güncellenemedi %s: %s", notif.get("id"), exc)
+    if ok and not is_alarm and not notif.get("policy_blocked"):
+        # Uygulamaya yayın: yalnız push GİTTİYSE (2026-10-28 tek teslim kuralı). Başarılı push kuyruktan
+        # çıktığından yayın tek sefer olur (ilk deneme başarısız, yeniden deneme başarılıysa da yayınlanır).
+        try:
+            await ws_manager.broadcast({"type": _ws_alert_type(notif), "data": [notif]})
+        except Exception as exc:
+            logger.debug("ertelenen bildirim WS yayını %s: %s", notif.get("symbol"), exc)
+    if ok:
+        # R3: yükseliş bildiriminin kanıt satırı ayrı tabloda (`rising_alerts`);
+        # `id` yerine `alert_id` taşır → dürüstlük kuralı orada da uygulanır.
+        alert_id = notif.get("alert_id")
+        if alert_id:
+            try:
+                await database.mark_rising_alert_notified(int(alert_id), True)
+            except Exception as exc:
+                logger.debug("rising push etiketi güncellenemedi %s: %s", alert_id, exc)
+    return ok
+
+
 async def _flush_deferred_push():
     """Sessiz saat bittiyse ertelenen push kuyruğunu boşalt (M1/P1 — R2-07/R4-12).
 
@@ -1177,13 +1242,8 @@ async def _flush_deferred_push():
     survivors = deque(maxlen=_deferred_push.maxlen)
     while _deferred_push:
         notif = _deferred_push.popleft()
-        try:
-            detected = float(notif.get("detected_at") or 0)
-            horizon = int(notif.get("horizon_minutes") or 0)
-        except (TypeError, ValueError):
-            detected, horizon = 0.0, 0
         # TTL: hedef ufku (+ tolerans) geçtiyse bayat push gönderilmez.
-        if detected and horizon and (now - detected) > (horizon + 2) * 60:
+        if _deferred_is_stale(notif, now):
             dropped += 1
             continue
         if not vapid_configured:
@@ -1192,54 +1252,12 @@ async def _flush_deferred_push():
             # Push denenmediği için kayıt/yayın da YOK.
             survivors.append(notif)
             continue
-        is_alarm = bool(notif.get("deferred_alert"))
-        # Radar bildirimi (kaydı `monitoring_notifications`'ta tutulan) mi? Alarm zarfı
-        # ve yükseliş (kanıt tablosu `rising_alerts`) bildirimi o tabloya yazılmaz.
-        recordable = (not is_alarm) and str(notif.get("source") or "") != "rising"
-        first_attempt = not notif.get("push_attempted")
-        if first_attempt and not is_alarm:
-            # Sink politikası (kayıt yazılmadan önce push'u da keser).
-            _reason = _notification_policy.evaluate(notif)
-            if _reason:
-                logger.info("ertelenen bildirim politikayla düşürüldü %s: %s",
-                            notif.get("symbol"), _reason)
-                dropped += 1
-                continue
-        ok = await _send_push(notif)
-        notif["push_success"] = ok
-        notif["push_attempted"] = True
-        if ok:
-            notif["sent_via_push"] = True
-        if recordable and not notif.get("id"):
-            # İLK deneme: bildirim şimdi (push denendiği için) kaydedilir; etiket gerçek sonuçtur.
-            notif["sent_via_push"] = bool(ok)
-            await _record_history([notif])
-            if not notif.get("policy_blocked"):
-                _link_pending_notification(notif)
-                _monitoring_state["history"] = ([notif] + _monitoring_state["history"])[:HISTORY_LIMIT]
-        elif ok and notif.get("id"):
-            # Ertelenen push gerçekten gönderildi → DB etiketini düzelt
-            try:
-                await database.mark_monitoring_push_sent(notif.get("id"))
-            except Exception as exc:
-                logger.warning("push etiketi güncellenemedi %s: %s", notif.get("id"), exc)
-        if ok and not is_alarm and not notif.get("policy_blocked"):
-            # Uygulamaya yayın: yalnız push GİTTİYSE (2026-10-28 tek teslim kuralı). Başarılı push kuyruktan
-            # çıktığından yayın tek sefer olur (ilk deneme başarısız, yeniden deneme başarılıysa da yayınlanır).
-            try:
-                await ws_manager.broadcast({"type": _ws_alert_type(notif), "data": [notif]})
-            except Exception as exc:
-                logger.debug("ertelenen bildirim WS yayını %s: %s", notif.get("symbol"), exc)
+        ok = await _deferred_deliver_one(notif)
+        if ok is None:
+            dropped += 1
+            continue
         if ok:
             sent += 1
-            # R3: yükseliş bildiriminin kanıt satırı ayrı tabloda (`rising_alerts`);
-            # `id` yerine `alert_id` taşır → dürüstlük kuralı orada da uygulanır.
-            alert_id = notif.get("alert_id")
-            if alert_id:
-                try:
-                    await database.mark_rising_alert_notified(int(alert_id), True)
-                except Exception as exc:
-                    logger.debug("rising push etiketi güncellenemedi %s: %s", alert_id, exc)
         elif notif.get("push_skip_reason") == "daily_symbol_limit":
             # Günde 1 push/sembol: bu sembol bugün zaten bildirildi — KALICI atlama, yeniden denenmez.
             dropped += 1
@@ -1740,6 +1758,71 @@ def _rising_risk_block_reason(symbol: str) -> tuple[str | None, dict]:
     return None, evidence
 
 
+def _notification_base_price(sym: str, c: dict, first_price: float | None) -> float:
+    """Bildirim taban fiyatı: güncelleme yolunda ilk tespit fiyatı, yoksa tazelik doğrulanmış ticker.
+
+    D-05: tazeligi dogrulanmis ticker YOKSA adayin kendi fiyati kullanılır.
+    MFE/touched de `candidate.price` uzerinden olculuyor -> tek taban.
+    """
+    price = float(c.get("price", 0) or 0)
+    if first_price is not None:
+        base_price = first_price
+    else:
+        ticker_price = _ticker_price(sym)
+        base_price = ticker_price if ticker_price else price
+        if ticker_price and price > 0:
+            divergence = abs(ticker_price - price) / price * 100
+            if divergence > TICKER_DIVERGENCE_WARN_PCT:
+                logger.warning(
+                    "[monitoring] ticker/aday fiyat ayrisimi %.1f%%: %s ticker=%s aday=%s",
+                    divergence, sym, ticker_price, price)
+    if base_price <= 0:
+        base_price = price
+    return base_price
+
+
+def _notification_prefixes(c: dict, sources: list, is_4way: bool) -> tuple[str, str, str | None, str | None]:
+    """Başlık/mesaj önekleri. Döner: (prefix_str, title_prefix, surge_block, confluence_gate).
+
+    2026-09-26 (bölüm 2.2) + P0-1 (2026-10-07): SERT risk bloğu bildirim
+    üretmez (buraya nadiren düşer — güncelleme yolu); "yetersiz 4'lü teyit"
+    ise SKORLAMA girdisidir, bildirimi öldürmez. İkisi AYRI alanlarda taşınır:
+    `surge_block_reason` = sert risk (varsa), `confluence_gate` = skor/teyit
+    nedeni (bilgilendirici; karar yolunu kapatmaz).
+    """
+    _surge_block = _master_surge_block_reason(c)
+    _confluence_gate = _master_surge_confluence_gate_reason(c)
+    prefix_str = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
+    title_prefix = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
+    if _surge_block:
+        prefix_str = title_prefix = f"⛔ RİSK KAPISI ({_surge_block}) · "
+    # 2026-10-17: rejim kalkanı rozeti — bildirim gider, başlık/mesaj "⚠ BTC REJİM" ile başlar.
+    _regime_badge = (c.get("master_surge") or {}).get("regime_badge") if isinstance(c.get("master_surge"), dict) else None
+    if _regime_badge:
+        prefix_str = "⚠ BTC REJİM · " + prefix_str
+        title_prefix = "⚠ BTC REJİM · " + title_prefix
+    return prefix_str, title_prefix, _surge_block, _confluence_gate
+
+
+def _notification_metric_fields(target: float, c: dict, horizon: int) -> dict:
+    """2026-10-18: DÜRÜST SAYILAR — kalibre isabet %, başabaş isabet %, net hedef, skor etiketi.
+
+    `app/notify_metrics.py`; UI sözleşmesi: bu dört ad sabit. Skor kalite değil
+    "hareket şiddeti"dir. Ayrıca A4: ödül/risk oranı ve dayanağı backend'den
+    yayınlanır — frontend kendi SL sabitini varsaymasın (tek kaynak).
+    """
+    return {
+        **notify_metrics.notification_metrics(
+            target, c.get("atr_pct") if c.get("atr_pct") is not None else c.get("atr_pct_15m"), horizon),
+        "rr": round(_rr_ratio(target), 3) if _rr_ratio(target) is not None else None,
+        "sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 5.0) or 0.0),
+        # A3: satırın yazıldığı ölçek sürümü + cap. Okuma tarafı bu etiketle
+        # doğru haritayı uygular (etiket yoksa kayıt lineer kabul edilir).
+        "norm_version": MONITORING_SCORE_NORM_VERSION,
+        "norm_cap": float(getattr(config, "MONITORING_SCORE_NORM_CAP", 2000) or 0),
+    }
+
+
 def _build_notification(sym, c, settings, first_price: float | None = None) -> dict:
     """Zengin bildirim içeriği: sembol, tespit zamanı, %potansiyel, anlık ve beklenen fiyat.
 
@@ -1755,24 +1838,8 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     score = (float(c.get("unified_score") or 0) if unified_pass
              else normalize_score(c.get("velocity_score", 0)))
     sources = list(c.get("unified_sources") or [])
-    source_txt = unified_signals.sources_text(sources) if sources else ""
     target = float(c.get("target_pct", 2.0) or 0)
-    price = float(c.get("price", 0) or 0)
-    if first_price is not None:
-        base_price = first_price
-    else:
-        # D-05: tazeligi dogrulanmis ticker YOKSA adayin kendi fiyati.
-        # MFE/touched de `candidate.price` uzerinden olculuyor -> tek taban.
-        ticker_price = _ticker_price(sym)
-        base_price = ticker_price if ticker_price else price
-        if ticker_price and price > 0:
-            divergence = abs(ticker_price - price) / price * 100
-            if divergence > TICKER_DIVERGENCE_WARN_PCT:
-                logger.warning(
-                    "[monitoring] ticker/aday fiyat ayrisimi %.1f%%: %s ticker=%s aday=%s",
-                    divergence, sym, ticker_price, price)
-    if base_price <= 0:
-        base_price = price
+    base_price = _notification_base_price(sym, c, first_price)
     expected_price = base_price * (1 + target / 100) if base_price > 0 else 0.0
     detected_at = time.time()
     horizon = int(c.get("horizon_minutes", 5) or 5)
@@ -1784,22 +1851,8 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     is_4way = bool(c.get("confluence_4way") or len(sources) >= 4)
     # MACD MTF konfluans snapshot'ı — senkron önbellek okuması (bloklamaz).
     mtf_compact = macd_mtf.cached_compact(sym)
-    # 2026-09-26 (bölüm 2.2) + P0-1 (2026-10-07): SERT risk bloğu bildirim
-    # üretmez (buraya nadiren düşer — güncelleme yolu); "yetersiz 4'lü teyit"
-    # ise SKORLAMA girdisidir, bildirimi öldürmez. İkisi AYRI alanlarda taşınır:
-    # `surge_block_reason` = sert risk (varsa), `confluence_gate` = skor/teyit
-    # nedeni (bilgilendirici; karar yolunu kapatmaz).
-    _surge_block = _master_surge_block_reason(c)
-    _confluence_gate = _master_surge_confluence_gate_reason(c)
-    prefix_str = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
-    title_prefix = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
-    if _surge_block:
-        prefix_str = title_prefix = f"⛔ RİSK KAPISI ({_surge_block}) · "
-    # 2026-10-17: rejim kalkanı rozeti — bildirim gider, başlık/mesaj "⚠ BTC REJİM" ile başlar.
+    prefix_str, title_prefix, _surge_block, _confluence_gate = _notification_prefixes(c, sources, is_4way)
     _regime_badge = (c.get("master_surge") or {}).get("regime_badge") if isinstance(c.get("master_surge"), dict) else None
-    if _regime_badge:
-        prefix_str = "⚠ BTC REJİM · " + prefix_str
-        title_prefix = "⚠ BTC REJİM · " + title_prefix
     message = (
         f"{prefix_str}{sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str} | "
         f"Anlık: {base_price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
@@ -1836,18 +1889,7 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         "candidate_id": c.get("candidate_id"),
         "ml_hit_probability": ml_prob,
         "ml_target_pct": c.get("ml_target_pct"),
-        # 2026-10-18: DÜRÜST SAYILAR — kalibre isabet %, başabaş isabet %, net hedef, skor etiketi
-        # (app/notify_metrics.py; UI sözleşmesi: bu dört ad sabit). Skor kalite değil "hareket şiddeti"dir.
-        **notify_metrics.notification_metrics(
-            target, c.get("atr_pct") if c.get("atr_pct") is not None else c.get("atr_pct_15m"), horizon),
-        # A4: ödül/risk oranı ve dayanağı backend'den yayınlanır. Frontend
-        # kendi SL sabitini varsaymasın (kalibrasyon tek kaynaktan gelsin).
-        "rr": round(_rr_ratio(target), 3) if _rr_ratio(target) is not None else None,
-        "sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 5.0) or 0.0),
-        # A3: satırın yazıldığı ölçek sürümü + cap. Okuma tarafı bu etiketle
-        # doğru haritayı uygular (etiket yoksa kayıt lineer kabul edilir).
-        "norm_version": MONITORING_SCORE_NORM_VERSION,
-        "norm_cap": float(getattr(config, "MONITORING_SCORE_NORM_CAP", 2000) or 0),
+        **_notification_metric_fields(target, c, horizon),
         # MACD MTF konfluans snapshot'ı (bildirim ANI — ölçüm raporu için;
         # önbellek okumasıdır, hesap scan turundaki fire-and-forget görevde).
         "macd_mtf_verdict": (mtf_compact or {}).get("verdict"),
@@ -3745,29 +3787,19 @@ _RISING_EVIDENCE_FILL_SEC = 300.0
 _daily_momentum_loop_task = None
 
 
-async def _daily_momentum_scan_once() -> int:
-    """Tek tur: velocity tara → daily_momentum_ok adayları kaydet + bildir.
-
-    DÖNÜŞ: işlenen (kaydedilen+bildirilen) aday sayısı.
-    """
-    if not config.DAILY_MOMENTUM_ENABLED:
-        return 0
+async def _momentum_collect_pool() -> tuple[dict, list]:
+    """5/15 tarama + short-squeeze. Döner: (by_sym, squeeze)."""
     try:
         from app.binance_tr_public import trading_symbols as _trading_syms
         tr_syms = [s for s in await _trading_syms("TRY")]
     except Exception:
         tr_syms = []
-    try:
-        scan5, scan15 = await asyncio.gather(
-            detect_velocity_candidates({}, horizon_minutes=5),
-            detect_velocity_candidates({}, horizon_minutes=15),
-        )
-    except Exception as exc:
-        logger.warning("günlük momentum taraması başarısız: %s", exc)
-        return 0
+    scan5, scan15 = await asyncio.gather(
+        detect_velocity_candidates({}, horizon_minutes=5),
+        detect_velocity_candidates({}, horizon_minutes=15),
+    )
     # Short-squeeze adayları (vadeli funding negatif) — aynı akışa girer.
     squeeze = await _short_squeeze_candidates(tr_syms)
-
     pool = list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or []) + \
         list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or [])
     # Sembol başına en iyi (upside_rank varsa ona göre)
@@ -3781,7 +3813,11 @@ async def _daily_momentum_scan_once() -> int:
         cur = by_sym.get(sym)
         if cur is None or float(c.get("velocity_score") or 0) > float(cur.get("velocity_score") or 0):
             by_sym[sym] = c
-    # Squeeze adaylarını birleştir (momentumda olan varsa strategy='both').
+    return by_sym, squeeze
+
+
+def _momentum_merge_squeeze(by_sym: dict, squeeze: list) -> dict:
+    """Squeeze adaylarını birleştir (momentumda olan varsa strategy='both')."""
     for c in squeeze:
         sym = str(c.get("symbol") or "").upper()
         if not sym or sym in analyzer.positions:
@@ -3792,7 +3828,77 @@ async def _daily_momentum_scan_once() -> int:
         else:
             cur["strategy"] = "both"
             cur["short_squeeze_potential"] = True
+    return by_sym
 
+
+async def _momentum_process_symbol(sym: str, c: dict, settings: dict, now: float) -> dict | None:
+    """Tek sembol: cooldown → fiyat → bildirim → DB kaydı → teslim. Döner: rapor satırı | None."""
+    price = float(_ticker_price(sym) or c.get("price") or 0)
+    if price <= 0:
+        return None
+    notif = _build_notification(sym, c, settings)
+    await notification_plan.attach_plan(notif, "radar")
+    _strat = str(c.get("strategy") or "daily_momentum")
+    notif["strategy"] = _strat
+    notif["sources"] = list(set((notif.get("sources") or []) + [s for s in (_strat.split("+") or ["daily_momentum"])]))
+    notif["daily_momentum_ok"] = True
+    notif["ret_8h_pct"] = c.get("ret_8h_pct")
+    notif["adx_14"] = c.get("adx_14")
+    notif["ceiling_pct"] = c.get("ceiling_pct")
+    notif["ceiling_price"] = c.get("ceiling_price")
+    if c.get("funding_rate_pct") is not None:
+        notif["funding_rate_pct"] = c.get("funding_rate_pct")
+    _pot = await _compute_potential(sym, price)
+    if _pot:
+        notif["potential_pct"] = _pot.get("potential_pct")
+    row_id = await database.save_daily_rising({
+        "created_at": now, "symbol": sym, "price": price,
+        "target_pct": c.get("target_pct"),
+        "ceiling_pct": c.get("ceiling_pct"),
+        "ceiling_price": c.get("ceiling_price") or (
+            price * (1 + float(c["ceiling_pct"]) / 100.0) if c.get("ceiling_pct") else None),
+        "velocity_score": c.get("velocity_score"),
+        "ret_8h": c.get("ret_8h_pct"), "adx": c.get("adx_14"),
+        "atr_pct": c.get("atr_pct_15m") or c.get("atr_pct"),
+        "slope": c.get("slope_15m"),
+        "spread_pct": (market.orderflow.get(sym) or {}).get("spread_pct"),
+        "horizon_minutes": c.get("horizon_minutes"),
+        "notified": True,
+        "strategy": _strat,
+        "potential_pct": _pot.get("potential_pct") if _pot else None,
+        "details": {"daily_momentum_reason": c.get("daily_momentum_reason"),
+                    "funding_state": c.get("funding_state")},
+    })
+    # Mevcut bildirim teslim yolu: push + DB + otonom paper (auto-paper).
+    try:
+        await _deliver_scan_notifications([notif])
+    except Exception as exc:
+        logger.debug("günlük momentum bildirim teslimi: %s", exc)
+    if row_id:
+        await database.mark_daily_rising_notified(row_id)
+    logger.info("yükseliş adayı (%s): %s @ %.6f (tavan +%%%s)", _strat, sym, price, c.get("ceiling_pct"))
+    return {
+        "symbol": sym, "price": price, "ceiling_pct": c.get("ceiling_pct"),
+        "potential_pct": _pot.get("potential_pct") if _pot else None,
+        "strategy": _strat, "velocity_score": c.get("velocity_score"),
+        "target_probability": touch_probability(
+            c.get("ceiling_pct"), c.get("atr_pct_15m") or c.get("atr_pct")),
+    }
+
+
+async def _daily_momentum_scan_once() -> int:
+    """Tek tur: velocity tara → daily_momentum_ok adayları kaydet + bildir.
+
+    DÖNÜŞ: işlenen (kaydedilen+bildirilen) aday sayısı.
+    """
+    if not config.DAILY_MOMENTUM_ENABLED:
+        return 0
+    try:
+        by_sym, squeeze = await _momentum_collect_pool()
+    except Exception as exc:
+        logger.warning("günlük momentum taraması başarısız: %s", exc)
+        return 0
+    by_sym = _momentum_merge_squeeze(by_sym, squeeze)
     if not by_sym:
         return 0
 
@@ -3800,64 +3906,14 @@ async def _daily_momentum_scan_once() -> int:
     cooldown = float(config.DAILY_MOMENTUM_REPEAT_COOLDOWN_MIN) * 60.0
     now = time.time()
     processed = 0
-    _report_rows: list[dict] = []
     for sym, c in by_sym.items():
         try:
             last = await database.last_daily_rising_at(sym)
             if last is not None and (now - last) < cooldown:
                 continue
-            price = float(_ticker_price(sym) or c.get("price") or 0)
-            if price <= 0:
-                continue
-            notif = _build_notification(sym, c, settings)
-            await notification_plan.attach_plan(notif, "radar")
-            _strat = str(c.get("strategy") or "daily_momentum")
-            notif["strategy"] = _strat
-            notif["sources"] = list(set((notif.get("sources") or []) + [s for s in (_strat.split("+") or ["daily_momentum"])]))
-            notif["daily_momentum_ok"] = True
-            notif["ret_8h_pct"] = c.get("ret_8h_pct")
-            notif["adx_14"] = c.get("adx_14")
-            notif["ceiling_pct"] = c.get("ceiling_pct")
-            notif["ceiling_price"] = c.get("ceiling_price")
-            if c.get("funding_rate_pct") is not None:
-                notif["funding_rate_pct"] = c.get("funding_rate_pct")
-            _pot = await _compute_potential(sym, price)
-            if _pot:
-                notif["potential_pct"] = _pot.get("potential_pct")
-            row_id = await database.save_daily_rising({
-                "created_at": now, "symbol": sym, "price": price,
-                "target_pct": c.get("target_pct"),
-                "ceiling_pct": c.get("ceiling_pct"),
-                "ceiling_price": c.get("ceiling_price") or (
-                    price * (1 + float(c["ceiling_pct"]) / 100.0) if c.get("ceiling_pct") else None),
-                "velocity_score": c.get("velocity_score"),
-                "ret_8h": c.get("ret_8h_pct"), "adx": c.get("adx_14"),
-                "atr_pct": c.get("atr_pct_15m") or c.get("atr_pct"),
-                "slope": c.get("slope_15m"),
-                "spread_pct": (market.orderflow.get(sym) or {}).get("spread_pct"),
-                "horizon_minutes": c.get("horizon_minutes"),
-                "notified": True,
-                "strategy": _strat,
-                "potential_pct": _pot.get("potential_pct") if _pot else None,
-                "details": {"daily_momentum_reason": c.get("daily_momentum_reason"),
-                            "funding_state": c.get("funding_state")},
-            })
-            # Mevcut bildirim teslim yolu: push + DB + otonom paper (auto-paper).
-            try:
-                await _deliver_scan_notifications([notif])
-            except Exception as exc:
-                logger.debug("günlük momentum bildirim teslimi: %s", exc)
-            if row_id:
-                await database.mark_daily_rising_notified(row_id)
-            processed += 1
-            _report_rows.append({
-                "symbol": sym, "price": price, "ceiling_pct": c.get("ceiling_pct"),
-                "potential_pct": _pot.get("potential_pct") if _pot else None,
-                "strategy": _strat, "velocity_score": c.get("velocity_score"),
-                "target_probability": touch_probability(
-                    c.get("ceiling_pct"), c.get("atr_pct_15m") or c.get("atr_pct")),
-            })
-            logger.info("yükseliş adayı (%s): %s @ %.6f (tavan +%%%s)", _strat, sym, price, c.get("ceiling_pct"))
+            row = await _momentum_process_symbol(sym, c, settings, now)
+            if row is not None:
+                processed += 1
         except Exception as exc:
             logger.debug("günlük momentum aday işleme (%s): %s", sym, exc)
     # WhatsApp gönderimi KALDIRILDI (2026-10-11): tek mesaj kanalı artık
@@ -4089,44 +4145,32 @@ def _inherit_anchor_prices(top: list[dict], prev_candidates: list[dict],
     return built
 
 
-async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -> bool:
-    """Kombine tarama → kalite eşiği → TOP N liste → WhatsApp + DB.
+async def _combined_list_rate_gate(list_min: int, force: bool) -> bool:
+    """GÖNDERİM ARALIĞI KORUMASI (2026-10-11). Döner: True → gönderim yapılabilir.
 
-    Ayarlar Ayarlar sayfasından (DB) gelir; `cfg` verilmezse okunur.
-    GÖNDERİM ARALIĞI KORUMASI (2026-10-11): son BAŞARILI liste gönderiminden bu
-    yana periyottan (60 sn tolerans) az geçtiyse tekrar gönderilmez — restart /
-    çift tetikleme / ilk-tarama bayrağı sıfırlanması artık spam üretemez.
-    `force=True` (elle gönderim) bu korumayı atlar.
+    Son BAŞARILI liste gönderiminden bu yana periyottan (60 sn tolerans) az
+    geçtiyse tekrar gönderilmez — restart / çift tetikleme / ilk-tarama bayrağı
+    sıfırlanması artık spam üretemez. `force=True` (elle gönderim) atlar.
+    Restart, normal periyottan önce İKİNCİ liste gönderemez; uzun kesintiden
+    sonra ise hemen gönderilir (gerçek "ilk tarama" davranışı).
     """
-    from app.whatsapp_notify import format_combined_list, send_whatsapp, whatsapp_enabled
-    if not whatsapp_enabled():
-        return False
-    cfg = cfg or await combined_rising_settings()
-    list_min = max(1, int(cfg.get("list_min", 30) or 30))
-    # KORUMA: son gönderilen liste DB'de; tam periyottan (60 sn tolerans) yeni
-    # ise atla. Restart, normal periyottan önce İKİNCİ liste gönderemez; uzun
-    # kesintiden sonra ise hemen gönderilir (gerçek "ilk tarama" davranışı).
-    if not force:
-        try:
-            last = await database.last_daily_rising_report(COMBINED_LIST_KIND)
-            if last and last.get("sent"):
-                age = time.time() - float(last.get("sent_at") or 0)
-                if age < (list_min * 60.0 - 60.0):
-                    logger.info("kombine liste atlandı: son gönderim %d sn önce (< periyot)",
-                                int(age))
-                    return False
-        except Exception:
-            pass
+    if force:
+        return True
     try:
-        cands = await _combined_scan_rows()
-    except Exception as exc:
-        logger.warning("kombine tarama başarısız: %s", exc)
-        return False
-    await _persist_combined_scan_rows(cands)
-    # FAZ 2: aynı satırlar birleşik aday outcome journal'ına da yazılır
-    # (duplicate korumalı; hata yutar — gönderim akışını etkilemez).
-    _unified_outcome_scan_cache.update(generated_at=time.time(), rows=cands)
-    await _record_unified_outcomes(cands)
+        last = await database.last_daily_rising_report(COMBINED_LIST_KIND)
+        if last and last.get("sent"):
+            age = time.time() - float(last.get("sent_at") or 0)
+            if age < (list_min * 60.0 - 60.0):
+                logger.info("kombine liste atlandı: son gönderim %d sn önce (< periyot)",
+                            int(age))
+                return False
+    except Exception:
+        pass
+    return True
+
+
+def _combined_list_select(cands: list, cfg: dict) -> tuple[list, float]:
+    """Eşik + tekilleştirme + TOP N. Döner: (top, min_score)."""
     n = int(cfg.get("top_n", 3) or 3)
     min_score = float(cfg.get("min_score", 10.0))
     # 2026-10-16 (tarama güncellemesi): AYNI alanda (`scan_score` = kalite
@@ -4155,27 +4199,62 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     # 5m+15m olarak TOP N'de iki yer kapamaz; ufuklar `horizons` rozeti.
     from app.unified_scan import dedup_rows_by_symbol as _dedup_by_symbol
     ranked = _dedup_by_symbol(ranked)
-    top = ranked[:n]
-    if not top:
-        best_all = float((cands[0].get("scan_score") if cands else 0) or 0)
-        logger.info("kombine liste atlandı: eşiği (%.1f) geçen aday yok (en iyi %.2f)",
-                    min_score, best_all)
-        return False
+    return ranked[:n], min_score
+
+
+async def _combined_list_prev_candidates() -> list[dict]:
+    """Bir önceki kombine listenin adayları (referans fiyat devralma için)."""
     # REFERANS FİYAT DEVRALMA (kullanıcı kuralı 2026-10-11): yeni listede bir
     # sembol ÖNCEKİ listede de varsa, başlangıç (referans) fiyatı İLK bildirildiği
     # listedeki fiyattır — arka arkaya gelen listeler zinciri. Araya liste girip
     # sembol o listede YOKSA zincir kopar → referans o anki (bu listenin) fiyatı.
-    prev_candidates: list[dict] = []
     try:
         prev = await database.last_daily_rising_report(COMBINED_LIST_KIND)
         if prev:
             pc = prev.get("candidates") or []
             try:
-                prev_candidates = json.loads(pc) if isinstance(pc, str) else list(pc)
+                return json.loads(pc) if isinstance(pc, str) else list(pc)
             except (TypeError, ValueError):
-                prev_candidates = []
+                return []
     except Exception:
-        prev_candidates = []
+        return []
+    return []
+
+
+async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -> bool:
+    """Kombine tarama → kalite eşiği → TOP N liste → WhatsApp + DB.
+
+    Ayarlar Ayarlar sayfasından (DB) gelir; `cfg` verilmezse okunur.
+    GÖNDERİM ARALIĞI KORUMASI (2026-10-11): son BAŞARILI liste gönderiminden bu
+    yana periyottan (60 sn tolerans) az geçtiyse tekrar gönderilmez — restart /
+    çift tetikleme / ilk-tarama bayrağı sıfırlanması artık spam üretemez.
+    `force=True` (elle gönderim) bu korumayı atlar.
+    """
+    from app.whatsapp_notify import format_combined_list, send_whatsapp, whatsapp_enabled
+    if not whatsapp_enabled():
+        return False
+    cfg = cfg or await combined_rising_settings()
+    list_min = max(1, int(cfg.get("list_min", 30) or 30))
+    if not await _combined_list_rate_gate(list_min, force):
+        return False
+    try:
+        cands = await _combined_scan_rows()
+    except Exception as exc:
+        logger.warning("kombine tarama başarısız: %s", exc)
+        return False
+    await _persist_combined_scan_rows(cands)
+    # FAZ 2: aynı satırlar birleşik aday outcome journal'ına da yazılır
+    # (duplicate korumalı; hata yutar — gönderim akışını etkilemez).
+    _unified_outcome_scan_cache.update(generated_at=time.time(), rows=cands)
+    await _record_unified_outcomes(cands)
+    n = int(cfg.get("top_n", 3) or 3)
+    top, min_score = _combined_list_select(cands, cfg)
+    if not top:
+        best_all = float((cands[0].get("scan_score") if cands else 0) or 0)
+        logger.info("kombine liste atlandı: eşiği (%.1f) geçen aday yok (en iyi %.2f)",
+                    min_score, best_all)
+        return False
+    prev_candidates = await _combined_list_prev_candidates()
     sent_at = time.time()
     built = _inherit_anchor_prices(top, prev_candidates, sent_at)
     try:
@@ -4207,50 +4286,24 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     return sent
 
 
-async def _send_combined_status(*, cfg: dict | None = None, force: bool = False) -> bool:
-    """Son kombine listenin adaylarının bildirim anına göre anlık durumu + ortalama.
-
-    İSTENEN AKIŞ (2026-10-11): listeden sonra `track_min` (5) dk'da bir değişim
-    bildirimi gider. BİR SONRAKİ listeden ÖNCEKİ son durum bildiriminde ayrıca
-    her adayın LİSTE OLUŞTURULDUKTAN SONRAKİ EN YÜKSEK değişimi (zirve) gösterilir
-    — liste ömrü boyunca ne kadar tepe yaptığı bilgisi sonradan değerlendirmeye
-    yarar. Zirve değerleri hem mesaja hem DB'ye yazılır (`peak_pct`).
-
-    RESTART KORUMASI: son durumdan `track_min`'den az süre geçtiyse atlanır.
-    """
-    from app.whatsapp_notify import format_combined_status, send_whatsapp, whatsapp_enabled
-    if not whatsapp_enabled():
-        return False
-    cfg = cfg or await combined_rising_settings()
-    track_min = max(1, int(cfg.get("track_min", 5) or 5))
-    list_min = max(1, int(cfg.get("list_min", 20) or 20))
-    if not force:  # elle gönderim bu korumayı atlar
-        try:
-            last_status = await database.last_daily_rising_report(COMBINED_STATUS_KIND)
-            if last_status and last_status.get("sent"):
-                age = time.time() - float(last_status.get("sent_at") or 0)
-                if age < (track_min * 60.0 - 30.0):
-                    logger.info("kombine durum atlandı: son gönderim %d sn önce", int(age))
-                    return False
-        except Exception:
-            pass
-    prev = await database.last_daily_rising_report(COMBINED_LIST_KIND)
-    if not prev:
-        return False
-    prev_rows = prev.get("candidates") or []
+async def _status_rate_gate(track_min: int, force: bool) -> bool:
+    """RESTART KORUMASI: son durumdan `track_min`'den az süre geçtiyse atla."""
+    if force:  # elle gönderim bu korumayı atlar
+        return True
     try:
-        prev_rows = json.loads(prev_rows) if isinstance(prev_rows, str) else list(prev_rows)
-    except (TypeError, ValueError):
-        prev_rows = []
-    if not prev_rows:
-        return False
-    # BİR SONRAKİ LİSTE YAKIN MI? Son liste üzerinden list_min'e yaklaşıldıysa bu
-    # "son durum bildirimi"dir → zirve sütunu eklenir.
-    list_age = time.time() - float(prev.get("sent_at") or 0)
-    is_last_before_next = list_age >= (list_min * 60.0 - track_min * 60.0)
-    syms = [str(r.get("symbol") or "").upper() for r in prev_rows]
-    _px = await _batch_prices(syms)
-    # Zirve takibi: önceki durum kayıtlarındaki birikmiş peak + şimdiki değişim.
+        last_status = await database.last_daily_rising_report(COMBINED_STATUS_KIND)
+        if last_status and last_status.get("sent"):
+            age = time.time() - float(last_status.get("sent_at") or 0)
+            if age < (track_min * 60.0 - 30.0):
+                logger.info("kombine durum atlandı: son gönderim %d sn önce", int(age))
+                return False
+    except Exception:
+        pass
+    return True
+
+
+async def _status_peak_history(prev: dict) -> dict[str, float]:
+    """Zirve takibi: önceki durum kayıtlarındaki birikmiş peak değerleri."""
     prev_peak: dict[str, float] = {}
     try:
         statuses = await database.list_daily_rising_reports(
@@ -4271,7 +4324,12 @@ async def _send_combined_status(*, cfg: dict | None = None, force: bool = False)
                     continue
                 prev_peak[s] = max(prev_peak.get(s, -1e9), pk)
     except Exception:
-        prev_peak = {}
+        return {}
+    return prev_peak
+
+
+def _status_build_rows(prev_rows: list, _px: dict, prev_peak: dict[str, float]) -> list[dict]:
+    """Aday satırlarını anlık fiyat + zirve ile kurar."""
     rows = []
     for r in prev_rows:
         sym = str(r.get("symbol") or "").upper()
@@ -4297,6 +4355,46 @@ async def _send_combined_status(*, cfg: dict | None = None, force: bool = False)
             "carried": bool(r.get("carried")),
             "strategy": r.get("strategy"),
         })
+    return rows
+
+
+async def _send_combined_status(*, cfg: dict | None = None, force: bool = False) -> bool:
+    """Son kombine listenin adaylarının bildirim anına göre anlık durumu + ortalama.
+
+    İSTENEN AKIŞ (2026-10-11): listeden sonra `track_min` (5) dk'da bir değişim
+    bildirimi gider. BİR SONRAKİ listeden ÖNCEKİ son durum bildiriminde ayrıca
+    her adayın LİSTE OLUŞTURULDUKTAN SONRAKİ EN YÜKSEK değişimi (zirve) gösterilir
+    — liste ömrü boyunca ne kadar tepe yaptığı bilgisi sonradan değerlendirmeye
+    yarar. Zirve değerleri hem mesaja hem DB'ye yazılır (`peak_pct`).
+
+    RESTART KORUMASI: son durumdan `track_min`'den az süre geçtiyse atlanır.
+    """
+    from app.whatsapp_notify import format_combined_status, send_whatsapp, whatsapp_enabled
+    if not whatsapp_enabled():
+        return False
+    cfg = cfg or await combined_rising_settings()
+    track_min = max(1, int(cfg.get("track_min", 5) or 5))
+    list_min = max(1, int(cfg.get("list_min", 20) or 20))
+    if not await _status_rate_gate(track_min, force):
+        return False
+    prev = await database.last_daily_rising_report(COMBINED_LIST_KIND)
+    if not prev:
+        return False
+    prev_rows = prev.get("candidates") or []
+    try:
+        prev_rows = json.loads(prev_rows) if isinstance(prev_rows, str) else list(prev_rows)
+    except (TypeError, ValueError):
+        prev_rows = []
+    if not prev_rows:
+        return False
+    # BİR SONRAKİ LİSTE YAKIN MI? Son liste üzerinden list_min'e yaklaşıldıysa bu
+    # "son durum bildirimi"dir → zirve sütunu eklenir.
+    list_age = time.time() - float(prev.get("sent_at") or 0)
+    is_last_before_next = list_age >= (list_min * 60.0 - track_min * 60.0)
+    syms = [str(r.get("symbol") or "").upper() for r in prev_rows]
+    _px = await _batch_prices(syms)
+    prev_peak = await _status_peak_history(prev)
+    rows = _status_build_rows(prev_rows, _px, prev_peak)
     try:
         from zoneinfo import ZoneInfo
         _tz = ZoneInfo(config.DAILY_MOMENTUM_TZ)

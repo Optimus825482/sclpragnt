@@ -1,6 +1,13 @@
 # Production runtime requirements. Pins reflect the versions actually
 # installed and tested in backend/venv.
 fastapi==0.141.1
+# 2026-11-10 (P0): FastAPI, `Form`/`File`/`UploadFile` destekli bir uç
+# noktayı YÜKLERKEN `python-multipart` ister ve yoksa `RuntimeError`
+# fırlatarak uygulamayı import aşamasında ÖLDÜRÜR (uvicorn hiç açılmaz).
+# Bağımlılık hiçbir dosyada tanımlı değildi; yerel venv'e elle kurulduğu
+# için testler yeşil kalıyor, konteyner ise açılışta çöküyordu. FastAPI'nin
+# kendi `standard` extra'sıyla gelen sürüm sabitlendi.
+python-multipart==0.0.33
 uvicorn[standard]==0.52.1
 websockets==17.0.1
 numpy==2.4.6
