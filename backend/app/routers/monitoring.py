@@ -835,40 +835,11 @@ def _clamp_confluence_window(value) -> int:
 
 
 @router.put("/api/monitoring/settings")
-async def update_monitoring_settings(payload: dict, request: Request):
-    """Global bildirim ayarlarını güncelle — YALNIZ admin.
+def _parse_core_settings(merged: dict, payload: dict) -> tuple[bool, float | None, float, str | None, str | None]:
+    """Çekirdek bildirim ayarlarını doğrular (geçersiz girdi → 422).
 
-    Admin tarafından yapılan değişiklik tüm kullanıcıları ve arka plan
-    döngüsünü anında etkiler (kullanıcı-başı ayar kaldırıldı, 2026-09-04).
-    Merge semantiği: yalnızca gönderilen alanlar güncellenir; diğer alanlar
-    (min_target_pct, quiet_hours, enabled) korunur — aksi halde eşiği kaydeden
-    her istek diğer ayarları varsayılana sıfırlıyordu (2026-09-04 teşhis).
-
-    M1/P1 (R4-06): tip/aralık doğrulaması eklendi — `"abc"` → 500 DEĞİL 422;
-    bozuk sessiz saatler deferral'ı sessizce kapatamaz; `min_target_pct`
-    [MONITORING_TARGET_PCT_MIN, MAX] aralığına zorlanır.
-
-    B6: `"min_score": null` gönderilerek AÇIK panel eşiği kaldırılabilir —
-    aday kapısı varsayılan ham eşiğe (`MONITORING_MIN_RAW_SCORE`) döner.
+    Döner: (enabled, min_score | None, min_target, quiet_start, quiet_end).
     """
-    from app.api_common import require_admin as _require_admin
-    _require_admin(request)
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=422, detail="Gövde bir JSON nesnesi olmalı")
-    existing = await get_user_notification_settings()
-    editable = ("enabled", "min_score", "min_target_pct",
-                "quiet_hours_start", "quiet_hours_end", "macd_refire_gate",
-                # BİRLEŞİK RADAR (2026-09-16): aynı ayar deposu, aynı merge semantiği.
-                "radar_combined_enabled", "radar_confluence_window_sec",
-                "radar_unified_notify", "radar_route_velocity_auto_through_auto_paper",
-                # KOMBİNE YÜKSELİŞ (2026-10-11): tek WhatsApp kanalı ayarları.
-                "combined_rising_enabled", "combined_rising_top_n",
-                "combined_rising_min_score", "combined_rising_start_hour",
-                "combined_rising_end_hour", "combined_rising_list_min",
-                "combined_rising_track_min")
-    merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
-
-    # --- Doğrulama (geçersiz girdi → 422, state BOZULMAZ) ---
     enabled = _coerce_bool(merged.get("enabled", True))
     # B6: min_score=None (veya açıkça null gönderilmiş) → eşik sıfırlanır.
     min_score_reset = "min_score" in payload and payload["min_score"] is None
@@ -900,8 +871,11 @@ async def update_monitoring_settings(payload: dict, request: Request):
         quiet_end = _validate_hhmm(quiet_end, "quiet_hours_end")
     else:
         quiet_end = None
+    return enabled, min_score, min_target, quiet_start, quiet_end
 
-    # KOMBİNE YÜKSELİŞ doğrulaması: geçersiz girdi → 422 (state bozulmaz).
+
+def _parse_combined_rising_settings(merged: dict) -> dict:
+    """KOMBİNE YÜKSELİŞ doğrulaması: geçersiz girdi → 422 (state bozulmaz)."""
     try:
         combined_top_n = int(float(merged.get(
             "combined_rising_top_n", getattr(config, "COMBINED_RISING_TOP_N", 3))))
@@ -938,6 +912,52 @@ async def update_monitoring_settings(payload: dict, request: Request):
         raise HTTPException(status_code=422, detail="combined_rising_list_min 5-120 dk aralığında olmalı")
     if not (1 <= combined_track_min <= 60):
         raise HTTPException(status_code=422, detail="combined_rising_track_min 1-60 dk aralığında olmalı")
+    return {
+        "combined_rising_top_n": combined_top_n,
+        "combined_rising_min_score": round(combined_min_score, 4),
+        "combined_rising_start_hour": combined_start,
+        "combined_rising_end_hour": combined_end,
+        "combined_rising_list_min": combined_list_min,
+        "combined_rising_track_min": combined_track_min,
+    }
+
+
+async def update_monitoring_settings(payload: dict, request: Request):
+    """Global bildirim ayarlarını güncelle — YALNIZ admin.
+
+    Admin tarafından yapılan değişiklik tüm kullanıcıları ve arka plan
+    döngüsünü anında etkiler (kullanıcı-başı ayar kaldırıldı, 2026-09-04).
+    Merge semantiği: yalnızca gönderilen alanlar güncellenir; diğer alanlar
+    (min_target_pct, quiet_hours, enabled) korunur — aksi halde eşiği kaydeden
+    her istek diğer ayarları varsayılana sıfırlıyordu (2026-09-04 teşhis).
+
+    M1/P1 (R4-06): tip/aralık doğrulaması eklendi — `"abc"` → 500 DEĞİL 422;
+    bozuk sessiz saatler deferral'ı sessizce kapatamaz; `min_target_pct`
+    [MONITORING_TARGET_PCT_MIN, MAX] aralığına zorlanır.
+
+    B6: `"min_score": null` gönderilerek AÇIK panel eşiği kaldırılabilir —
+    aday kapısı varsayılan ham eşiğe (`MONITORING_MIN_RAW_SCORE`) döner.
+    """
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Gövde bir JSON nesnesi olmalı")
+    existing = await get_user_notification_settings()
+    editable = ("enabled", "min_score", "min_target_pct",
+                "quiet_hours_start", "quiet_hours_end", "macd_refire_gate",
+                # BİRLEŞİK RADAR (2026-09-16): aynı ayar deposu, aynı merge semantiği.
+                "radar_combined_enabled", "radar_confluence_window_sec",
+                "radar_unified_notify", "radar_route_velocity_auto_through_auto_paper",
+                # KOMBİNE YÜKSELİŞ (2026-10-11): tek WhatsApp kanalı ayarları.
+                "combined_rising_enabled", "combined_rising_top_n",
+                "combined_rising_min_score", "combined_rising_start_hour",
+                "combined_rising_end_hour", "combined_rising_list_min",
+                "combined_rising_track_min")
+    merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
+
+    # --- Doğrulama (geçersiz girdi → 422, state BOZULMAZ) ---
+    enabled, min_score, min_target, quiet_start, quiet_end = _parse_core_settings(merged, payload)
+    combined = _parse_combined_rising_settings(merged)
 
     settings = {
         "enabled": enabled,
@@ -967,12 +987,7 @@ async def update_monitoring_settings(payload: dict, request: Request):
         # KOMBİNE YÜKSELİŞ (2026-10-11): tek WhatsApp kanalı ayarları.
         "combined_rising_enabled": _coerce_bool(merged.get(
             "combined_rising_enabled", getattr(config, "COMBINED_RISING_ENABLED", True))),
-        "combined_rising_top_n": combined_top_n,
-        "combined_rising_min_score": round(combined_min_score, 4),
-        "combined_rising_start_hour": combined_start,
-        "combined_rising_end_hour": combined_end,
-        "combined_rising_list_min": combined_list_min,
-        "combined_rising_track_min": combined_track_min,
+        **combined,
     }
     await database.set_llm_setting("monitoring_notification_settings", json.dumps(settings))
     # PERFORMANS (2026-09-26): /state settings önbelleğini tazele — aksi halde
@@ -2435,38 +2450,14 @@ def _ws_alert_type(notif: dict) -> str:
     return "monitoring_alert"
 
 
-async def _deliver_scan_notifications(notified: list) -> None:
-    """Bildirim teslimi: push gönderimi, erteleme, WS yayını, otonom paper.
-
-    MUTLAKA `_locked_state()` DIŞINDA çağrılmalı (B5): web push ağ I/O'su ve
-    auto_paper DB/plan işlemleri state kilidini uzun süre tutmamalıdır.
-
-    Push yalnızca YENI bildirimlere gönderilir (güncellemeler her turda
-    tetiklenmesin diye spam koruması).
-
-    PANEL BİLDİRİMİ YOK (2026-10-17): bir bildirim ancak push DENENİRSE kaydedilir
-    (`monitoring_notifications`), WS ile yayınlanır, oturum geçmişine ve LLM ikinci göze
-    girer. Push denenmeyen yeni adaylar (VAPID yok, boot grace) hiçbirini üretmez;
-    sessiz saatte ertelenenler kayıt/yayın olmadan kuyruğa girer ve push gerçekten
-    denendiğinde (`_flush_deferred_push`) kaydedilip yayınlanır. OTONOM PAPER bundan
-    ETKİLENMEZ: `try_open_from_notification` tüm (politikayla engellenmemiş) adaylara
-    uygulanır; kaydedilmeyen adaylarda `notification_id` yoktur. Ancak 2026-10-18'den beri
-    (AUTO_PAPER_ONLY_ON_PUSH) push'u gitmemiş aday orada push kapısına takılır.
-    GÜNCELLEMELER (`updated=True`) zaten var olan bir bildirim satırının tazelenmesidir ve
-    eskisi gibi yayınlanır.
-    """
-    if not notified:
-        return
-    new_notifs = [n for n in notified if not n.get("updated")]
-
-    # O-02: Boot anında grace period (ilk BOOT_SUPPRESS_SECONDS sn içinde toplu push/spam engelle)
+def _scan_boot_grace(new_notifs: list) -> tuple[list, bool]:
+    """O-02: Boot grace penceresi. Döner: (kalan yeni bildirimler, in_boot_grace)."""
     boot_time = _monitoring_state.get("_boot_time")
     if boot_time is None:
         _monitoring_state["_boot_time"] = time.time()
         boot_time = _monitoring_state["_boot_time"]
     boot_suppress = float(getattr(config, "BOOT_SUPPRESS_SECONDS", 60))
     in_boot_grace = (time.time() - boot_time) < boot_suppress and not bool(os.getenv("PYTEST_CURRENT_TEST"))
-
     if in_boot_grace and new_notifs:
         logger.info("Monitoring boot grace period aktif (kalan: %.0f sn) — %d adet push bildirimi bastırıldı "
                     "(push denenmediği için kayıt/yayın da yok).",
@@ -2474,47 +2465,48 @@ async def _deliver_scan_notifications(notified: list) -> None:
         # Harici push fırtınası bastırılır; push denenmediği için bildirim de üretilmez
         # (otonom paper aşağıda eskisi gibi sürer).
         new_notifs = []
+    return new_notifs, in_boot_grace
 
-    quiet = bool(notified[0].get("quiet_hours"))
-    vapid_configured = _vapid_configured()
-    # (2026-10-18) Sessizlik nabzı artık `_notify` içinde kurulur (`_heartbeat_notification`): politikaya
-    # takılan adaylar bu aşamaya hiç ulaşmadığından eski blok hiç çalışmıyordu.
-    # BİRLEŞİK RADAR (Aşama 2): tek tip bildirim. Radar push'u `radar-{sym}` tag'i
-    # ile gider ve bu turda push edilen semboller kaydedilir — yükseliş teslimatı
-    # aynı sembol için İKİNCİ push atmaz.
-    unified = await _radar_unified_enabled()
-    if unified:
-        for notif in new_notifs:
-            sym = str(notif.get("symbol") or "").upper()
-            notif["tag"] = f"radar-{sym}"
-            # Kaynak listesi `_build_notification`'dan gelir (füzyon sonrası
-            # ["velocity","jump","early"] olabilir); eski kayıtlar/yalnız-radar
-            # yolu ["velocity"] kalır.
-            notif.setdefault("sources", ["velocity"])
-            notif["unified"] = True
-            if sym:
-                _unified_pushed_symbols.add(sym)
-                # ÇAPRAZ BASTIRMA (2026-09-17 düzeltmesi — canlı veri tespiti):
-                # radar turu bildirdiyse hızlı yol (MACD jump/early) aynı sembolü
-                # UNIFIED_FAST_COOLDOWN_SEC boyunca TEKRAR bildirmez. Teşhis:
-                # ONETRY 10:35 (radar) + 10:43 (hızlı yol) — 8 dk arayla İKİ push;
-                # hızlı yolun `recently_notified` haritası radar bildirimini
-                # görmüyordu, pending kapısı (ufuk+2dk=7dk) da 8. dakikada dolmuştu.
-                # Not: push başarısız olsa bile bildirim KAYDEDİLİP WS ile yayınlanır
-                # ve otonom paper açabilir → bastırma teslimden bağımsız işaretlenir.
-                # SKOR KAYDI (2026-09-19): sinyal terfisi kapısı son bildirim
-                # skorunu karşılaştırır — radar push'unun skoru kaydedilmezse
-                # skor haritası boş kalır ve cooldown'daki HER sinyal "terfi"
-                # sanılıp bastırma hiçe iner.
-                unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
-    # Push DENENEN yeni bildirimler (kaydedilecek + yayınlanacak olanlar).
+
+def _scan_mark_unified(new_notifs: list) -> None:
+    """BİRLEŞİK RADAR (Aşama 2): tek tip bildirim etiketleri + çapraz bastırma işareti."""
+    # Radar push'u `radar-{sym}` tag'i ile gider ve bu turda push edilen semboller
+    # kaydedilir — yükseliş teslimatı aynı sembol için İKİNCİ push atmaz.
+    for notif in new_notifs:
+        sym = str(notif.get("symbol") or "").upper()
+        notif["tag"] = f"radar-{sym}"
+        # Kaynak listesi `_build_notification`'dan gelir (füzyon sonrası
+        # ["velocity","jump","early"] olabilir); eski kayıtlar/yalnız-radar
+        # yolu ["velocity"] kalır.
+        notif.setdefault("sources", ["velocity"])
+        notif["unified"] = True
+        if sym:
+            _unified_pushed_symbols.add(sym)
+            # ÇAPRAZ BASTIRMA (2026-09-17 düzeltmesi — canlı veri tespiti):
+            # radar turu bildirdiyse hızlı yol (MACD jump/early) aynı sembolü
+            # UNIFIED_FAST_COOLDOWN_SEC boyunca TEKRAR bildirmez. Teşhis:
+            # ONETRY 10:35 (radar) + 10:43 (hızlı yol) — 8 dk arayla İKİ push;
+            # hızlı yolun `recently_notified` haritası radar bildirimini
+            # görmüyordu, pending kapısı (ufuk+2dk=7dk) da 8. dakikada dolmuştu.
+            # Not: push başarısız olsa bile bildirim KAYDEDİLİP WS ile yayınlanır
+            # ve otonom paper açabilir → bastırma teslimden bağımsız işaretlenir.
+            # SKOR KAYDI (2026-09-19): sinyal terfisi kapısı son bildirim
+            # skorunu karşılaştırır — radar push'unun skoru kaydedilmezse
+            # skor haritası boş kalır ve cooldown'daki HER sinyal "terfi"
+            # sanılıp bastırma hiçe iner.
+            unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
+
+
+async def _scan_push_new(new_notifs: list, quiet: bool, vapid_configured: bool) -> list:
+    """Push DENENEN yeni bildirimler (kaydedilecek + yayınlanacak olanlar)."""
     attempted: list = []
-    if new_notifs and not quiet and vapid_configured:
+    if not new_notifs:
+        return attempted
+    if not quiet and vapid_configured:
         # Önce kalıcı kayıt (sent_via_push=False, push_attempted=True), sonra push; gerçek
         # teslim sonucu etikete yansır. Politika bloklayanlar düşer.
         new_notifs = await _register_push_notifications(new_notifs)
         for notif in new_notifs:
-
             ok = await _send_push(notif)
             notif["push_success"] = ok
             if ok:
@@ -2529,30 +2521,37 @@ async def _deliver_scan_notifications(notified: list) -> None:
             else:
                 logger.warning("Monitoring push gönderilemedi: %s", notif.get("symbol"))
         attempted = list(new_notifs)
-    elif new_notifs and not quiet:
+    elif not quiet:
         # VAPID yok: push DENENEMEZ → bildirim kaydedilmez/yayınlanmaz (panel bildirimi yok).
         logger.info("Monitoring push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d aday; "
                     "bildirim kaydı/yayını yok)", len(new_notifs))
         for notif in new_notifs:
             notif["push_success"] = False
-    elif new_notifs and quiet:
+    else:
         # Sessiz saat: push'u ertele — saat bitince _flush_deferred_push gönderir.
         # Kayıt/yayın da push denendiğinde (flush) yapılır; şimdi hiçbiri yok.
         logger.info("Monitoring: sessiz saatlerde %d bildirim push kuyruğuna alındı", len(new_notifs))
         for notif in new_notifs:
             _deferred_push.append(notif)
-    # KULLANICI WHATSAPP BİLDİRİMİ: WhatsApp'ı AÇAN her kullanıcıya (kendi
-    # numarasına) bu bildirim mesaj olarak gönderilir. Push tesliminden BAĞIMSIZ:
-    # kullanıcı push aboneliği olmasa da WhatsApp isteyebilir. Sessiz saatte
-    # gönderilmez (kullanıcı tercihine saygı). Hata bildirim akışını bozmaz.
+    return attempted
+
+
+async def _scan_deliver_whatsapp(new_notifs: list, quiet: bool) -> None:
+    """KULLANICI WHATSAPP BİLDİRİMİ (push tesliminden bağımsız, sessiz saatte gönderilmez)."""
+    # WhatsApp'ı AÇAN her kullanıcıya (kendi numarasına) bu bildirim mesaj olarak
+    # gönderilir. Hata bildirim akışını bozmaz.
     # (WhatsApp ayrı bir DIŞ kanaldır; panel bildirimi değildir ve bu değişiklikten etkilenmez.)
-    if new_notifs and not quiet:
-        try:
-            for notif in new_notifs:
-                await _broadcast_user_whatsapp(notif)
-        except Exception as exc:
-            logger.debug("kullanıcı WhatsApp yayını atlandı: %s", exc)
-    # Otonom Paper Trade: her geçerli fırsatta açık işlem yoksa pozisyon aç (2026-09-22 Erkan Kararı).
+    if not (new_notifs and not quiet):
+        return
+    try:
+        for notif in new_notifs:
+            await _broadcast_user_whatsapp(notif)
+    except Exception as exc:
+        logger.debug("kullanıcı WhatsApp yayını atlandı: %s", exc)
+
+
+async def _scan_auto_paper(notified: list, attempted: list) -> None:
+    """Otonom Paper Trade: her geçerli fırsatta açık işlem yoksa pozisyon aç."""
     # 2026-10-18 (AUTO_PAPER_ONLY_ON_PUSH): yalnız push'u GERÇEKTEN gitmiş bildirimde açılır; kapı
     # `try_open_from_notification` içindedir (push gitmeyen aday orada engellenir ve logda görünür).
     try:
@@ -2577,6 +2576,48 @@ async def _deliver_scan_notifications(notified: list) -> None:
         pass
     except Exception as exc:
         logger.warning("auto_paper toplu deneme hatası: %s", exc)
+
+
+async def _deliver_scan_notifications(notified: list) -> None:
+    """Bildirim teslimi: push gönderimi, erteleme, WS yayını, otonom paper.
+
+    MUTLAKA `_locked_state()` DIŞINDA çağrılmalı (B5): web push ağ I/O'su ve
+    auto_paper DB/plan işlemleri state kilidini uzun süre tutmamalıdır.
+
+    Push yalnızca YENI bildirimlere gönderilir (güncellemeler her turda
+    tetiklenmesin diye spam koruması).
+
+    PANEL BİLDİRİMİ YOK (2026-10-17): bir bildirim ancak push DENENİRSE kaydedilir
+    (`monitoring_notifications`), WS ile yayınlanır, oturum geçmişine ve LLM ikinci göze
+    girer. Push denenmeyen yeni adaylar (VAPID yok, boot grace) hiçbirini üretmez;
+    sessiz saatte ertelenenler kayıt/yayın olmadan kuyruğa girer ve push gerçekten
+    denendiğinde (`_flush_deferred_push`) kaydedilip yayınlanır. OTONOM PAPER bundan
+    ETKİLENMEZ: `try_open_from_notification` tüm (politikayla engellenmemiş) adaylara
+    uygulanır; kaydedilmeyen adaylarda `notification_id` yoktur. Ancak 2026-10-18'den beri
+    (AUTO_PAPER_ONLY_ON_PUSH) push'u gitmemiş aday orada push kapısına takılır.
+    GÜNCELLEMELER (`updated=True`) zaten var olan bir bildirim satırının tazelenmesidir ve
+    eskisi gibi yayınlanır.
+
+    Aşamalar: boot grace -> birleşik etiket -> push/erteleme -> WhatsApp ->
+    otonom paper -> WS yayını -> LLM ikinci göz.
+    """
+    if not notified:
+        return
+    new_notifs = [n for n in notified if not n.get("updated")]
+    new_notifs, _in_boot_grace = _scan_boot_grace(new_notifs)
+
+    quiet = bool(notified[0].get("quiet_hours"))
+    vapid_configured = _vapid_configured()
+    # (2026-10-18) Sessizlik nabzı artık `_notify` içinde kurulur (`_heartbeat_notification`): politikaya
+    # takılan adaylar bu aşamaya hiç ulaşmadığından eski blok hiç çalışmıyordu.
+    unified = await _radar_unified_enabled()
+    if unified:
+        _scan_mark_unified(new_notifs)
+
+    attempted = await _scan_push_new(new_notifs, quiet, vapid_configured)
+    await _scan_deliver_whatsapp(new_notifs, quiet)
+    await _scan_auto_paper(notified, attempted)
+
     # WS yayını: push DENENEN yeni bildirimler + var olan bildirim satırlarının güncellemeleri.
     # Push denenmeyen adaylar uygulamaya bildirim olarak GİTMEZ.
     updates = [n for n in notified if n.get("updated") and not n.get("policy_blocked")]
@@ -2828,21 +2869,20 @@ async def unified_fast_notify(symbol: str, kind: str, score: float) -> dict | No
         return None
 
 
-async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dict | None:
-    if not unified_signals.enabled() or not await _radar_unified_enabled():
-        return None
-    sym = str(symbol or "").upper()
-    if not sym:
-        return None
-    # Aynı sembolde zaten birleşik bildirim VAR (hızlı-yol cooldown) → sessiz.
+async def _fast_notify_gates(sym: str, cooldown: float) -> tuple[bool, dict | None]:
+    """Hızlı-yol ön kapıları: cooldown, kullanıcı ayarı, sessiz saat, açık pozisyon, BEKLİYOR.
+
+    Döner: (ready, out). `ready=False` ise `out` dönüş değeridir (None);
+    `ready=True` ise `out` yüklenen ayar sözlüğüdür.
+    """
     now_mono = time.monotonic()
+    # Aynı sembolde zaten birleşik bildirim VAR (hızlı-yol cooldown) → sessiz.
     last = _unified_fast_last.get(sym)
-    cooldown = float(getattr(config, "UNIFIED_FAST_COOLDOWN_SEC", 1800))
     if last is not None and now_mono - last < cooldown:
-        return None
+        return False, None
     # Çapraz tekilleştirme: radar/yükseliş yakın zamanda bildirdiyse YENİ push yok.
     if unified_signals.recently_notified(sym, ttl_sec=cooldown):
-        return None
+        return False, None
     # RADAR COOLDOWN'U DA UYGULA (2026-09-26 denetimi, bulgu #10): buraya kadar
     # `notified_symbols`'a YAZILIYOR ama OKUNMUYORDU → iki ayrı zaman dünyası
     # vardı ve radar ile hızlı yol arasında 5-30 dk bandında mükerrer bildirim
@@ -2850,19 +2890,18 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     # içinde radar bu sembolü bildirdiyse hızlı yol da susar.
     _last_radar_mono = _monitoring_state["notified_symbols"].get(sym)
     if _last_radar_mono is not None and now_mono - _last_radar_mono < NOTIFY_COOLDOWN_SEC:
-        return None
+        return False, None
     _unified_fast_prune(cooldown)
     # Kullanıcı bildirimleri kapalıysa veya sessiz saatse radar gibi davran:
     # kayıt yapılmaz (erteleme kuyruğu radar turunun işidir; burada atlanır).
     settings = await get_user_notification_settings()
     if not bool(settings.get("enabled", True)):
-        return None
-    quiet = _in_quiet_hours(settings)
-    if quiet:
-        return None
+        return False, None
+    if _in_quiet_hours(settings):
+        return False, None
     # Açık pozisyonlu sembol: bot zaten yönetiyor — bildirim yok.
     if sym in {str(s or "").upper() for s in (analyzer.positions or {})}:
-        return None
+        return False, None
     # Sonuçlanmamış (BEKLİYOR) bildirim varsa yenisi AÇILMAZ (radar kuralı).
     try:
         pending = await database.get_pending_monitoring_notification(sym)
@@ -2871,7 +2910,15 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     if pending:
         horizon = int(pending.get("horizon_minutes") or 5)
         if time.time() - float(pending.get("detected_at") or 0) < (horizon + 2) * 60:
-            return None
+            return False, None
+    return True, settings
+
+
+def _fast_notify_build(sym: str, kind: str, settings: dict) -> dict | None:
+    """Füzyon adayını kurar ve skor/hedef/sert-risk/ticker kapılarını uygular.
+
+    Döner: aday sözlüğü ya da `None` (kapı düştü).
+    """
     # Füzyon adayı: MACD bileşenleri + (varsa) son radar panel skoru.
     velocity_row = get_cached_radar_candidate(sym)
     candidate = unified_signals.build_fusion_candidate(sym, kind, velocity_row)
@@ -2893,23 +2940,17 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     if _surge_block:
         logger.info("BİRLEŞİK SİNYAL bastırıldı: %s master_surge kapısı=%s", sym, _surge_block)
         return None
-
-
     # Radar kuralı D-05: tazeliği doğrulanmış ticker yoksa adayın fiyatı.
     tick_px = _ticker_price(sym)
     if tick_px:
         candidate["price"] = tick_px
     if not candidate.get("price") or float(candidate["price"]) <= 0:
         return None
-    cand_id = candidate.get("candidate_id") or f"unified-{kind}-{int(time.time() * 1000)}-{sym}"
-    candidate["candidate_id"] = cand_id
-    notif = _build_notification(sym, candidate, settings)
-    await notification_plan.attach_plan(notif, "radar")
-    notif["candidate_id"] = cand_id
-    notif["updated"] = False
-    notif["quiet_hours"] = False
-    notif["trigger"] = kind
-    notif["sent_via_push"] = False
+    return candidate
+
+
+def _fast_notify_track(sym: str, candidate: dict, notif: dict, now_mono: float) -> None:
+    """Bildirim/zaman damgası defterlerini işaretler ve hedef çapasını yazar."""
     # Kapıları işaretle: 60 sn'lik radar turu aynı sembolü tekrar push etmesin.
     _unified_fast_last[sym] = now_mono
     _monitoring_state["notified_symbols"][sym] = now_mono
@@ -2945,6 +2986,10 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
             "notification_id": _existing_pending.get("notification_id"),
         }
     unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
+
+
+async def _fast_notify_deliver(sym: str, kind: str, candidate: dict, notif: dict) -> None:
+    """Teslim: kalıcı kayıt + push + WS + otonom paper (tek tip teslim)."""
     # 2026-10-17 (PANEL BİLDİRİMİ KALDIRILDI): sink politikası kararı KAYIT YAZMADAN
     # alınır; bildirim satırı (rapor/günlük takip sayfası) + oturum geçmişi + WS yayını
     # yalnız push DENENECEKSE (VAPID tanımlıysa) yazılır. Aksi halde aday yalnız ölçüm
@@ -2955,7 +3000,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     # velocity_candidates tablosuna da kaydet (aksi halde rapor ÖLÇÜLEMEDİ kalır).
     try:
         await database.save_velocity_candidates([{
-            "candidate_id": cand_id,
+            "candidate_id": notif.get("candidate_id"),
             "created_at": float(notif.get("detected_at") or time.time()),
             "symbol": sym,
             "price": float(candidate.get("price") or 0),
@@ -2969,7 +3014,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     # teslimi (geçmiş, push, otonom paper, WS) yapılmaz; ölçüm kaydı yukarıda alındı.
     if notif.get("policy_blocked"):
         logger.info("hızlı yol bildirimi politikayla düşürüldü %s: %s", sym, notif.get("policy_blocked"))
-        return notif
+        return
     push_attempted = _vapid_configured()
     if push_attempted:
         # Kalıcı kayıt (rapor/günlük takip sayfası buradan okur) — push'tan hemen ÖNCE;
@@ -2983,7 +3028,6 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     notif["sources"] = list(notif.get("sources") or [])
     if kind not in notif["sources"]:
         notif["sources"].append(kind)
-    sources = notif.get("sources")
     if push_attempted:
         ok = await _send_push(notif)
         notif["push_success"] = ok
@@ -3013,8 +3057,32 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
                 "+".join(notif.get("sources") or []))
     if notif.get("sent_via_push"):
         _maybe_llm_second_eye([notif])
-    return notif
 
+
+async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dict | None:
+    """Birleşik hızlı yol: kapılar → aday → defter → teslim."""
+    if not unified_signals.enabled() or not await _radar_unified_enabled():
+        return None
+    sym = str(symbol or "").upper()
+    if not sym:
+        return None
+    cooldown = float(getattr(config, "UNIFIED_FAST_COOLDOWN_SEC", 1800))
+    ready, settings = await _fast_notify_gates(sym, cooldown)
+    if not ready:
+        return None
+    candidate = _fast_notify_build(sym, kind, settings)
+    if candidate is None:
+        return None
+    notif = _build_notification(sym, candidate, settings)
+    await notification_plan.attach_plan(notif, "radar")
+    notif["candidate_id"] = candidate.get("candidate_id")
+    notif["updated"] = False
+    notif["quiet_hours"] = False
+    notif["trigger"] = kind
+    notif["sent_via_push"] = False
+    _fast_notify_track(sym, candidate, notif, time.monotonic())
+    await _fast_notify_deliver(sym, kind, candidate, notif)
+    return notif
 
 # ---------------------------------------------------------------------------
 # YÜKSELİŞ SİNYALLERİ (R3, 2026-09-14)
@@ -3195,6 +3263,167 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
     }
 
 
+def _rising_partition_unified(notified: list) -> tuple[list, list]:
+    """BİRLEŞİK mod: bildirimleri birincil/bastırılmış olarak ayırır.
+
+    Tag tek şemaya iner (`radar-{sym}`); sinyal terfisi uygulanır.
+    Döner: (primary, suppressed).
+    """
+    # TEK TİP BİLDİRİM: radar bu turda aynı sembolü ZATEN push ettiyse ikinci
+    # push YOK. Yükseliş ya "birincil" push olur (radar tetiklenmediyse) ya da
+    # bastırılır (radar push'u zaten aynı sembolü kapsadı). Her iki durumda da
+    # tag tek şemaya iner: `radar-{sym}`.
+    primary: list = []
+    suppressed: list = []
+    for notif in notified:
+        sym = str(notif.get("symbol") or "").upper()
+        notif["tag"] = f"radar-{sym}"
+        notif["sources"] = ["rising"]
+        notif["unified"] = True
+        # SİNYAL TERFİSİ (kullanıcı iyileştirmesi 2026-09-19): eskiden
+        # cooldown'daki her yükseliş sinyali yutuluyordu; erken sinyal
+        # sonrası gelen ÇOK DAHA GÜÇLÜ teyit de kayboluyordu. Artık yeni
+        # skor, son bildirim skorundan UNIFIED_UPGRADE_MIN_GAIN kadar
+        # yüksekse bastırma yerine "sinyal güçlendi" push'u gider.
+        # AYNI TUR istisnası: radar bu turda push ettiyse terfi OLMAZ —
+        # çift bildirim koruması aşılamaz (test_rising_is_suppressed...).
+        _same_tur_pushed = sym in _unified_pushed_symbols
+        _in_cooldown = unified_signals.recently_notified(sym)
+        _upgrade = (not _same_tur_pushed and _in_cooldown and
+                    unified_signals.should_upgrade_signal(sym, float(notif.get("score") or 0)))
+        # 2026-10-17 TEYİT KURALI: yükseliş zarfı tek kaynaklıdır (["rising"]); bildirim
+        # politikası (≥2 kaynak ∧ velocity ∧ mod ≠ unified) push'u keser. Ölçüm kaydı
+        # (rising_alerts) ve otonom paper yolu DEĞİŞMEZ (otonom kurallar ayrıdır).
+        # 2026-10-31: KDJ Osilatörü (#114) Spot Altcoin Dip Dönüşü push için doğrudan onaylıdır.
+        _is_whitelisted = notif.get("kind") in ("kdj_dip", "supertrend", "ema_bounce") or notif.get("source") in ("kdj_dip", "supertrend", "ema_bounce")
+        _policy_reason = None if _is_whitelisted else _notification_policy.evaluate(notif)
+        if _policy_reason:
+            notif["policy_blocked"] = _policy_reason
+        if _policy_reason or ((_same_tur_pushed or _in_cooldown) and not _upgrade):
+            notif["push_success"] = False
+            notif["suppressed_by_unified"] = not _policy_reason
+            suppressed.append(notif)
+        else:
+            if _upgrade:
+                notif["upgrade"] = True
+                notif["title"] = f"⚡ SİNYAL GÜÇLENDİ · {sym}"
+            primary.append(notif)
+    return primary, suppressed
+
+
+async def _rising_push_primary(primary: list, quiet: bool, deferred: list) -> list:
+    """Birincil bildirimleri push'lar (ya da sessiz saatte erteler). Döner: attempted."""
+    attempted: list = []
+    for notif in primary:
+        ok = await _send_push(notif)
+        notif["push_success"] = ok
+        notif["push_attempted"] = True
+        if ok:
+            notif["sent_via_push"] = True
+        # #71 (2026-09-26): `note_notified` push BAŞARISIZ OLSA BİLE
+        # yazılır. Radar yolu (`:1294-1298`) bu davranışı zaten doğru
+        # uyguluyor ve gerekçesi geçerli: bildirim WS ile yayınlanır,
+        # geçmişe kaydedilir ve otonom paper pozisyon açabilir; yani
+        # teslimden bağımsız olarak "bu sembol için sinyal işlendi"
+        # demektir. Push başarısızlığında yazılmadığı için aynı sembol
+        # tekrar tekrar push edilebiliyordu.
+        unified_signals.note_notified(symbol=notif.get("symbol") or "",
+                                      score=float(notif.get("score") or 0))
+        alert_id = notif.get("alert_id")
+        if alert_id:
+            try:
+                await database.mark_rising_alert_notified(alert_id, bool(ok))
+            except Exception as exc:
+                logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
+    attempted = list(primary)
+    if quiet:
+        for notif in primary:
+            deferred.append(notif)
+    return attempted
+
+
+async def _rising_mark_suppressed(suppressed: list) -> None:
+    """Bastırılanlar: push denenmedi → `sent_via_push=False` dürüstçe yazılır."""
+    for notif in suppressed:
+        notif.setdefault("push_success", False)
+        alert_id = notif.get("alert_id")
+        if alert_id:
+            try:
+                await database.mark_rising_alert_notified(alert_id, False)
+            except Exception as exc:
+                logger.debug("rising bastırma etiketi %s: %s", alert_id, exc)
+
+
+async def _rising_deliver_legacy(notified: list, quiet: bool, deferred: list) -> list:
+    """ESKİ mod (bayrak kapalı): ayrı push + ayrı `rising_alert` WS tipi. Döner: attempted."""
+    # 2026-10-17 TEYİT KURALI burada da push'u keser (ölçüm + otonom paper aynen).
+    _pushable = []
+    for notif in notified:
+        _is_whitelisted = notif.get("kind") in ("kdj_dip", "supertrend", "ema_bounce") or notif.get("source") in ("kdj_dip", "supertrend", "ema_bounce")
+        _policy_reason = None if _is_whitelisted else _notification_policy.evaluate(notif)
+        if _policy_reason:
+            notif["policy_blocked"] = _policy_reason
+            notif["push_success"] = False
+        else:
+            _pushable.append(notif)
+    attempted: list = []
+    if _vapid_configured() and not quiet:
+        attempted = list(_pushable)
+        for notif in _pushable:
+            ok = await _send_push(notif)
+            notif["push_success"] = ok
+            notif["push_attempted"] = True
+            if ok:
+                notif["sent_via_push"] = True
+            alert_id = notif.get("alert_id")
+            if alert_id:
+                try:
+                    await database.mark_rising_alert_notified(alert_id, bool(ok))
+                except Exception as exc:
+                    logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
+    elif quiet:
+        for notif in _pushable:
+            deferred.append(notif)
+    else:
+        logger.info("Yükseliş push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d sinyal)", len(notified))
+        for notif in notified:
+            notif["push_success"] = False
+            alert_id = notif.get("alert_id")
+            if alert_id:
+                try:
+                    await database.mark_rising_alert_notified(alert_id, False)
+                except Exception as exc:
+                    logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
+    return attempted
+
+
+async def _rising_auto_paper(notified: list) -> None:
+    """Otonom paper: Panel uyarısı veya Push bildirimlerinde açık işlem yoksa aç (2026-09-22 Erkan Kararı)."""
+    if not bool(getattr(config, "RISING_AUTONOMOUS_ENABLED", True)):
+        return
+    min_score = float(getattr(config, "RISING_AUTO_MIN_SCORE", 70) or 0)
+    try:
+        from app.routers.auto_paper import try_open_from_notification
+        for notif in notified:
+            if float(notif.get("score") or 0) < min_score:
+                continue
+            try:
+                opened = await try_open_from_notification(notif)
+            except Exception as exc:
+                logger.debug("rising auto_paper %s: %s", notif.get("symbol"), exc)
+                continue
+            if isinstance(opened, dict) and opened.get("trade_id") and notif.get("alert_id"):
+                try:
+                    await database.mark_rising_alert_trade(int(notif["alert_id"]),
+                                                           int(opened["trade_id"]))
+                except Exception as exc:
+                    logger.debug("rising işlem bağı: %s", exc)
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.warning("rising auto_paper toplu deneme hatası: %s", exc)
+
+
 async def _rising_deliver(notified: list) -> None:
     """Yükseliş teslimi: push + WS `rising_alert` + otonom paper.
 
@@ -3208,146 +3437,23 @@ async def _rising_deliver(notified: list) -> None:
     if not notified:
         return
     quiet = bool((notified[0] or {}).get("quiet_hours"))
-    vapid_configured = _vapid_configured()
     unified = await _radar_unified_enabled()
     attempted: list = []
 
     if unified:
-        # TEK TİP BİLDİRİM: radar bu turda aynı sembolü ZATEN push ettiyse ikinci
-        # push YOK. Yükseliş ya "birincil" push olur (radar tetiklenmediyse) ya da
-        # bastırılır (radar push'u zaten aynı sembolü kapsadı). Her iki durumda da
-        # tag tek şemaya iner: `radar-{sym}`.
-        primary: list = []
-        suppressed: list = []
-        for notif in notified:
-            sym = str(notif.get("symbol") or "").upper()
-            notif["tag"] = f"radar-{sym}"
-            notif["sources"] = ["rising"]
-            notif["unified"] = True
-            # SİNYAL TERFİSİ (kullanıcı iyileştirmesi 2026-09-19): eskiden
-            # cooldown'daki her yükseliş sinyali yutuluyordu; erken sinyal
-            # sonrası gelen ÇOK DAHA GÜÇLÜ teyit de kayboluyordu. Artık yeni
-            # skor, son bildirim skorundan UNIFIED_UPGRADE_MIN_GAIN kadar
-            # yüksekse bastırma yerine "sinyal güçlendi" push'u gider.
-            # AYNI TUR istisnası: radar bu turda push ettiyse terfi OLMAZ —
-            # çift bildirim koruması aşılamaz (test_rising_is_suppressed...).
-            _same_tur_pushed = sym in _unified_pushed_symbols
-            _in_cooldown = unified_signals.recently_notified(sym)
-            _upgrade = (not _same_tur_pushed and _in_cooldown and
-                        unified_signals.should_upgrade_signal(sym, float(notif.get("score") or 0)))
-            # 2026-10-17 TEYİT KURALI: yükseliş zarfı tek kaynaklıdır (["rising"]); bildirim
-            # politikası (≥2 kaynak ∧ velocity ∧ mod ≠ unified) push'u keser. Ölçüm kaydı
-            # (rising_alerts) ve otonom paper yolu DEĞİŞMEZ (otonom kurallar ayrıdır).
-            # 2026-10-31: KDJ Osilatörü (#114) Spot Altcoin Dip Dönüşü push için doğrudan onaylıdır.
-            _is_whitelisted = notif.get("kind") in ("kdj_dip", "supertrend", "ema_bounce") or notif.get("source") in ("kdj_dip", "supertrend", "ema_bounce")
-            _policy_reason = None if _is_whitelisted else _notification_policy.evaluate(notif)
-            if _policy_reason:
-                notif["policy_blocked"] = _policy_reason
-            if _policy_reason or ((_same_tur_pushed or _in_cooldown) and not _upgrade):
-                notif["push_success"] = False
-                notif["suppressed_by_unified"] = not _policy_reason
-                suppressed.append(notif)
-            else:
-                if _upgrade:
-                    notif["upgrade"] = True
-                    notif["title"] = f"⚡ SİNYAL GÜÇLENDİ · {sym}"
-                primary.append(notif)
-        if vapid_configured and not quiet:
-            attempted = list(primary)
-            for notif in primary:
-                ok = await _send_push(notif)
-                notif["push_success"] = ok
-                notif["push_attempted"] = True
-                if ok:
-                    notif["sent_via_push"] = True
-                # #71 (2026-09-26): `note_notified` push BAŞARISIZ OLSA BİLE
-                # yazılır. Radar yolu (`:1294-1298`) bu davranışı zaten doğru
-                # uyguluyor ve gerekçesi geçerli: bildirim WS ile yayınlanır,
-                # geçmişe kaydedilir ve otonom paper pozisyon açabilir; yani
-                # teslimden bağımsız olarak "bu sembol için sinyal işlendi"
-                # demektir. Push başarısızlığında yazılmadığı için aynı sembol
-                # tekrar tekrar push edilebiliyordu.
-                unified_signals.note_notified(symbol=notif.get("symbol") or "",
-                                              score=float(notif.get("score") or 0))
-                alert_id = notif.get("alert_id")
-                if alert_id:
-                    try:
-                        await database.mark_rising_alert_notified(alert_id, bool(ok))
-                    except Exception as exc:
-                        logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
+        primary, suppressed = _rising_partition_unified(notified)
+        if _vapid_configured() and not quiet:
+            attempted = await _rising_push_primary(primary, quiet, _deferred_push)
         elif quiet:
+            # Sessiz saat: push'lar ertelenir (attempted BOŞ kalır → WS/LLM yok).
             for notif in primary:
                 _deferred_push.append(notif)
         # Bastırılanlar: push denenmedi → `sent_via_push=False` dürüstçe yazılır.
-        for notif in suppressed:
-            alert_id = notif.get("alert_id")
-            if alert_id:
-                try:
-                    await database.mark_rising_alert_notified(alert_id, False)
-                except Exception as exc:
-                    logger.debug("rising bastırma etiketi %s: %s", alert_id, exc)
+        await _rising_mark_suppressed(suppressed)
     else:
-        # ESKİ DAVRANIŞ (bayrak kapalı): ayrı push + ayrı `rising_alert` WS tipi.
-        # 2026-10-17 TEYİT KURALI burada da push'u keser (ölçüm + otonom paper aynen).
-        _pushable = []
-        for notif in notified:
-            _is_whitelisted = notif.get("kind") in ("kdj_dip", "supertrend", "ema_bounce") or notif.get("source") in ("kdj_dip", "supertrend", "ema_bounce")
-            _policy_reason = None if _is_whitelisted else _notification_policy.evaluate(notif)
-            if _policy_reason:
-                notif["policy_blocked"] = _policy_reason
-                notif["push_success"] = False
-            else:
-                _pushable.append(notif)
-        if vapid_configured and not quiet:
-            attempted = list(_pushable)
-            for notif in _pushable:
-                ok = await _send_push(notif)
-                notif["push_success"] = ok
-                notif["push_attempted"] = True
-                if ok:
-                    notif["sent_via_push"] = True
-                alert_id = notif.get("alert_id")
-                if alert_id:
-                    try:
-                        await database.mark_rising_alert_notified(alert_id, bool(ok))
-                    except Exception as exc:
-                        logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
-        elif quiet:
-            for notif in _pushable:
-                _deferred_push.append(notif)
-        else:
-            logger.info("Yükseliş push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d sinyal)", len(notified))
-            for notif in notified:
-                notif["push_success"] = False
-                alert_id = notif.get("alert_id")
-                if alert_id:
-                    try:
-                        await database.mark_rising_alert_notified(alert_id, False)
-                    except Exception as exc:
-                        logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
-    # Otonom paper: Panel uyarısı veya Push bildirimlerinde açık işlem yoksa aç (2026-09-22 Erkan Kararı)
-    if bool(getattr(config, "RISING_AUTONOMOUS_ENABLED", True)):
-        min_score = float(getattr(config, "RISING_AUTO_MIN_SCORE", 70) or 0)
-        try:
-            from app.routers.auto_paper import try_open_from_notification
-            for notif in notified:
-                if float(notif.get("score") or 0) < min_score:
-                    continue
-                try:
-                    opened = await try_open_from_notification(notif)
-                except Exception as exc:
-                    logger.debug("rising auto_paper %s: %s", notif.get("symbol"), exc)
-                    continue
-                if isinstance(opened, dict) and opened.get("trade_id") and notif.get("alert_id"):
-                    try:
-                        await database.mark_rising_alert_trade(int(notif["alert_id"]),
-                                                               int(opened["trade_id"]))
-                    except Exception as exc:
-                        logger.debug("rising işlem bağı: %s", exc)
-        except ImportError:
-            pass
-        except Exception as exc:
-            logger.warning("rising auto_paper toplu deneme hatası: %s", exc)
+        attempted = await _rising_deliver_legacy(notified, quiet, _deferred_push)
+
+    await _rising_auto_paper(notified)
 
     if unified:
         # Tek tip: yalnızca birincil yükseliş bildirimleri `monitoring_alert`
@@ -4333,9 +4439,7 @@ async def daily_rising_reports_list(request: Request = None, limit: int = 50,
 
 
 @router.get("/api/daily-rising/reports/summary")
-async def daily_rising_reports_summary(request: Request = None, days: float = 7.0,
-                                       limit: int = 200, kind: str = "",
-                                       include_archived: bool = False):
+async def _rising_report_fetch(days: float, limit: int, kind: str, include_archived: bool):
     """Gönderilen HER liste raporunun başarısını ölç + genel özet döndür.
 
     Kullanıcı isteği (2026-10-11): "3'lü sistem geldikten SONRAKİ başarıyı ve
@@ -4358,7 +4462,7 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
     reps.sort(key=lambda r: float(r.get("sent_at") or 0), reverse=True)
     reps = reps[:max(1, int(limit))]
     if not reps:
-        return {"ok": True, "report_count": 0, "total_candidates": 0,
+        return None, None, None, None, {"ok": True, "report_count": 0, "total_candidates": 0,
                 "measured": 0, "ceiling_hits": 0, "hit_rate": None,
                 "avg_mfe_pct": None, "pending": 0, "reports": [], "by_source": {},
                 "avg_sent_gain_all_pct": None, "avg_sent_gain_today_pct": None,
@@ -4387,6 +4491,12 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
             c = []
         parsed.append((rep, c))
         all_syms.extend(str(x.get("symbol") or "").upper() for x in c)
+    return reps, parsed, next_at, newest_id, None
+
+
+async def _rising_report_context(parsed):
+    """Toplu fiyat + şimdi + yerel takvim günü etiketi."""
+    all_syms = [str(x.get("symbol") or "").upper() for _r, c in parsed for x in c]
     _px = await _batch_prices([s for s in all_syms if s])
 
     now = time.time()
@@ -4397,6 +4507,10 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
     except Exception:
         _tz = None
     _today_label = (datetime.now(_tz) if _tz else datetime.now()).strftime("%Y-%m-%d")
+    return _px, now, _tz, _today_label
+
+
+async def _rising_report_measure(parsed, next_at, newest_id, _px, now, _tz, _today_label):
     per_report: list[dict] = []
     # KAYNAK (strateji) bazında kırılım: hangi motorun isabetli olduğu ölçülür.
     src_meas: Counter = Counter()
@@ -4506,7 +4620,47 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         for m in mfes:
             tot_mfe_sum += m
             tot_mfe_n += 1
+    return {
+        "per_report": per_report,
+        "src_meas": src_meas,
+        "src_hits": src_hits,
+        "src_mfe_sum": src_mfe_sum,
+        "tot_measured": tot_measured,
+        "tot_hits": tot_hits,
+        "tot_mfe_n": tot_mfe_n,
+        "tot_pending": tot_pending,
+        "tot_mfe_sum": tot_mfe_sum,
+        "all_mfe_sum": all_mfe_sum,
+        "all_mfe_n": all_mfe_n,
+        "today_mfe_sum": today_mfe_sum,
+        "today_mfe_n": today_mfe_n,
+        "all_tgt_sum": all_tgt_sum,
+        "all_tgt_n": all_tgt_n,
+        "today_tgt_sum": today_tgt_sum,
+        "today_tgt_n": today_tgt_n,
+        "all_sim_sum": all_sim_sum,
+        "all_sim_n": all_sim_n,
+        "today_sim_sum": today_sim_sum,
+        "today_sim_n": today_sim_n,
+    }
 
+
+def _rising_report_summary(acc, reps, parsed):
+    (
+        per_report, src_meas, src_hits, src_mfe_sum,
+        tot_measured, tot_hits, tot_mfe_n, tot_pending,
+        tot_mfe_sum, all_mfe_sum, all_mfe_n, today_mfe_sum,
+        today_mfe_n, all_tgt_sum, all_tgt_n, today_tgt_sum,
+        today_tgt_n, all_sim_sum, all_sim_n, today_sim_sum,
+        today_sim_n,
+    ) = (
+        acc["per_report"], acc["src_meas"], acc["src_hits"], acc["src_mfe_sum"],
+        acc["tot_measured"], acc["tot_hits"], acc["tot_mfe_n"], acc["tot_pending"],
+        acc["tot_mfe_sum"], acc["all_mfe_sum"], acc["all_mfe_n"], acc["today_mfe_sum"],
+        acc["today_mfe_n"], acc["all_tgt_sum"], acc["all_tgt_n"], acc["today_tgt_sum"],
+        acc["today_tgt_n"], acc["all_sim_sum"], acc["all_sim_n"], acc["today_sim_sum"],
+        acc["today_sim_n"],
+    )
     by_source = {
         src: {
             "measured": int(src_meas[src]),
@@ -4544,6 +4698,36 @@ async def daily_rising_reports_summary(request: Request = None, days: float = 7.
         "reports": per_report,
         "by_source": by_source,
     }
+
+
+async def daily_rising_reports_summary(request: Request = None, days: float = 7.0,
+                                       limit: int = 200, kind: str = "",
+                                       include_archived: bool = False):
+    """Gönderilen HER liste raporunun başarısını ölç + genel özet döndür.
+
+    Aşamalar: rapor çekme/pencereler -> ölçüm döngüsü -> özet sözlüğü.
+
+    Kullanıcı isteği (2026-10-11): "3'lü sistem geldikten SONRAKİ başarıyı ve
+    gönderilen listeleri görmek istiyorum; eskileri istemiyorum." Bu yüzden
+    varsayılan olarak YALNIZ `combined_list` (yeni 3'lü liste) ölçülür; eski
+    `slot` kayıtları (15-20 adaylı, kaldırılan döngü) HARİÇ tutulur.
+
+    ÖLÇÜM PENCERESİ = LİSTE ÖMRÜ (kullanıcı düzeltmesi 2026-10-11): bir listenin
+    işi BİR SONRAKİ liste gönderildiğinde tamamlanır (20 dk). 24 saat beklemek
+    yanlıştı → saatler önceki listeler bile 'BEKLİYOR' görünüyordu. Artık her
+    liste [gönderim, sonraki liste] aralığında ölçülür ve MÜHÜRLENİR; yalnızca
+    EN YENİ liste (henüz sonraki gelmedi) 'BEKLİYOR' sayılır.
+    Salt-okunur; admin kapısı yok.
+    """
+    reps, parsed, next_at, newest_id, empty = await _rising_report_fetch(
+        days, limit, kind, include_archived)
+    if empty is not None:
+        return empty
+    _px, now, _tz, _today_label = await _rising_report_context(parsed)
+    acc = await _rising_report_measure(parsed, next_at, newest_id, _px, now, _tz, _today_label)
+    return _rising_report_summary(acc, reps, parsed)
+
+
 
 
 @router.get("/api/daily-rising/last-report")
@@ -6810,21 +6994,12 @@ async def report_notifications(
             "breakdown": day_breakdown, "overall": overall_breakdown}
 
 @router.get("/api/monitoring/diagnostics")
-async def monitoring_diagnostics(request: Request):
-    """Diagnostic deep-dive: compare target_pct vs actual MFE across all records.
-    
-    Returns per-symbol breakout so user can spot where the success rate is lost.
+def _diag_score_buckets(rows: list, min_score: float) -> dict:
+    """Teşhis skor kovaları (90-100 … 0-50) + genel tablo.
 
-    B7: WS/bellek/rate-limit metrikleri ALTYAPI İÇ bilgileridir — uç artık
-    YALNIZ admin erişimlidir (önceden kimlik doğrulamasız açıktı).
+    M1/P0 (R3-04): yarım-hedef artık "BASARILI" değil "KISMİ"; başarı yalnız
+    gerçek dokunuş (TAMAMEN). Teşhis kovaları raporla aynı tanımı kullanır.
     """
-    from app.api_common import require_admin as _require_admin
-    _require_admin(request)
-    settings = await get_user_notification_settings()
-    min_score = _effective_min_score(settings)
-    # R4-04: genel tablo da cap'siz okunur (limit=None).
-    rows = await database.get_monitoring_velocity_matches(limit=None, day=None)
-    rows = [r for r in rows if _stored_panel_score(r) >= min_score]
     profile_buckets: dict[str, list] = {"all": []}
     for r in rows:
         mfe_val = r.get("mfe_pct")
@@ -6849,8 +7024,6 @@ async def monitoring_diagnostics(request: Request):
         else:
             bucket = "0-50"
         tch = bool(r.get("touched_target"))
-        # M1/P0 (R3-04): yarım-hedef artık "BASARILI" değil "KISMİ"; başarı yalnız
-        # gerçek dokunuş (TAMAMEN). Teşhis kovaları raporla aynı tanımı kullanır.
         label = "TAMAMEN" if tch else ("KISMİ" if mfe_f > 0 else "BASARISIZ")
         entry = {"symbol": r.get("symbol"), "score": score, "target_pct": tgt,
                  "mfe_pct": round(mfe_f, 3), "status": label, "horizon": r.get("horizon_minutes")}
@@ -6865,7 +7038,11 @@ async def monitoring_diagnostics(request: Request):
         avg_mfe = sum(i["mfe_pct"] for i in items) / n if n else 0
         summary[bk] = {"count": n, "success": s, "success_rate": round(s/n*100,1) if n else 0,
                        "avg_target_pct": round(avg_target,2), "avg_mfe_pct": round(avg_mfe,2)}
-    # Per-symbol top losers
+    return summary
+
+
+def _diag_symbol_summary(rows: list) -> dict:
+    """Sembol bazında en kötü 30 (başarı oranına göre)."""
     by_symbol = {}
     for r in rows:
         sym = str(r.get("symbol") or "").upper()
@@ -6889,7 +7066,11 @@ async def monitoring_diagnostics(request: Request):
                             "rate": round(d["success"]/d["count"]*100, 1) if d["count"] else 0,
                             "avg_mfe": round(d["total_mfe"]/d["count"], 3) if d["count"] else 0,
                             "avg_target": round(d["total_target"]/d["count"], 2) if d["count"] else 0}
-    # WS and rate limit metrics (2026-09-07)
+    return sym_summary
+
+
+def _diag_ws_metrics() -> dict:
+    """WS/bellek/rate-limit metrikleri (2026-09-07) — ALTYAPI iç bilgileri (B7)."""
     ws_metrics = {}
     try:
         from app.ws_runtime import ws_manager
@@ -6908,12 +7089,20 @@ async def monitoring_diagnostics(request: Request):
         ws_metrics["subscribed_symbols"] = len(getattr(md, "symbols", []))
     except Exception as exc:
         ws_metrics["error"] = str(exc)
-    rate_stats = {}
+    return ws_metrics
+
+
+def _diag_rate_stats() -> dict:
+    """Velocity rate-limit istatistikleri."""
     try:
         from app.routers import velocity
-        rate_stats = velocity._rate_limit_stats()
+        return velocity._rate_limit_stats()
     except Exception as exc:
-        rate_stats["error"] = str(exc)
+        return {"error": str(exc)}
+
+
+def _diag_freshness_sample() -> dict:
+    """İlk 3 adayın veri tazelik örneği."""
     freshness_sample = {}
     try:
         for sym_item in list(_monitoring_state.get("last_candidates") or [])[:3]:
@@ -6925,10 +7114,13 @@ async def monitoring_diagnostics(request: Request):
         # M1/P2: sessiz `pass` yerine görünür kayıt (teşhis boş kalmasın).
         logger.warning("freshness_sample olusturulamadi: %s", exc)
         freshness_sample = {"error": str(exc)}
-    # Memory usage: obezite tespiti (2026-09-07)
+    return freshness_sample
+
+
+def _diag_memory_metrics() -> dict:
+    """Bellek kullanımı: obezite tespiti (2026-09-07)."""
     memory_metrics = {}
     try:
-        import sys as _sys
         # Klines cache boyutu: tum timeframelerdeki tum semboller icin toplam deger
         total_klines = 0
         total_volumes = 0
@@ -6954,7 +7146,11 @@ async def monitoring_diagnostics(request: Request):
             memory_metrics["subscribed_symbols"] = len(md.symbols)
     except Exception as exc:
         memory_metrics["error"] = str(exc)
-    # DB query latency: son 3 notify sorgusunun gecikmesi (2026-09-07)
+    return memory_metrics
+
+
+def _diag_db_latency() -> dict:
+    """DB sorgu gecikmesi: son 3 notify sorgusunun ortalaması (2026-09-07)."""
     db_latency = {}
     try:
         _db_latencies = _monitoring_state.get("_db_latencies", [])
@@ -6972,6 +7168,34 @@ async def monitoring_diagnostics(request: Request):
         # M1/P2: sessiz `pass` yerine loglanır.
         logger.warning("db_latency metrigi olusturulamadi: %s", exc)
         db_latency["error"] = str(exc)
+    return db_latency
+
+
+async def monitoring_diagnostics(request: Request):
+    """Diagnostic deep-dive: compare target_pct vs actual MFE across all records.
+
+    Returns per-symbol breakout so user can spot where the success rate is lost.
+
+    B7: WS/bellek/rate-limit metrikleri ALTYAPI İÇ bilgileridir — uç artık
+    YALNIZ admin erişimlidir (önceden kimlik doğrulamasız açıktı).
+
+    Aşamalar: skor kovaları -> sembol özeti -> altyapı metrikleri (WS/rate/
+    tazelik/bellek/DB gecikmesi).
+    """
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    settings = await get_user_notification_settings()
+    min_score = _effective_min_score(settings)
+    # R4-04: genel tablo da cap'siz okunur (limit=None).
+    rows = await database.get_monitoring_velocity_matches(limit=None, day=None)
+    rows = [r for r in rows if _stored_panel_score(r) >= min_score]
+    summary = _diag_score_buckets(rows, min_score)
+    sym_summary = _diag_symbol_summary(rows)
+    ws_metrics = _diag_ws_metrics()
+    rate_stats = _diag_rate_stats()
+    freshness_sample = _diag_freshness_sample()
+    memory_metrics = _diag_memory_metrics()
+    db_latency = _diag_db_latency()
     return {
         "paper_only": True,
         "system_startup": _monitoring_state.get("last_scan_at") is None,
@@ -7101,23 +7325,18 @@ async def monitoring_notification_history():
     return {"paper_only": True, "history": persisted, "session": session}
 
 
-async def monitoring_background_loop():
-    """Sunucu tarafı sürekli tarama: PWA kapalıyken bile taramayı ve push
-    bildirimlerini sürdürür. Hemen başlar (B8: ayrı bir başlangıç taraması
-    YOK — döngünün ilk turu zaten hemen koşar; eskiden açılışta çift tarama
-    yapılıyordu). Veri hazır değilse scan_one boş döner ama API her zaman
-    yanıt verir (2026-09-07)."""
-    logger.info("Monitoring arka plan taraması başladı (tur=%ss)", SCAN_INTERVAL_SEC)
-    # Altyapı uyarısı: VAPID anahtarları yapılandırılmamışsa push bildirimleri
-    # SESSİZCE hiç çalışmaz (uygulama sağlıklı görünür) — denetim maddesi.
-    # Startup'ta bir kez görünür uyarı verilir; flush davranışı değişmez.
-    # 2026-09-16: Teşhis artık yalnızca "eksik" demiyor; doğru anahtarın gerekli
-    # olduğu TEK değişkeni belirtiyor ve private↔public uyuşmazlığını (sessiz 401)
-    # yakalıyor. Eski uyarı VAPID_PUBLIC_KEY'i de zorunlu sanıyordu — backend için
-    # zorunlu değildir (pywebpush public'i private'dan türetir).
-    # 2026-09-16 (yanlış alarm düzeltmesi): "VAPID_PUBLIC_KEY ayarlı değil" notu
-    # artık `info` içindedir; sağlıklı sistemde WARNING basmaz. Yalnızca gerçek
-    # arızalar (private yok/geçersiz, private↔public uyuşmazlığı) uyarı olur.
+def _loop_log_vapid_health() -> None:
+    """Altyapı uyarısı: VAPID anahtarları yapılandırılmamışsa push SESSİZCE çalışmaz.
+
+    Startup'ta bir kez görünür uyarı verilir; flush davranışı değişmez.
+    2026-09-16: Teşhis artık yalnızca "eksik" demiyor; doğru anahtarın gerekli
+    olduğu TEK değişkeni belirtiyor ve private↔public uyuşmazlığını (sessiz 401)
+    yakalıyor. Eski uyarı VAPID_PUBLIC_KEY'i de zorunlu sanıyordu — backend için
+    zorunlu değildir (pywebpush public'i private'dan türetir).
+    2026-09-16 (yanlış alarm düzeltmesi): "VAPID_PUBLIC_KEY ayarlı değil" notu
+    artık `info` içindedir; sağlıklı sistemde WARNING basmaz. Yalnızca gerçek
+    arızalar (private yok/geçersiz, private↔public uyuşmazlığı) uyarı olur.
+    """
     from app.vapid import diagnose_vapid
     _vapid = diagnose_vapid()
     for _problem in _vapid["problems"]:
@@ -7128,94 +7347,120 @@ async def monitoring_background_loop():
         logger.warning(
             "Monitoring push: tarayıcı push bildirimleri GÖNDERİLMEYECEK "
             "(panel geçmişi ve uygulama içi iletişim çalışmaya devam eder).")
+
+
+async def _loop_scan_once(state: dict) -> dict | None:
+    """Tek tarama turu (kilit altında) + ardışık hata muhasebesi. Döner: sonuç."""
+    try:
+        async with _scan_lock:
+            # PERFORMANS (2026-09-26): `_run_scan` state kilidi TUTMADAN koşar
+            # (POST /scan ile aynı gerekçe — ~52 sn'lik tur GET /state'i
+            # bloklamasın). `_persist_runtime_state` kendi kısa girişini alır.
+            result = await _run_scan()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        # 2026-10-15 (denetim düzeltmesi, madde 12): traceback'li uyarı +
+        # ardışık hata eşiğinde TEK seferlik error + sistem alarmı.
+        state["errors"] = state.get("errors", 0) + 1
+        logger.warning("monitoring loop turu başarısız (ardışık %d): %s",
+                       state["errors"], exc, exc_info=True)
+        if state["errors"] == SCAN_CONSECUTIVE_ERROR_ALERT_THRESHOLD:
+            message = (f"monitoring tarama döngüsü {state['errors']} turdur "
+                       f"ardışık hata veriyor: {type(exc).__name__}: {exc}")
+            logger.error(message)
+            _alert_system_event("MONITORING_LOOP_FAILING", message)
+        await asyncio.sleep(SCAN_INTERVAL_SEC)
+        return None
+    state["errors"] = 0
+    return result
+
+
+async def _loop_post_scan(result: dict | None) -> None:
+    """Tarama sonrası: bildirim teslimi, ertelenen push, yükseliş taraması."""
+    # B5: bildirim teslimi (push/WS/otonom paper) state kilidi DIŞINDA —
+    # yavaş push ağ I/O'su GET /state ve GET /scan isteklerini bloklamaz.
+    if result:
+        # BİRLEŞİK RADAR: bu turda push edilen sembol kaydını sıfırla; aynı tur
+        # içinde radar + yükseliş çapraz bastırma bu sete göre çalışır.
+        _unified_pushed_symbols.clear()
+        try:
+            await _deliver_scan_notifications(result["new_notifications"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("monitoring bildirim teslimi: %s", exc)
+    # Sessiz saat bittiyse ertelenen push'ları gönder (scan kilidinden bağımsız)
+    try:
+        await _flush_deferred_push()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("monitoring ertelenen push gönderimi: %s", exc)
+    # R3 (2026-09-14): yükseliş/erken sinyalleri — MACD snapshot'ından türetilir
+    # (ağ isteği yok). Her iki kilidin DIŞINDA: push ağ I/O'su + otonom paper
+    # DB işi GET /state ve /scan isteklerini bloklamamalı.
+    try:
+        await _run_rising_scan()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("Yükseliş taraması hatası: %s", exc)
+
+
+def _loop_schedule_surge_bias(state: dict) -> None:
+    """Self-Learning Bias yenileme (10 dk'da bir, fire-and-forget).
+
+    PERFORMANS (2026-09-26): 2×500 satırlık DB okuması döngü İÇİNDE bekleniyordu
+    → o turun uyku payı bu işin süresi kadar kısalıyordu. Fire-and-forget
+    göreve alındı; çakışmayı önlemek için koşum bayrağı var.
+    """
+    _now_mono = time.monotonic()
+    if _now_mono - state["last"] < _SURGE_BIAS_REFRESH_INTERVAL or state["running"]:
+        return
+    state["last"] = _now_mono
+    state["running"] = True
+
+    async def _refresh_surge_biases() -> None:
+        try:
+            from app.surge_learning import refresh_biases
+            from app import database as _db
+            _closed_trades = await _db.list_auto_paper_trades(status="closed", limit=500)
+            _radar_rows = await _db.get_monitoring_velocity_matches(limit=500)
+            refresh_biases(_closed_trades, _radar_rows)
+            logger.info("surge_learning: Bias önbelleği yenilendi (%d trade, %d radar satırı).",
+                        len(_closed_trades), len(_radar_rows))
+        except asyncio.CancelledError:
+            raise
+        except Exception as _bias_exc:
+            logger.warning("surge_learning bias yenileme hatası: %s", _bias_exc)
+        finally:
+            state["running"] = False
+
+    _bias_task = asyncio.create_task(_refresh_surge_biases())
+    _background_tasks.add(_bias_task)
+    _bias_task.add_done_callback(_background_tasks.discard)
+
+
+# Self-Learning Bias: İlk taramadan önce bir kez başlat (10 dakika).
+_SURGE_BIAS_REFRESH_INTERVAL: float = 600.0
+
+
+async def monitoring_background_loop():
+    """Sunucu tarafı sürekli tarama: PWA kapalıyken bile taramayı ve push
+    bildirimlerini sürdürür. Hemen başlar (B8: ayrı bir başlangıç taraması
+    YOK — döngünün ilk turu zaten hemen koşar; eskiden açılışta çift tarama
+    yapılıyordu). Veri hazır değilse scan_one boş döner ama API her zaman
+    yanıt verir (2026-09-07)."""
+    logger.info("Monitoring arka plan taraması başladı (tur=%ss)", SCAN_INTERVAL_SEC)
+    _loop_log_vapid_health()
     await restore_runtime_state()
-    # Self-Learning Bias: İlk taramadan önce bir kez başlat
-    _surge_bias_last_refresh: float = 0.0
-    _SURGE_BIAS_REFRESH_INTERVAL: float = 600.0   # 10 dakika
-    _surge_bias_running = False
-    _scan_consecutive_errors = 0
+    _bias_state: dict = {"last": 0.0, "running": False}
+    _scan_state: dict = {"errors": 0}
     while True:
-        result = None
-        try:
-            async with _scan_lock:
-                # PERFORMANS (2026-09-26): `_run_scan` state kilidi TUTMADAN koşar
-                # (POST /scan ile aynı gerekçe — ~52 sn'lik tur GET /state'i
-                # bloklamasın). `_persist_runtime_state` kendi kısa girişini alır.
-                result = await _run_scan()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            # 2026-10-15 (denetim düzeltmesi, madde 12): traceback'li uyarı +
-            # ardışık hata eşiğinde TEK seferlik error + sistem alarmı.
-            _scan_consecutive_errors += 1
-            logger.warning("monitoring loop turu başarısız (ardışık %d): %s",
-                           _scan_consecutive_errors, exc, exc_info=True)
-            if _scan_consecutive_errors == SCAN_CONSECUTIVE_ERROR_ALERT_THRESHOLD:
-                message = (f"monitoring tarama döngüsü {_scan_consecutive_errors} turdur "
-                           f"ardışık hata veriyor: {type(exc).__name__}: {exc}")
-                logger.error(message)
-                _alert_system_event("MONITORING_LOOP_FAILING", message)
-            await asyncio.sleep(SCAN_INTERVAL_SEC)
-            continue
-        _scan_consecutive_errors = 0
-        # B5: bildirim teslimi (push/WS/otonom paper) state kilidi DIŞINDA —
-        # yavaş push ağ I/O'su GET /state ve GET /scan isteklerini bloklamaz.
-        if result:
-            # BİRLEŞİK RADAR: bu turda push edilen sembol kaydını sıfırla; aynı tur
-            # içinde radar + yükseliş çapraz bastırma bu sete göre çalışır.
-            _unified_pushed_symbols.clear()
-            try:
-                await _deliver_scan_notifications(result["new_notifications"])
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("monitoring bildirim teslimi: %s", exc)
-        # Sessiz saat bittiyse ertelenen push'ları gönder (scan kilidinden bağımsız)
-        try:
-            await _flush_deferred_push()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("monitoring ertelenen push gönderimi: %s", exc)
-        # R3 (2026-09-14): yükseliş/erken sinyalleri — MACD snapshot'ından türetilir
-        # (ağ isteği yok). Her iki kilidin DIŞINDA: push ağ I/O'su + otonom paper
-        # DB işi GET /state ve /scan isteklerini bloklamamalı.
-        try:
-            await _run_rising_scan()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("Yükseliş taraması hatası: %s", exc)
-
-        # Self-Learning Bias Yenileme (her 10 dakikada bir — scan döngüsü kilitlerinden bağımsız)
-        # PERFORMANS (2026-09-26): 2×500 satırlık DB okuması döngü İÇİNDE bekleniyordu
-        # → o turun uyku payı bu işin süresi kadar kısalıyordu. Fire-and-forget
-        # göreve alındı; çakışmayı önlemek için koşum bayrağı var.
-        _now_mono = __import__("time").monotonic()
-        if _now_mono - _surge_bias_last_refresh >= _SURGE_BIAS_REFRESH_INTERVAL and not _surge_bias_running:
-            _surge_bias_last_refresh = _now_mono
-            _surge_bias_running = True
-
-            async def _refresh_surge_biases() -> None:
-                try:
-                    from app.surge_learning import refresh_biases
-                    from app import database as _db
-                    _closed_trades = await _db.list_auto_paper_trades(status="closed", limit=500)
-                    _radar_rows = await _db.get_monitoring_velocity_matches(limit=500)
-                    refresh_biases(_closed_trades, _radar_rows)
-                    logger.info("surge_learning: Bias önbelleği yenilendi (%d trade, %d radar satırı).",
-                                len(_closed_trades), len(_radar_rows))
-                except asyncio.CancelledError:
-                    raise
-                except Exception as _bias_exc:
-                    logger.warning("surge_learning bias yenileme hatası: %s", _bias_exc)
-                finally:
-                    nonlocal _surge_bias_running
-                    _surge_bias_running = False
-
-            _bias_task = asyncio.create_task(_refresh_surge_biases())
-            _background_tasks.add(_bias_task)
-            _bias_task.add_done_callback(_background_tasks.discard)
+        result = await _loop_scan_once(_scan_state)
+        await _loop_post_scan(result)
+        _loop_schedule_surge_bias(_bias_state)
 
         await asyncio.sleep(SCAN_INTERVAL_SEC)
         # Olay güdümlü hızlı tarama (2026-09-26, "daha erken"): keşif güçlü

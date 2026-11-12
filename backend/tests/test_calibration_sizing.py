@@ -169,7 +169,8 @@ class CalibrationLiveWiringTests(unittest.TestCase):
 
         from app.analyzer import ScalpAnalyzer
 
-        source = inspect.getsource(ScalpAnalyzer._open_position_unlocked)
+        # 2026-11-10 refactor: entry_context kurulumu `_build_entry_context`'e taşındı.
+        source = inspect.getsource(ScalpAnalyzer._build_entry_context)
         self.assertIn('entry_context["volume_ratio"]', source,
                       "volume_ratio entry_context'e yazılmıyor → kova hep unknown")
 

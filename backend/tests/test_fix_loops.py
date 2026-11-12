@@ -259,7 +259,8 @@ class MonitoringLoopFixTests(unittest.IsolatedAsyncioTestCase):
     def test_scan_loop_logs_traceback_and_alerts_on_threshold(self):
         from app.routers import monitoring
 
-        src = inspect.getsource(monitoring.monitoring_background_loop)
+        # 2026-11-10 refactor: tur/hata muhasebesi `_loop_scan_once`'a taşındı.
+        src = inspect.getsource(monitoring._loop_scan_once)
         self.assertIn("monitoring loop turu başarısız (ardışık %d)", src)
         self.assertIn("SCAN_CONSECUTIVE_ERROR_ALERT_THRESHOLD", src)
         self.assertIn('_alert_system_event("MONITORING_LOOP_FAILING"', src)

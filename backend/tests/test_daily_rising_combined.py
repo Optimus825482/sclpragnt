@@ -363,7 +363,10 @@ def test_send_combined_list_skips_when_recent(monkeypatch):
 def test_reports_summary_has_source_breakdown():
     import inspect
     from app.routers import monitoring as mo
-    src = inspect.getsource(mo.daily_rising_reports_summary)
+    # 2026-11-10 refactor: ölçüm döngüsü/sözlük parçaları ayrı fonksiyonlarda.
+    src = "".join(inspect.getsource(f) for f in (
+        mo.daily_rising_reports_summary, mo._rising_report_fetch,
+        mo._rising_report_measure, mo._rising_report_summary))
     for key in ("hit_rate", "ceiling_hits", "avg_mfe_pct", "reports", "by_source"):
         assert key in src, f"özet alanı eksik: {key}"
     assert "COMBINED_LIST_KIND" in src
@@ -377,7 +380,8 @@ def test_reports_summary_has_realizable_sim_fields():
     import inspect
     from app.routers import monitoring as mo
     from app import database as db
-    summary_src = inspect.getsource(mo.daily_rising_reports_summary)
+    summary_src = "".join(inspect.getsource(f) for f in (
+        mo.daily_rising_reports_summary, mo._rising_report_measure, mo._rising_report_summary))
     for key in ("avg_sim_pct", "avg_sim_all_pct", "avg_sim_today_pct",
                 "avg_sim_all_n", "avg_sim_today_n", "sim_measured"):
         assert key in summary_src, f"özet sim alanı eksik: {key}"
@@ -407,7 +411,8 @@ def test_report_window_is_list_lifetime_not_24h():
     sayar."""
     import inspect
     from app.routers import monitoring as mo
-    src = inspect.getsource(mo.daily_rising_reports_summary)
+    src = "".join(inspect.getsource(f) for f in (
+        mo.daily_rising_reports_summary, mo._rising_report_fetch, mo._rising_report_measure))
     assert "next_at" in src                 # sonraki liste zamanı çizelgesi
     assert "window_end" in src              # pencere = sonraki liste
     assert "max_sec" in src
@@ -450,7 +455,8 @@ def test_reports_endpoints_exclude_legacy_slot():
     + combined_status) görünsün; kaldırılan eski `slot`/`delta` kayıtları HARİÇ."""
     import inspect
     from app.routers import monitoring as mo
-    summ = inspect.getsource(mo.daily_rising_reports_summary)
+    summ = "".join(inspect.getsource(f) for f in (
+        mo.daily_rising_reports_summary, mo._rising_report_fetch))
     # Varsayılan türler yalnız combined_list; eski "slot" varsayılana EKLENMEMELİ.
     assert '["slot"' not in summ and ", \"slot\"]" not in summ
     assert "COMBINED_LIST_KIND" in summ
