@@ -46,8 +46,13 @@ class MiniTickerCacheTests(unittest.TestCase):
             "source": "ws:miniTicker@arr"})
         self.assertEqual(market.mini_tickers["ETHTRY"]["last_price"], 50.5)
         self.assertNotIn("BADTRY", market.mini_tickers)
-        # izlenmeyen sembol `tickers`a yazılmaz
-        self.assertIsNone(market.get_ticker("ETHTRY"))
+        # 2026-11-10 (davranış değişikliği): izlenmeyen sembol `tickers`a hâlâ
+        # YAZILMAZ, ancak `get_ticker` artık `mini_tickers` yedeğine düşer.
+        # Neden: `!miniTicker@arr` TÜM semboller için saniyelik fiyat taşıyor;
+        # yalnız `tickers`'a bakmak warming/pasif ~276 sembolü "BAYAT" gösterip
+        # her turda gereksiz REST yedeğine düşürüyordu (canlı şikâyet).
+        self.assertNotIn("ETHTRY", market.tickers)
+        self.assertEqual(market.get_ticker("ETHTRY")["last_price"], 50.5)
 
     def test_tracked_ticker_refreshed_only_when_newer_and_fields_kept(self):
         market = MarketData(["BTCTRY"])

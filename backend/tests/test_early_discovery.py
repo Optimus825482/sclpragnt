@@ -237,7 +237,11 @@ class MarketDataArrRoutingTests(unittest.TestCase):
         market = MarketData(["BTCTRY"])
         market._process_ws_message({
             "stream": "!miniTicker@arr",
-            "data": [_row("BTCTRY", 100.0, 1000.0)],
+            # 2026-11-10: `E` gerçek Binance verisinde HEP doludur. `E=0`
+            # göndermek `_ingest_mini_ticker_arr`'ın "boşsa şimdiki zaman"
+            # yedeğine düşmesine ve mini kaydın SONRAKİ ticker'dan bile daha
+            # yeni görünmesine yol açıyordu (yapay durum).
+            "data": [_row("BTCTRY", 100.0, 1000.0, event_ms=900)],
         })
         market._process_ws_message({
             "stream": "btctry@ticker",

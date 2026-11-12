@@ -1167,7 +1167,48 @@ class MarketData:
                 history["_ts_index_map"] = {ts: idx for idx, ts in enumerate(timestamps)}
 
     def get_ticker(self, symbol):
-        return self.tickers.get(symbol.upper())
+        """Sembolün fiyat kaydı — `tickers` öncelikli, `mini_tickers` yedeği.
+
+        2026-11-10 (P0, "WS bağlı ama fiyat hep BAYAT"): `!miniTicker@arr`
+        dizisi TÜM semboller için saniyelik fiyat taşıyor ve
+        `_ingest_mini_ticker_arr` bunu `mini_tickers`'a yazıyor — ama
+        `tickers`'a YALNIZCA `self.symbols` (WS kline aboneliği olan ~34 aktif
+        sembol) için yazıyordu. Evrenin geri kalanı (warming/pasif, ~276
+        sembol) için fiyat `mini_tickers`'ta TAZE dururken `get_ticker`
+        yalnız `tickers`'a baktığı için `None` ya da bayat kayıt dönüyordu.
+        Sonuç: o semboller her turda "ticker BAYAT" uyarısı üretip gereksiz
+        REST yedeğine düşüyordu (dakikada onlarca istek, log gürültüsü).
+
+        Artık iki kaynak BİRLEŞTİRİLİR: `tickers` kaydı varsa o kullanılır,
+        ancak `mini_tickers` daha YENİ bir zaman damgası taşıyorsa onun
+        fiyatı/zamanı esas alınır (mevcut zengin alanlar korunur).
+        """
+        sym = str(symbol or "").upper()
+        primary = self.tickers.get(sym)
+        mini = self.mini_tickers.get(sym)
+        if not mini:
+            return primary
+        # Basit kayıt: `tickers`'a yazarken olduğu gibi adapter önekini ekle
+        # (`_ingest_mini_ticker_arr` ile aynı biçim) — böylece `ws_quote`
+        # kaynağı "binance_tr_public_ws:miniTicker@arr" görür ve
+        # `price_service.SOURCE_WS_MINI_ARR` ile tutarlı kalır.
+        if not primary:
+            return {
+                **mini,
+                "symbol": sym,
+                "source": f"{self.source_prefix}_{self.MINI_TICKER_ARR_SOURCE}",
+            }
+        try:
+            primary_ms = int(primary.get("timestamp") or 0)
+            mini_ms = int(mini.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            return primary
+        if mini_ms <= primary_ms:
+            return primary
+        # mini daha taze: fiyatı/zamanı devral, zengin alanları koru.
+        return {**primary, "last_price": mini.get("last_price"),
+                "timestamp": mini_ms,
+                "source": f"{self.source_prefix}_{self.MINI_TICKER_ARR_SOURCE}"}
 
     def ticker_freshness(self, symbol, max_age_sec=None):
         ticker = self.get_ticker(symbol) or {}
