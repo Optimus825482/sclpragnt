@@ -64,8 +64,9 @@ class EntryGateContractTests(unittest.TestCase):
         assert "MAX_CLUSTER_EXPOSURE_PCT" in src
 
     def test_passes_guard_blocks_false_candidates(self):
-        # 2026-11-10 refactor: passes kapısı `_compute_entry_gates`'e taşındı.
-        src = inspect.getsource(auto_paper._compute_entry_gates)
+        # 2026-11-10 refactor: passes kapısı `_entry_flag_gates`'e taşındı
+        # (`_compute_entry_gates` orkestratörü onu çağırır).
+        src = inspect.getsource(auto_paper._entry_flag_gates)
         assert "passes" in src
         assert '"not_passing"' in src
 
