@@ -130,12 +130,15 @@ class ScoreGateRawTests(unittest.TestCase):
 
     def test_run_scan_uses_raw_gate_source(self):
         from app.routers import monitoring
+        # 2026-11-10 refactor: eşik/füzyon filtresi `_scan_build_lists`'e taşındı;
+        # `_run_scan` orkestratörü `effective_min_raw_score`'ı hesaplayıp geçirir.
         src = __import__("inspect").getsource(monitoring._run_scan)
         self.assertIn("effective_min_raw_score", src, "aday kapısı ham skordan seçilmeli (R2-01)")
+        gate_src = __import__("inspect").getsource(monitoring._scan_build_lists)
         # #9 (2026-09-26): korumasız `float(c.get(...) or 0)` yerine `_num`
         # kullanılmalı — tek bozuk satır turu düşürmesin.
-        self.assertIn('_num(c.get("velocity_score", 0), 0.0)', src)
-        self.assertNotIn('float(c.get("velocity_score", 0) or 0) >= effective_min_raw_score', src)
+        self.assertIn('_num(c.get("velocity_score", 0), 0.0)', gate_src)
+        self.assertNotIn('float(c.get("velocity_score", 0) or 0) >= effective_min_raw_score', gate_src)
 
 
 class NotifyRawGateTests(unittest.IsolatedAsyncioTestCase):

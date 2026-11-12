@@ -3368,6 +3368,153 @@ async def _rising_deliver(notified: list) -> None:
     _maybe_llm_second_eye(_delivered(attempted))
 
 
+async def _rising_apply_dynamic_target(candidate: dict, symbol: str) -> float:
+    """Yükseliş sinyali için dinamik hedef uygular (öğrenilmiş hedef dahil).
+
+    Döner: uygulanan `target_pct`.
+    """
+    from app.routers import velocity as _velocity
+    # DİNAMİK HEDEF (2026-09-17): yükseliş sinyalleri de sembol hedef öğrenme
+    # durumundan geçer. `panel_score=False`: sinyal skoru `strength × 10` ile
+    # SENTEZLENİR, velocity PANEL skoru değildir → PANEL ölçeğine bağlı bant ve
+    # zayıf-skor kelepçesi uygulanmaz (plan §4/R3 ölçek karışımı yasağı).
+    base_target = float(candidate.get("target_pct") or getattr(config, "RISING_TARGET_PCT", 2.2))
+    learned_target = None
+    learned_count = 0
+    if getattr(config, "MONITORING_TARGET_ADAPTIVE", True):
+        try:
+            state = await database.get_symbol_target_state(symbol)
+            if state:
+                val = float(state.get("target_pct") or 0)
+                learned_target = val if val > 0 else None
+                learned_count = int(state.get("total_count") or 0)
+        except Exception:
+            learned_target = None
+            learned_count = 0
+    try:
+        return _velocity.dynamic_target_pct(
+            float(candidate.get("score") or 0), base_target,
+            learned_pct=learned_target, learned_count=learned_count,
+            panel_score=False)
+    except Exception as exc:
+        # Sessiz yutma YOK: hedef öğrenmesi burada devre dışı kalırsa görünmeli.
+        logger.debug("yükseliş dinamik hedef uygulanamadı %s: %s", symbol, exc)
+        return base_target
+
+
+async def _rising_handle_early(candidate: dict, symbol: str, notify_enabled: bool,
+                               summary: dict, rising_signals) -> bool:
+    """ERKEN (KIND_EARLY) sinyali: push YOK, kanıt + izleme listesi. Döner: True → işlendi."""
+    # Push GÖNDERILMEZ. Kanıt kaydı yapılır, ERKEN izleme listesine eklenir.
+    # Bu sembol için sonraki KIND_STRENGTH sinyali "erken uyarılı" olarak
+    # işaretlenir → YÜKSELİŞ bildirimi daha anlamlı olur.
+    # HİSTEREZİS (2026-09-26 performans turu): erken koşul SÜRDÜKÇE her
+    # turda `rising_alerts` satırı yazılıyordu (tablo şişmesi + tur başına
+    # gereksiz insert). STRENGTH dalıyla AYNI edge kontrolü: öncü küme
+    # değişmediyse yeni bilgi yoktur → DB kaydı YAPILMAZ. Erken-izleme
+    # tazeliği yine korunur (in-memory, ucuz) — YÜKSELİŞ sinyalinin
+    # "erken uyarılı" etiketi etkilenmez.
+    prev_key_early = rising_signals.last_key(symbol)
+    cur_key_early = rising_signals.signal_key(candidate)
+    if prev_key_early is not None and not rising_signals.rising_edge_trigger(prev_key_early, cur_key_early):
+        rising_signals.register_early_watch(candidate)
+        summary["early_dedup"] = summary.get("early_dedup", 0) + 1
+        return True
+    price = _ticker_price(symbol) if notify_enabled else None
+    if notify_enabled and (not price or price <= 0):
+        summary["skipped_price"] += 1
+        return True
+    # Kanıt kaydı (ölçüm / panel görünümü için)
+    await database.record_rising_alert({
+        **candidate,
+        "price": float(price) if price else None,
+        "expected_price": None,
+        "created_at": time.time(),
+        "notified": False,
+    })
+    # ERKEN izleme listesine kaydet (koşullar değişirse YÜKSELİŞ hızlanır)
+    rising_signals.register_early_watch(candidate)
+    # Histerezis anahtarını ilerlet (flood önleme)
+    rising_signals.advance_key(candidate)
+    return True  # ← PUSH YOK
+
+
+def _rising_decide_fire(candidate: dict, symbol: str, price, now: float, settings: dict,
+                        notify_enabled: bool, unified_mode: bool, is_first_observation: bool,
+                        notified: list, max_per_scan: int, rising_signals, unified_signals):
+    """YÜKSELİŞ sinyali ateşleme kararı. Döner: (fire: bool, update_change, risk_blocked)."""
+    # Sessiz arm (ilk gözlem): restart fırtınasını engelle ama sinyali KAYDET —
+    # panel ve rapor bundan beslenir, yalnız push/dialog yapılmaz.
+    # BİRLEŞİK SİNYAL (2026-09-17): hızlı-yol/radar yakın zamanda bu sembolü
+    # bildirdiyse rising push'u BASTIRILIR (tek bildirim kuralı) — kanıt
+    # kaydı (`rising_alerts`) yine yazılır, replay bunu kullanır.
+    # EŞİK KONTROLÜ (2026-09-21): admin min_score altındaki zayıf sinyaller bildirilmez.
+    effective_min_score = _effective_min_score(settings)
+    score_qualifies = float(candidate.get("score") or 0) >= effective_min_score
+    # P1-2 (2026-10-07 denetimi): SERT RİSK kapısı — radar yolunda
+    # `_master_surge_block_reason` ile uygulanan aynı fail-closed kapı
+    # (BTC panik döküşü / BTC 1H EMA200 altı rejim / aşırı şişkin long
+    # tasfiye riski). Eksikliğinde BTC çakılırken yükseliş bildirimi gidip
+    # `auto_paper` pozisyon açabiliyordu. Sert riskte push GÖNDERİLMEZ ve
+    # bu turda aynı sembol yeniden denenmesin diye defter ilerletilir
+    # (kanıt satırı diğer bastırma yollarıyla aynı şekilde yine yazılır).
+    _risk_reason, _ = _rising_risk_block_reason(symbol)
+    risk_blocked = _risk_reason is not None
+    fire = (notify_enabled and not is_first_observation
+            and score_qualifies
+            and not risk_blocked
+            and rising_signals.should_fire(candidate, now)
+            and not (unified_mode and unified_signals.recently_notified(symbol)))
+    # ── UPDATE BİLDİRİMİ: cooldown/horizon içindeyken koşullar değiştiyse ──
+    # Rising cooldown hâlâ aktifse (should_fire → False) ama önceki bildirimden
+    # bu yana hedef veya sinyal gücü anlamlı değiştiyse kullanıcıya UPDATE push
+    # gönder. Bu "neden tekrar bildirim?" sorusunun asıl cevabıdır:
+    # ya yeni bir sinyal (cooldown dolmuş) ya da değişim güncellemesi.
+    update_change = None
+    # P1-2: risk bloklu sinyal UPDATE ile de ateşlenmez (sert risk her
+    # yolu kapatır — yoksa cooldown/horizon içi "güncelleme" kapıyı delerdi).
+    if (not fire and not risk_blocked and not is_first_observation
+            and notify_enabled and score_qualifies):
+        update_change = rising_signals.changed_since_last_fire(
+            candidate, float(price or 0))
+        if update_change and len(notified) < max_per_scan:
+            if not (unified_mode and unified_signals.recently_notified(symbol)):
+                fire = True   # UPDATE modunda ateşle
+                candidate["_update_change"] = update_change  # mesaj için
+    return fire, update_change, risk_blocked
+
+
+def _rising_build_notification(candidate: dict, symbol: str, price, quiet: bool,
+                               update_change, notify_enabled: bool, rising_signals):
+    """Push nesnesini kurar (erken-uyarı bayrağı + UPDATE etiketi)."""
+    notif = _build_rising_notification(candidate, float(price)) if notify_enabled else None
+    if notif is None:
+        return None
+    notif["quiet_hours"] = bool(quiet)
+    # ERKEN izleme bayrağı: push metnine "Erken uyarıdan güçlendi" notu ekle
+    early_entry = rising_signals.is_early_watch(symbol)
+    if early_entry:
+        notif["early_watch"] = True
+        notif["early_detected_at"] = early_entry.get("detected_at")
+    # UPDATE etiketi ve değişim bilgisi
+    if update_change:
+        notif["updated"] = True
+        notif["update_reason"] = update_change.get("reason", "")
+        notif["target_delta"] = update_change.get("target_delta")
+        notif["score_delta"] = update_change.get("score_delta")
+        # UPDATE metnini zenginleştir
+        notif["title"] = f"🔄 GÜNCELLEME · {symbol}"
+        reason_txt = update_change.get("reason", "")
+        notif["message"] = (
+            f"🔄 {symbol} | {reason_txt} | "
+            f"Hedef: %{candidate.get('target_pct', 0):.2f} | "
+            f"Skor: {candidate.get('score', 0):.0f}"
+        )
+    else:
+        notif["updated"] = False
+    return notif
+
+
 async def _run_rising_scan() -> dict:
     """Yükseliş taraması: tespit → fiyat → histerezis → kanıt → bildirim.
 
@@ -3405,69 +3552,13 @@ async def _run_rising_scan() -> dict:
         symbol = str(candidate.get("symbol") or "").upper()
         if not symbol:
             continue
-        # DİNAMİK HEDEF (2026-09-17): yükseliş sinyalleri de sembol hedef öğrenme
-        # durumundan geçer. `panel_score=False`: sinyal skoru `strength × 10` ile
-        # SENTEZLENİR, velocity PANEL skoru değildir → PANEL ölçeğine bağlı bant ve
-        # zayıf-skor kelepçesi uygulanmaz (plan §4/R3 ölçek karışımı yasağı).
-        base_target = float(candidate.get("target_pct") or getattr(config, "RISING_TARGET_PCT", 2.2))
-        learned_target = None
-        learned_count = 0
-        if getattr(config, "MONITORING_TARGET_ADAPTIVE", True):
-            try:
-                state = await database.get_symbol_target_state(symbol)
-                if state:
-                    val = float(state.get("target_pct") or 0)
-                    learned_target = val if val > 0 else None
-                    learned_count = int(state.get("total_count") or 0)
-            except Exception:
-                learned_target = None
-                learned_count = 0
-        try:
-            from app.routers import velocity as _velocity
-            candidate["target_pct"] = _velocity.dynamic_target_pct(
-                float(candidate.get("score") or 0), base_target,
-                learned_pct=learned_target, learned_count=learned_count,
-                panel_score=False)
-        except Exception as exc:
-            # Sessiz yutma YOK: hedef öğrenmesi burada devre dışı kalırsa görünmeli.
-            logger.debug("yükseliş dinamik hedef uygulanamadı %s: %s", symbol, exc)
-            candidate["target_pct"] = base_target
+        candidate["target_pct"] = await _rising_apply_dynamic_target(candidate, symbol)
 
-        # ── ERKEN (KIND_EARLY) sinyali ──────────────────────────────────────────
-        # Push GÖNDERILMEZ. Kanıt kaydı yapılır, ERKEN izleme listesine eklenir.
-        # Bu sembol için sonraki KIND_STRENGTH sinyali "erken uyarılı" olarak
-        # işaretlenir → YÜKSELİŞ bildirimi daha anlamlı olur.
+        # ── ERKEN (KIND_EARLY) sinyali: push yok ──────────────────────────────
         kind = str(candidate.get("kind") or "")
         if kind == rising_signals.KIND_EARLY:
-            # HİSTEREZİS (2026-09-26 performans turu): erken koşul SÜRDÜKÇE her
-            # turda `rising_alerts` satırı yazılıyordu (tablo şişmesi + tur başına
-            # gereksiz insert). STRENGTH dalıyla AYNI edge kontrolü: öncü küme
-            # değişmediyse yeni bilgi yoktur → DB kaydı YAPILMAZ. Erken-izleme
-            # tazeliği yine korunur (in-memory, ucuz) — YÜKSELİŞ sinyalinin
-            # "erken uyarılı" etiketi etkilenmez.
-            prev_key_early = rising_signals.last_key(symbol)
-            cur_key_early = rising_signals.signal_key(candidate)
-            if prev_key_early is not None and not rising_signals.rising_edge_trigger(prev_key_early, cur_key_early):
-                rising_signals.register_early_watch(candidate)
-                summary["early_dedup"] = summary.get("early_dedup", 0) + 1
-                continue
-            price = _ticker_price(symbol) if notify_enabled else None
-            if notify_enabled and (not price or price <= 0):
-                summary["skipped_price"] += 1
-                continue
-            # Kanıt kaydı (ölçüm / panel görünümü için)
-            await database.record_rising_alert({
-                **candidate,
-                "price": float(price) if price else None,
-                "expected_price": None,
-                "created_at": time.time(),
-                "notified": False,
-            })
-            # ERKEN izleme listesine kaydet (koşullar değişirse YÜKSELİŞ hızlanır)
-            rising_signals.register_early_watch(candidate)
-            # Histerezis anahtarını ilerlet (flood önleme)
-            rising_signals.advance_key(candidate)
-            continue  # ← PUSH YOK
+            await _rising_handle_early(candidate, symbol, notify_enabled, summary, rising_signals)
+            continue
 
         # ── YÜKSELİŞ (KIND_STRENGTH) sinyali ───────────────────────────────────
         # Histerezis: AYNI öncü kümesi sürüyorsa yeni bilgi yoktur → ne kayıt ne
@@ -3484,72 +3575,13 @@ async def _run_rising_scan() -> dict:
             summary["skipped_price"] += 1
             continue
 
-        # Sessiz arm (ilk gözlem): restart fırtınasını engelle ama sinyali KAYDET —
-        # panel ve rapor bundan beslenir, yalnız push/dialog yapılmaz.
-        # BİRLEŞİK SİNYAL (2026-09-17): hızlı-yol/radar yakın zamanda bu sembolü
-        # bildirdiyse rising push'u BASTIRILIR (tek bildirim kuralı) — kanıt
-        # kaydı (`rising_alerts`) yine yazılır, replay bunu kullanır.
-        # EŞİK KONTROLÜ (2026-09-21): admin min_score altındaki zayıf sinyaller bildirilmez.
-        effective_min_score = _effective_min_score(settings)
-        score_qualifies = float(candidate.get("score") or 0) >= effective_min_score
-        # P1-2 (2026-10-07 denetimi): SERT RİSK kapısı — radar yolunda
-        # `_master_surge_block_reason` ile uygulanan aynı fail-closed kapı
-        # (BTC panik döküşü / BTC 1H EMA200 altı rejim / aşırı şişkin long
-        # tasfiye riski). Eksikliğinde BTC çakılırken yükseliş bildirimi gidip
-        # `auto_paper` pozisyon açabiliyordu. Sert riskte push GÖNDERİLMEZ ve
-        # bu turda aynı sembol yeniden denenmesin diye defter ilerletilir
-        # (kanıt satırı diğer bastırma yollarıyla aynı şekilde yine yazılır).
-        _risk_reason, _ = _rising_risk_block_reason(symbol)
-        risk_blocked = _risk_reason is not None
-        fire = (notify_enabled and not is_first_observation
-                and score_qualifies
-                and not risk_blocked
-                and rising_signals.should_fire(candidate, now)
-                and not (unified_mode and unified_signals.recently_notified(symbol)))
-
-        # ── UPDATE BİLDİRİMİ: cooldown/horizon içindeyken koşullar değiştiyse ──
-        # Rising cooldown hâlâ aktifse (should_fire → False) ama önceki bildirimden
-        # bu yana hedef veya sinyal gücü anlamlı değiştiyse kullanıcıya UPDATE push
-        # gönder. Bu "neden tekrar bildirim?" sorusunun asıl cevabıdır:
-        # ya yeni bir sinyal (cooldown dolmuş) ya da değişim güncellemesi.
-        update_change = None
-        # P1-2: risk bloklu sinyal UPDATE ile de ateşlenmez (sert risk her
-        # yolu kapatır — yoksa cooldown/horizon içi "güncelleme" kapıyı delerdi).
-        if (not fire and not risk_blocked and not is_first_observation
-                and notify_enabled and score_qualifies):
-            update_change = rising_signals.changed_since_last_fire(
-                candidate, float(price or 0))
-            if update_change and len(notified) < max_per_scan:
-                if not (unified_mode and unified_signals.recently_notified(symbol)):
-                    fire = True   # UPDATE modunda ateşle
-                    candidate["_update_change"] = update_change  # mesaj için
-
+        fire, update_change, _risk_blocked = _rising_decide_fire(
+            candidate, symbol, price, now, settings, notify_enabled, unified_mode,
+            is_first_observation, notified, max_per_scan, rising_signals, unified_signals)
         if fire and len(notified) >= max_per_scan:
             continue
-        notif = _build_rising_notification(candidate, float(price)) if notify_enabled else None
-        if notif is not None:
-            notif["quiet_hours"] = bool(quiet)
-            # ERKEN izleme bayrağı: push metnine "Erken uyarıdan güçlendi" notu ekle
-            early_entry = rising_signals.is_early_watch(symbol)
-            if early_entry:
-                notif["early_watch"] = True
-                notif["early_detected_at"] = early_entry.get("detected_at")
-            # UPDATE etiketi ve değişim bilgisi
-            if update_change:
-                notif["updated"] = True
-                notif["update_reason"] = update_change.get("reason", "")
-                notif["target_delta"] = update_change.get("target_delta")
-                notif["score_delta"] = update_change.get("score_delta")
-                # UPDATE metnini zenginleştir
-                notif["title"] = f"🔄 GÜNCELLEME · {symbol}"
-                reason_txt = update_change.get("reason", "")
-                notif["message"] = (
-                    f"🔄 {symbol} | {reason_txt} | "
-                    f"Hedef: %{candidate.get('target_pct', 0):.2f} | "
-                    f"Skor: {candidate.get('score', 0):.0f}"
-                )
-            else:
-                notif["updated"] = False
+        notif = _rising_build_notification(candidate, symbol, price, quiet,
+                                          update_change, notify_enabled, rising_signals)
 
         # Kanıt katmanı: bildirimden ÖNCE yazılır ki her sinyal ölçülebilir olsun.
         alert_id = await database.record_rising_alert({
@@ -3591,7 +3623,6 @@ async def _run_rising_scan() -> dict:
             logger.warning("Yükseliş teslimi: %s", exc)
     summary["notified"] = len(notified)
     return summary
-
 
 # Kanıt doldurma periyodu: ufuk 30 dk olduğundan 5 dakikalık tarama yeterli.
 _RISING_EVIDENCE_FILL_SEC = 300.0
@@ -5659,25 +5690,16 @@ def _risk_state_from_references() -> tuple[bool, bool]:
         return False, True  # rejim hesaplanamazsa fail-open + BİLİNMİYOR
 
 
-async def _run_scan() -> dict:
-    """Tek tarama turu: 5dk + 15dk velocity taramalarını hibrit sıralamayla birleştirir.
+async def _scan_detect(watch_symbols: list) -> dict:
+    """Ufuk taramaları (5/15 + varsa 30/60) — paylaşımlı kline önbelleğiyle.
 
-    İzleme listesindeki semboller her turda top-gainer havuzuna zorunlu olarak
-    eklenir (extra_symbols) — böylece izleme listesi "daha sık analiz edilen"
-    listede kalır ve terfi/düşme kararı her turda tazelenir.
-
-    Hibrit (2026-09-04): sembol başına chat upside-scout ile AYNI sıralama
-    anahtarı (upside_rank = dk-başı hedef × hız skoru × kalite × mikro-yapı)
-    kullanılır; açık pozisyonlu semboller aday listesinden elenir; her adayın
-    5dk+15dk çift profili saklanır. RISK_OFF rejimde etkin eşik yükseltilir.
+    F-16 GÜNCELLEME (2026-09-26 performans turu): profiller artık tur-başı
+    PAYLAŞIMLI kline önbelleğiyle SIRALI koşar. Eski karar ("seri beklemek
+    gecikmeyi ikiye katlıyordu") önbelleksiz çağrı içindi; şimdi 5m profili
+    1m profilinin indirdiği AYNI serileri yeniden indirmiyor → REST çağrısı
+    YARİYA İNİYOR (420→210/tur, 8 rps sınırda duvar süresi ~52sn→~26sn).
+    İkinci profil yalnızca önbellekten okur (ağ beklemez).
     """
-    watch_symbols = sorted({w.get("symbol") for w in (_monitoring_state["last_watchlist"] or []) if w.get("symbol")})
-    # F-16 GÜNCELLEME (2026-09-26 performans turu): profiller artık tur-başı
-    # PAYLAŞIMLI kline önbelleğiyle SIRALI koşar. Eski karar ("seri beklemek
-    # gecikmeyi ikiye katlıyordu") önbelleksiz çağrı içindi; şimdi 5m profili
-    # 1m profilinin indirdiği AYNI serileri yeniden indirmiyor → REST çağrısı
-    # YARİYA İNİYOR (420→210/tur, 8 rps sınırda duvar süresi ~52sn→~26sn).
-    # İkinci profil yalnızca önbellekten okur (ağ beklemez).
     _kline_cache: dict = {}
     try:
         # Ufuklar: 5/15 + (bayrak açıksa) 30/60. `_active_horizons` tek kaynak.
@@ -5700,16 +5722,11 @@ async def _run_scan() -> dict:
         # yayınlamaktansa boş göstermek doğrudur (2026-09-26).
         _monitoring_state["warm"] = []
         raise
+    return scans
 
-    scan5 = scans.get(5) or {}
-    scan15 = scans.get(15) or {}
 
-    # Ufuk → aday/izleme listeleri (5/15 ana; 30/60 varsa eklenir).
-    candidates_by_h: dict[int, list] = {h: (s.get("candidates", []) or []) for h, s in scans.items()}
-    watchlist_by_h: dict[int, list] = {h: (s.get("watchlist", []) or []) for h, s in scans.items()}
-    candidates5 = candidates_by_h.get(5, [])
-    candidates15 = candidates_by_h.get(15, [])
-
+def _scan_warm_pool(scans: dict) -> list[dict]:
+    """Warm (eşik altı ama yakın) havuzu toplar, sıralar ve MACD MTF rozetini ekler."""
     # Warm listesi toplama (2026-09-26): velocity taraması dönüşünde artık
     # "warm" (eşik altı ama yakın) adayları da var. İki profilin warm havuzu
     # birleştirilir, frontend sözleşmesindeki ALANLARLA (isimler birebir)
@@ -5740,9 +5757,12 @@ async def _run_scan() -> dict:
     for _w in merged_warm:
         _w["macd_mtf"] = macd_mtf.cached_compact(_w.get("symbol"))
     _monitoring_state["warm"] = merged_warm[:12]
-    # MACD MTF tazeleme (fire-and-forget): warm + nabız sembollerinin konfluans
-    # önbelleğini 60 sn TTL ile tazeler; taramayı BEKLETMEZ.
-    _macd_mtf_symbols: list[str] = [str(_w.get("symbol") or "") for _w in _monitoring_state["warm"]]
+    return _monitoring_state["warm"]
+
+
+def _scan_schedule_macd_refresh(warm_rows: list[dict]) -> None:
+    """MACD MTF tazeleme (fire-and-forget): warm + nabız sembolleri 60 sn TTL; taramayı BEKLETMEZ."""
+    _macd_mtf_symbols: list[str] = [str(_w.get("symbol") or "") for _w in warm_rows]
     try:
         from app.early_discovery import top_candidates as _top_candidates
         _macd_mtf_symbols += [str(_r.get("symbol") or "")
@@ -5753,6 +5773,16 @@ async def _run_scan() -> dict:
         _mtf_task = asyncio.create_task(macd_mtf.refresh_many(_macd_mtf_symbols))
         _background_tasks.add(_mtf_task)
         _mtf_task.add_done_callback(_background_tasks.discard)
+
+
+async def _scan_merge(scans: dict, watch_symbols: list, now: float):
+    """Ufuk satırlarını profillere göre birleştirir; aday/izleme listelerini üretir.
+
+    Döner: (filtered_candidates, watchlist_list, all_watchlist, open_symbols, touch_rates).
+    """
+    # Ufuk → aday/izleme listeleri (5/15 ana; 30/60 varsa eklenir).
+    candidates_by_h: dict[int, list] = {h: (s.get("candidates", []) or []) for h, s in scans.items()}
+    watchlist_by_h: dict[int, list] = {h: (s.get("watchlist", []) or []) for h, s in scans.items()}
 
     # Sıralama anahtarı: chat upside-scout ile ortak (journal touch oranları +
     # mikro-yapı çarpanı satırların içinde hazır: upside_rank_score hesaplar).
@@ -5819,7 +5849,6 @@ async def _run_scan() -> dict:
         _monitoring_state["watchlist_seen_at"].pop(sym, None)
 
     # İzlemeye alınanları işaretle
-    now = time.time()
     for sym in all_watchlist:
         _monitoring_state["watchlist_seen_at"].setdefault(sym, now)
 
@@ -5828,23 +5857,19 @@ async def _run_scan() -> dict:
     for sym in list(_monitoring_state["watchlist_seen_at"]):
         if sym not in all_watchlist:
             _monitoring_state["watchlist_seen_at"].pop(sym, None)
+    return filtered_candidates, all_watchlist, open_symbols, touch_rates
 
-    # Rejim: RISK_OFF bayrağı — hafif yerel ölçüm (BTC/ETH 1h trend).
-    # 2026-09-04: bayrağın eşikle ilişkisi kaldırıldı (çarpan yok); yalnızca
-    # gözlem amaçlı API'de raporlanır. F-14: referans verisi yoksa BİLİNMİYOR.
-    risk_off, risk_off_unknown = _risk_state_from_references()
-    _monitoring_state["risk_off"] = risk_off
-    _monitoring_state["risk_off_unknown"] = risk_off_unknown
 
-    settings = await get_user_notification_settings()
+async def _scan_build_lists(filtered_candidates: dict, all_watchlist: dict, open_symbols: set,
+                            settings: dict, effective_min_raw_score: float, effective_min_score: float,
+                            now: float):
+    """Eşik filtresi + birleşik sinyal füzyonu. Döner: (candidates_list, watchlist_list)."""
     # TEK EŞİK (2026-09-26, #8): aday kapısı panel eşiğinin TERS haritasıyla
     # türetilen HAM eşiktir (`_effective_min_raw_score` = `_raw_from_panel(
     # _effective_min_score)`). Eskiden liste filtresi sabit ham 1400'ü,
     # bildirim ise panel 71.5'i (→ ham 1730) uyguluyordu; 1400-1730 bandı
     # "listede var, bildirilmiyor" bant olarak yaşıyordu. Artık İKİSİ DE aynı
     # sayıya türer. `_num` koruması: bozuk satır tüm turu düşürmez (#9).
-    effective_min_raw_score = _effective_min_raw_score(settings)
-    effective_min_score = _effective_min_score(settings)
     # Admin eşiği altındaki adaylar listede GÖSTERİLMEZ (2026-09-04 kullanıcı
     # kararı; RISK_OFF çarpanı kaldırıldı). _notify aynı eşiği uygular.
     candidates_list = sorted(
@@ -5888,7 +5913,14 @@ async def _run_scan() -> dict:
             } for c in fusion_only if c.get("price") and c.get("candidate_id")])
         except Exception as exc:
             logger.debug("unified journal kaydı: %s", exc)
+    return candidates_list, watchlist_list
 
+
+async def _scan_finalize(scans: dict, candidates_list: list, watchlist_list: list,
+                         filtered_candidates: dict, open_symbols: set, settings: dict,
+                         risk_off, risk_off_unknown, effective_min_score: float,
+                         effective_min_raw_score: float, now: float) -> dict:
+    """Bildirim üretimi + radar tarama günlüğü + state yazımı."""
     # Bu turdaki aday kümesi: eşik altında kalan sembollerin debounce sayacı sıfırlanır
     current_candidate_syms = set(filtered_candidates)
     for sym in list(_monitoring_state["candidate_streak"]):
@@ -5931,6 +5963,55 @@ async def _run_scan() -> dict:
         "new_notifications": new_notifications,
     }
 
+
+async def _run_scan() -> dict:
+    """Tek tarama turu — aşamalı orkestratör.
+
+    Aşamalar: ufuk taramaları -> warm havuzu/MACD MTF -> birleştirme+profil ->
+    eşik/füzyon -> bildirim+günlük+state.
+
+    İzleme listesindeki semboller her turda top-gainer havuzuna zorunlu olarak
+    eklenir (extra_symbols) — böylece izleme listesi "daha sık analiz edilen"
+    listede kalır ve terfi/düşme kararı her turda tazelenir.
+
+    Hibrit (2026-09-04): sembol başına chat upside-scout ile AYNI sıralama
+    anahtarı (upside_rank = dk-başı hedef × hız skoru × kalite × mikro-yapı)
+    kullanılır; açık pozisyonlu semboller aday listesinden elenir; her adayın
+    5dk+15dk çift profili saklanır. RISK_OFF rejimde etkin eşik yükseltilir.
+    """
+    watch_symbols = sorted({w.get("symbol") for w in (_monitoring_state["last_watchlist"] or []) if w.get("symbol")})
+    now = time.time()
+
+    # 1) Ufuk taramaları (paylaşımlı kline önbelleği)
+    scans = await _scan_detect(watch_symbols)
+
+    # 2) Warm havuzu + MACD MTF rozeti/tazeleme
+    warm_rows = _scan_warm_pool(scans)
+    _scan_schedule_macd_refresh(warm_rows)
+
+    # 3) Birleştirme + profiller + açık pozisyon elemesi
+    filtered_candidates, all_watchlist, open_symbols, _touch_rates = await _scan_merge(scans, watch_symbols, now)
+
+    # Rejim: RISK_OFF bayrağı — hafif yerel ölçüm (BTC/ETH 1h trend).
+    # 2026-09-04: bayrağın eşikle ilişkisi kaldırıldı (çarpan yok); yalnızca
+    # gözlem amaçlı API'de raporlanır. F-14: referans verisi yoksa BİLİNMİYOR.
+    risk_off, risk_off_unknown = _risk_state_from_references()
+    _monitoring_state["risk_off"] = risk_off
+    _monitoring_state["risk_off_unknown"] = risk_off_unknown
+
+    settings = await get_user_notification_settings()
+    effective_min_raw_score = _effective_min_raw_score(settings)
+    effective_min_score = _effective_min_score(settings)
+
+    # 4) Eşik filtresi + birleşik sinyal füzyonu
+    candidates_list, watchlist_list = await _scan_build_lists(
+        filtered_candidates, all_watchlist, open_symbols, settings,
+        effective_min_raw_score, effective_min_score, now)
+
+    # 5) Bildirim + günlük + state
+    return await _scan_finalize(
+        scans, candidates_list, watchlist_list, filtered_candidates, open_symbols, settings,
+        risk_off, risk_off_unknown, effective_min_score, effective_min_raw_score, now)
 
 def _loop_is_active() -> bool:
     """Tarama döngüsü GERÇEKTEN canlı mı? (M1/P1 — R4-02)

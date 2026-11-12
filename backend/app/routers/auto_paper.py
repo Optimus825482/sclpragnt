@@ -1460,40 +1460,11 @@ async def _check_open_positions():
     _AUTO_PAPER_STATE["last_check_at"] = now
 
 
-async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: float = 1.5, settings: dict | None = None):
-    """Tek bir auto_paper pozisyonunu yönet: TP/SL/breakeven/trailing."""
-    symbol = str(trade.get("symbol") or "").upper()
-    trade_id = int(trade["id"])
-    entry_price = float(trade["entry_price"])
-    stop_loss = float(trade["stop_loss"]) if trade.get("stop_loss") else None
-    take_profit = float(trade["take_profit"]) if trade.get("take_profit") else None
-    # TP-CANCEL-ON-TRAIL (2026-10-09): iptal bayragi KALICI. TP bir kez iptal
-    # edildiyse (tp_cancel_on_trail) bu tur ve sonraki turlarda TP-primary
-    # dalinin yeniden ateslemesini/ratchet'in TP'yi diriltmesini onler.
-    tp_cancelled = bool(trade.get("tp_cancelled", False))
-    quantity = float(trade["quantity"])
-    commission_pct = paper_ledger.commission_pct()
-    # D-01 (2026-09-26 denetimi): kâr kilidi stop'u HER ZAMAN orijinal
-    # stop_loss'tan daha yukarıdadır; bu yüzden `stop_loss` kontrolü kâr
-    # kilidi kontrolünden ÖNCE çalışırsa, kâr kilidi aktifken daha düşük
-    # fiyattan kapanılır ve kâr kilidi fiilen devre dışı kalır. Etkin stop
-    # = max(stop_loss, breakeven_stop) olmalı; bu değer aşağıdaki SL
-    # kontrolünde VE (breakeven/trailing bloklarındaki) kâr koruma
-    # kontrolünde tek kaynak olarak kullanılır.
-    _breakeven_stop_db = float(trade.get("breakeven_stop") or 0)
-    _breakeven_activated_db = bool(trade.get("breakeven_activated", False))
-    effective_stop_loss = stop_loss
-    if _breakeven_activated_db and _breakeven_stop_db > 0:
-        effective_stop_loss = max(stop_loss, _breakeven_stop_db) if stop_loss is not None else _breakeven_stop_db
-    elif _breakeven_stop_db > 0:
-        # Breakeven fiyatı yazılmış ama bayrak henüz set edilmemişse de
-        # (DB yazma sırası/yarış durumu) kâr koruması geçerlidir.
-        effective_stop_loss = max(stop_loss, _breakeven_stop_db) if stop_loss is not None else _breakeven_stop_db
-
+async def _fresh_trade_price(trade: dict, symbol: str, now: float):
+    """Tazelik kapısı: WS ticker + REST yedeği. Döner: (current_price, price_is_fresh, last_known_price)."""
     # Güncel fiyat
     ticker = market.get_ticker(symbol)
     current_price = float(ticker.get("last_price") or 0) if ticker else 0
-
     # D-02 (2026-09-26 denetimi): TAZELİK KAPISI TÜM ÇIKIŞ YOLLARININ
     # ÖNÜNE alınır. Bayat/eksik ticker fiyatıyla kapanmak (aşağıdaki
     # max_hold ve symbol_deactivated yolları) gerçekleşmeyen bir fill fiyatı
@@ -1506,9 +1477,8 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # turlarda taze fiyatla kapanır).
     ticker_ts = float((ticker or {}).get("timestamp") or 0)
     price_is_fresh = bool(current_price > 0 and paper_ledger.is_fresh(ticker_ts, now))
-    # Son bilinen fiyat (bayat ticker, yoksa DB tepe/giriş) — yalnız aşağıdaki
-    # zorla kapanışta kullanılır.
-    last_known_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
+    # Son bilinen fiyat (bayat ticker, yoksa DB tepe/giriş) — yalnız zorla kapanışta kullanılır.
+    last_known_price = current_price if current_price > 0 else float(trade.get("peak_price") or float(trade["entry_price"]))
     # Log gürültü kapısı (2026-11-10, flap düzeltmesi): likit olmayan/15-20 sn
     # kadanslı sembollerde her tur uyarı yerine sembol başına aralıkta bir.
     # Sayaç YAPIŞKANDIR — ara tazelik anları sıfırlamaz. REST yedeği her turda
@@ -1520,13 +1490,11 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
             logger.warning("auto_paper %s: ticker BAYAT (yaş=%.1fs > %ss) — REST fiyat yedeği deneniyor (bu satır sembol başına %d sn'de bir)",
                            symbol, (now * 1000 - ticker_ts) / 1000.0, config.MAX_TICKER_AGE_SEC,
                            int(_STALE_TICKER_LOG_INTERVAL_SEC))
-
     # 2026-10-15 (denetim düzeltmesi, madde 1): ticker bayat/eksikse ESKİDEN bu
     # tur erken dönülüyor, SL/trailing/max_hold hiç çalışmıyordu (WS akışında
     # olmayan sembolde pozisyon süresiz "izleniyor"da kalırdı). Artık REST
     # (`api_common._fresh_public_price`) ile taze fiyat alınır ve yönetim
-    # NORMAL sürer; REST de başarısızsa bu tur ertelenir (aşağıdaki zorla
-    # kapanış hariç).
+    # NORMAL sürer; REST de başarısızsa bu tur ertelenir (zorla kapanış hariç).
     if not price_is_fresh:
         rest_price = None
         try:
@@ -1542,7 +1510,30 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
             if _stale_logged:
                 logger.info("auto_paper %s: bayat/eksik ticker yerine REST fiyatı kullanıldı (%.6f)",
                             symbol, current_price)
+    return current_price, price_is_fresh, last_known_price
 
+
+async def _check_hold_exit(trade: dict, symbol: str, trade_id: int, now: float,
+                           current_price: float, price_is_fresh: bool, last_known_price: float,
+                           settings: dict | None):
+    """Süre tabanlı çıkışlar: stale force close / plan süresi / zaman-durdurma / max_hold.
+
+    Döner: True → pozisyon kapatıldı (çağıran dönmeli); False → devam.
+    """
+    entry_price = float(trade["entry_price"])
+    tp_cancelled = bool(trade.get("tp_cancelled", False))
+    stop_loss = float(trade["stop_loss"]) if trade.get("stop_loss") else None
+    take_profit = float(trade["take_profit"]) if trade.get("take_profit") else None
+    commission_pct = paper_ledger.commission_pct()
+    _breakeven_stop_db = float(trade.get("breakeven_stop") or 0)
+    _breakeven_activated_db = bool(trade.get("breakeven_activated", False))
+    effective_stop_loss = stop_loss
+    if _breakeven_activated_db and _breakeven_stop_db > 0:
+        effective_stop_loss = max(stop_loss, _breakeven_stop_db) if stop_loss is not None else _breakeven_stop_db
+    elif _breakeven_stop_db > 0:
+        # Breakeven fiyatı yazılmış ama bayrak henüz set edilmemişse de
+        # (DB yazma sırası/yarış durumu) kâr koruması geçerlidir.
+        effective_stop_loss = max(stop_loss, _breakeven_stop_db) if stop_loss is not None else _breakeven_stop_db
     # 1. SÜRE KONTROLÜ: varsayılan `config.AUTO_PAPER_MAX_HOLD_MINUTES` (120 dk;
     # 2026-09-21 Erkan kararı 60 dk idi, 2026-10-07 optimizasyonuyla 120'ye
     # çıkarıldı — gerekçe config.py'de). Taze (WS ya da REST) fiyatla kapanır;
@@ -1557,12 +1548,6 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     _trade_hold = trade.get("max_hold_minutes")
     if trade.get("exit_profile") and _trade_hold:
         max_hold_minutes = float(_trade_hold)
-    _profile_manage = ma_buy_profiles.manage_params(trade.get("exit_profile"))
-    profile_no_trail = _profile_manage is not None and not _profile_manage["trailing"]
-    profile_no_breakeven = _profile_manage is not None and not _profile_manage.get("breakeven", False)
-    # 2026-10-27 (işlem planı): plan işleminde iz süren / başabaş / TP iptali KAPALI — çıkış yalnız plan hedefi,
-    # plan stopu, plan süre kuralı ve rejim/LLM/bayat fiyat güvenlik çıkışları (hedef min. %3 net).
-    is_plan_trade = trade.get("exit_profile") == PLAN_EXIT_PROFILE
     if (not price_is_fresh and max_hold_minutes > 0
             and hold_minutes >= max_hold_minutes * _STALE_FORCE_CLOSE_FACTOR):
         logger.warning("auto_paper %s: taze fiyat alınamıyor ve süre %.1f dk >= max_hold %.0f dk × %.1f — "
@@ -1570,7 +1555,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
                        symbol, hold_minutes, max_hold_minutes, _STALE_FORCE_CLOSE_FACTOR, last_known_price)
         await _close_trade(trade_id, symbol, paper_ledger.exit_fill("stale_force_close", last_known_price),
                            now, "stale_force_close")
-        return
+        return True
     # 2026-10-27 (işlem planı): planın çıkış zamanı geldi ve net >= 0 (ya da ek süre bitti) → piyasa çıkışı.
     # max_hold (= exit_at + ek süre) bundan SONRA; taze fiyat yoksa bu tur ertelenir.
     if trade.get("exit_profile") == PLAN_EXIT_PROFILE and price_is_fresh and current_price > 0:
@@ -1582,26 +1567,25 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
             except Exception as plan_exc:
                 logger.warning("auto_paper %s: plan çıkış önerisi hatası: %s", symbol, plan_exc)
                 _advice = None
-            # Hedef / stop aynı anda tetiklendiyse onlar kendi adı ve dolum modeliyle kapanır
-            # (aşağıdaki max_hold'a düşmeden, burada).
+            # Hedef / stop aynı anda tetiklendiyse onlar kendi adı ve dolum modeliyle kapanır.
             if _advice == "cik" and not tp_cancelled and take_profit is not None and current_price >= take_profit:
                 await _close_trade(trade_id, symbol, paper_ledger.exit_fill("take_profit", current_price, take_profit),
                                    now, "take_profit")
-                return
+                return True
             if _advice == "cik" and effective_stop_loss is not None and current_price <= effective_stop_loss:
                 _sl_reason = "breakeven_stop" if (effective_stop_loss != stop_loss) else "stop_loss"
                 await _close_trade(trade_id, symbol,
                                    paper_ledger.exit_fill(_sl_reason, current_price, effective_stop_loss),
                                    now, _sl_reason)
-                return
+                return True
             if _advice == "cik":
                 logger.info("auto_paper %s: PLAN SÜRESİ DOLDU (%.1f dk) — pozisyon kapatılıyor (çıkış=%.6f)",
                             symbol, hold_minutes, current_price)
                 await _close_trade(trade_id, symbol, paper_ledger.exit_fill(PLAN_EXIT_REASON, current_price),
                                    now, PLAN_EXIT_REASON)
-                return
+                return True
     # 2026-10-15 (radar iyileştirme): ZAMAN-DURDURMA — max_hold'dan ÖNCE. Süre
-    # `hold_minutes` (yukarıdaki) ile, kâr canlı `gross_pnl_pct` ile AYNI formülle
+    # `hold_minutes` ile, kâr canlı `gross_pnl_pct` ile AYNI formülle
     # (brüt, komisyonsuz) ölçülür. Taze fiyat yoksa bu tur ertelenir (D-02).
     # Flag 0 iken bu blok hiç çalışmaz (davranış değişmez).
     if (AUTO_PAPER_TIME_STOP_MIN > 0 and price_is_fresh and current_price > 0
@@ -1614,7 +1598,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
             # Piyasa çıkışı: anlık fiyattan dolar. `paper_ledger.exit_fill` burada
             # KULLANILMAZ — "time_stop" MARKET_EXITS'te tanımlı değil (ValueError).
             await _close_trade(trade_id, symbol, float(current_price), now, "time_stop")
-            return
+            return True
     if max_hold_minutes > 0 and hold_minutes >= max_hold_minutes:
         # D-02: bayat/eksik fiyatla KAPANMA YAPILMAZ. Pozisyon bir sonraki
         # tazelik turunda kapatılır (gerekirse peak_price fallback'i ile
@@ -1622,30 +1606,29 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         if not price_is_fresh:
             logger.info("auto_paper %s: max_hold doldu ama fiyat bayat — kapanış ertelendi (%.1f dk)",
                         symbol, hold_minutes)
-            return
+            return True
         exit_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
         logger.info("auto_paper %s: MAKSİMUM SÜRE DOLDU (%.1f dk >= %.1f dk) — pozisyon kapatılıyor (çıkış=%.6f)",
                     symbol, hold_minutes, max_hold_minutes, exit_price)
         await _close_trade(trade_id, symbol, paper_ledger.exit_fill("max_duration", exit_price), now, "max_duration")
-        return
+        return True
+    return False
 
-    # 2. SEMBOL STREAM GÜVENLİĞİ VE PASİF KONTROLÜ:
-    # Açık pozisyonu olan sembol her zaman WebSocket akışında tutulmalı (asla bu yüzden kapatılmaz)
-    market_symbols = getattr(market, "symbols", None)
-    if isinstance(market_symbols, (list, set, tuple)):
-        symbols_lower = {str(s).lower() for s in market_symbols if isinstance(s, str)}
-        if symbols_lower and symbol.lower() not in symbols_lower:
-            try:
-                extend_stream_universe([symbol], source="auto_paper_stream_guard")
-            except Exception as exc:
-                logger.warning("auto_paper %s akış evrenine ekleme koruması: %s", symbol, exc)
 
-    # 2026-10-28 Erkan kararı: sembolün pasife düşmesi açık işlemi KAPATMAZ;
-    # işlem kendi SL/TP/süre kurallarıyla kapanır.
-
-    if not price_is_fresh:
-        return
-
+async def _check_tp_sl_exit(trade: dict, symbol: str, trade_id: int, now: float, current_price: float,
+                            settings: dict | None):
+    """TP-primary + SL çıkışları; tepe güncellemesi. Döner: (kapandı: bool, peak_price)."""
+    entry_price = float(trade["entry_price"])
+    stop_loss = float(trade["stop_loss"]) if trade.get("stop_loss") else None
+    take_profit = float(trade["take_profit"]) if trade.get("take_profit") else None
+    tp_cancelled = bool(trade.get("tp_cancelled", False))
+    _breakeven_stop_db = float(trade.get("breakeven_stop") or 0)
+    _breakeven_activated_db = bool(trade.get("breakeven_activated", False))
+    effective_stop_loss = stop_loss
+    if _breakeven_activated_db and _breakeven_stop_db > 0:
+        effective_stop_loss = max(stop_loss, _breakeven_stop_db) if stop_loss is not None else _breakeven_stop_db
+    elif _breakeven_stop_db > 0:
+        effective_stop_loss = max(stop_loss, _breakeven_stop_db) if stop_loss is not None else _breakeven_stop_db
     # TP-primary cikis (2026-10-09: VARSAYILAN KAPALI — bkz. get_default_settings
     # yorumu ve work/ab_tp_cancel.py). Acikken trailing/breakeven'DEN ONCE degerlendirilir.
     # 2026-10-16 (maliyet/çıkış): varsayılanlar çıkış profilinden (DB ayarı önce).
@@ -1658,96 +1641,98 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         # D-08 (2026-09-12): TP dolumu TETİK fiyatından (gap-through: min(price, tp)).
         await _close_trade(trade_id, symbol, paper_ledger.exit_fill("take_profit", current_price, take_profit),
                            now, "take_profit")
-        return
-
+        return True, None
     # Peak güncelle
     peak_price = max(float(trade.get("peak_price") or entry_price), current_price)
     if peak_price > float(trade.get("peak_price") or entry_price):
         await database.update_auto_paper_peak(trade_id, peak_price)
-
     # SL kontrolü — 2026-10-15 (denetim düzeltmesi, madde 2): stop dolumu
     # `min(price, stop)` = iki fiyatın KÖTÜSÜ. Eski D-08 `max(price, stop)`
     # gap'te stop'un altına düşen fiyatı yok sayıp stop fiyatından doluyor,
-    # zararı sistematik küçük / PnL'i iyimser yazıyordu. TP dolumu değişmedi
-    # (orada `min(price, tp)` zaten kötümser).
-    # D-01 (2026-09-26): burada ARTık `stop_loss` değil `effective_stop_loss`
+    # zararı sistematik küçük / PnL'i iyimser yazıyordu. TP dolumu değişmedi.
+    # D-01 (2026-09-26): burada ARTIK `stop_loss` değil `effective_stop_loss`
     # kullanılır — kâr kilidi aktifken orijinal stop'tan daha yüksekte
     # kapanış olur (aşağıdaki breakeven korumasıyla aynı mantık).
     if effective_stop_loss is not None and current_price <= effective_stop_loss:
         sl_reason = "breakeven_stop" if (effective_stop_loss != stop_loss) else "stop_loss"
         await _close_trade(trade_id, symbol, paper_ledger.exit_fill(sl_reason, current_price, effective_stop_loss),
                            now, sl_reason)
-        return
+        return True, peak_price
+    return False, peak_price
 
-    # Kâr ve TP oranları
-    gross_pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
-    tp_gain_pct = None
-    if take_profit is not None and entry_price > 0 and take_profit > entry_price:
-        tp_gain_pct = (take_profit - entry_price) / entry_price * 100
-
-    # Breakeven kontrolü (isteğe bağlı — erken minik kârla çıkıp ralliyi kaçırmamak için
-    # varsayılan KAPALI, 2026-09-22 Erkan kararı).
+async def _apply_breakeven(trade: dict, symbol: str, trade_id: int, now: float, current_price: float,
+                           entry_price: float, peak_price: float, gross_pnl_pct: float, tp_gain_pct,
+                           breakeven_trigger_pct: float, settings: dict | None,
+                           profile_no_trail: bool, profile_no_breakeven: bool, is_plan_trade: bool):
+    """Breakeven kâr kilidi. Döner: (kapandı: bool, breakeven_enabled: bool, trail_gap_pct: float)."""
+    _exit_def = _exit_defaults()
     breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False))) \
         and not profile_no_trail and not profile_no_breakeven and not is_plan_trade
     BREAKEVEN_TRAIL_GAP_PCT = float(_exit_def["trailing_gap_pct"])  # 2026-10-16 (maliyet/çıkış): profil
-    if breakeven_enabled:
-        breakeven_activated = bool(trade.get("breakeven_activated", False))
+    if not breakeven_enabled:
+        return False, breakeven_enabled, BREAKEVEN_TRAIL_GAP_PCT
+    breakeven_activated = bool(trade.get("breakeven_activated", False))
+    # B2: Dynamic profit-lock triggers tied to TP target (Tavan korumalı)
+    dynamic_breakeven_enabled = bool((settings or {}).get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False)))
+    # Master Surge Dinamik Uyarlanabilir Hedef Kilidi (2026-09-21):
+    # 158 sinyallik testte gözlenen %71 kısmi kazancı (+%1.0-%3.7) korumak için
+    # TP1 seviyesine (+%1.2-%1.8) ulaşıldığında kâr kilidi derhal devreye girer.
+    # Standart (Master Surge olmayan) işlemler gerileme koruması gereği etkilenmez.
+    raw_tp1 = trade.get("tp1_scalp_pct")
+    is_master_surge = bool(trade.get("confluence_4way") or (raw_tp1 is not None and float(raw_tp1) > 0))
+    if is_master_surge:
+        tp1_scalp = float(raw_tp1 or getattr(config, "MASTER_SURGE_TP1_MIN_PCT", 1.2))
+        if gross_pnl_pct >= tp1_scalp:
+            breakeven_trigger_pct = min(breakeven_trigger_pct, tp1_scalp)
+    elif tp_gain_pct is not None and dynamic_breakeven_enabled:
+        breakeven_trigger_pct = min(breakeven_trigger_pct, max(0.8, tp_gain_pct * 0.5))
+    # B4: Narrow breakeven buffer (admin-editable, default 0.02)
+    breakeven_buffer_pct = float((settings or {}).get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02)))
+    # Standart taban açıklık: config.AUTO_PAPER_TRAILING_GAP_PCT (TR %0.6);
+    # Master Surge veya özel tanımlı işlemde sıkı takip (%0.40)
+    custom_gap = trade.get("trailing_gap_pct")
+    if custom_gap is not None and float(custom_gap) > 0:
+        BREAKEVEN_TRAIL_GAP_PCT = float(custom_gap)
+    elif is_master_surge:
+        BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40))
+    else:
+        BREAKEVEN_TRAIL_GAP_PCT = float(_exit_def["trailing_gap_pct"])  # 2026-10-16 (maliyet/çıkış): profil
+    # In-memory breakeven stop: DB'ye yazılan değerle aynı turdaki koruma
+    # kontrolü arasında gecikme olmasın.
+    current_breakeven_stop = float(trade.get("breakeven_stop") or 0)
+    commission_pct = paper_ledger.commission_pct()
+    if gross_pnl_pct >= breakeven_trigger_pct:
+        # NET taban (2026-09-18 hassasiyeti): gidiş-dönüş komisyon + SATIŞ dolum
+        # kayması dahil (giriş kayması zaten çapa fill_entry'de). Bu fiyattan
+        # satış, `_close_trade` muhasebesi sonrası daima pozitif net verir.
+        exit_slip = paper_ledger.slippage_pct()
+        net_floor = entry_price * (1 + paper_ledger.round_trip_markup(commission_pct, exit_slip) + breakeven_buffer_pct / 100)
+        trail_stop = peak_price * (1 - BREAKEVEN_TRAIL_GAP_PCT / 100)
+        new_breakeven = max(net_floor, trail_stop)
+        applied_breakeven = max(new_breakeven, current_breakeven_stop)
+        if applied_breakeven < current_price:
+            if not breakeven_activated or applied_breakeven > current_breakeven_stop:
+                await database.update_auto_paper_breakeven(trade_id, True, applied_breakeven)
+                current_breakeven_stop = applied_breakeven
+                breakeven_activated = True
+                logger.info("auto_paper %s: breakeven stop=%.6f (gross=%+.2f%%)", symbol, applied_breakeven, gross_pnl_pct)
+    # Breakeven stop koruması (in-memory değer kullanılır, DB okuması değil).
+    # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ (min), gap iyimser yazılmaz.
+    if breakeven_activated and current_breakeven_stop > 0 and current_price <= current_breakeven_stop:
+        await _close_trade(trade_id, symbol,
+                           paper_ledger.exit_fill("breakeven_stop", current_price, current_breakeven_stop),
+                           now, "breakeven_stop")
+        return True, breakeven_enabled, BREAKEVEN_TRAIL_GAP_PCT
+    return False, breakeven_enabled, BREAKEVEN_TRAIL_GAP_PCT
 
-        # B2: Dynamic profit-lock triggers tied to TP target (Tavan korumalı)
-        dynamic_breakeven_enabled = bool((settings or {}).get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False)))
 
-        # Master Surge Dinamik Uyarlanabilir Hedef Kilidi (2026-09-21):
-        # 158 sinyallik testte gözlenen %71 kısmi kazancı (+%1.0-%3.7) korumak için
-        # TP1 seviyesine (+%1.2-%1.8) ulaşıldığında kâr kilidi derhal devreye girer.
-        # Standart (Master Surge olmayan) işlemler gerileme koruması gereği etkilenmez.
-        raw_tp1 = trade.get("tp1_scalp_pct")
-        is_master_surge = bool(trade.get("confluence_4way") or (raw_tp1 is not None and float(raw_tp1) > 0))
-        if is_master_surge:
-            tp1_scalp = float(raw_tp1 or getattr(config, "MASTER_SURGE_TP1_MIN_PCT", 1.2))
-            if gross_pnl_pct >= tp1_scalp:
-                breakeven_trigger_pct = min(breakeven_trigger_pct, tp1_scalp)
-        elif tp_gain_pct is not None and dynamic_breakeven_enabled:
-            breakeven_trigger_pct = min(breakeven_trigger_pct, max(0.8, tp_gain_pct * 0.5))
-
-        # B4: Narrow breakeven buffer (admin-editable, default 0.02)
-        breakeven_buffer_pct = float((settings or {}).get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02)))
-        # Standart taban açıklık: config.AUTO_PAPER_TRAILING_GAP_PCT (TR %0.6);
-        # Master Surge veya özel tanımlı işlemde sıkı takip (%0.40)
-        custom_gap = trade.get("trailing_gap_pct")
-        if custom_gap is not None and float(custom_gap) > 0:
-            BREAKEVEN_TRAIL_GAP_PCT = float(custom_gap)
-        elif is_master_surge:
-            BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40))
-        else:
-            BREAKEVEN_TRAIL_GAP_PCT = float(_exit_def["trailing_gap_pct"])  # 2026-10-16 (maliyet/çıkış): profil
-        # In-memory breakeven stop: DB'ye yazılan değerle aynı turdaki koruma
-        # kontrolü arasında gecikme olmasın.
-        current_breakeven_stop = float(trade.get("breakeven_stop") or 0)
-
-        if gross_pnl_pct >= breakeven_trigger_pct:
-            # NET taban (2026-09-18 hassasiyeti): gidiş-dönüş komisyon + SATIŞ dolum
-            # kayması dahil (giriş kayması zaten çapa fill_entry'de). Bu fiyattan
-            # satış, `_close_trade` muhasebesi sonrası daima pozitif net verir.
-            exit_slip = paper_ledger.slippage_pct()
-            net_floor = entry_price * (1 + paper_ledger.round_trip_markup(commission_pct, exit_slip) + breakeven_buffer_pct / 100)
-            trail_stop = peak_price * (1 - BREAKEVEN_TRAIL_GAP_PCT / 100)
-            new_breakeven = max(net_floor, trail_stop)
-            applied_breakeven = max(new_breakeven, current_breakeven_stop)
-            if applied_breakeven < current_price:
-                if not breakeven_activated or applied_breakeven > current_breakeven_stop:
-                    await database.update_auto_paper_breakeven(trade_id, True, applied_breakeven)
-                    current_breakeven_stop = applied_breakeven
-                    breakeven_activated = True
-                    logger.info("auto_paper %s: breakeven stop=%.6f (gross=%+.2f%%)", symbol, applied_breakeven, gross_pnl_pct)
-
-        # Breakeven stop koruması (in-memory değer kullanılır, DB okuması değil).
-        # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ (min), gap iyimser yazılmaz.
-        if breakeven_activated and current_breakeven_stop > 0 and current_price <= current_breakeven_stop:
-            await _close_trade(trade_id, symbol,
-                               paper_ledger.exit_fill("breakeven_stop", current_price, current_breakeven_stop),
-                               now, "breakeven_stop")
-            return
-
+async def _apply_trailing(trade: dict, symbol: str, trade_id: int, now: float, current_price: float,
+                          peak_price: float, gross_pnl_pct: float, tp_gain_pct,
+                          settings: dict | None, _profile_manage, is_plan_trade: bool,
+                          breakeven_enabled: bool, breakeven_trail_gap_pct: float,
+                          tp_cancelled: bool, take_profit):
+    """Trailing stop ratchet + TP ratchet/iptal. Döner: True → pozisyon kapatıldı."""
+    _exit_def = _exit_defaults()
     # Trailing stop modülü (kullanıcı isteği 2026-09-08): %trailing_trigger_pct
     # kara geçince fiyatı %trailing_gap_pct geriden takip eder. Varsayılan AÇIK;
     # ayarlardan kapatılabilir (trailing_enabled=false).
@@ -1759,112 +1744,163 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         trailing_enabled = bool(_profile_manage["trailing"])
     else:
         trailing_enabled = bool((settings or {}).get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED))
-    if trailing_enabled:
-        if _profile_manage is not None:
-            trailing_trigger_pct = float(_profile_manage["trailing_trigger_pct"])
-            trailing_gap_pct = float(_profile_manage["trailing_gap_pct"])
-        else:
-            # 2026-10-16 (maliyet/çıkış): varsayılanlar çıkış profilinden (DB ayarı önce).
-            trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", _exit_def["trailing_trigger_pct"]))
-            trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", _exit_def["trailing_gap_pct"]))
+    if not trailing_enabled:
+        return False
+    if _profile_manage is not None:
+        trailing_trigger_pct = float(_profile_manage["trailing_trigger_pct"])
+        trailing_gap_pct = float(_profile_manage["trailing_gap_pct"])
+    else:
+        # 2026-10-16 (maliyet/çıkış): varsayılanlar çıkış profilinden (DB ayarı önce).
+        trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", _exit_def["trailing_trigger_pct"]))
+        trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", _exit_def["trailing_gap_pct"]))
+        # B2: Dynamic trailing trigger tied to TP target (Tavan korumalı)
+        dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False)))
+        if tp_gain_pct is not None and dynamic_trailing_enabled:
+            trailing_trigger_pct = min(trailing_trigger_pct, max(1.2, tp_gain_pct * 0.6))
+        # B3: Dynamic trailing gap compatible with TP
+        if tp_gain_pct is not None and gross_pnl_pct >= tp_gain_pct * 0.9:
+            trailing_gap_pct = max(0.2, trailing_gap_pct * 0.5)
+        # Breakeven açıksa trailing gap'i kısıtla; breakeven kapalıysa kullanıcının
+        # belirlediği geniş trailing mesafesine izin ver.
+        if breakeven_enabled:
+            trailing_gap_pct = min(trailing_gap_pct, breakeven_trail_gap_pct)
+    trailing_activated = bool(trade.get("trailing_activated", False))
+    current_trailing_stop = float(trade.get("trailing_stop") or 0)
+    # Aktif değilse ve kâr trigger eşiğine ulaşıldıysa trailing'i devreye al.
+    if not trailing_activated and gross_pnl_pct >= trailing_trigger_pct:
+        trailing_activated = True
+    if trailing_activated:
+        # Zirvenin %gap gerisinden stop; yalnızca yukarı güncellenir (fiyat
+        # yükseldikçe takip eder, düşerken eski stopta kalır).
+        new_trailing = peak_price * (1 - trailing_gap_pct / 100)
+        # İlk aktivasyonda stop güncel fiyatın altında kalmalı (anında kapanma olmasın).
+        if not bool(trade.get("trailing_activated", False)) and new_trailing >= current_price:
+            new_trailing = current_price * (1 - trailing_gap_pct / 100)
+        applied_trailing = max(new_trailing, current_trailing_stop)
+        if applied_trailing > current_trailing_stop:
+            await database.update_auto_paper_trailing(trade_id, True, applied_trailing)
+            current_trailing_stop = applied_trailing
+            logger.info("auto_paper %s: trailing stop=%.6f (gross=%+.2f%%)", symbol, applied_trailing, gross_pnl_pct)
+        # TP-CANCEL-ON-TRAIL (2026-10-09, opsiyonel; varsayilan KAPALI):
+        # trailing devreye girdigi AN sabit TP emri IPTAL edilir. Boylece
+        # fiyat eski TP hedefine takilmadan trailing ile tasinir.
+        # KANIT (work/ab_tp_cancel.py, 30 gun gercek Binance TR mumu, 1231
+        # islem, maliyet %0.325): B (cancel) A'ya (ratchet) karsi +0.138%
+        # islem basi, wilcoxon p=2e-14, 5/6 bagimsiz pencerede, 18/18
+        # parametre kombinasyonunda kazandi; train VE test pozitif.
+        # CANLI MUHIM NOT: TRIG (1.0) < TP (>=1.5) oldugu icin trailing TP'ye
+        # UGRAMADAN once devreye girer; pratikte bu davranis
+        # `AUTO_PAPER_TP_PRIMARY_ENABLED=false` ile ORTUSUR.
+        # DIRILMEME GARANTISI (2026-09-18 basarisizliginin kok nedeni): iptal
+        # DB'de `tp_cancelled=TRUE` olarak KALICIDIR. Bu turdan sonra sirasi:
+        #  - TP-primary dali `not tp_cancelled` ile ateslemez (yukarida),
+        #  - `update_auto_paper_trade_tp` (bildirim hedefi + ratchet) bayrak
+        #    set oldugu icin TP YAZMAZ (tek-yol bekci) → geri diriltilemez.
+        tp_cancel_on_trail = bool((settings or {}).get("tp_cancel_on_trail", getattr(config, "AUTO_PAPER_TP_CANCEL_ON_TRAIL", False)))
+        if tp_cancel_on_trail and not tp_cancelled:
+            # Bayragi DB'de set et (kalici). In-memory `tp_cancelled` de set
+            # edilir ki ayni turda asagidaki ratchet dali tekrar silmesin.
+            try:
+                await database.cancel_auto_paper_trade_tp(trade_id)
+            except Exception as cancel_exc:
+                logger.warning("auto_paper %s: TP iptal hatası: %s", symbol, cancel_exc)
+            tp_cancelled = True
+            take_profit = None
+            logger.info("auto_paper %s: trailing devreye girdi — sabit TP İPTAL edildi (tp_cancel_on_trail)", symbol)
+        # TP KORUMALI TRAILING (2026-09-28, kârlılık düzeltmesi):
+        # Trailing devreye girdiğinde TP artık SİLİNMEZ. Fiyat TP'ye
+        # ulaşırsa → TP ile kapanır (garanti kâr). Fiyat TP'ye ulaşmadan
+        # geri dönerse → trailing stop ile kapanır (korumalı kâr).
+        # Yeni davranış: TP korunur; trailing stop TP'nin ÜZERİNE çıkarsa
+        # TP yukarı ratchet'lenir (trailing stop seviyesine). Böylece:
+        #  - Fiyat tahmin edilen artışın üzerinde yükselirse pozisyon taşınır ✓
+        #  - Fiyat hedefine ulaştığında kâr GERÇEKTEN alınır ✓
+        #  - Küçük geri çekilmelerde trailing kilitler ✓
+        if not tp_cancelled and take_profit is not None and applied_trailing > take_profit:
+            # Trailing stop TP'nin üzerine çıktı → TP'yi yukarı ratchet'le.
+            try:
+                await database.update_auto_paper_trade_tp(trade_id, applied_trailing)
+                take_profit = applied_trailing
+                logger.info("auto_paper %s: trailing TP'nin üstüne çıktı — TP ratchet: %.6f (gross=%+.2f%%)",
+                            symbol, applied_trailing, gross_pnl_pct)
+            except Exception as tp_exc:
+                logger.warning("auto_paper %s: TP ratchet hatası: %s", symbol, tp_exc)
+    # Trailing stop koruması: aktifse ve fiyat stopa düştüyse kapat.
+    # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ (min), gap iyimser yazılmaz.
+    if trailing_activated and current_trailing_stop > 0 and current_price <= current_trailing_stop:
+        await _close_trade(trade_id, symbol,
+                           paper_ledger.exit_fill("trailing_stop", current_price, current_trailing_stop),
+                           now, "trailing_stop")
+        return True
+    return False
 
-            # B2: Dynamic trailing trigger tied to TP target (Tavan korumalı)
-            dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False)))
-            if tp_gain_pct is not None and dynamic_trailing_enabled:
-                trailing_trigger_pct = min(trailing_trigger_pct, max(1.2, tp_gain_pct * 0.6))
 
-            # B3: Dynamic trailing gap compatible with TP
-            if tp_gain_pct is not None and gross_pnl_pct >= tp_gain_pct * 0.9:
-                trailing_gap_pct = max(0.2, trailing_gap_pct * 0.5)
+async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: float = 1.5, settings: dict | None = None):
+    """Tek bir auto_paper pozisyonunu yönet — aşamalı orkestratör.
 
-            # Breakeven açıksa trailing gap'i kısıtla; breakeven kapalıysa kullanıcının
-            # belirlediği geniş trailing mesafesine izin ver.
-            if breakeven_enabled:
-                trailing_gap_pct = min(trailing_gap_pct, BREAKEVEN_TRAIL_GAP_PCT)
+    Aşamalar: taze fiyat (WS+REST) -> süre çıkışları -> TP/SL + tepe ->
+    breakeven kâr kilidi -> trailing ratchet. Profil/plan işlemlerinde
+    trailing/breakeven kuralı profilden gelir.
+    """
+    symbol = str(trade.get("symbol") or "").upper()
+    trade_id = int(trade["id"])
+    entry_price = float(trade["entry_price"])
+    # 2026-10-21: çıkış profilli işlem (MA BUY H4) kendi tutma süresini taşır; iz süren stop kuralı profilden gelir,
+    # başabaş stop profilli işlemde uygulanmaz.
+    _profile_manage = ma_buy_profiles.manage_params(trade.get("exit_profile"))
+    profile_no_trail = _profile_manage is not None and not _profile_manage["trailing"]
+    profile_no_breakeven = _profile_manage is not None and not _profile_manage.get("breakeven", False)
+    # 2026-10-27 (işlem planı): plan işleminde iz süren / başabaş / TP iptali KAPALI — çıkış yalnız plan hedefi,
+    # plan stopu, plan süre kuralı ve rejim/LLM/bayat fiyat güvenlik çıkışları (hedef min. %3 net).
+    is_plan_trade = trade.get("exit_profile") == PLAN_EXIT_PROFILE
+    take_profit = float(trade["take_profit"]) if trade.get("take_profit") else None
+    tp_cancelled = bool(trade.get("tp_cancelled", False))
 
-        trailing_activated = bool(trade.get("trailing_activated", False))
-        current_trailing_stop = float(trade.get("trailing_stop") or 0)
+    # 1) Taze fiyat (WS ticker + REST yedeği)
+    current_price, price_is_fresh, last_known_price = await _fresh_trade_price(trade, symbol, now)
 
-        # Aktif değilse ve kâr trigger eşiğine ulaşıldıysa trailing'i devreye al.
-        if not trailing_activated and gross_pnl_pct >= trailing_trigger_pct:
-            trailing_activated = True
+    # 2) Süre tabanlı çıkışlar (stale force close / plan / time-stop / max_hold)
+    if await _check_hold_exit(trade, symbol, trade_id, now, current_price, price_is_fresh,
+                              last_known_price, settings):
+        return
 
-        if trailing_activated:
-            # Zirvenin %gap gerisinden stop; yalnızca yukarı güncellenir (fiyat
-            # yükseldikçe takip eder, düşerken eski stopta kalır).
-            new_trailing = peak_price * (1 - trailing_gap_pct / 100)
-            # İlk aktivasyonda stop güncel fiyatın altında kalmalı (anında kapanma olmasın).
-            if not bool(trade.get("trailing_activated", False)) and new_trailing >= current_price:
-                new_trailing = current_price * (1 - trailing_gap_pct / 100)
-            applied_trailing = max(new_trailing, current_trailing_stop)
-            if applied_trailing > current_trailing_stop:
-                await database.update_auto_paper_trailing(trade_id, True, applied_trailing)
-                current_trailing_stop = applied_trailing
-                logger.info("auto_paper %s: trailing stop=%.6f (gross=%+.2f%%)", symbol, applied_trailing, gross_pnl_pct)
+    # 3) SEMBOL STREAM GÜVENLİĞİ: açık pozisyonu olan sembol akışta tutulmalı
+    # (asla bu yüzden kapatılmaz). 2026-10-28: sembolün pasife düşmesi açık
+    # işlemi KAPATMAZ; işlem kendi SL/TP/süre kurallarıyla kapanır.
+    market_symbols = getattr(market, "symbols", None)
+    if isinstance(market_symbols, (list, set, tuple)):
+        symbols_lower = {str(s).lower() for s in market_symbols if isinstance(s, str)}
+        if symbols_lower and symbol.lower() not in symbols_lower:
+            try:
+                extend_stream_universe([symbol], source="auto_paper_stream_guard")
+            except Exception as exc:
+                logger.warning("auto_paper %s akış evrenine ekleme koruması: %s", symbol, exc)
+    if not price_is_fresh:
+        return
 
-            # TP-CANCEL-ON-TRAIL (2026-10-09, opsiyonel; varsayilan KAPALI):
-            # trailing devreye girdigi AN sabit TP emri IPTAL edilir. Boylece
-            # fiyat eski TP hedefine takilmadan trailing ile tasinir.
-            #
-            # KANIT (work/ab_tp_cancel.py, 30 gun gercek Binance TR mumu, 1231
-            # islem, maliyet %0.325): B (cancel) A'ya (ratchet) karsi +0.138%
-            # islem basi, wilcoxon p=2e-14, 5/6 bagimsiz pencerede, 18/18
-            # parametre kombinasyonunda kazandi; train VE test pozitif.
-            # CANLI MUHIM NOT: TRIG (1.0) < TP (>=1.5) oldugu icin trailing TP'ye
-            # UGRAMADAN once devreye girer; pratikte bu davranis
-            # `AUTO_PAPER_TP_PRIMARY_ENABLED=false` ile ORTUSUR. Ikisi birlikte
-            # acikken cancel yine de tutarli (TP'yi erken iptal eder).
-            #
-            # DIRILMEME GARANTISI (2026-09-18 basarisizliginin kok nedeni): iptal
-            # DB'de `tp_cancelled=TRUE` olarak KALICIDIR. Bu turdan sonra sirasi:
-            #  - TP-primary dali `not tp_cancelled` ile ateslemez (yukarida),
-            #  - `update_auto_paper_trade_tp` (bildirim hedefi + ratchet) bayrak
-            #    set oldugu icin TP YAZMAZ (tek-yol bekci) → geri diriltilemez.
-            tp_cancel_on_trail = bool((settings or {}).get("tp_cancel_on_trail", getattr(config, "AUTO_PAPER_TP_CANCEL_ON_TRAIL", False)))
-            if tp_cancel_on_trail and not tp_cancelled:
-                # Bayragi DB'de set et (kalici). In-memory `tp_cancelled` de set
-                # edilir ki ayni turda asagidaki ratchet dali tekrar silmesin.
-                try:
-                    await database.cancel_auto_paper_trade_tp(trade_id)
-                except Exception as cancel_exc:
-                    logger.warning("auto_paper %s: TP iptal hatası: %s", symbol, cancel_exc)
-                tp_cancelled = True
-                take_profit = None
-                logger.info("auto_paper %s: trailing devreye girdi — sabit TP İPTAL edildi (tp_cancel_on_trail)", symbol)
+    # 4) TP-primary + SL + tepe güncellemesi
+    closed, peak_price = await _check_tp_sl_exit(trade, symbol, trade_id, now, current_price, settings)
+    if closed:
+        return
 
-            # TP KORUMALI TRAILING (2026-09-28, kârlılık düzeltmesi):
-            # Trailing devreye girdiğinde TP artık SİLİNMEZ. Fiyat TP'ye
-            # ulaşırsa → TP ile kapanır (garanti kâr). Fiyat TP'ye ulaşmadan
-            # geri dönerse → trailing stop ile kapanır (korumalı kâr).
-            #
-            # Eski davranış (2026-09-18): trailing aktivasyonunda TP=NULL yapılıyordu
-            # ve çıkış tamamen trailing'e devrediliyordu. (Bu projede KANITLA
-            # secilen `tp_cancel_on_trail` AÇIKken o davranışa BILINCLI olarak
-            # donulur; dirilme engeli sayesinde 2026-09-18 hatasi tekrarlanmaz.)
-            #
-            # Yeni davranış: TP korunur; trailing stop TP'nin ÜZERİNE çıkarsa
-            # TP yukarı ratchet'lenir (trailing stop seviyesine). Böylece:
-            #  - Fiyat tahmin edilen artışın üzerinde yükselirse pozisyon taşınır ✓
-            #  - Fiyat hedefine ulaştığında kâr GERÇEKTEN alınır ✓
-            #  - Küçük geri çekilmelerde trailing kilitler ✓
-            if not tp_cancelled and take_profit is not None and applied_trailing > take_profit:
-                # Trailing stop TP'nin üzerine çıktı → TP'yi yukarı ratchet'le
-                # (trailing en az TP kadar koruyor, TP yükselince hedefe ulaşım garanti)
-                try:
-                    await database.update_auto_paper_trade_tp(trade_id, applied_trailing)
-                    take_profit = applied_trailing
-                    logger.info("auto_paper %s: trailing TP'nin üstüne çıktı — TP ratchet: %.6f (gross=%+.2f%%)",
-                                symbol, applied_trailing, gross_pnl_pct)
-                except Exception as tp_exc:
-                    logger.warning("auto_paper %s: TP ratchet hatası: %s", symbol, tp_exc)
+    # Kâr ve TP oranları
+    gross_pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
+    tp_gain_pct = None
+    if take_profit is not None and entry_price > 0 and take_profit > entry_price:
+        tp_gain_pct = (take_profit - entry_price) / entry_price * 100
 
-        # Trailing stop koruması: aktifse ve fiyat stopa düştüyse kapat.
-        # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ (min), gap iyimser yazılmaz.
-        if trailing_activated and current_trailing_stop > 0 and current_price <= current_trailing_stop:
-            await _close_trade(trade_id, symbol,
-                               paper_ledger.exit_fill("trailing_stop", current_price, current_trailing_stop),
-                               now, "trailing_stop")
+    # 5) Breakeven kâr kilidi
+    closed, breakeven_enabled, be_gap = await _apply_breakeven(
+        trade, symbol, trade_id, now, current_price, entry_price, peak_price,
+        gross_pnl_pct, tp_gain_pct, breakeven_trigger_pct, settings,
+        profile_no_trail, profile_no_breakeven, is_plan_trade)
+    if closed:
+        return
 
+    # 6) Trailing ratchet (+ TP ratchet/iptal)
+    await _apply_trailing(trade, symbol, trade_id, now, current_price, peak_price,
+                          gross_pnl_pct, tp_gain_pct, settings, _profile_manage, is_plan_trade,
+                          breakeven_enabled, be_gap, tp_cancelled, take_profit)
 
 async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float, reason: str):
     """Auto paper pozisyonunu kapat ve wallet'a iade et (atomik DB işlemi)."""

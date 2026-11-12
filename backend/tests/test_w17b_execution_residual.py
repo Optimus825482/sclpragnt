@@ -747,8 +747,9 @@ class VelocityRateLimiterTests(unittest.IsolatedAsyncioTestCase):
 class BreakevenFlagTests(unittest.TestCase):
     def test_flag_assignment_is_inside_db_write_block(self):
         tree = ast.parse(_AUTO_PAPER_SRC)
+        # 2026-11-10 refactor: breakeven mantığı `_apply_breakeven`'a taşındı.
         func = next(n for n in ast.walk(tree)
-                    if isinstance(n, ast.AsyncFunctionDef) and n.name == "_manage_single_trade")
+                    if isinstance(n, ast.AsyncFunctionDef) and n.name == "_apply_breakeven")
         target = None
         for node in ast.walk(func):
             if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) \

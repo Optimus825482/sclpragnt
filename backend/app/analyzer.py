@@ -1112,43 +1112,41 @@ class ScalpAnalyzer:
             details["reason"] = self._liquidity_reason(details)
         return liquid, details
 
-    async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="CHAT_PREDICTION", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None, entry_context_extra=None):
-        symbol = str(symbol).replace("_", "").upper()
-        # DÜZELTME (D-05, 2026-09-12): buradaki yorum "circuit breaker pause
-        # kaldırıldı, pause'lu strateji işlem açabilir" diyordu — kodun tersi.
-        # Duraklatma kapısı YUKARIDA, `open_position` içinde
-        # (`await strategy_breaker.is_paused_async(...)`) gerçekten var ve tüm
-        # giriş yolları oradan geçer. Bu yanlış yorum yüzünden kapının bir
-        # bakımda silinme riski vardı; doğrusuyla değiştirildi.
-        # Every entry path (strategy, LLM, alert, radar and pending orders)
-        # converges here. A passive symbol must therefore be rejected at this
-        # final writer boundary, not only skipped by the strategy scan loop.
-        # CHAT_PREDICTION (velocity) and GLOBAL_LEAD_LAG are exempt: their candidates come from
-        # live market signals whose WS volume history the activity filter
-        # needs may not exist yet, and they enforce their own liquidity checks.
-        if (config.SYMBOL_ACTIVITY_FILTER_ENABLED and symbol in config.PASSIVE_SYMBOLS
+    async def _passive_symbol_gate(self, symbol: str, entry_price, strat_name: str):
+        """Pasif sembol kapısı (son yazıcı sınırı). Döner: block dict veya None."""
+        if not (config.SYMBOL_ACTIVITY_FILTER_ENABLED and symbol in config.PASSIVE_SYMBOLS
                 and strat_name not in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG")):
-            activity = dict(config.SYMBOL_ACTIVITY_STATUS.get(symbol) or {})
-            failed = [key for key, ok in activity.get("checks", {}).items() if not ok]
-            reason = "symbol_activity:passive"
-            if failed:
-                reason += ":" + ",".join(failed)
-            blocked = {
-                "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                "reason": reason, "strategy": strat_name, "timestamp": time.time(),
-                "activity": activity,
-            }
-            await database.save_signal(blocked)
-            print(f"[Aktivite] {symbol} yeni giriş engellendi: {reason}", flush=True)
-            return blocked
-        llm_guard = await database.get_llm_symbol_guard(symbol) if strat_name == "LLM_PAPER" else None
+            return None
+        activity = dict(config.SYMBOL_ACTIVITY_STATUS.get(symbol) or {})
+        failed = [key for key, ok in activity.get("checks", {}).items() if not ok]
+        reason = "symbol_activity:passive"
+        if failed:
+            reason += ":" + ",".join(failed)
+        blocked = {
+            "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+            "reason": reason, "strategy": strat_name, "timestamp": time.time(),
+            "activity": activity,
+        }
+        await database.save_signal(blocked)
+        print(f"[Aktivite] {symbol} yeni giriş engellendi: {reason}", flush=True)
+        return blocked
+
+    async def _llm_guard_gate(self, symbol: str, entry_price, strat_name: str):
+        """LLM sembol guard kapısı (cooldown/rearm). Döner: True → engellendi."""
+        if strat_name != "LLM_PAPER":
+            return False
+        llm_guard = await database.get_llm_symbol_guard(symbol)
         if llm_guard and llm_guard.get("status") == "active":
             blocked_until = llm_guard.get("blocked_until")
             if blocked_until is None or float(blocked_until) > time.time():
                 reason = f"llm_guard:{llm_guard.get('guard_type', 'symbol_block')}"
-                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price, "reason": reason, "strategy": strat_name, "timestamp": time.time(), "guard_revision": llm_guard.get("revision")})
-                return None
-            llm_guard = await database.upsert_llm_symbol_guard(symbol, llm_guard.get("guard_type", "cooldown"), "expired", blocked_until, "cooldown_expired", llm_guard.get("evidence"))
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                            "reason": reason, "strategy": strat_name, "timestamp": time.time(),
+                                            "guard_revision": llm_guard.get("revision")})
+                return True
+            llm_guard = await database.upsert_llm_symbol_guard(
+                symbol, llm_guard.get("guard_type", "cooldown"), "expired", blocked_until,
+                "cooldown_expired", llm_guard.get("evidence"))
         if llm_guard and llm_guard.get("status") == "expired":
             evidence = llm_guard.get("evidence") or {}
             exit_price = evidence.get("exit_price")
@@ -1162,7 +1160,16 @@ class ScalpAnalyzer:
                                             "reason": "llm_guard_rearm_not_reached", "strategy": strat_name,
                                             "timestamp": time.time(), "rearm_required_pct": required_move,
                                             "last_exit_price": exit_price})
-                return None
+                return True
+        return False
+
+    async def _position_conflict_gate(self, symbol: str, entry_price, strat_name: str):
+        """Açık pozisyon çakışması / max_open / auto_paper çakışma / re-entry kapısı.
+
+        Döner: ("open", {"reason": ...}) → sembol zaten açık (sinyal yazıldı, dönüş None);
+        ("block", dict) → BUY_BLOCKED döndür; (None, None) → devam.
+        `self.positions` DB ile uzlaştırılır.
+        """
         # The in-memory portfolio can lag after a restart or another worker's
         # write. Reconcile this symbol before attempting the unique DB insert.
         db_positions = await database.load_positions()
@@ -1172,41 +1179,49 @@ class ScalpAnalyzer:
             # Tek sembol = tek pozisyon; katman/pyramiding yalnızca BB-MFI'ya
             # aitti ve o stratejiyle birlikte kaldırıldı (2026-09-04).
             await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                        "reason": "position_already_open", "strategy": strat_name, "timestamp": time.time()})
-            return None
-        else:
-            if len(self.positions) >= self.max_open_positions():
+                                        "reason": "position_already_open", "strategy": strat_name,
+                                        "timestamp": time.time()})
+            return "open", {"reason": "position_already_open"}
+        if len(self.positions) >= self.max_open_positions():
+            blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                       "reason": "max_open_positions_reached", "strategy": strat_name, "timestamp": time.time()}
+            await database.save_signal(blocked)
+            return "block", blocked
+        # D-10 (2026-09-12): iki alt sistem AYNI TRY cüzdanını paylaşır.
+        # `database.open_auto_paper_trade` `positions` tablosunu kontrol eder
+        # (tek yön) ama ters yön yoktu: analyzer yalnızca bellekteki
+        # self.positions + DB `positions` tablosuna bakıyor, `auto_paper_trades`
+        # tablosunu SORGULAMIYORDU. Sonuç: aynı sembole velocity (bu yol) ve
+        # auto_paper (bildirim yolu) iki pozisyon açabiliyor → istenen riskin
+        # 2×'i ve pozisyon sayımı yanlış. Sorgu burada serbesttir
+        # (`database.py` DEĞİŞTİRİLMEZ; mevcut okuma yardımcısı çağrılır).
+        try:
+            auto_open = await database.get_open_auto_paper_trade(symbol)
+        except Exception as exc:
+            # DB erişilemezse mevcut açılış akışını bozmamak için fail-open
+            # (load_positions da hata kabul etmez); iz bırakılır.
+            auto_open = None
+            print(f"[D-10] auto_paper açık pozisyon kontrolü atlandı {symbol}: {exc}", flush=True)
+        if auto_open:
+            blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                       "reason": "auto_paper_position_open", "strategy": strat_name, "timestamp": time.time()}
+            await database.save_signal(blocked)
+            return "block", blocked
+        if strat_name != "LLM_PAPER":
+            block_reason = self._reentry_block_reason(symbol, self._strategy_tf(strat_name))
+            if block_reason:
                 blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                           "reason": "max_open_positions_reached", "strategy": strat_name, "timestamp": time.time()}
+                           "reason": block_reason, "strategy": strat_name, "timestamp": time.time()}
                 await database.save_signal(blocked)
-                return blocked
-            # D-10 (2026-09-12): iki alt sistem AYNI TRY cüzdanını paylaşır.
-            # `database.open_auto_paper_trade` `positions` tablosunu kontrol eder
-            # (tek yön) ama ters yön yoktu: analyzer yalnızca bellekteki
-            # self.positions + DB `positions` tablosuna bakıyor, `auto_paper_trades`
-            # tablosunu SORGULAMIYORDU. Sonuç: aynı sembole velocity (bu yol) ve
-            # auto_paper (bildirim yolu) iki pozisyon açabiliyor → istenen riskin
-            # 2×'i ve pozisyon sayımı yanlış. Sorgu burada serbesttir
-            # (`database.py` DEĞİŞTİRİLMEZ; mevcut okuma yardımcısı çağrılır).
-            try:
-                auto_open = await database.get_open_auto_paper_trade(symbol)
-            except Exception as exc:
-                # DB erişilemezse mevcut açılış akışını bozmamak için fail-open
-                # (load_positions da hata kabul etmez); iz bırakılır.
-                auto_open = None
-                print(f"[D-10] auto_paper açık pozisyon kontrolü atlandı {symbol}: {exc}", flush=True)
-            if auto_open:
-                blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                           "reason": "auto_paper_position_open", "strategy": strat_name, "timestamp": time.time()}
-                await database.save_signal(blocked)
-                return blocked
-            if strat_name != "LLM_PAPER":
-                block_reason = self._reentry_block_reason(symbol, self._strategy_tf(strat_name))
-                if block_reason:
-                    blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                               "reason": block_reason, "strategy": strat_name, "timestamp": time.time()}
-                    await database.save_signal(blocked)
-                    return blocked
+                return "block", blocked
+        return None, None
+
+    async def _resolve_entry_order_value(self, symbol: str, entry_price, strat_name: str,
+                                         requested_order_value, entry_context_extra):
+        """Bakiye + sipariş büyüklüğü (talep, sipariş yüzdesi, S3 kalibrasyon, S4 rejim).
+
+        Döner: (try_balance, order_value) — reddedildiğinde (None, None) (sinyal yazılmıştır).
+        """
         try_balance = await database.get_wallet_balance("TRY")
         # BİRİM: TRY notional (adet/lot DEĞİL). Komisyon iki bacakta da
         # notional üzerinden kesilir; available_value giriş komisyonunu da
@@ -1227,158 +1242,188 @@ class ScalpAnalyzer:
                                             "reason": ("llm_order_below_minimum_or_balance" if strat_name == "LLM_PAPER"
                                                        else "requested_order_below_minimum_or_balance"),
                                             "strategy": strat_name, "timestamp": time.time()})
-                return None
-        else:
-            order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
-            order_value = available_value * max(0.001, min(order_pct, 1.0))
-            if order_value < config.MIN_PARTIAL_ORDER_TRY:
-                # Küçük yüzde tutarı yüzünden kullanılabilir bakiye boşta
-                # kalmasın: önce 250 TL kademeli tutarı, son aşamada ise
-                # minimumun üzerindeki tüm kalan bakiyeyi kullan.
-                if available_value >= config.FALLBACK_ORDER_TRY:
-                    order_value = config.FALLBACK_ORDER_TRY
-                elif available_value >= config.MIN_PARTIAL_ORDER_TRY:
-                    order_value = available_value
-                else:
-                    await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                                "reason": "insufficient_balance_for_minimum_order", "strategy": strat_name, "timestamp": time.time()})
-                    return None
-            # S3 calibration multiplier: historically weak context buckets take
-            # a proportionally smaller position (bounded 0.5..1.0). D-11
-            # (2026-09-26): "unknown" hacim bandı artık NÖTR 1.0 değil,
-            # fail-safe `UNKNOWN_VOLUME_MULTIPLIER` (0.85) alır — hacim oranı
-            # okunamayan giriş tam boyutla açılmaz. İnce örnekli kova yine 1.0.
-            # Callers may override via entry_context_extra; otherwise the shared
-            # bucket state decides.
-            calib_multiplier = float((entry_context_extra or {}).get("calibration_multiplier") or 1.0) \
-                if isinstance(entry_context_extra, dict) else 1.0
-            if config.CALIBRATION_SIZING_ENABLED and calib_multiplier == 1.0:
-                try:
-                    # S3 bucket'ları saat + hacim rejimine göre ayrılır; hacim
-                    # oranı canlı 5m cache'ten beslenir ve AYNI değer
-                    # `entry_context["volume_ratio"]` olarak kalıcı yazılır
-                    # (TEK hesap: `_entry_volume_ratio`).
-                    calib_multiplier = calibration_service.multiplier_for(
-                        strat_name,
-                        volume_ratio=self._entry_volume_ratio(symbol, None))
-                except Exception:
-                    calib_multiplier = 1.0
-            if config.CALIBRATION_SIZING_ENABLED and calib_multiplier != 1.0:
-                order_value = max(config.MIN_PARTIAL_ORDER_TRY,
-                                  order_value * min(1.0, max(0.5, calib_multiplier)))
-            # S4 regime-gated sizing: mean-reversion shrinks in trending
-            # regimes; continuation shrinks in confirmed dead ranges.
-            regime_info = {}
-            try:
-                # C-06 (2026-09-12): iki hata vardı ve ikisi de `except
-                # Exception` içinde yutuluyordu → S4 regime sizing hiç
-                # çalışmıyordu (ölü kod).
-                #   1) `calculate_snapshot(symbol, price, klines, ...)` imzası
-                #      3 zorunlu argüman ister; `_cs(k)` tek argümanla
-                #      çağrılıyordu → TypeError. Ayrıca 3. argüman TEK kline
-                #      değil,
-                #      {timeframe: kline} sözlüğüdür (primary_timeframe ile
-                #      eşleşmeli).
-                #   2) Rejim `snapshot["regime"]` ALTINDA DEĞİL — kanonik yol
-                #      `snapshot["methodologies"]["regime"]` (bkz.
-                #      _methodology_analysis; routers/llm_chat.py:1831 ile aynı
-                #      yol). Eski kod `{}` okuyordu → regime=None → multiplier
-                #      her zaman 1.0.
-                # Anahtar sözleşmesi: regime = {"name": ..., "confidence": ...}
-                tf_probe = self._strategy_tf(strat_name)
-                k = self.market.get_ut_kline(symbol, tf_probe) if self.market else None
-                if k and len(k.get("closes") or []) >= 55:
-                    snap = calculate_snapshot(symbol, entry_price, {tf_probe: k},
-                                              None, 0, order_value, tf_probe)
-                    regime_info = (((snap or {}).get("methodologies") or {}).get("regime") or {})
-                    style = calibration_service.strategy_style_of(strat_name)
-                    regime_mult = calibration_service.regime_size_multiplier(
-                        style, (regime_info or {}).get("name"), (regime_info or {}).get("confidence"))
-                    if config.REGIME_SIZING_ENABLED and regime_mult != 1.0:
-                        order_value = max(config.MIN_PARTIAL_ORDER_TRY, order_value * regime_mult)
-            except Exception as exc:
-                # Sessiz yutma bu hatanın bulunamamasının sebebiydi; nötr (1.0)
-                # davranışı korunur ama artık iz bırakır.
-                print(f"[Rejim] S4 rejim bazlı boyutlandırma atlandı: {exc}", flush=True)
-                regime_info = {}
-            if order_value < config.MIN_PARTIAL_ORDER_TRY:
+                return None, None
+            return try_balance, order_value
+        order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
+        order_value = available_value * max(0.001, min(order_pct, 1.0))
+        if order_value < config.MIN_PARTIAL_ORDER_TRY:
+            # Küçük yüzde tutarı yüzünden kullanılabilir bakiye boşta
+            # kalmasın: önce 250 TL kademeli tutarı, son aşamada ise
+            # minimumun üzerindeki tüm kalan bakiyeyi kullan.
+            if available_value >= config.FALLBACK_ORDER_TRY:
+                order_value = config.FALLBACK_ORDER_TRY
+            elif available_value >= config.MIN_PARTIAL_ORDER_TRY:
+                order_value = available_value
+            else:
                 await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                            "reason": "remaining_cash_pct_below_minimum_order", "strategy": strat_name, "timestamp": time.time()})
-                return None
-        details = {}
-        expected_gross = None
-        expected_net = None
+                                            "reason": "insufficient_balance_for_minimum_order",
+                                            "strategy": strat_name, "timestamp": time.time()})
+                return None, None
+        order_value = self._apply_calibration_sizing(symbol, strat_name, order_value, entry_context_extra)
+        order_value = self._apply_regime_sizing(symbol, entry_price, strat_name, order_value)
+        if order_value < config.MIN_PARTIAL_ORDER_TRY:
+            await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                        "reason": "remaining_cash_pct_below_minimum_order",
+                                        "strategy": strat_name, "timestamp": time.time()})
+            return None, None
+        return try_balance, order_value
+
+    def _apply_calibration_sizing(self, symbol: str, strat_name: str, order_value: float, entry_context_extra):
+        """S3 kalibrasyon çarpanı (0.5..1.0). Hata → nötr 1.0."""
+        # S3 calibration multiplier: historically weak context buckets take
+        # a proportionally smaller position (bounded 0.5..1.0). D-11
+        # (2026-09-26): "unknown" hacim bandı artık NÖTR 1.0 değil,
+        # fail-safe `UNKNOWN_VOLUME_MULTIPLIER` (0.85) alır — hacim oranı
+        # okunamayan giriş tam boyutla açılmaz. İnce örnekli kova yine 1.0.
+        # Callers may override via entry_context_extra; otherwise the shared
+        # bucket state decides.
+        calib_multiplier = float((entry_context_extra or {}).get("calibration_multiplier") or 1.0) \
+            if isinstance(entry_context_extra, dict) else 1.0
+        if config.CALIBRATION_SIZING_ENABLED and calib_multiplier == 1.0:
+            try:
+                # S3 bucket'ları saat + hacim rejimine göre ayrılır; hacim
+                # oranı canlı 5m cache'ten beslenir ve AYNI değer
+                # `entry_context["volume_ratio"]` olarak kalıcı yazılır
+                # (TEK hesap: `_entry_volume_ratio`).
+                calib_multiplier = calibration_service.multiplier_for(
+                    strat_name,
+                    volume_ratio=self._entry_volume_ratio(symbol, None))
+            except Exception:
+                calib_multiplier = 1.0
+        if config.CALIBRATION_SIZING_ENABLED and calib_multiplier != 1.0:
+            order_value = max(config.MIN_PARTIAL_ORDER_TRY,
+                              order_value * min(1.0, max(0.5, calib_multiplier)))
+        return order_value
+
+    def _apply_regime_sizing(self, symbol: str, entry_price, strat_name: str, order_value: float):
+        """S4 rejim kapılı boyutlandırma. Hata → nötr (boyut değişmez)."""
+        # S4 regime-gated sizing: mean-reversion shrinks in trending
+        # regimes; continuation shrinks in confirmed dead ranges.
+        try:
+            # C-06 (2026-09-12): iki hata vardı ve ikisi de `except
+            # Exception` içinde yutuluyordu → S4 regime sizing hiç
+            # çalışmıyordu (ölü kod).
+            #   1) `calculate_snapshot(symbol, price, klines, ...)` imzası
+            #      3 zorunlu argüman ister; `_cs(k)` tek argümanla
+            #      çağrılıyordu → TypeError. Ayrıca 3. argüman TEK kline
+            #      değil, {timeframe: kline} sözlüğüdür (primary_timeframe ile
+            #      eşleşmeli).
+            #   2) Rejim `snapshot["regime"]` ALTINDA DEĞİL — kanonik yol
+            #      `snapshot["methodologies"]["regime"]` (bkz.
+            #      _methodology_analysis; routers/llm_chat.py:1831 ile aynı
+            #      yol). Eski kod `{}` okuyordu → regime=None → multiplier
+            #      her zaman 1.0.
+            # Anahtar sözleşmesi: regime = {"name": ..., "confidence": ...}
+            tf_probe = self._strategy_tf(strat_name)
+            k = self.market.get_ut_kline(symbol, tf_probe) if self.market else None
+            if k and len(k.get("closes") or []) >= 55:
+                snap = calculate_snapshot(symbol, entry_price, {tf_probe: k},
+                                          None, 0, order_value, tf_probe)
+                regime_info = (((snap or {}).get("methodologies") or {}).get("regime") or {})
+                style = calibration_service.strategy_style_of(strat_name)
+                regime_mult = calibration_service.regime_size_multiplier(
+                    style, (regime_info or {}).get("name"), (regime_info or {}).get("confidence"))
+                if config.REGIME_SIZING_ENABLED and regime_mult != 1.0:
+                    order_value = max(config.MIN_PARTIAL_ORDER_TRY, order_value * regime_mult)
+        except Exception as exc:
+            # Sessiz yutma bu hatanın bulunamamasının sebebiydi; nötr (1.0)
+            # davranışı korunur ama artık iz bırakır.
+            print(f"[Rejim] S4 rejim bazlı boyutlandırma atlandı: {exc}", flush=True)
+        return order_value
+
+    async def _correlation_cap_gate(self, symbol: str, entry_price, strat_name: str,
+                                    order_value: float, try_balance: float):
+        """S5 dinamik korelasyon küme tavanı. Döner: block dict veya None."""
+        if not (config.CORRELATION_CAP_ENABLED and self.market):
+            return None
         # S5 dynamic correlation cluster cap: correlation-weighted long
         # exposure across open positions + this new entry must not breach the
         # configured % of equity. Fails open on any error; only applies when
         # the flag is enabled.
-        if config.CORRELATION_CAP_ENABLED and self.market:
-            try:
-                from app.correlation import cluster_exposure
-                from app.api_common import correlation_monitor
+        try:
+            from app.correlation import cluster_exposure
+            from app.api_common import correlation_monitor
 
-                equity = try_balance + sum(
-                    float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
-                    for p in self.positions.values()
-                )
-                exposure = cluster_exposure(
-                    self.positions, symbol, order_value,
-                    correlation_monitor, "BTC", equity)
-                cap = config.MAX_CLUSTER_EXPOSURE_PCT
-                if exposure.get("exposure_pct") is not None and exposure["exposure_pct"] > cap:
-                    ineligible = {"symbol": symbol, "action": "BUY_BLOCKED",
-                                  "price": entry_price, "reason": "correlation_cluster_cap",
-                                  "strategy": strat_name, "timestamp": time.time(),
-                                  "exposure": exposure, "cap_pct": cap}
-                    await database.save_signal({
-                        "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                        "reason": "correlation_cluster_cap", "strategy": strat_name,
-                        "timestamp": time.time(), "exposure_pct": exposure.get("exposure_pct"),
-                        "cap_pct": cap})
-                    print(f"[Correlation] {symbol} giriş engellendi: küme pozlaması %{exposure.get('exposure_pct')} > %{cap}", flush=True)
-                    return ineligible
-            except Exception as exc:
-                print(f"[Correlation] S5 kapı değerlendirmesi atlandı: {exc}", flush=True)
-        if self.market:
-            # The final recheck covers the small race between a preflight and
-            # the atomic portfolio write.  It is an eligibility outcome, never
-            # a BUY_BLOCKED signal or notification.  CHAT_PREDICTION candidates
-            # come from Top-Gainer REST scans, so their WS orderbook stream may
-            # not be subscribed yet; the REST snapshot is refreshed in
-            # open_position BEFORE the lock (a network call must never run
-            # under the shared open/close lock).  Burada yalnızca yerel
-            # orderflow okunur. Spread hiçbir likidite kapısında koşul
-            # değildir; derinlik ve hacim eşikleri aynen uygulanır.
-            flow = self.market.get_orderflow(symbol) or {}
-            liquid, details = self.market.liquidity_status(
-                symbol, order_value,
-                ignore_ws_freshness=(strat_name in ("CHAT_PREDICTION", "AUTO_PAPER", "GLOBAL_LEAD_LAG")))
-            if not liquid and strat_name != "GLOBAL_LEAD_LAG":
-                reason = self._liquidity_reason(details, "entry_recheck_failed")
-                ineligible = {"symbol": symbol, "action": "ENTRY_INELIGIBLE", "price": entry_price,
-                              "reason": reason, "strategy": strat_name, "timestamp": time.time(),
-                              "liquidity": details}
-                print(f"[Likidite] {symbol} giriş ön-koşulu sağlanmadı: {reason}")
+            equity = try_balance + sum(
+                float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
+                for p in self.positions.values()
+            )
+            exposure = cluster_exposure(
+                self.positions, symbol, order_value,
+                correlation_monitor, "BTC", equity)
+            cap = config.MAX_CLUSTER_EXPOSURE_PCT
+            if exposure.get("exposure_pct") is not None and exposure["exposure_pct"] > cap:
+                ineligible = {"symbol": symbol, "action": "BUY_BLOCKED",
+                              "price": entry_price, "reason": "correlation_cluster_cap",
+                              "strategy": strat_name, "timestamp": time.time(),
+                              "exposure": exposure, "cap_pct": cap}
+                await database.save_signal({
+                    "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                    "reason": "correlation_cluster_cap", "strategy": strat_name,
+                    "timestamp": time.time(), "exposure_pct": exposure.get("exposure_pct"),
+                    "cap_pct": cap})
+                print(f"[Correlation] {symbol} giriş engellendi: küme pozlaması %{exposure.get('exposure_pct')} > %{cap}", flush=True)
                 return ineligible
-            target_pct = float(requested_tp_pct) if (strat_name == "GLOBAL_LEAD_LAG" and requested_tp_pct) else config.SPOT_PROFIT_TARGET_PCT
-            target_value = order_value * (1 + target_pct)
-            expected_gross = order_value * target_pct
-            expected_fees = (order_value + target_value) * config.COMMISSION_PCT
-            expected_slippage = order_value * config.ESTIMATED_SLIPPAGE_PCT * 2
-            expected_net = expected_gross - expected_fees - expected_slippage
-            # Cost-aware entry gate: the trade-history audit showed fees can
-            # exceed the gross edge; an entry whose modeled net at target is
-            # below the configured floor is economically unviable.
-            min_net = config.MIN_EXPECTED_NET_PNL_TRY
-            if strat_name != "GLOBAL_LEAD_LAG" and expected_net is not None and expected_net < min_net:
-                ineligible = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                              "reason": "expected_net_below_floor", "strategy": strat_name,
-                              "timestamp": time.time(),
-                              "detail": {"expected_net": round(expected_net, 4), "min_net": min_net}}
-                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                            "reason": "expected_net_below_floor", "strategy": strat_name,
-                                            "timestamp": time.time()})
-                return ineligible
+        except Exception as exc:
+            print(f"[Correlation] S5 kapı değerlendirmesi atlandı: {exc}", flush=True)
+        return None
+
+    def _liquidity_recheck_gate(self, symbol: str, entry_price, strat_name: str, order_value: float):
+        """Son likidite yeniden kontrolü + beklenen net kâr tabanı. Döner: (block dict, details)."""
+        details = {}
+        if not self.market:
+            return None, details
+        # The final recheck covers the small race between a preflight and
+        # the atomic portfolio write.  It is an eligibility outcome, never
+        # a BUY_BLOCKED signal or notification.  CHAT_PREDICTION candidates
+        # come from Top-Gainer REST scans, so their WS orderbook stream may
+        # not be subscribed yet; the REST snapshot is refreshed in
+        # open_position BEFORE the lock (a network call must never run
+        # under the shared open/close lock).  Burada yalnızca yerel
+        # orderflow okunur. Spread hiçbir likidite kapısında koşul
+        # değildir; derinlik ve hacim eşikleri aynen uygulanır.
+        liquid, details = self.market.liquidity_status(
+            symbol, order_value,
+            ignore_ws_freshness=(strat_name in ("CHAT_PREDICTION", "AUTO_PAPER", "GLOBAL_LEAD_LAG")))
+        if not liquid and strat_name != "GLOBAL_LEAD_LAG":
+            reason = self._liquidity_reason(details, "entry_recheck_failed")
+            ineligible = {"symbol": symbol, "action": "ENTRY_INELIGIBLE", "price": entry_price,
+                          "reason": reason, "strategy": strat_name, "timestamp": time.time(),
+                          "liquidity": details}
+            print(f"[Likidite] {symbol} giriş ön-koşulu sağlanmadı: {reason}")
+            return ineligible, details
+        return None, details
+
+    def _expected_net_values(self, strat_name: str, requested_tp_pct, order_value: float):
+        """Beklenen brüt/net kâr (maliyet farkındalıklı kapı için). Döner: (gross, net, target_pct)."""
+        if not self.market:
+            return None, None
+        target_pct = float(requested_tp_pct) if (strat_name == "GLOBAL_LEAD_LAG" and requested_tp_pct) \
+            else config.SPOT_PROFIT_TARGET_PCT
+        target_value = order_value * (1 + target_pct)
+        expected_gross = order_value * target_pct
+        expected_fees = (order_value + target_value) * config.COMMISSION_PCT
+        expected_slippage = order_value * config.ESTIMATED_SLIPPAGE_PCT * 2
+        expected_net = expected_gross - expected_fees - expected_slippage
+        return expected_gross, expected_net, target_pct
+
+    async def _expected_net_gate(self, symbol: str, entry_price, strat_name: str, expected_net):
+        """Maliyet farkındalıklı giriş kapısı. Döner: True → engellendi."""
+        # Cost-aware entry gate: the trade-history audit showed fees can
+        # exceed the gross edge; an entry whose modeled net at target is
+        # below the configured floor is economically unviable.
+        min_net = config.MIN_EXPECTED_NET_PNL_TRY
+        if strat_name == "GLOBAL_LEAD_LAG" or expected_net is None or expected_net >= min_net:
+            return False
+        await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                    "reason": "expected_net_below_floor", "strategy": strat_name,
+                                    "timestamp": time.time()})
+        return True
+
+    def _compute_planned_exits(self, strat_name: str, requested_stop_pct, requested_tp_pct,
+                               requested_hold_sec, entry_context_extra):
+        """Planlanan SL/TP/max-hold yüzdeleri. Döner: (tp_pct, sl_pct, hold_sec, no_initial_stop)."""
+        no_initial_stop = False
         if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
             # İki giriş yolu, iki çıkış planı:
             # - Chat tahmin otomatı (replay planı TP %0.8 / SL %0.5 / 900 sn):
@@ -1405,19 +1450,27 @@ class ScalpAnalyzer:
             # → pozisyon 90dk'lık stale_position yoluna kadar sürükleniyordu.
             # Saniye birimi; VELOCITY_MAX_HOLD_MIN dakika birimindedir.
             planned_max_hold_sec = self._planned_max_hold_sec(requested_hold_sec)
-        else:
-            planned_take_profit_pct = (
-                float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None
-                else None if strat_name == "LLM_PAPER" else config.SPOT_PROFIT_TARGET_PCT
-            )
-            planned_stop_loss_pct = (
-                float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None
-                else None if strat_name == "LLM_PAPER" else config.HARD_STOP_LOSS_PCT
-            )
-            planned_max_hold_sec = (
-                int(requested_hold_sec) if strat_name == "LLM_PAPER" and requested_hold_sec is not None
-                else None if strat_name == "LLM_PAPER" else config.MAX_POSITION_HOLD_SEC
-            )
+            return planned_take_profit_pct, planned_stop_loss_pct, planned_max_hold_sec, no_initial_stop
+        planned_take_profit_pct = (
+            float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None
+            else None if strat_name == "LLM_PAPER" else config.SPOT_PROFIT_TARGET_PCT
+        )
+        planned_stop_loss_pct = (
+            float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None
+            else None if strat_name == "LLM_PAPER" else config.HARD_STOP_LOSS_PCT
+        )
+        planned_max_hold_sec = (
+            int(requested_hold_sec) if strat_name == "LLM_PAPER" and requested_hold_sec is not None
+            else None if strat_name == "LLM_PAPER" else config.MAX_POSITION_HOLD_SEC
+        )
+        return planned_take_profit_pct, planned_stop_loss_pct, planned_max_hold_sec, no_initial_stop
+
+    def _build_entry_context(self, symbol: str, entry_price, strat_name: str, order_value: float,
+                             details: dict, expected_gross, expected_net,
+                             planned_take_profit_pct, planned_stop_loss_pct, planned_max_hold_sec,
+                             entry_context_extra):
+        """Açılış `entry_context`'ini (kalibrasyon/aktivite/TA/MTF dahil) inşa eder."""
+        flow = (self.market.get_orderflow(symbol) or {}) if self.market else {}
         entry_context = {"strategy_revision": config.STRATEGY_REVISION,
                          "liquidity": details if self.market else {},
                          "expected_gross_pnl_try": expected_gross if self.market else None,
@@ -1435,14 +1488,12 @@ class ScalpAnalyzer:
         # `entry_context["liquidity"]["volume_ratio"]` alanından okuyordu.
         # İlk anahtar HİÇ yazılmıyordu; `liquidity` sözlüğünde
         # `volume_ratio` anahtarı da güvenilir biçimde bulunmuyordu
-        # (`liquidity_status` çıktısı birkaç katman içinde saklanabiliyor /
-        # details boş dönebiliyor) → `volume_band` DAİMA "unknown" ve
-        # `multiplier_for` DAİMA 1.0 çıkıyordu: kova anahtarları hiç
-        # eşleşmiyor, S3 kalibrasyonu sıfır etkiyle çalışıyordu.
+        # (`liquidity_status` çıktısı birkaç katman içinde saklanabiliyor / details boş dönebiliyor)
+        # → `volume_band` DAİMA "unknown" ve `multiplier_for` DAİMA 1.0 çıkıyordu:
+        # kova anahtarları hiç eşleşmiyor, S3 kalibrasyonu sıfır etkiyle çalışıyordu.
         # Düzeltme: canlı yol ile BİREBİR aynı tanım
         # (`vols[-1] / mean(vols[-21:-1])`, 5m cache) burada da hesaplanıp
-        # KALICI alan olarak yazılır. DB'ye yeni kolon gerekmez —
-        # `entry_context` JSONB'dir.
+        # KALICI alan olarak yazılır. DB'ye yeni kolon gerekmez — `entry_context` JSONB'dir.
         entry_context["volume_ratio"] = self._entry_volume_ratio(symbol, details)
         # Observation only: preserve the exact symbol-activity context used at
         # entry so later capital-lock research never has to infer it from a
@@ -1464,35 +1515,181 @@ class ScalpAnalyzer:
         if entry_context_extra:
             entry_context["signal_context"] = dict(entry_context_extra)
         if self.market:
-            technical_tf = self._strategy_tf(strat_name)
-            daily_klines = self.market.klines.get("1d", {}).get(symbol.upper(), {})
-            symbol_klines = {
-                technical_tf: self.market.klines.get(technical_tf, {}).get(symbol.upper(), {}),
-                "1d": daily_klines,
-            }
-            entry_context["technical"] = calculate_snapshot(
-                symbol, entry_price, symbol_klines,
+            entry_context["technical"] = self._technical_snapshot(
+                symbol, entry_price, strat_name, order_value, flow)
+        return entry_context
+
+    def _technical_snapshot(self, symbol: str, entry_price, strat_name: str, order_value: float, flow: dict):
+        """Teknik anlık görüntü + M1/M5/M15/H1/H4 kanıtı (radar ile aynı)."""
+        technical_tf = self._strategy_tf(strat_name)
+        daily_klines = self.market.klines.get("1d", {}).get(symbol.upper(), {})
+        symbol_klines = {
+            technical_tf: self.market.klines.get(technical_tf, {}).get(symbol.upper(), {}),
+            "1d": daily_klines,
+        }
+        technical = calculate_snapshot(
+            symbol, entry_price, symbol_klines,
+            flow,
+            self.market.ticker_24h.get(symbol, 0),
+            order_value, technical_tf
+        )
+        # Persist the same M1/M5/M15/H1/H4 evidence that the radar uses.
+        # Missing cache data is recorded explicitly as data_ready=False;
+        # it must never be silently interpreted as bullish or neutral.
+        mtf_snapshots = {}
+        for timeframe in ("1m", "5m", "15m", "1h", "4h"):
+            history = self.market.klines.get(timeframe, {}).get(symbol.upper(), {})
+            snapshot = calculate_snapshot(
+                symbol, entry_price,
+                {timeframe: history, "1d": daily_klines},
                 flow,
                 self.market.ticker_24h.get(symbol, 0),
-                order_value, technical_tf
+                order_value,
+                timeframe,
             )
-            # Persist the same M1/M5/M15/H1/H4 evidence that the radar uses.
-            # Missing cache data is recorded explicitly as data_ready=False;
-            # it must never be silently interpreted as bullish or neutral.
-            mtf_snapshots = {}
-            for timeframe in ("1m", "5m", "15m", "1h", "4h"):
-                history = self.market.klines.get(timeframe, {}).get(symbol.upper(), {})
-                snapshot = calculate_snapshot(
-                    symbol, entry_price,
-                    {timeframe: history, "1d": daily_klines},
-                    flow,
-                    self.market.ticker_24h.get(symbol, 0),
-                    order_value,
-                    timeframe,
-                )
-                mtf_snapshots[timeframe] = snapshot
-            entry_context["technical"]["mtf_snapshots"] = mtf_snapshots
-            entry_context["technical"]["mtf_timeframes"] = list(mtf_snapshots)
+            mtf_snapshots[timeframe] = snapshot
+        technical["mtf_snapshots"] = mtf_snapshots
+        technical["mtf_timeframes"] = list(mtf_snapshots)
+        return technical
+
+    def _apply_exit_plan_fields(self, pos: dict, entry_price, strat_name: str,
+                                planned_take_profit_pct, planned_stop_loss_pct,
+                                planned_max_hold_sec, no_initial_stop: bool):
+        """Pozisyona stop/TP/max-hold alanlarını yazar (strategy-özel çıkış modeli dahil)."""
+        if strat_name == "LLM_PAPER":
+            if planned_stop_loss_pct is not None:
+                pos["llm_stop_price"] = entry_price * (1 - max(0.0001, float(planned_stop_loss_pct)))
+            if planned_take_profit_pct is not None:
+                pos["llm_take_profit_price"] = entry_price * (1 + max(0.0001, float(planned_take_profit_pct)))
+            if planned_max_hold_sec is not None:
+                pos["llm_max_hold_sec"] = max(60, int(planned_max_hold_sec))
+            return
+        technical_tf = self._strategy_tf(strat_name)
+        system_kline = self.market.get_ut_kline(pos["symbol"], technical_tf) if self.market else None
+        atr = self.calculate_atr(system_kline, config.SYSTEM_ATR_PERIOD) if system_kline else None
+        if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
+            # Replay planındaki SL (%0.5) veya Lead-Lag SL burada gerçek stop olur.
+            # Stop ATR'ye göre genişletilmez: plan yüzdesi birebir uygulanır.
+            strategy_stop_pct = planned_stop_loss_pct or config.HARD_STOP_LOSS_PCT
+            stop_distance = entry_price * strategy_stop_pct
+        else:
+            strategy_stop_pct = config.HARD_STOP_LOSS_PCT
+            stop_distance = max(
+                entry_price * strategy_stop_pct,
+                float(atr or 0) * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER,
+            )
+        if stop_distance <= 0:
+            stop_distance = entry_price * strategy_stop_pct
+        # no-initial-stop modunda (otonom hız avcısı) başlangıç stopu
+        # hiç konmaz — system_stop_price set edilmez, _manage_open_position
+        # bunu -inf gibi ele alır; +%1 kâr kilidi stop'u yukarı taşır.
+        if not (strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") and no_initial_stop):
+            pos["system_stop_price"] = entry_price - stop_distance
+        elif strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
+            # stop yok; yine de alanın varlığını koru (okuyanlar None'a dayanmasın)
+            pos["system_stop_price"] = None
+        if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
+            # Planlı yol (chat tahmin otomatı + otonom hız avcısı + lead-lag):
+            # TP açılışta sabitlenir — chat tahmin otomatında plan
+            # yüzdesi, otonom hız avcısında tahmin edilen hedef
+            # (target_pct: 5dk-%2 / 15dk-%3) take_profit_pct olarak
+            # gelir; max-hold plan süresiyle sınırlıdır. Trailing yoktur.
+            if planned_take_profit_pct is not None:
+                pos["system_take_profit_price"] = entry_price * (1 + planned_take_profit_pct)
+            if planned_max_hold_sec is not None:
+                pos["velocity_max_hold_sec"] = planned_max_hold_sec
+        else:
+            pos["system_take_profit_price"] = entry_price + stop_distance * config.SYSTEM_RISK_REWARD
+        pos["stop_price"] = pos["system_stop_price"]
+        pos["take_profit"] = pos.get("system_take_profit_price")
+        pos["system_atr"] = float(atr or 0)
+        pos["system_risk_reward"] = config.SYSTEM_RISK_REWARD
+        pos["system_exit_model"] = (
+            "lead_lag_plan" if strat_name == "GLOBAL_LEAD_LAG"
+            else ("chat_replay_plan" if planned_take_profit_pct is not None else "velocity_no_plan")
+        ) if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") else "atr_trailing_after_rr_target"
+
+    async def _commit_position(self, symbol: str, entry_price, strat_name: str, pos: dict,
+                               sig: dict, next_cash: float, quantity: float):
+        """Atomik pozisyon yazımı; DB hatasında bellek pozisyonunu geri alır."""
+        try:
+            await database.commit_open_position(symbol, symbol.replace("TRY", ""), next_cash, quantity, pos, sig)
+        except Exception as exc:
+            error_text = str(exc).lower()
+            # Her DB hatasında bellek pozisyonunu GERİ AL: aksi halde zumbi
+            # pozisyon bellek↔DB tutarsızlığı yaratır, /api/positions 500 verir
+            # ve rapor sayfasında "AÇIK" görünen ama DB'de olmayan hayalet
+            # sinyaller oluşur.
+            self.positions.pop(symbol, None)
+            if any(token in error_text for token in ("duplicate key", "unique constraint", "already_open", "max_open_positions_reached", "insufficient_paper_balance")):
+                self.positions = await database.load_positions()
+                reason = "max_open_positions_reached" if "max_open_positions" in error_text else "insufficient_paper_balance" if "insufficient" in error_text else "position_already_open"
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                            "reason": reason, "strategy": strat_name, "timestamp": time.time()})
+                return {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                        "reason": reason, "strategy": strat_name, "timestamp": time.time()}
+            raise
+        return sig
+
+    async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="CHAT_PREDICTION", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None, entry_context_extra=None):
+        """Pozisyon aç — aşamalı orkestratör (tüm giriş yollarının son yazıcı sınırı).
+
+        Aşamalar: pasif sembol -> LLM guard -> pozisyon çakışması ->
+        büyüklük (+S3/S4) -> S5 korelasyon -> likidite recheck -> net taban ->
+        çıkış planı -> entry_context -> pozisyon yazımı.
+        """
+        symbol = str(symbol).replace("_", "").upper()
+        # DÜZELTME (D-05, 2026-09-12): buradaki yorum "circuit breaker pause
+        # kaldırıldı, pause'lu strateji işlem açabilir" diyordu — kodun tersi.
+        # Duraklatma kapısı YUKARIDA, `open_position` içinde
+        # (`await strategy_breaker.is_paused_async(...)`) gerçekten var ve tüm
+        # giriş yolları oradan geçer. Bu yanlış yorum yüzünden kapının bir
+        # bakımda silinme riski vardı; doğrusuyla değiştirildi.
+        # Every entry path (strategy, LLM, alert, radar and pending orders)
+        # converges here. A passive symbol must therefore be rejected at this
+        # final writer boundary, not only skipped by the strategy scan loop.
+        # CHAT_PREDICTION (velocity) and GLOBAL_LEAD_LAG are exempt: their candidates come from
+        # live market signals whose WS volume history the activity filter
+        # needs may not exist yet, and they enforce their own liquidity checks.
+        blocked = await self._passive_symbol_gate(symbol, entry_price, strat_name)
+        if blocked is not None:
+            return blocked
+        if await self._llm_guard_gate(symbol, entry_price, strat_name):
+            return None
+        _kind, _payload = await self._position_conflict_gate(symbol, entry_price, strat_name)
+        if _kind == "open":
+            return None
+        if _kind == "block":
+            return _payload
+
+        try_balance, order_value = await self._resolve_entry_order_value(
+            symbol, entry_price, strat_name, requested_order_value, entry_context_extra)
+        if order_value is None:
+            return None
+
+        blocked = await self._correlation_cap_gate(symbol, entry_price, strat_name, order_value, try_balance)
+        if blocked is not None:
+            return blocked
+
+        blocked, details = self._liquidity_recheck_gate(symbol, entry_price, strat_name, order_value)
+        if blocked is not None:
+            return blocked
+
+        expected_gross, expected_net, _target_pct = self._expected_net_values(
+            strat_name, requested_tp_pct, order_value)
+        if await self._expected_net_gate(symbol, entry_price, strat_name, expected_net):
+            return {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                    "reason": "expected_net_below_floor", "strategy": strat_name,
+                    "timestamp": time.time(),
+                    "detail": {"expected_net": round(expected_net, 4), "min_net": config.MIN_EXPECTED_NET_PNL_TRY}}
+
+        planned_tp, planned_sl, planned_hold, no_initial_stop = self._compute_planned_exits(
+            strat_name, requested_stop_pct, requested_tp_pct, requested_hold_sec, entry_context_extra)
+
+        entry_context = self._build_entry_context(
+            symbol, entry_price, strat_name, order_value, details, expected_gross, expected_net,
+            planned_tp, planned_sl, planned_hold, entry_context_extra)
+
         # D-08 (2026-09-12): fiilî ALIŞ dolumuna kayma (slippage) uygula.
         # Pozisyonun maliyet tabanı (entry_price) ve adet bu dolumdan türetilir;
         # böylece PnL = (satış_dolum - alış_dolum)*adet - komisyonlar giriş
@@ -1521,82 +1718,20 @@ class ScalpAnalyzer:
             "quantity": quantity, "entry_time": time.time(), "strategy": strat_name, "layers": 1,
             "trade_id": uuid.uuid4().hex,
             "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context,
-            "entry_layers": [{"entry_price": float(entry_price), "quantity": quantity}]
+            "entry_layers": [{"entry_price": float(entry_price), "quantity": quantity}],
+            "symbol": symbol,
         }
-        if strat_name != "LLM_PAPER":
-                technical_tf = self._strategy_tf(strat_name)
-                system_kline = self.market.get_ut_kline(symbol, technical_tf) if self.market else None
-                atr = self.calculate_atr(system_kline, config.SYSTEM_ATR_PERIOD) if system_kline else None
-                if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
-                    # Replay planındaki SL (%0.5) veya Lead-Lag SL burada gerçek stop olur.
-                    # Stop ATR'ye göre genişletilmez: plan yüzdesi birebir uygulanır.
-                    strategy_stop_pct = planned_stop_loss_pct or config.HARD_STOP_LOSS_PCT
-                    stop_distance = entry_price * strategy_stop_pct
-                else:
-                    strategy_stop_pct = config.HARD_STOP_LOSS_PCT
-                    stop_distance = max(
-                        entry_price * strategy_stop_pct,
-                        float(atr or 0) * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER,
-                    )
-                if stop_distance <= 0:
-                    stop_distance = entry_price * strategy_stop_pct
-                # no-initial-stop modunda (otonom hız avcısı) başlangıç stopu
-                # hiç konmaz — system_stop_price set edilmez, _manage_open_position
-                # bunu -inf gibi ele alır; +%1 kâr kilidi stop'u yukarı taşır.
-                if not (strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") and no_initial_stop):
-                    pos["system_stop_price"] = entry_price - stop_distance
-                elif strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
-                    # stop yok; yine de alanın varlığını koru (okuyanlar None'a dayanmasın)
-                    pos["system_stop_price"] = None
-                if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
-                    # Planlı yol (chat tahmin otomatı + otonom hız avcısı + lead-lag):
-                    # TP açılışta sabitlenir — chat tahmin otomatında plan
-                    # yüzdesi, otonom hız avcısında tahmin edilen hedef
-                    # (target_pct: 5dk-%2 / 15dk-%3) take_profit_pct olarak
-                    # gelir; max-hold plan süresiyle sınırlıdır. Trailing yoktur.
-                    if planned_take_profit_pct is not None:
-                        pos["system_take_profit_price"] = entry_price * (1 + planned_take_profit_pct)
-                    if planned_max_hold_sec is not None:
-                        pos["velocity_max_hold_sec"] = planned_max_hold_sec
-                else:
-                    pos["system_take_profit_price"] = entry_price + stop_distance * config.SYSTEM_RISK_REWARD
-                pos["stop_price"] = pos["system_stop_price"]
-                pos["take_profit"] = pos.get("system_take_profit_price")
-                pos["system_atr"] = float(atr or 0)
-                pos["system_risk_reward"] = config.SYSTEM_RISK_REWARD
-                pos["system_exit_model"] = ("lead_lag_plan" if strat_name == "GLOBAL_LEAD_LAG"
-                                            else ("chat_replay_plan" if planned_take_profit_pct is not None
-                                                  else "velocity_no_plan")) if strat_name in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") else "atr_trailing_after_rr_target"
-        if strat_name == "LLM_PAPER":
-                if requested_stop_pct is not None:
-                    pos["llm_stop_price"] = entry_price * (1 - max(0.0001, float(requested_stop_pct)))
-                if requested_tp_pct is not None:
-                    pos["llm_take_profit_price"] = entry_price * (1 + max(0.0001, float(requested_tp_pct)))
-                if requested_hold_sec is not None:
-                    pos["llm_max_hold_sec"] = max(60, int(requested_hold_sec))
-        pos["symbol"] = symbol
+        # Orijinal davranış: LLM_PAPER dışı tüm stratejilerde exit alanları
+        # (market olmasa bile; atr None kalır) yazılır.
+        self._apply_exit_plan_fields(pos, entry_price, strat_name, planned_tp, planned_sl,
+                                     planned_hold, no_initial_stop)
         self.positions[symbol] = pos
-        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "trade_id": pos.get("trade_id"), "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time(),
+        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened",
+               "strategy": strat_name, "trade_id": pos.get("trade_id"),
+               "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time(),
                # D-03: raporlanan büyüklük FİİLEN kullanılan büyüklük olsun.
                # Eskiden velocity tarafı talep ettiği %50'yi raporluyordu ama
                # gerçekleşen %10'du; artık ikisi aynı kaynaktan okunabilir.
                # BİRİM: TRY notional (quantity DEĞİL).
                "order_value_try": order_value, "quantity": quantity}
-        try:
-            await database.commit_open_position(symbol, symbol.replace("TRY", ""), next_cash, quantity, pos, sig)
-        except Exception as exc:
-            error_text = str(exc).lower()
-            # Her DB hatasında bellek pozisyonunu GERİ AL: aksi halde zumbi
-            # pozisyon bellek↔DB tutarsızlığı yaratır, /api/positions 500 verir
-            # ve rapor sayfasında "AÇIK" görünen ama DB'de olmayan hayalet
-            # sinyaller oluşur.
-            self.positions.pop(symbol, None)
-            if any(token in error_text for token in ("duplicate key", "unique constraint", "already_open", "max_open_positions_reached", "insufficient_paper_balance")):
-                self.positions = await database.load_positions()
-                reason = "max_open_positions_reached" if "max_open_positions" in error_text else "insufficient_paper_balance" if "insufficient" in error_text else "position_already_open"
-                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                            "reason": reason, "strategy": strat_name, "timestamp": time.time()})
-                return {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                        "reason": reason, "strategy": strat_name, "timestamp": time.time()}
-            raise
-        return sig
+        return await self._commit_position(symbol, entry_price, strat_name, pos, sig, next_cash, quantity)
