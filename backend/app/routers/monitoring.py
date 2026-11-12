@@ -3041,8 +3041,13 @@ async def _fast_notify_deliver(sym: str, kind: str, candidate: dict, notif: dict
     # BİRLEŞİK SİNYAL: Bu bildirimin gerçek MFE ve hedefe dokunuşunu ölçebilmek için
     # velocity_candidates tablosuna da kaydet (aksi halde rapor ÖLÇÜLEMEDİ kalır).
     try:
+        # 2026-11-10 (P0): candidate_id yoksa kayıt NOT NULL ihlaliyle düşüyordu
+        # ve sinyal ölçülemiyordu. Üretici taraf düzeltildi; burada da son savunma
+        # hattı olarak kimlik garanti edilir (idempotent: aynı ms+sembol).
+        _cid = notif.get("candidate_id") or f"uni-{kind or 'fast'}-{int(time.time() * 1000)}-{sym}"
+        notif["candidate_id"] = _cid
         await database.save_velocity_candidates([{
-            "candidate_id": notif.get("candidate_id"),
+            "candidate_id": _cid,
             "created_at": float(notif.get("detected_at") or time.time()),
             "symbol": sym,
             "price": float(candidate.get("price") or 0),
@@ -3051,7 +3056,8 @@ async def _fast_notify_deliver(sym: str, kind: str, candidate: dict, notif: dict
             "velocity_score": 0.0, "passes": False, "rank": None,
         }])
     except Exception as exc:
-        logger.warning("unified fast notify velocity adayı kaydedilemedi %s: %s", sym, exc)
+        logger.warning("unified fast notify velocity adayı kaydedilemedi %s: %s", sym, exc,
+                       exc_info=True)
     # 2026-10-16 (sinyal politikası): lavabo blokladıysa (policy_blocked) hızlı yol
     # teslimi (geçmiş, push, otonom paper, WS) yapılmaz; ölçüm kaydı yukarıda alındı.
     if notif.get("policy_blocked"):

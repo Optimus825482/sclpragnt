@@ -105,3 +105,44 @@ def test_combined_score_formula():
     assert wn._combined_score({"potential_pct": 20.0, "target_probability": 60.0}) == 12.0
     # ihtimal yoksa nötr taban %50
     assert wn._combined_score({"potential_pct": 10.0}) == 5.0
+
+
+def test_send_skips_when_url_empty_but_flag_enabled(monkeypatch):
+    """Regresyon (2026-11-10): köprü servisi kaldırıldı ama bayrak açık kaldıysa
+    `url` boş kalır; `f"{url}/send"` -> "/send" olup urllib'in DNS çözümlemesi
+    "Temporary failure in name resolution" üretiyordu (her turda log + deneme).
+
+    Beklenen: hiç ağ denemesi yapılmadan False dönmek.
+    """
+    import asyncio
+
+    monkeypatch.delenv("WHATSAPP_BRIDGE_URL", raising=False)
+    monkeypatch.delenv("WHATSAPP_GROUP_ID", raising=False)
+    monkeypatch.setenv("WHATSAPP_NOTIFY_ENABLED", "true")
+
+    calls: list[str] = []
+
+    def _boom(url, payload, headers):  # noqa: ANN001
+        calls.append(url)
+        raise AssertionError("boş URL ile ağ isteği denenmemeliydi")
+
+    monkeypatch.setattr(wn, "_post_sync", _boom)
+
+    async def _run():
+        # Hem genel gönderim hem numaraya gönderim aynı gövdeyi kullanır.
+        return (await wn.send_whatsapp("metin"),
+                await wn.send_whatsapp_to_number("metin", "905551112233"))
+
+    assert asyncio.run(_run()) == (False, False)
+    assert calls == [], f"beklenmeyen ağ denemesi: {calls}"
+
+
+def test_send_skips_when_url_missing_via_underscore(monkeypatch):
+    """`_send_whatsapp` doğrudan çağrıldığında da boş URL korumalı olmalı."""
+    import asyncio
+
+    monkeypatch.delenv("WHATSAPP_BRIDGE_URL", raising=False)
+    monkeypatch.setenv("WHATSAPP_NOTIFY_ENABLED", "true")
+    monkeypatch.setattr(wn, "_post_sync", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("ağ isteği olmamalı")))
+    assert asyncio.run(wn._send_whatsapp(to="905551112233@s.whatsapp.net", text="x")) is False

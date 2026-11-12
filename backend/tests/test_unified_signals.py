@@ -165,6 +165,41 @@ class BuildFusionCandidateTests(unittest.TestCase):
         self.assertIn("velocity", cand["unified_sources"])
         self.assertIn("jump", cand["unified_sources"])
 
+    def test_candidate_id_is_always_produced(self):
+        """Regresyon (2026-11-10): hızlı yol adayında candidate_id YOKTU.
+
+        `_fast_notify_deliver` bu adayı `velocity_candidates` tablosuna yazar;
+        o kolon NOT NULL. Eksik kimlik yüzünden her hızlı yol sinyali
+        `null value in column "candidate_id"` ile düşüyor ve sinyalin MFE /
+        hedefe dokunuş ölçümü hiçbir zaman yapılamıyordu.
+        """
+        row = {"jump": 88, "early_score": 70, "strength": 8, "last": 12.5}
+        snapshot = {"symbols": {"XYZTRY": row}, "universe": ["XYZTRY"]}
+        with patch.object(us._macd, "_SNAPSHOT", snapshot):
+            with patch.object(config, "UNIFIED_FAST_MIN_SCORE", 55):
+                cand = us.build_fusion_candidate("XYZTRY", "early")
+        self.assertIsNotNone(cand)
+        cid = cand.get("candidate_id")
+        self.assertIsInstance(cid, str)
+        self.assertTrue(cid, "candidate_id boş olmamalı (NOT NULL kolon)")
+        # Rapor eşleştiricisi "uni-" önekini bekler (5dk varsayımı buradan gelir).
+        self.assertTrue(cid.startswith("uni-"), cid)
+        self.assertIn("XYZTRY", cid)
+        self.assertIn("early", cid)
+
+    def test_candidate_id_unique_per_detection(self):
+        """Aynı sembol iki ayrı tetiklemede ayrı kimlik almalı (idempotens bozulmasın)."""
+        row = {"jump": 88, "early_score": 70, "strength": 8, "last": 12.5}
+        snapshot = {"symbols": {"XYZTRY": row}, "universe": ["XYZTRY"]}
+        ids = set()
+        with patch.object(us._macd, "_SNAPSHOT", snapshot):
+            with patch.object(config, "UNIFIED_FAST_MIN_SCORE", 55):
+                for _ in range(3):
+                    cand = us.build_fusion_candidate("XYZTRY", "jump")
+                    ids.add(cand["candidate_id"])
+                    time.sleep(0.002)  # ms damgası ayrışsın
+        self.assertEqual(3, len(ids), f"kimlikler çakıştı: {ids}")
+
 
 class SuppressionTests(unittest.TestCase):
     def tearDown(self):

@@ -520,6 +520,14 @@ def build_fusion_candidate(symbol: str, kind: str,
         "mode": "unified",
         "upside_rank": 0.0,
         "passes": False,
+        # 2026-11-10 (P0): `candidate_id` BURADA üretilmiyordu. Hızlı yol
+        # (`_unified_fast_notify_impl` → `_fast_notify_deliver`) bu adayı
+        # `save_velocity_candidates`'e yazarken `candidate_id` NOT NULL
+        # ihlaline düşüyor ve satır SESSİZCE kayboluyordu → sinyalin MFE ve
+        # hedefe dokunuş ölçümü hiçbir zaman yapılamıyordu. Kardeş fonksiyon
+        # `detect_unified_signals` bu anahtarı zaten üretiyor; aynı biçim
+        # ("uni-" öneki) korunur ki rapor eşleştiricisi 5dk varsayabilsin.
+        "candidate_id": f"uni-{kind or 'fast'}-{int(time.time() * 1000)}-{sym}",
     }
     try:
         from app import master_surge

@@ -76,6 +76,14 @@ async def _send_whatsapp(*, to: str | None, text: str) -> bool:
     if not text or not whatsapp_enabled():
         return False
     url, key, grp = _cfg()
+    # 2026-11-10: `whatsapp_enabled()` zaten URL'i kontrol ediyor, ancak bu
+    # fonksiyon doğrudan da çağrılabiliyor (ör. _send_whatsapp). URL boşsa
+    # `f"{url}/send"` -> "/send" üretiliyor ve urllib bunu "Temporary failure
+    # in name resolution" ile deniyordu — yani hiç yapılandırılmamış bir
+    # köprü için her turda DNS denemesi + log gürültüsü. Burada dur.
+    if not url:
+        logger.debug("WhatsApp köprüsü yapılandırılmamış (WHATSAPP_BRIDGE_URL boş) — gönderim atlandı")
+        return False
     headers = {"Content-Type": "application/json"}
     if key:
         headers["X-Bridge-Key"] = key
