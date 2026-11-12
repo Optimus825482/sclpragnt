@@ -174,8 +174,8 @@ async def main() -> int:
         s = r["summary"]; cap = s["n"] * STAKE
         H.append(f"<tr><td class='b'>{r['day']:%d.%m %H:%M}</td><td>→ {dt.datetime.fromtimestamp(r['end'] / 1000, TZ):%d.%m %H:%M}{' (kısmi)' if r['partial'] else ''}</td>"
                  f"<td>{s['universe']}</td><td>{s['breadth']:.0%}</td><td>{s['candidates']}</td><td>{s['n']}</td><td class='pos'>{s['trail']}</td><td class='neg'>{s['stop']}</td><td>{s['time']}{(' + ' + str(s['open']) + ' açık') if s.get('open') else ''}</td>"
-                 f"<td>{'—' if s['win'] is None else f'{s['win']:.0%}'}</td><td class='{c(s['net'])} b'>{ftl(s['net'])}</td><td>{cap:,.0f} TL</td><td class='{c(s['net'])}'>{fpct(s['net'] / cap * 100 if cap else None)}</td>"
-                 f"<td>{fpct(s['mfe_mean'])}</td><td>{fpct(s['mfe_median'])}</td><td>{'—' if s['mfe_ge3'] is None else f'{s['mfe_ge3']:.0%}'}</td><td>{fdur(s['mfe_min_median'])}</td><td>{fpct(s['mae_mean'])}</td></tr>".replace(",", "."))
+                 f"<td>{'—' if s['win'] is None else format(s['win'], '.0%')}</td><td class='{c(s['net'])} b'>{ftl(s['net'])}</td><td>{cap:,.0f} TL</td><td class='{c(s['net'])}'>{fpct(s['net'] / cap * 100 if cap else None)}</td>"
+                 f"<td>{fpct(s['mfe_mean'])}</td><td>{fpct(s['mfe_median'])}</td><td>{'—' if s['mfe_ge3'] is None else format(s['mfe_ge3'], '.0%')}</td><td>{fdur(s['mfe_min_median'])}</td><td>{fpct(s['mae_mean'])}</td></tr>".replace(",", "."))
     H.append("</table></div>")
     for r in report:
         H += [f"<h2>{r['day']:%d.%m.%Y %H:%M} listesi — {len(r['rows'])} sinyal{' (pencere kısmi)' if r['partial'] else ''}</h2>",

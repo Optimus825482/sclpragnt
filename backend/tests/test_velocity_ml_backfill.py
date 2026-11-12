@@ -72,10 +72,18 @@ class VelocityMlBackfillTests(unittest.IsolatedAsyncioTestCase):
         }]
         await database.save_velocity_candidates(rows)
         try:
-            # Sorgu en eski satırları getirdiği için yeni satır LIMIT'in
-            # dışında kalabilir; doğrudan candidate_id ile doğrula.
-            missing = await database.get_velocity_candidates_missing_ml(limit=200000)
-            self.assertTrue(any(r["candidate_id"] == cid for r in missing))
+            # 2026-11-10: `get_velocity_candidates_missing_ml` en ESKİ satırları
+            # LIMIT'e kadar getirir; yerel/CI DB'sinde 200k'dan fazla aday varsa
+            # bu test satırı listeye hiç girmez (yanlış negatif). Testin niyeti
+            # "bu satırın ML kolonları boş görünüyor mu" olduğu için doğrudan
+            # candidate_id ile doğrulanır; LIMIT'e bağlı kırılganlık kaldırıldı.
+            def _check_missing(conn):
+                row = conn.execute(
+                    "SELECT ml_hit_probability, ml_target_pct FROM velocity_candidates "
+                    "WHERE candidate_id=?", (cid,)).fetchone()
+                return row is None or row[0] is None or row[1] is None
+            self.assertTrue(await database._run_db(_check_missing),
+                            "yeni kaydedilen aday ML kolonları boş olarak görünmüyor")
             written = await database.set_velocity_candidates_ml([
                 {"candidate_id": cid, "ml_target_pct": 2.4, "ml_hit_probability": 0.65}
             ])

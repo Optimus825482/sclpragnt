@@ -227,7 +227,7 @@ def _blocked(symbol: str, reason: str, **extra) -> dict:
         price = float(extra.get("price") or extra.get("current_price") or 0.0)
         asyncio.create_task(_log_blocked_decision(symbol, reason, price, dict(extra)))
     except Exception:
-        pass
+        logger.debug("auto_paper %s: engel kararı loglanamadı", symbol, exc_info=True)
     return block
 
 
@@ -599,779 +599,736 @@ async def try_open_from_notification(notification: dict) -> dict | None:
         _note_scan_log(notification, result)
 
 
+
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-10 REFACTOR: `_try_open_impl` (472 satır) aşamalara bölündü.
+# Aşamalar: context -> gates -> cooldown -> price -> reopen -> max_open ->
+# sizing -> _open_new_trade. Davranış birebir korunmuştur (kapı sırası ve
+# engel nedenleri aynı); yalnız okunabilirlik/bakım için bölündü.
+# ---------------------------------------------------------------------------
+
+
+async def _entry_context(notification: dict) -> tuple[dict | None, dict | None, str | None, bool]:
+    """Aşama 1 — ayar/kimlik/skor/mod kapıları. Dönüş: (settings, block, symbol, rule_signal)."""
+    settings = await get_auto_paper_settings()
+    if not settings.get("enabled", True):
+        return None, _blocked(str(notification.get("symbol") or "?").upper(), "auto_paper_disabled"), None, False
+
+    symbol = str(notification.get("symbol") or "").upper()
+    if not symbol:
+        return settings, None, None, False
+
+    _source = str(notification.get("source") or "")
+    rule_signal = _source in _RULE_SIGNAL_SOURCES
+    if rule_signal and not getattr(config, _RULE_SIGNAL_SWITCHES[_source], True):
+        return settings, _blocked(symbol, f"{_source}_paper_kapali"), symbol, rule_signal
+
+    score = float(notification.get("score") or 0)
+    min_score = float(settings.get("min_score", config.AUTO_PAPER_MIN_SCORE_DEFAULT))
+    if not rule_signal and score < min_score:
+        return settings, _blocked(symbol, "score_below_min", price=0.0,
+                                  score=round(score, 1), min_score=min_score), symbol, rule_signal
+
+    allowed_modes = settings.get("allowed_modes") or []
+    if allowed_modes and not rule_signal:
+        notif_mode = str(notification.get("mode") or "").strip()
+        if notif_mode not in allowed_modes:
+            return settings, _blocked(symbol, "mode_not_allowed", mode=notif_mode,
+                                      allowed=allowed_modes), symbol, rule_signal
+
+    return settings, None, symbol, rule_signal
+
+
+async def _compute_entry_gates(notification: dict, symbol: str, settings: dict,
+                               open_trade: dict | None) -> dict | None:
+    """Aşama 2 — dedup + akıllı-para / rejim / LLM / trap kapıları.
+
+    Açık pozisyon varsa TP-güncelleme yoluna gidileceği için kalite kapıları
+    BİLİNÇLİ atlanır — mevcut pozisyonu iyileştirmek riskli değildir.
+    """
+    if open_trade is None:
+        dedup_min = float(settings.get("dedup_cooldown_minutes", 0.0) or 0.0)
+        if dedup_min > 0:
+            try:
+                _last_entry = await database.get_last_auto_paper_entry_time(symbol)
+            except Exception as exc:
+                logger.debug("auto_paper %s dedup kontrol hatasi: %s", symbol, exc)
+                _last_entry = None
+            if _last_entry and (time.time() - _last_entry) < (dedup_min * 60.0):
+                rem = round(dedup_min * 60.0 - (time.time() - _last_entry), 0)
+                return _blocked(symbol, "symbol_dedup", remaining_sec=rem,
+                                dedup_cooldown_minutes=dedup_min)
+
+    if open_trade is not None:
+        return None
+
+    passes = notification.get("passes")
+    if passes is not None and not bool(passes):
+        logger.warning("auto_paper %s: aday panel sartini gecmedi (passes=False) - acilmadi (R3-08)", symbol)
+        return _blocked(symbol, "not_passing")
+
+    block_reason = notification.get("block_reason") or notification.get("surge_block_reason")
+    if block_reason:
+        logger.warning("auto_paper %s: risk engeli devrede (%s) - acilmadi", symbol, block_reason)
+        return _blocked(symbol, f"risk_blocked:{block_reason}", block_reason=block_reason)
+
+    _regime_badge = notification.get("regime_badge")
+    if not _regime_badge and str(getattr(config, "RADAR_SHIELD_MODE", "badge")).lower() != "block":
+        try:
+            from app.routers.velocity import btc_shield_active
+            if symbol not in ("BTCTRY", "BTCUSDT") and btc_shield_active():
+                _regime_badge = "BTC_BEAR_REGIME_SHIELD"
+        except Exception:
+            _regime_badge = None
+    if _regime_badge:
+        if getattr(config, "AUTO_PAPER_BLOCK_ON_REGIME_BADGE", False):
+            return _blocked(symbol, f"risk_blocked:{_regime_badge}", block_reason=_regime_badge)
+        logger.info("auto_paper %s: BTC rejim rozeti var ama otonom girisi engellemiyor (kullanici karari)", symbol)
+    if notification.get("master_surge_passed") is False:
+        logger.warning("auto_paper %s: Master Surge kontrolunden gecmedi - acilmadi", symbol)
+        return _blocked(symbol, "master_surge_failed")
+
+    if settings.get("llm_gate_enabled", True):
+        llm_v = str(notification.get("llm_verdict") or "").strip().upper()
+        try:
+            llm_c = float(notification.get("llm_confidence") or 0)
+        except (ValueError, TypeError):
+            llm_c = 0.0
+        min_c = float(settings.get("llm_min_confidence", 60.0))
+        if llm_v in ("FAKE", "TUZAK") and llm_c >= 50:
+            logger.warning("auto_paper %s: LLM Ikinci Goz FAKE/TUZAK uyarisi verdi (Guven: %%%.0f) - islem acilmadi", symbol, llm_c)
+            return _blocked(symbol, "llm_fake_blocked", block_reason=f"LLM_FAKE_%{round(llm_c)}", verdict=llm_v, confidence=round(llm_c))
+        if llm_v == "DEVAM" and llm_c > 0 and llm_c < min_c:
+            logger.warning("auto_paper %s: LLM DEVAM dedi ancak guven yetersiz (%%%s < %%%s) - acilmadi", symbol, llm_c, min_c)
+            return _blocked(symbol, "llm_low_confidence", block_reason="LLM_LOW_CONFIDENCE", verdict=llm_v, confidence=round(llm_c))
+
+    try:
+        from app.ai_trading_suite import evaluate_trap_shield
+        trap_verdict = evaluate_trap_shield(
+            symbol=symbol,
+            indicators={
+                "rsi": float(notification.get("rsi") or 50.0),
+                "volume_ratio": float(notification.get("volume_ratio") or 1.0),
+                "adx": float(notification.get("adx") or 20.0),
+            }
+        )
+        if trap_verdict.protective_veto:
+            logger.warning("auto_paper %s: FinCon Tuzak Kalkani VETOSU verdi (Benzerlik: %%%.0f, Tip: %s) - islem engellendi",
+                           symbol, trap_verdict.highest_similarity_pct, trap_verdict.matching_failure_type)
+            return _blocked(symbol, f"fincon_trap_shield_veto:{trap_verdict.matching_failure_type}",
+                            block_reason=f"FINCON_TRAP_%{int(trap_verdict.highest_similarity_pct)}",
+                            verdict=trap_verdict.verdict)
+    except Exception as trap_exc:
+        logger.debug("auto_paper %s FinCon trap shield kontrolu atlandi: %s", symbol, trap_exc)
+
+    try:
+        from app.ai_trading_suite import evaluate_wyckoff_vsa, evaluate_obv_cmf_inflow
+        obv_res = evaluate_obv_cmf_inflow(symbol=symbol)
+        if obv_res.divergence_type == "BEARISH_DISTRIBUTION" and obv_res.cmf_value < -0.15:
+            logger.warning("auto_paper %s: OBV/CMF Kurumsal Dagitim Uyarisi (CMF: %.2f) - islem engellendi",
+                           symbol, obv_res.cmf_value)
+            return _blocked(symbol, "obv_cmf_bearish_distribution_veto",
+                            block_reason=f"OBV_CMF_DISTRIBUTION_{round(obv_res.cmf_value, 2)}",
+                            verdict="BEARISH_DISTRIBUTION")
+        wyckoff_res = evaluate_wyckoff_vsa(symbol=symbol)
+        if wyckoff_res.vsa_pattern in ("DISTRIBUTION_UTAD", "BUYING_CLIMAX_EXHAUSTION") or wyckoff_res.trade_action == "TAKE_PROFIT":
+            logger.warning("auto_paper %s: Wyckoff VSA Zirve Tukenis/Dagitim Uyarisi (%s) - islem engellendi",
+                           symbol, wyckoff_res.vsa_pattern)
+            return _blocked(symbol, f"wyckoff_distribution_veto:{wyckoff_res.vsa_pattern}",
+                            block_reason=f"WYCKOFF_{wyckoff_res.vsa_pattern}",
+                            verdict=wyckoff_res.vsa_pattern)
+    except Exception as spot_suite_err:
+        logger.debug("auto_paper %s Spot AI Suite kontrolu atlandi: %s", symbol, spot_suite_err)
+
+    return None
+
+
+async def _cooldown_gate(notification: dict, symbol: str, settings: dict) -> dict | None:
+    """Aşama 3a — sessiz saatler + stop-loss ve post-win cooldown kapıları."""
+    try:
+        from app.routers import monitoring as _monitoring_mod
+        if await _monitoring_mod.quiet_hours_active():
+            logger.warning("auto_paper %s: sessiz saatler etkin - otonom islem acilmadi (R3-07)", symbol)
+            return _blocked(symbol, "quiet_hours")
+    except Exception as quiet_exc:
+        logger.warning("auto_paper %s: sessiz saat sorgusu basarisiz - islem acilmadi (fail-closed): %s",
+                       symbol, quiet_exc)
+        return _blocked(symbol, "quiet_hours_query_error")
+
+    now_ts = time.time()
+    cooldown_min = float(settings.get("sl_cooldown_minutes", _SL_COOLDOWN_MINUTES_DEFAULT))
+    sl_cooldown_until = _stop_loss_cooldowns.get(symbol, 0.0)
+    if cooldown_min > 0 and now_ts >= sl_cooldown_until:
+        try:
+            last_sl = await database.get_last_auto_paper_stop_loss_time(symbol)
+            if last_sl and (now_ts - last_sl) < (cooldown_min * 60.0):
+                sl_cooldown_until = last_sl + (cooldown_min * 60.0)
+                _stop_loss_cooldowns[symbol] = sl_cooldown_until
+        except Exception as exc:
+            logger.debug("auto_paper %s db sl cooldown kontrol hatasi: %s", symbol, exc)
+    if now_ts < sl_cooldown_until:
+        return _blocked(symbol, "stop_loss_cooldown", remaining_sec=round(sl_cooldown_until - now_ts, 0))
+
+    win_cooldown_min = float(settings.get("post_win_cooldown_minutes", getattr(config, "AUTO_PAPER_POST_WIN_COOLDOWN_MINUTES", 15.0)))
+    win_cooldown_until = _post_win_cooldowns.get(symbol, 0.0)
+    if win_cooldown_min > 0 and now_ts >= win_cooldown_until:
+        try:
+            last_win = await database.get_last_auto_paper_winning_trade_time(symbol)
+            if last_win and (now_ts - last_win) < (win_cooldown_min * 60.0):
+                win_cooldown_until = last_win + (win_cooldown_min * 60.0)
+                _post_win_cooldowns[symbol] = win_cooldown_until
+        except Exception as exc:
+            logger.debug("auto_paper %s db post win cooldown kontrol hatasi: %s", symbol, exc)
+    if now_ts < win_cooldown_until:
+        return _blocked(symbol, "post_win_cooldown", remaining_sec=round(win_cooldown_until - now_ts, 0))
+
+    return None
+
+
+async def _resolve_entry_price(notification: dict, symbol: str, settings: dict) -> tuple[float | None, dict | None]:
+    """Aşama 3b — güncel fiyat + ticker tazelik kapısı + MTF konfluans kapısı."""
+    if hasattr(config, "PASSIVE_SYMBOLS") and isinstance(config.PASSIVE_SYMBOLS, set):
+        config.PASSIVE_SYMBOLS.discard(symbol)
+
+    ticker = market.get_ticker(symbol)
+    current_price = float(ticker.get("last_price") or 0) if ticker else 0
+    if current_price <= 0:
+        current_price = float(notification.get("price") or 0)
+    if current_price <= 0:
+        return current_price, _blocked(symbol, "no_price")
+
+    try:
+        freshness = market.ticker_freshness(symbol, max_age_sec=60)
+    except Exception:
+        freshness = {"fresh": False, "age_sec": None}
+
+    if not bool(freshness.get("fresh")):
+        try:
+            rest_px = await price_service.rest_ticker_price(symbol)
+            if rest_px:
+                current_price = float(rest_px)
+                freshness = {"fresh": True, "age_sec": 0.0, "source": "binance_tr_rest_auto_paper"}
+        except Exception as exc:
+            logger.warning("auto_paper %s: REST ticker fetch hatasi: %s", symbol, exc)
+
+    if not bool(freshness.get("fresh")):
+        notif_time = float(notification.get("detected_at") or notification.get("timestamp") or 0)
+        if notif_time > 1e11:
+            notif_time /= 1000.0
+        if notif_time > 0 and (time.time() - notif_time) <= 60.0 and float(notification.get("price") or 0) > 0:
+            current_price = float(notification["price"])
+            freshness = {"fresh": True, "age_sec": round(time.time() - notif_time, 1),
+                         "source": "notification_fallback"}
+
+    if current_price <= 0:
+        current_price = float(notification.get("price") or 0)
+
+    if not bool(freshness.get("fresh")) or current_price <= 0:
+        logger.warning("auto_paper %s: taze ticker yok (age=%ss) - bayat fiyata acilis engellendi",
+                       symbol, freshness.get("age_sec"))
+        return current_price, _blocked(symbol, "stale_ticker", price=current_price, age_sec=freshness.get("age_sec"))
+
+    block_weak_mtf = bool(settings.get("block_weak_mtf", True))
+    min_mtf_confluence = float(settings.get("min_mtf_confluence", 45.0))
+    if block_weak_mtf:
+        mtf_verdict = notification.get("macd_mtf_verdict")
+        mtf_confluence = notification.get("macd_mtf_confluence")
+        if mtf_verdict is None or mtf_confluence is None:
+            try:
+                from app import macd_mtf
+                mtf_compact = macd_mtf.cached_compact(symbol)
+                if mtf_compact:
+                    mtf_verdict = mtf_compact.get("verdict")
+                    mtf_confluence = mtf_compact.get("confluence")
+            except Exception:
+                logger.debug("auto_paper %s: MACD MTF kompakt verisi alinamadi", symbol, exc_info=True)
+        if mtf_verdict == "ZAYIF" or (mtf_confluence is not None and float(mtf_confluence) < min_mtf_confluence):
+            logger.warning("auto_paper %s: MACD MTF ZAYIF (skor=%s < %.1f, verdict=%s) - sahte kirilim riskiyle acilmadi",
+                           symbol, mtf_confluence, min_mtf_confluence, mtf_verdict)
+            return current_price, _blocked(symbol, "weak_mtf_confluence", price=current_price,
+                                           confluence=mtf_confluence, verdict=mtf_verdict)
+
+    return current_price, None
+
+
+async def _reopen_gate(notification: dict, symbol: str, settings: dict, current_price: float) -> dict | None:
+    """Aşama 4 — aynı bildirimin daha önce işlenip işlenmediğini ve yeniden-açma kurallarını denetler."""
+    notification_id = notification.get("id")
+    notification_key = notification.get("notification_key")
+    now = time.time()
+
+    prior_trade = None
+    if notification_key is not None:
+        try:
+            prior_trade = await database.get_recent_auto_paper_trade_by_notification_key(str(notification_key))
+        except Exception:
+            prior_trade = None
+        if prior_trade:
+            return _blocked(symbol, "notification_already_processed", price=current_price, key=str(notification_key))
+        return None
+
+    if notification_id is None:
+        return None
+
+    nid_int = None
+    if isinstance(notification_id, int):
+        nid_int = notification_id
+    elif isinstance(notification_id, str) and notification_id.lstrip("-").isdigit():
+        nid_int = int(notification_id)
+    if nid_int is not None:
+        try:
+            prior_trade = await database.get_recent_auto_paper_trade_by_notification(nid_int)
+        except Exception:
+            prior_trade = None
+    if not prior_trade:
+        return None
+
+    if not bool(settings.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)):
+        return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="yeniden acma kapali")
+
+    exit_reason = str(prior_trade.get("exit_reason") or "").lower()
+    trailing_kapanis = exit_reason in {"trailing_stop", "breakeven_stop"}
+    if not trailing_kapanis:
+        return _blocked(symbol, "reopen_not_allowed", price=current_price, detail=f"onceki kapanis: {exit_reason or '?'}")
+
+    notif_price = float(notification.get("price") or 0)
+    if notif_price <= 0 or current_price <= notif_price:
+        return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="fiyat bildirim fiyatinin altinda")
+
+    detected_at = float(notification.get("detected_at") or 0)
+    horizon_min = float(notification.get("horizon_minutes") or 0)
+    ufuk_bitti = bool(detected_at and horizon_min and (detected_at + horizon_min * 60) < now)
+    if ufuk_bitti:
+        return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="ufuk suresi doldu")
+
+    prior_tp = float(prior_trade.get("take_profit") or 0)
+    if prior_tp > 0 and current_price >= prior_tp:
+        return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="hedefe ulasildi")
+
+    logger.info("auto_paper %s: trailing/breakeven kapanisi sonrasi kosullar saglaniyor (%s) - "
+                "ayni bildirimle yeniden islem aciliyor", symbol, exit_reason)
+    return None
+
+
+async def _max_open_gate(symbol: str, settings: dict, current_price: float) -> dict | None:
+    """Aşama 5 — global maksimum açık pozisyon tavanı (0 = sınırsız)."""
+    max_open = int(settings.get("max_open_positions",
+                                getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0)))
+    if max_open <= 0:
+        return None
+    open_count = len(await database.list_auto_paper_trades(status="open", apply_reports_baseline=False))
+    if open_count >= max_open:
+        logger.warning("auto_paper %s: max acik pozisyon (%d/%d) - acilmadi (R3-06)",
+                       symbol, open_count, max_open)
+        return _blocked(symbol, "max_open", price=current_price, open_count=open_count, max_open=max_open)
+    return None
+
+
+async def _sizing_gate(notification: dict, symbol: str, settings: dict) -> tuple[float | None, float | None, dict | None]:
+    """Aşama 6 — sizing (bakiye x balance_pct, plan tavani) + likidite/korelasyon kume kapisi."""
+    balance = await database.get_wallet_balance()
+    balance_pct = float(settings.get("balance_pct", config.AUTO_PAPER_BALANCE_PCT_DEFAULT)) / 100.0
+    order_value = balance * balance_pct
+    order_value = _plan_capped_order_value(order_value, notification)
+    gate = await _liquidity_cluster_gate(symbol, order_value, balance)
+    if gate is not None:
+        logger.warning("auto_paper %s giris engellendi: %s (R3-06)", symbol, gate.get("reason"))
+        return balance, order_value, gate
+    return balance, order_value, None
 async def _try_open_impl(notification: dict) -> dict | None:
-    """Bir monitoring bildirimi geldiğinde otonom paper pozisyonu aç.
+    """Bir monitoring bildirimi geldiğinde otonom paper pozisyonu aç — aşamalı orkestratör.
 
-    Giriş kuralları:
-      - Sembolde açık pozisyon yoksa serbest TL bakiyesinin %balance_pct'i ile pozisyon aç.
-      - SL: settings'teki stop_loss_pct (varsayılan %3)
-      - TP: bildirimdeki hedef (notification_target_pct üzerinden)
-      - Sembolde zaten açık auto_paper pozisyonu varsa TP güncelle (hedef takibi)
-      - Aynı bildirim daha önce işlendiyse (kapanış sonrası yeniden açma) engelle.
-      - R3-06 (P1): girişten önce likidite + korelasyon küme kapısı; engelin NEDENİ
-        dönüş durumunda taşınır (sessiz düşme yok). R3-07 (P0): sessiz saatlerde
-        otonom işlem engellenir.
+    Giriş kuralları (aşama sırası):
+      1. `_entry_context`        — ayar/kimlik/skor/mod kapıları
+      2. `_compute_entry_gates`  — dedup + akıllı-para/rejim/LLM/trap kapıları
+      3. `_cooldown_gate`        — sessiz saat + SL/post-win cooldown
+      4. `_resolve_entry_price`  — fiyat + tazelik + MTF konfluans
+      5. `_reopen_gate`          — aynı bildirim / yeniden-açma kuralları
+      6. `_max_open_gate`        — global açık pozisyon tavanı
+      7. `_sizing_gate`          — bakiye × balance_pct + likidite/küme kapısı
+      8. `_open_new_trade`       — atomik pozisyon açılışı
 
-IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
-
-      * Bildirim -> auto_paper (BU yol):
-          - Esik olcegi: PANEL (0-100). `score` panel; `min_score` varsayilani
-            `AUTO_PAPER_MIN_SCORE_DEFAULT` (50). Monitoring yalnizca panel
-            `monitoring.min_score`'u (varsayilan 70) gecen PASSING adaylari bildirir.
-          - Havuz: yalnizca PASSING adaylar (watchlist dahil DEGIL).
-          - Desen kapisi: `m5_pattern_ok` koşulu YOK.
-          - Likidite/kume: R3-06 ile bu yola DAHIL EDILDI (asagida).
-
-      * velocity-auto (velocity.py):
-          - Esik olcegi: HAM `velocity_score` >= 10 (0-2000; panel yaklasik 0.5).
-          - Havuz: WATCHLIST (`passes=False`) adaylarini DAHIL eder.
-          - Desen kapisi: `m5_pattern_ok` ZORUNLU.
-          - Likidite: R3-06 oncesi yalnizca bu yolda vardi.
-
-      Bu yuzden ayni tarama iki farkli islem seti uretebilir. Bu fonksiyon
-      kapi/olcek uyumsuzlugunu DOKUMANTE eder ve esikleri BILINCLI olarak
-      DEGISTIRMEZ (her yol kendi sozlesmesiyle calismaya devam eder — R3-08).
-      R3-08 kapsaminda yalnizca `passes` bayragi acikca FALSE ise giris engellenir.
-
-      Kurallar:
-      - Likidite (derinlik + 24h) ve korelasyon kume asimi kapilari (R3-06).
+    Her kapı bir engel sözlüğü döndürüp kısa devre yapar (sessiz düşme yok).
+    Açık pozisyon varsa TP güncellemesine (`_update_existing_trade`) yönlenir.
     """
     try:
-        settings = await get_auto_paper_settings()
-        if not settings.get("enabled", True):
-            # 2026-09-27: sessiz None yerine görünür log — otonom kapalıyken
-            # push gelip işlem açılmayınca operatör neden görebilsin.
-            return _blocked(str(notification.get("symbol") or "?").upper(), "auto_paper_disabled")
-
-        symbol = str(notification.get("symbol") or "").upper()
+        # 1) Ayar + kimlik + skor/mod kapıları
+        settings, block, symbol, rule_signal = await _entry_context(notification)
+        if block is not None:
+            return block
         if not symbol:
             return None
 
-        # KURAL SİNYALİ (2026-10-18, MA BUY): skoru yoktur ve modu radar mod listesinde değildir → skor ve mod
-        # kapıları yerine kendi anahtarı (`MA_BUY_AUTO_PAPER_ENABLED`) uygulanır. Diğer TÜM kapılar aynen geçerli.
-        _source = str(notification.get("source") or "")
-        rule_signal = _source in _RULE_SIGNAL_SOURCES
-        if rule_signal and not getattr(config, _RULE_SIGNAL_SWITCHES[_source], True):
-            return _blocked(symbol, f"{_source}_paper_kapali")
-
-        score = float(notification.get("score") or 0)
-        min_score = float(settings.get("min_score", config.AUTO_PAPER_MIN_SCORE_DEFAULT))
-        if not rule_signal and score < min_score:
-            # 2026-09-27: eskiden sessiz None dönüyordu → push gelip işlem
-            # açılmayınca operatör NEDENİ göremiyordu. Engelin nedenini
-            # decision_logs'a yaz (R3-06 deseni: sessiz düşme yok).
-            return _blocked(symbol, "score_below_min", price=0.0,
-                            score=round(score, 1), min_score=min_score)
-
-        # Sinyal teyit kontrolü: Panel veya Push ile gelen tüm geçerli bildirimler
-        # açık pozisyon yoksa otonom işleme alınır (2026-09-22 Erkan Kararı).
-
-        # MOD FILTRESI (2026-10-07). Bos liste = filtre kapali (eski davranis).
-        # P0-2 DUZELTMESI (2026-10-07 denetimi): eski varsayilan yalnizca
-        # `["trend_devam"]` idi. AMA `trend_devam` YALNIZ velocity yolunda
-        # uretilir (velocity.py:575); radar/birlesik bildirimleri `mode="unified"`
-        # tasir (unified_signals.py:374,477). Tek-modluk liste bu yuzden radar
-        # giris yolunu TAMAMEN kapatuyordu — radar bildirimi hicbir zaman otonom
-        # acilamiyordu (sessiz ariza). Cozum: kanitla DESTEKLENEN modlari acikca
-        # listele. `trend_devam` en guclu kanitli moddur (dar havuzda
-        # +1.446%/islem, n=379) ve listede KALIR; `unified` de eklenir cunku
-        # dar havuzla ayni islem basi getiri verir (+1.375%, n=540) — yani
-        # unified'i dislamak edge KATMAZ, yalnizca hacmi (ve radar yolunu)
-        # oldurur. Dislanan modlar (`notr`, `llm_ikinci_goz`) ve negatif
-        # `global_lead_lag` listede YOKTUR. Bos liste = tum modlar (eski
-        # davranisa donus).
-        allowed_modes = settings.get("allowed_modes") or []
-        if allowed_modes and not rule_signal:
-            notif_mode = str(notification.get("mode") or "").strip()
-            if notif_mode not in allowed_modes:
-                return _blocked(symbol, "mode_not_allowed", mode=notif_mode,
-                                allowed=allowed_modes)
-
-        # Acik pozisyon var mi? (Asagida hem dedup kapisi hem de "acik pozisyon
-        # → TP guncelle" karari bu TEK okumayi paylasir.)
+        # Açık pozisyon tek okuma: dedup + TP-güncelleme kararı paylaşır
         open_trade = await database.get_open_auto_paper_trade(symbol)
 
-        # BILDIRIM DEDUP (2026-10-07). Ayni sembolde kisa sure once giris
-        # yapildiysa tekrar girme. Ayarlar > 0 ise devreye girer: ayni sinyal
-        # 5 dakikada birden fazla kanaldan geliyordu ve her biri ayri pozisyon
-        # aciyordu; 30 gunluk veride bu tekrarlar ortalamayi bozuyordu.
-        #
-        # P2-3 DUZELTMESI (2026-10-07 denetimi): dedup YALNIZCA YENI sembol
-        # girisini engeller. Eskiden acik pozisyon varken de calisiyordu ve
-        # ayni sembolun TP'sinin 60 dk boyunca YUKARI guncellenmesini (mevcut
-        # pozisyonu IYILESTIRMEYI) engelliyordu. Riskli olan yeni giris; mevcut
-        # pozisyonun hedefini iyilestirmek degil. `open_trade` varsa dedup
-        # ATLANIR (asagida TP guncelleme yoluna gidilir). Cift giris korunur:
-        # acik pozisyon zaten `open_trade` dalinda yeni pozisyon ACMAZ, yalnizca
-        # TP gunceller.
-        if open_trade is None:
-            dedup_min = float(settings.get("dedup_cooldown_minutes", 0.0) or 0.0)
-            if dedup_min > 0:
-                try:
-                    _last_entry = await database.get_last_auto_paper_entry_time(symbol)
-                except Exception as exc:
-                    logger.debug("auto_paper %s dedup kontrol hatasi: %s", symbol, exc)
-                    _last_entry = None
-                if _last_entry and (time.time() - _last_entry) < (dedup_min * 60.0):
-                    rem = round(dedup_min * 60.0 - (time.time() - _last_entry), 0)
-                    return _blocked(symbol, "symbol_dedup", remaining_sec=rem,
-                                    dedup_cooldown_minutes=dedup_min)
+        # 2) Dedup + akıllı-para/rejim/LLM/trap kapıları
+        block = await _compute_entry_gates(notification, symbol, settings, open_trade)
+        if block is not None:
+            return block
 
-        # R3-08 (P1): aday PANEL EŞİĞİNİ geçmiş olmalı (passing-only). Monitoring
-        # yalnızca passing adayları bildirir; burada `passes` bayrağı açıkça False
-        # erse giriş engellenir. Guard (koruma) metriği kanıtlarsa engellenmez;
-        # anahtar yoksa da geçirgen kalınır (geriye dönük uyum).
-        passes = notification.get("passes")
-        if passes is not None and not bool(passes):
-            logger.warning("auto_paper %s: aday panel şartını geçmedi (passes=False) — "
-                           "açılmadı (R3-08)", symbol)
-            return _blocked(symbol, "not_passing")
+        # 3) Sessiz saat + cooldown kapıları
+        block = await _cooldown_gate(notification, symbol, settings)
+        if block is not None:
+            return block
 
-        # Savunma Derinliği: Master Surge veya Risk Kapısı engeli varsa açma (fail-closed)
-        block_reason = notification.get("block_reason") or notification.get("surge_block_reason")
-        if block_reason:
-            logger.warning("auto_paper %s: risk engeli devrede (%s) — açılmadı", symbol, block_reason)
-            return _blocked(symbol, f"risk_blocked:{block_reason}", block_reason=block_reason)
-        # 2026-10-17 (RADAR_SHIELD_MODE=badge): bildirim rozetle GİDER ama otonom giriş yine
-        # engellenir — hem zarftaki rozet hem anlık kalkan durumu (yükseliş/hızlı yol zarfları için).
-        _regime_badge = notification.get("regime_badge")
-        if not _regime_badge and str(getattr(config, "RADAR_SHIELD_MODE", "badge")).lower() != "block":
-            try:
-                from app.routers.velocity import btc_shield_active
-                if symbol not in ("BTCTRY", "BTCUSDT") and btc_shield_active():
-                    _regime_badge = "BTC_BEAR_REGIME_SHIELD"
-            except Exception:
-                _regime_badge = None
-        if _regime_badge:
-            # 2026-10-18 (kullanıcı kararı): rejim rozeti artık otonom paper girişini ENGELLEMEZ
-            # (AUTO_PAPER_BLOCK_ON_REGIME_BADGE=1 eski davranışı geri getirir).
-            if getattr(config, "AUTO_PAPER_BLOCK_ON_REGIME_BADGE", False):
-                return _blocked(symbol, f"risk_blocked:{_regime_badge}", block_reason=_regime_badge)
-            logger.info("auto_paper %s: BTC rejim rozeti var ama otonom girişi engellemiyor (kullanıcı kararı)", symbol)
-        if notification.get("master_surge_passed") is False:
-            logger.warning("auto_paper %s: Master Surge kontrolünden geçmedi — açılmadı", symbol)
-            return _blocked(symbol, "master_surge_failed")
+        # 4) Fiyat + tazelik + MTF konfluans
+        current_price, block = await _resolve_entry_price(notification, symbol, settings)
+        if block is not None:
+            return block
 
-        # LLM Sinyal Hakemi Kapısı: FAKE/Tuzak kararı varsa veya güven çok zayıfsa açma (2026-09-29 analiz kanıtı: +22.59 TRY koruma)
-        if settings.get("llm_gate_enabled", True):
-            llm_v = str(notification.get("llm_verdict") or "").strip().upper()
-            try:
-                llm_c = float(notification.get("llm_confidence") or 0)
-            except (ValueError, TypeError):
-                llm_c = 0.0
-            min_c = float(settings.get("llm_min_confidence", 60.0))
-            if llm_v in ("FAKE", "TUZAK") and llm_c >= 50:
-                logger.warning("auto_paper %s: LLM İkinci Göz FAKE/TUZAK uyarısı verdi (Güven: %%%.0f) — işlem açılmadı", symbol, llm_c)
-                return _blocked(symbol, "llm_fake_blocked", block_reason=f"LLM_FAKE_%{round(llm_c)}", verdict=llm_v, confidence=round(llm_c))
-            if llm_v == "DEVAM" and llm_c > 0 and llm_c < min_c:
-                logger.warning("auto_paper %s: LLM DEVAM dedi ancak güven yetersiz (%%%s < %%%s) — açılmadı", symbol, llm_c, min_c)
-                return _blocked(symbol, "llm_low_confidence", block_reason="LLM_LOW_CONFIDENCE", verdict=llm_v, confidence=round(llm_c))
+        # 5) Aynı bildirim / yeniden-açma kapısı
+        block = await _reopen_gate(notification, symbol, settings, current_price)
+        if block is not None:
+            return block
 
-        # FinCon Episodik Negatif Hafıza & Boğa Tuzağı Kalkanı Kapısı:
-        try:
-            from app.ai_trading_suite import evaluate_trap_shield
-            trap_verdict = evaluate_trap_shield(
-                symbol=symbol,
-                indicators={
-                    "rsi": float(notification.get("rsi") or 50.0),
-                    "volume_ratio": float(notification.get("volume_ratio") or 1.0),
-                    "adx": float(notification.get("adx") or 20.0),
-                }
-            )
-            if trap_verdict.protective_veto:
-                logger.warning("auto_paper %s: 🛡️ FinCon Tuzak Kalkanı VETOSU verdi (Benzerlik: %%%.0f, Tip: %s) — işlem engellendi",
-                               symbol, trap_verdict.highest_similarity_pct, trap_verdict.matching_failure_type)
-                return _blocked(symbol, f"fincon_trap_shield_veto:{trap_verdict.matching_failure_type}",
-                                block_reason=f"FINCON_TRAP_%{int(trap_verdict.highest_similarity_pct)}",
-                                verdict=trap_verdict.verdict)
-        except Exception as trap_exc:
-            logger.debug("auto_paper %s FinCon trap shield kontrolü atlandı: %s", symbol, trap_exc)
-
-        # Spot Akıllı Para ve Wyckoff VSA / OBV-CMF Dağıtım (Distribution) Savunma Kapısı:
-        try:
-            from app.ai_trading_suite import evaluate_wyckoff_vsa, evaluate_obv_cmf_inflow
-            # 1. OBV & Chaikin Money Flow (CMF) Kurumsal Para Çıkışı / Dağıtım Vetosu
-            obv_res = evaluate_obv_cmf_inflow(symbol=symbol)
-            if obv_res.divergence_type == "BEARISH_DISTRIBUTION" and obv_res.cmf_value < -0.15:
-                logger.warning("auto_paper %s: 🛑 OBV/CMF Kurumsal Dağıtım Uyarısı (CMF: %.2f) — işlem engellendi",
-                               symbol, obv_res.cmf_value)
-                return _blocked(symbol, "obv_cmf_bearish_distribution_veto",
-                                block_reason=f"OBV_CMF_DISTRIBUTION_{round(obv_res.cmf_value, 2)}",
-                                verdict="BEARISH_DISTRIBUTION")
-
-            # 2. Wyckoff VSA Sahte Zirve / UTAD Dağıtım Vetosu
-            wyckoff_res = evaluate_wyckoff_vsa(symbol=symbol)
-            if wyckoff_res.vsa_pattern in ("DISTRIBUTION_UTAD", "BUYING_CLIMAX_EXHAUSTION") or wyckoff_res.trade_action == "TAKE_PROFIT":
-                logger.warning("auto_paper %s: 🛑 Wyckoff VSA Zirve Tükeniş/Dağıtım Uyarısı (%s) — işlem engellendi",
-                               symbol, wyckoff_res.vsa_pattern)
-                return _blocked(symbol, f"wyckoff_distribution_veto:{wyckoff_res.vsa_pattern}",
-                                block_reason=f"WYCKOFF_{wyckoff_res.vsa_pattern}",
-                                verdict=wyckoff_res.vsa_pattern)
-        except Exception as spot_suite_err:
-            logger.debug("auto_paper %s Spot AI Suite kontrolü atlandı: %s", symbol, spot_suite_err)
-
-        # R3-07 (P0): SESSİZ SAATLERDE otonom işlem DURDURULUR. Web push'un sessiz
-        # saatlerde ertelenmesi monitoring._notify içinde zaten korunur (onun
-        # ALTERNATİFİ değil, POSITION açılışında ek kapı). Aday bir sonraki taramada
-        # (sessiz saat bitince) yeniden değerlendirilir — doğal retry. Ertelemeyi
-        # buraya uygulamıyoruz: sessiz aralık boyunca pozisyon açmak istemiyoruz.
-        try:
-            from app.routers import monitoring as _monitoring_mod
-            if await _monitoring_mod.quiet_hours_active():
-                logger.warning("auto_paper %s: sessiz saatler etkin — otonom işlem "
-                            "açılmadı (R3-07)", symbol)
-                return _blocked(symbol, "quiet_hours")
-        except Exception as quiet_exc:
-            # Sessizlik sorgusu BAŞARISIZ OLURSA KAPAT (fail-closed, R3-07 düzeltmesi):
-            # eskiden sorgu hatasında AÇILIYORDU (fail-open) ve kullanıcı
-            # sessiz saatlerde otonom pozisyon açıldığını görebiliyordu —
-            # ayardaki R3-07 sözleşmesiyle çelişiyordu. Sessiz aralık
-            # pozisyon açmaya izin vermez; aday bir sonraki taramada yeniden
-            # değerlendirilir (doğal retry).
-            logger.warning("auto_paper %s: sessiz saat sorgusu başarısız — işlem "
-                        "açılmadı (fail-closed): %s", symbol, quiet_exc)
-            return _blocked(symbol, "quiet_hours_query_error")
-
-        # Stop-loss sonrası bekleme süresi (cooldown) kapısı (5 dk):
-        # Stop olan sembole hemen peş peşe yeniden girip kayıp serisi (churn) yaratmayı engelle.
-        now_ts = time.time()
-        cooldown_min = float(settings.get("sl_cooldown_minutes", _SL_COOLDOWN_MINUTES_DEFAULT))
-        sl_cooldown_until = _stop_loss_cooldowns.get(symbol, 0.0)
-        if cooldown_min > 0 and now_ts >= sl_cooldown_until:
-            try:
-                last_sl = await database.get_last_auto_paper_stop_loss_time(symbol)
-                if last_sl and (now_ts - last_sl) < (cooldown_min * 60.0):
-                    sl_cooldown_until = last_sl + (cooldown_min * 60.0)
-                    _stop_loss_cooldowns[symbol] = sl_cooldown_until
-            except Exception as exc:
-                logger.debug("auto_paper %s db sl cooldown kontrol hatası: %s", symbol, exc)
-
-        if now_ts < sl_cooldown_until:
-            rem = round(sl_cooldown_until - now_ts, 0)
-            return _blocked(symbol, "stop_loss_cooldown", remaining_sec=rem)
-
-        # Kârlı işlem sonrası kâr koruma beklemesi (post-win cooldown) kapısı:
-        # Kârla kapanan sembole hemen tekrar girip kârı geri verme tuzağını engeller (2026-09-29 analiz kanıtı: 9 işlemde -79.40 TRY kayıp).
-        win_cooldown_min = float(settings.get("post_win_cooldown_minutes", getattr(config, "AUTO_PAPER_POST_WIN_COOLDOWN_MINUTES", 15.0)))
-        win_cooldown_until = _post_win_cooldowns.get(symbol, 0.0)
-        if win_cooldown_min > 0 and now_ts >= win_cooldown_until:
-            try:
-                last_win = await database.get_last_auto_paper_winning_trade_time(symbol)
-                if last_win and (now_ts - last_win) < (win_cooldown_min * 60.0):
-                    win_cooldown_until = last_win + (win_cooldown_min * 60.0)
-                    _post_win_cooldowns[symbol] = win_cooldown_until
-            except Exception as exc:
-                logger.debug("auto_paper %s db post win cooldown kontrol hatası: %s", symbol, exc)
-
-        if now_ts < win_cooldown_until:
-            rem = round(win_cooldown_until - now_ts, 0)
-            return _blocked(symbol, "post_win_cooldown", remaining_sec=rem)
-
-        # Aktif işleme giren sembol pasif listesinden temizlenir
-        if hasattr(config, "PASSIVE_SYMBOLS") and isinstance(config.PASSIVE_SYMBOLS, set):
-            config.PASSIVE_SYMBOLS.discard(symbol)
-
-        # Mevcut fiyat
-        ticker = market.get_ticker(symbol)
-        current_price = float(ticker.get("last_price") or 0) if ticker else 0
-        if current_price <= 0:
-            current_price = float(notification.get("price") or 0)
-        if current_price <= 0:
-            return _blocked(symbol, "no_price")
-
-        # Ticker tazelik kapısı: REST ticker'ı getiremezse bildirim fiyatına
-        # (detected_at anına ait, bayat) düşmek SL/TP çapasını yanlış sabitler.
-        # Bildirim fiyatı yalnızca taze bir ticker ile doğrulanınca kullanılır.
-        # (Denetim maddesi: otomatik açılışta bayat fiyata çapa riski.)
-        try:
-            freshness = market.ticker_freshness(symbol, max_age_sec=60)
-        except Exception:
-            freshness = {"fresh": False, "age_sec": None}
-
-        # Eğer hafızada taze ticker yoksa (ör. sembol config.SYMBOLS dışındaki bir radar çiftiyse),
-        # anlık REST ticker ile hafızayı güncelle:
-        if not bool(freshness.get("fresh")):
-            try:
-                # 2026-10-15 (denetim düzeltmesi, madde 3): REST fiyatı
-                # paylaşımlı `market.tickers`'a YAZILMAZ (eskiden
-                # timestamp=now ile yazılıyor; WS akışı olmayan sembolde
-                # bu fiyat diğer tüketicilere dakikalarca "taze" görünüyordu).
-                # Fiyat yalnız bu açılış kararında yerel olarak kullanılır.
-                rest_px = await price_service.rest_ticker_price(symbol)
-                if rest_px:
-                    current_price = float(rest_px)
-                    freshness = {"fresh": True, "age_sec": 0.0, "source": "binance_tr_rest_auto_paper"}
-            except Exception as exc:
-                logger.warning("auto_paper %s: REST ticker fetch hatası: %s", symbol, exc)
-
-        # Eğer REST de erişilemediyse ama bildirim taze (son 60s) ve fiyatı varsa fallback kullan:
-        if not bool(freshness.get("fresh")):
-            notif_time = float(notification.get("detected_at") or notification.get("timestamp") or 0)
-            if notif_time > 1e11:
-                notif_time /= 1000.0
-            if notif_time > 0 and (time.time() - notif_time) <= 60.0 and float(notification.get("price") or 0) > 0:
-                # Madde 3: bildirim fiyatı da `market.tickers`'a yazılmaz; gerçek
-                # yaşı `age_sec` ile yalnız bu yerel kararda taşınır.
-                current_price = float(notification["price"])
-                freshness = {"fresh": True, "age_sec": round(time.time() - notif_time, 1),
-                             "source": "notification_fallback"}
-
-        if current_price <= 0:
-            current_price = float(notification.get("price") or 0)
-
-        if not bool(freshness.get("fresh")) or current_price <= 0:
-            logger.warning("auto_paper %s: taze ticker yok (age=%ss) — bayat fiyata "
-                        "açılış engellendi", symbol, freshness.get("age_sec"))
-            return _blocked(symbol, "stale_ticker", price=current_price, age_sec=freshness.get("age_sec"))
-
-        # MACD MTF Konfluans Kapısı: ZAYIF MTF / Yüksek sahte kırılım (%75 fake) filtresi
-        block_weak_mtf = bool(settings.get("block_weak_mtf", True))
-        min_mtf_confluence = float(settings.get("min_mtf_confluence", 45.0))
-        if block_weak_mtf:
-            mtf_verdict = notification.get("macd_mtf_verdict")
-            mtf_confluence = notification.get("macd_mtf_confluence")
-            if mtf_verdict is None or mtf_confluence is None:
-                try:
-                    from app import macd_mtf
-                    mtf_compact = macd_mtf.cached_compact(symbol)
-                    if mtf_compact:
-                        mtf_verdict = mtf_compact.get("verdict")
-                        mtf_confluence = mtf_compact.get("confluence")
-                except Exception:
-                    pass
-            if mtf_verdict == "ZAYIF" or (mtf_confluence is not None and float(mtf_confluence) < min_mtf_confluence):
-                logger.warning("auto_paper %s: MACD MTF ZAYIF (skor=%s < %.1f, verdict=%s) — sahte kırılım riskiyle açılmadı",
-                               symbol, mtf_confluence, min_mtf_confluence, mtf_verdict)
-                return _blocked(symbol, "weak_mtf_confluence", price=current_price,
-                                confluence=mtf_confluence, verdict=mtf_verdict)
-
-        notification_id = notification.get("id")
-        notification_key = notification.get("notification_key")
-        # Aynı bildirim daha önce bir trade'e dönüşüyse: trailing/breakeven ile
-        # kapandıysa ve fiyat hâlâ bildirim fiyatının üzerindeyse + ufuk süresi
-        # dolmadıysa + hedefe ulaşılmadıysa YENİDEN açmaya izin ver. (Böylece kâr
-        # kilidi/trailing çıkışı sonrası aynı fırsat devam ediyorsa kaçırılmaz;
-        # diğer kapanış nedenleri tekrar açılışı engeller.)
-        now = time.time()
-        # R3-09 (P0): yeniden-açma (reopen) akışı, churn kontrolünü artık
-        # `notification_key` (TEXT kolon) üzerinden yapar. Eski kod string'i
-        # `notification_id` (bigint) içine yazıyordu → PostgreSQL tip hatası sessiz
-        # yutuluyor ve yeniden açma HİÇ ÇALIŞMIYORDU. Normal (monitoring) bildirimler
-        # integer id taşır ve `notification_id` bigint'i üzerinden geçerli kalır.
-        prior_trade = None
-        if notification_key is not None:
-            # Reopen: kararlı anahtara göre churn koruması — saat başına en fazla bir.
-            try:
-                prior_trade = await database.get_recent_auto_paper_trade_by_notification_key(
-                    str(notification_key))
-            except Exception:
-                prior_trade = None
-            if prior_trade:
-                return _blocked(symbol, "notification_already_processed", price=current_price, key=str(notification_key))
-        elif notification_id is not None:
-            # Normal bildirim: id yalnızca tam sayı olabilir (bigint). String id
-            # asla bigint'e yazılmaz/atanmaz → tip hatası riski yok.
-            nid_int = None
-            if isinstance(notification_id, int):
-                nid_int = notification_id
-            elif isinstance(notification_id, str) and notification_id.lstrip("-").isdigit():
-                nid_int = int(notification_id)
-            if nid_int is not None:
-                try:
-                    prior_trade = await database.get_recent_auto_paper_trade_by_notification(nid_int)
-                except Exception:
-                    prior_trade = None
-            if prior_trade:
-                # "Trailing/breakeven sonrası yeniden açma" kapalıysa eski davranış:
-                # aynı bildirimle asla tekrar açma.
-                if not bool(settings.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)):
-                    return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="yeniden açma kapalı")
-
-                # Kapanış biçimi nedir?
-                exit_reason = str(prior_trade.get("exit_reason") or "").lower()
-                trailing_kapanis = exit_reason in {"trailing_stop", "breakeven_stop"}
-                if not trailing_kapanis:
-                    # TP/SL/reset ile kapandıysa aynı bildirimle tekrar açma.
-                    return _blocked(symbol, "reopen_not_allowed", price=current_price, detail=f"önceki kapanış: {exit_reason or '?'}")
-
-                # Koşul 1: güncel fiyat bildirim fiyatının üzerinde olmalı.
-                notif_price = float(notification.get("price") or 0)
-                if notif_price <= 0 or current_price <= notif_price:
-                    return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="fiyat bildirim fiyatının altında")
-
-                # Koşul 2: ufuk süresi henüz dolmamalı (bildirim detected_at + horizon).
-                detected_at = float(notification.get("detected_at") or 0)
-                horizon_min = float(notification.get("horizon_minutes") or 0)
-                ufuk_bitti = bool(detected_at and horizon_min and (detected_at + horizon_min * 60) < now)
-                if ufuk_bitti:
-                    return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="ufuk süresi doldu")
-
-                # Koşul 3: hedefe (take_profit) ulaşılmamış olmalı. Trailing/breakeven
-                # zaten TP'ye ulaşmadan kapanış olduğu için bu genellikle otomatik
-                # sağlar; yine de açık kontrol edilir. (Eski "fiyat yükselme
-                # eğilimindedir" koşulu, trailing çıkışında fiyat zirveden
-                # düştüğü için hep false dönüp yeniden açmayı engelliyordu.)
-                prior_tp = float(prior_trade.get("take_profit") or 0)
-                if prior_tp > 0 and current_price >= prior_tp:
-                    return _blocked(symbol, "reopen_not_allowed", price=current_price, detail="hedefe ulaşıldı")
-
-                logger.info("auto_paper %s: trailing/breakeven kapanışı sonrası koşullar "
-                            "sağlanıyor (%s) — aynı bildirimle yeniden işlem açılıyor",
-                            symbol, exit_reason)
-
-        # Mevcut açık auto_paper pozisyonu yukarıda (dedup kapısından önce) BİR
-        # kez okundu; burada yeniden sorgulanmaz.
+        # Açık pozisyon varsa yeni giriş yok — yalnız TP'yi güncelle
         if open_trade:
-            # Açık pozisyon var → TP güncelle (bildirim hedefini takip et)
             return await _update_existing_trade(open_trade, notification, current_price)
-        # Global maksimum açık pozisyon sınırı (varsayılan 8 — Erkan kararı,
-        # 2026-09-18). ÖNCE çalışma-anı DB ayarı (Ayarlar > Otonom Paper Trade
-        # > Max açık pozisyon); yoksa sınıf varsayılanı. 0 = sınırsız (yalnız
-        # env ile verilir; UI 0'a izin vermez).
-        # R3-06 (c): sembol-başı sınır yukarıda `open_trade` ile korunur; global
-        # sınır ise burada. Engel NEDENÎ ile döndürülür (sessiz düşme yok).
-        # Denetim notu (atomiklik): bu sayım ile `_open_new_trade` içindeki insert
-        # arasında yarış penceresi VAR; kök neden düzeltmesi DB katmanında —
-        # `insert_auto_paper_trade` advisory xact_lock'lu op içinde global limiti
-        # yeniden sayar (aşağıdaki `_AUTO_PAPER_GLOBAL_LIMIT_NOTE`).
-        max_open = int(settings.get("max_open_positions",
-                     getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0)))
-        if max_open > 0:
-            # P0-3 (2026-10-07): `apply_reports_baseline=False` — açık pozisyon
-            # TAVANI risk kontrolüdür; "Rapor Başlangıcı" (görsel/telemetri
-            # filtresi) bu sayıma SIZMAMALIDIR. Aksi halde rapor başlangıcından
-            # eski açık pozisyonlar sayılmaz ve tavan fiilen aşılır (denetim
-            # P0-3). Reset cutoff yine uygulanır (ilk argüman).
-            open_count = len(await database.list_auto_paper_trades(
-                status="open", apply_reports_baseline=False))
-            if open_count >= max_open:
-                logger.warning("auto_paper %s: max açık pozisyon (%d/%d) — açılmadı "
-                               "(R3-06)", symbol, open_count, max_open)
-                return _blocked(symbol, "max_open", price=current_price, open_count=open_count, max_open=max_open)
 
-        # R3-06 (a/b): girişten önce LİKİDİTE + KORELASYON KÜME kapısı. order_value
-        # burada hesaplanıp `_open_new_trade`'e iletilir (tek wallet okuması).
-        balance = await database.get_wallet_balance()
-        balance_pct = float(settings.get("balance_pct", config.AUTO_PAPER_BALANCE_PCT_DEFAULT)) / 100.0
-        order_value = balance * balance_pct
-        # 2026-10-27 (işlem planı): plan tavanı kapıdan ÖNCE (kapı gerçek tutarı görür).
-        order_value = _plan_capped_order_value(order_value, notification)
-        gate = await _liquidity_cluster_gate(symbol, order_value, balance)
-        if gate is not None:
-            logger.warning("auto_paper %s giriş engellendi: %s (R3-06)", symbol, gate.get("reason"))
-            return gate
+        # 6) Global maksimum açık pozisyon tavanı
+        block = await _max_open_gate(symbol, settings, current_price)
+        if block is not None:
+            return block
 
-        # Yeni pozisyon aç (atomik; DB tarafında çift-açılış kontrolü de var)
+        # 7) Sizing + likidite/korelasyon küme kapısı
+        balance, order_value, block = await _sizing_gate(notification, symbol, settings)
+        if block is not None:
+            return block
+
+        # 8) Yeni pozisyon aç (atomik; DB tarafında çift-açılış kontrolü de var)
         return await _open_new_trade(symbol, notification, current_price, settings,
-                                    order_value=order_value, balance=balance)
+                                     order_value=order_value, balance=balance)
     except Exception as exc:
         logger.exception("auto_paper try_open: %s", exc)
-        # 2026-10-18: istisna artık sessiz değil — karar günlüğüne "giriş engellendi: exception:<Tür>" düşer.
         return _blocked(str((notification or {}).get("symbol") or "?").upper(),
                         f"exception:{type(exc).__name__}", error=str(exc)[:160])
 
 
-async def _open_new_trade(symbol: str, notification: dict, current_price: float, settings: dict,
-                          order_value: float | None = None, balance: float | None = None) -> dict | None:
-    """Yeni otonom paper pozisyonu aç — atomik DB işlemi (open_auto_paper_trade).
-    
-    R3-06: `order_value`/`balance` önceden hesaplanıp iletilmişse yeniden okunmaz
-    (likidite kapısı ile açılışta aynı değerler kullanılır — tutarlılık).
+
+
+async def _resolve_order_size(symbol: str, notification: dict, settings: dict, current_price: float,
+                              order_value: float | None, balance: float | None
+                              ) -> tuple[float | None, float | None, float, dict | None]:
+    """Aşama 1 — bakiye/sizing + min emir kapısı. Dönüş: (balance, order_value, min_order, block)."""
+    balance_pct = float(settings.get("balance_pct", config.AUTO_PAPER_BALANCE_PCT_DEFAULT)) / 100.0
+    min_order = float(settings.get("min_order_try", config.AUTO_PAPER_MIN_ORDER_TRY))
+    if balance is None:
+        balance = await database.get_wallet_balance()
+    if order_value is None:
+        order_value = balance * balance_pct
+    # 2026-10-27 (işlem planı): tavan tüm çarpanlardan sonra; küçük tavan min emre takılır (bilinçli).
+    order_value = _plan_capped_order_value(order_value, notification)
+    # RİSK SİZİNG fail-closed: geçerli emir üretemiyorsa AÇMA (R3-06 deseni).
+    if order_value < min_order:
+        quote = config.QUOTE_ASSET
+        logger.warning(
+            "auto_paper %s: risk bütçesi yetersiz (bakiye %.2f %s × %%%.1f = %.2f %s "
+            "< min emir %.2f %s) — açılmadı; balance_pct/min_order_try ayarlayın",
+            symbol, balance, quote, balance_pct * 100, order_value, quote, min_order, quote)
+        return balance, order_value, min_order, _blocked(
+            symbol, "order_below_min", price=current_price,
+            order_value=round(order_value, 2), min_order=min_order,
+            balance=round(balance, 2), balance_pct=round(balance_pct * 100, 2))
+    return balance, order_value, min_order, None
+
+
+async def _calc_exit_plan(symbol: str, notification: dict, current_price: float, settings: dict,
+                          order_value: float
+                          ) -> tuple[dict | None, dict | None]:
+    """Aşama 2 — çıkış planı: SL/TP yüzdeleri (profil/plan/PPO/volume-breakout),
+    ATR koruması, hedef tavanı, komisyon+slippage ve fill/miktar.
+
+    Dönüş: `(plan, block)`. `plan` = fill/quantity/tp/sl/exit_profile/max_hold/
+    plan_context/target_pct/order_value/net_order_value. `block` doluysa iptal.
     """
+    sl_pct = float(settings.get("stop_loss_pct", _exit_defaults()["stop_loss_pct"])) / 100.0
+    _is_rule_signal = str(notification.get("source") or "") in _RULE_SIGNAL_SOURCES
+    plan_exit = _plan_exit_params(notification)
+    exit_profile = ma_buy_profiles.exit_overrides(notification) if (_is_rule_signal and plan_exit is None) else None
+    if exit_profile and exit_profile.get("stop_loss_pct"):
+        sl_pct = float(exit_profile["stop_loss_pct"]) / 100.0
+    elif notification.get("sl_pct"):
+        sl_pct = float(notification["sl_pct"]) / 100.0
+    if plan_exit is not None:
+        sl_pct = plan_exit["stop_pct"] / 100.0
+    target_pct = _effective_target_pct(notification)
+
+    # PPO/RL adaptasyonu: yalnız kullanıcı planı/profili YOKKEN. SL önerisi ATR'den
+    # sonra birleştirilir (ayrı değişkende); volatilite girdisi güncel `sl_pct`.
+    ppo_sl_pct: float | None = None
+    ppo_apply = exit_profile is None and plan_exit is None
     try:
-        balance_pct = float(settings.get("balance_pct", config.AUTO_PAPER_BALANCE_PCT_DEFAULT)) / 100.0
-        min_order = float(settings.get("min_order_try", config.AUTO_PAPER_MIN_ORDER_TRY))
-
-        # Bakiye kontrolü — R3-06: çağıran (try_open) önceden hesapladıysa onu kullan.
-        if balance is None:
-            balance = await database.get_wallet_balance()
-        if order_value is None:
-            order_value = balance * balance_pct
-        # 2026-10-27 (işlem planı): tavan tüm çarpanlardan sonra (profilli işlemde de);
-        # küçük tavan aşağıdaki min emir kontrolüne takılır (bilinçli).
-        order_value = _plan_capped_order_value(order_value, notification)
-        # RİSK SİZİNG (2026-09-16 denetimi): ESKİDEN `order_value < min_order` iken
-        # `order_value = balance` yapılıyordu → tek pozisyona TÜM bakiye gidiyordu ve
-        # `balance_pct` fiilen baypas ediliyordu. Ölçülebilir örnek: bakiye 100 TRY,
-        # `balance_pct=%35`, `min_order_try=50` → 100 TRY açılış = riskin %100'ü.
-        # Bu hem risk kontrolünü hem boyut kanıtını (sizing raporu) bozar.
-        # Doğru davranış: risk bütçesi geçerli bir emir üretemiyorsa AÇMA (fail-closed)
-        # ve nedeni görünür kıl — operatör `balance_pct`/`min_order_try` ayarlarını
-        # kendisi hizalar. (R3-06 deseni: sessiz düşme yok.)
-        if order_value < min_order:
-            # 2026-09-27: metin `TRY` sabitiydi. deployment quote'u
-            # (`config.QUOTE_ASSET`, TR→TRY) kullanılır — bakiye cinsi tanım
-            # gereği quote cinsidir, sembol ekinden türetmeye gerek yok.
-            quote = config.QUOTE_ASSET
-            logger.warning(
-                "auto_paper %s: risk bütçesi yetersiz (bakiye %.2f %s × %%%.1f = %.2f %s "
-                "< min emir %.2f %s) — açılmadı; balance_pct/min_order_try ayarlayın",
-                symbol, balance, quote, balance_pct * 100, order_value, quote,
-                min_order, quote)
-            return _blocked(symbol, "order_below_min",
-                            price=current_price,
-                            order_value=round(order_value, 2),
-                            min_order=min_order,
-                            balance=round(balance, 2),
-                            balance_pct=round(balance_pct * 100, 2))
-
-        # 2026-10-16 (maliyet/çıkış): varsayılan SL çıkış profilinden (DB ayarı önce).
-        sl_pct = float(settings.get("stop_loss_pct", _exit_defaults()["stop_loss_pct"])) / 100.0
-        # 2026-10-21: kural sinyalinin ÇIKIŞ PROFİLİ (MA BUY H4): zarftaki stop/tutma/iz süren ayarı ayarların önüne geçer.
-        _is_rule_signal = str(notification.get("source") or "") in _RULE_SIGNAL_SOURCES   # _open_new_trade ayrı fonksiyon: kapsamda rule_signal yok
-        # 2026-10-27 (işlem planı): profile_exit=False plan → hedef/stop/süre plandan; profil yolu devre dışı.
-        plan_exit = _plan_exit_params(notification)
-        exit_profile = ma_buy_profiles.exit_overrides(notification) if (_is_rule_signal and plan_exit is None) else None
-        if exit_profile and exit_profile.get("stop_loss_pct"):
-            sl_pct = float(exit_profile["stop_loss_pct"]) / 100.0
-        elif notification.get("sl_pct"):
-            sl_pct = float(notification["sl_pct"]) / 100.0
-        if plan_exit is not None:
-            sl_pct = plan_exit["stop_pct"] / 100.0
-        target_pct = _effective_target_pct(notification)
-        # PPO Reinforcement Learning & Volatilite Uyarlamalı TP/SL Kalibratörü:
-        try:
-            from app.ai_trading_suite import evaluate_ppo_adaptive_policy
-            ppo_action = evaluate_ppo_adaptive_policy(
-                symbol=symbol,
-                volatility_atr_pct=effective_sl_pct * 100.0,
-                daily_drawdown_pct=0.5
-            )
+        from app.ai_trading_suite import evaluate_ppo_adaptive_policy
+        ppo_action = evaluate_ppo_adaptive_policy(
+            symbol=symbol, volatility_atr_pct=sl_pct * 100.0, daily_drawdown_pct=0.5)
+        if ppo_apply:
             if ppo_action.recommended_tp_pct > 0:
                 target_pct = max(target_pct, ppo_action.recommended_tp_pct * 100.0)
             if ppo_action.recommended_sl_pct > 0:
-                effective_sl_pct = max(0.006, min(0.028, ppo_action.recommended_sl_pct))
+                ppo_sl_pct = max(0.006, min(0.028, ppo_action.recommended_sl_pct))
             if ppo_action.position_size_multiplier != 1.0:
                 order_value = order_value * ppo_action.position_size_multiplier
-        except Exception as ppo_err:
-            logger.debug("auto_paper %s PPO adaptasyonu atlandı: %s", symbol, ppo_err)
+    except Exception as ppo_err:
+        logger.debug("auto_paper %s PPO adaptasyonu atlandı: %s", symbol, ppo_err)
 
-        # Wyckoff VSA & Volume Anomaly Breakout Hedef Adaptasyonu:
+    # Wyckoff VSA & Volume Anomaly Breakout hedef adaptasyonu
+    try:
+        from app.ai_trading_suite import evaluate_volume_breakout
+        vol_bo = evaluate_volume_breakout(symbol=symbol, price=current_price)
+        if vol_bo.is_box_breakout and vol_bo.take_profit > current_price:
+            bo_tp_pct = (vol_bo.take_profit - current_price) / current_price * 100.0
+            if bo_tp_pct > target_pct:
+                target_pct = min(12.0, max(target_pct, bo_tp_pct))
+    except Exception as bo_err:
+        logger.debug("auto_paper %s Volume breakout adaptasyonu atlandı: %s", symbol, bo_err)
+
+    if target_pct <= 0:
+        target_pct = float(settings.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT))
+
+    # Master Surge TP2: nihai hedef TP2 ise — TP FİYATI hesaplanmadan ÖNCE uygulanır.
+    tp1_scalp_val = notification.get("tp1_scalp_pct")
+    tp2_runner_val = notification.get("tp2_runner_pct")
+    if plan_exit is None and tp2_runner_val and float(tp2_runner_val) > target_pct:
+        target_pct = float(tp2_runner_val)
+
+    # Hedef tavanı (0 = sınırsız).
+    max_target = float(settings.get("max_target_pct", 0.0) or 0.0)
+    if plan_exit is None and max_target > 0 and target_pct > max_target:
+        logger.info("auto_paper %s: bildirim hedefi +%.2f%% tavanı +%.2f%%'e çekildi",
+                    symbol, target_pct, max_target)
+        target_pct = max_target
+
+    commission_pct = paper_ledger.commission_pct()
+    max_cost = order_value / (1 + commission_pct)
+    entry_slip = paper_ledger.slippage_pct()
+    fill_entry = paper_ledger.entry_fill(current_price, entry_slip)
+    quantity = max_cost / fill_entry if fill_entry > 0 else 0
+    if quantity <= 0:
+        return None, _blocked(symbol, "zero_quantity", price=current_price)
+
+    net_order_value = fill_entry * quantity
+    cost_markup = paper_ledger.round_trip_markup(commission_pct, entry_slip, exit_kind="take_profit")
+    if plan_exit is not None:
+        # Plan brüt hedefi ücret+kaymayı ZATEN içerir → mark-up ikinci kez eklenmez.
+        target_pct = plan_exit["target_pct"]
+        cost_markup = 0.0
+    take_profit_price = fill_entry * (1 + target_pct / 100 + cost_markup)
+
+    # Volatiliteye duyarlı SL (ATR koruması, ATR stop'u yalnız GENİŞLETİR).
+    volatility_sl_enabled = (bool(settings.get("volatility_sl_enabled", True)) and not exit_profile
+                             and plan_exit is None)
+    effective_sl_pct = sl_pct
+    if volatility_sl_enabled:
         try:
-            from app.ai_trading_suite import evaluate_volume_breakout
-            vol_bo = evaluate_volume_breakout(symbol=symbol, price=current_price)
-            if vol_bo.is_box_breakout and vol_bo.take_profit > current_price:
-                bo_tp_pct = (vol_bo.take_profit - current_price) / current_price * 100.0
-                if bo_tp_pct > target_pct:
-                    target_pct = min(12.0, max(target_pct, bo_tp_pct))
-        except Exception as bo_err:
-            logger.debug("auto_paper %s Volume breakout adaptasyonu atlandı: %s", symbol, bo_err)
+            from app.technical_analysis import _atr
+            kline = market.get_ut_kline(symbol, "5m") or market.get_ut_kline(symbol, "1m")
+            if kline:
+                highs = kline.get("highs") or []
+                lows = kline.get("lows") or []
+                closes = kline.get("closes") or []
+                if len(closes) >= 15:
+                    atr_val = _atr(highs, lows, closes, 14)
+                    if atr_val and current_price > 0:
+                        atr_pct = atr_val / current_price
+                        effective_sl_pct = _effective_sl_pct(sl_pct, atr_pct)
+        except Exception as atr_err:
+            logger.debug("auto_paper %s: ATR stop hesaplama atlandı: %s", symbol, atr_err)
+    # PPO SL: yalnız volatilite SL açıkken ve stopu GENİŞLETİYORSA (asla daraltmaz).
+    if ppo_apply and volatility_sl_enabled and ppo_sl_pct is not None:
+        effective_sl_pct = max(effective_sl_pct, ppo_sl_pct)
 
-        if target_pct <= 0:
-            target_pct = float(settings.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT))
+    stop_loss_price = fill_entry * (1 - effective_sl_pct)
+    now = time.time()
 
-        # Master Surge iki kademeli hedefleme: bildirimde TP2 koşucu hedefi varsa
-        # nihai hedef TP2'dir. DÜZELTME (2026-10-07): bu blok ESKİDEN TP fiyatı
-        # hesaplandıktan SONRA çalışıyordu → `target_pct` yükseliyor ama
-        # `take_profit_price` eski (düşük) değerde kalıyordu; DB'ye ise
-        # yükseltilmiş `notification_target_pct` yazılıyordu. Sonuç: kayıtta
-        # emrin asla ulaşamayacağı bir hedef görünüyordu (durum tutarsızlığı).
-        # Artık TP2, TP fiyatı hesaplanmadan ÖNCE uygulanır.
-        tp1_scalp_val = notification.get("tp1_scalp_pct")
-        tp2_runner_val = notification.get("tp2_runner_pct")
-        if plan_exit is None and tp2_runner_val and float(tp2_runner_val) > target_pct:
-            target_pct = float(tp2_runner_val)
+    # Çıkış profili / tutma süresi / plan bağlamı.
+    if plan_exit is not None:
+        trade_exit_profile = PLAN_EXIT_PROFILE
+        trade_max_hold = (plan_exit["exit_at"] - now + plan_exit["grace_minutes"] * 60) / 60.0
+        if trade_max_hold <= 0:
+            return None, _blocked(symbol, "plan_expired", price=current_price,
+                                  exit_at=plan_exit["exit_at"], grace_minutes=plan_exit["grace_minutes"])
+        plan_context = json.dumps({"exit_at": plan_exit["exit_at"],
+                                   "grace_minutes": plan_exit["grace_minutes"],
+                                   "plan_key": plan_exit["plan_key"]})
+    else:
+        trade_exit_profile = exit_profile["name"] if exit_profile else None
+        trade_max_hold = (float(exit_profile["max_hold_minutes"])
+                          if exit_profile and exit_profile.get("max_hold_minutes") else None)
+        plan_context = None
 
-        # HEDEF TAVANI (2026-10-07 incelemesi). `default_target_pct` ayarı
-        # buraya HİÇ etki etmiyordu: TP, bildirimin kendi `target_pct`'inden
-        # gelir ve o ortalama +%3,90'dır. Ölçüm (1537 kapanan işlem + 9740
-        # değerlendirilmiş aday): ulaşılan tepe medyanı +%1,62, yani hedef
-        # ulaşılabilir tepenin ~2,4 katıydı; işlemlerin yalnızca %13'ü hedefe
-        # değiyordu. Tavan, hedefi realize edilebilir bir aralığa çeker.
-        # 0 = sınırsız (eski davranış); geriye dönük uyum için kapalı bırakılabilir.
-        max_target = float(settings.get("max_target_pct", 0.0) or 0.0)
-        if plan_exit is None and max_target > 0 and target_pct > max_target:
-            logger.info("auto_paper %s: bildirim hedefi +%.2f%% tavanı +%.2f%%'e çekildi",
-                        symbol, target_pct, max_target)
-            target_pct = max_target
+    return {
+        "fill_entry": fill_entry,
+        "quantity": quantity,
+        "net_order_value": net_order_value,
+        "take_profit_price": take_profit_price,
+        "stop_loss_price": stop_loss_price,
+        "target_pct": target_pct,
+        "order_value": order_value,
+        "now": now,
+        "tp1_scalp_val": tp1_scalp_val,
+        "tp2_runner_val": tp2_runner_val,
+        "trade_exit_profile": trade_exit_profile,
+        "trade_max_hold": trade_max_hold,
+        "plan_context": plan_context,
+    }, None
 
-        commission_pct = paper_ledger.commission_pct()
-        max_cost = order_value / (1 + commission_pct)
-        # D-08 (2026-09-12): fiilî ALIŞ dolumuna kayma (slippage) uygula. Maliyet
-        # tabanı ve adet bu dolumdan türetilir; quantity*entry_price = max_cost
-        # kimliği korunur (boyut raporu ile muhasebe tutarlı kalır). Dolum modeli
-        # ve kayma tek kaynağı: paper_ledger.
-        entry_slip = paper_ledger.slippage_pct()
-        fill_entry = paper_ledger.entry_fill(current_price, entry_slip)
-        quantity = max_cost / fill_entry if fill_entry > 0 else 0
-        if quantity <= 0:
-            return _blocked(symbol, "zero_quantity", price=current_price)
 
-        net_order_value = fill_entry * quantity
-        # ERKAN İSTEĞİ (2026-09-18): TP hedefi NET olacak — gidiş-dönüş komisyon
-        # + SATIŞ kayması mark-up'a eklenir (giriş kayması zaten fill_entry
-        # çapasında). Bildirimdeki +%2.0 hedefi artık net +%2.0 realize eder:
-        # TP brüt = 2.0 + 2×0.15 + 0.025 ≈ +2.325%. Kapanış muhasebesi
-        # (`_close_trade`) ZATEN komisyon+ kaymayı düşüyor; çapası da
-        # mark-up'lı olmalı ki bildirimdeki hedef gerçekten realize edilsin.
-        # 2026-10-17: kâr al bekleyen LIMIT → çıkış maker ve kaymasız (paper_ledger.is_maker_exit).
-        cost_markup = paper_ledger.round_trip_markup(commission_pct, entry_slip, exit_kind="take_profit")
-        if plan_exit is not None:
-            # Plan brüt hedefi ücret + kaymayı ZATEN içerir → mark-up ikinci kez eklenmez.
-            target_pct = plan_exit["target_pct"]
-            cost_markup = 0.0
-        take_profit_price = fill_entry * (1 + target_pct / 100 + cost_markup)
+def _build_trade_record(symbol: str, notification: dict, plan: dict, settings: dict
+                        ) -> tuple[dict, dict]:
+    """Aşama 3 — `trade_data` + `signal` sözlüklerini kurar (DB insert girdisi)."""
+    now = plan["now"]
+    # R3-09 (P0): notification_id bigint'e yalnız TAM SAYI; string id → key (TEXT).
+    raw_nid = notification.get("id")
+    notification_id_val = None
+    if isinstance(raw_nid, int):
+        notification_id_val = raw_nid
+    elif isinstance(raw_nid, str) and raw_nid.lstrip("-").isdigit():
+        notification_id_val = int(raw_nid)
+    notification_key = notification.get("notification_key")
 
-        # Volatiliteye duyarlı Stop Loss (ATR koruması):
-        # 5m gürültüsü içinde normal -%1.6-1.8 geri çekilmelerde erken stop olmamak için
-        # ATR'ye göre nefes alma payı (maksimum %2.8 ile sınırlı).
-        volatility_sl_enabled = (bool(settings.get("volatility_sl_enabled", True)) and not exit_profile
-                                 and plan_exit is None)
-        effective_sl_pct = sl_pct
-        if volatility_sl_enabled:
-            try:
-                from app.technical_analysis import _atr
-                kline = market.get_ut_kline(symbol, "5m") or market.get_ut_kline(symbol, "1m")
-                if kline:
-                    highs = kline.get("highs") or []
-                    lows = kline.get("lows") or []
-                    closes = kline.get("closes") or []
-                    if len(closes) >= 15:
-                        atr_val = _atr(highs, lows, closes, 14)
-                        if atr_val and current_price > 0:
-                            atr_pct = atr_val / current_price
-                            # 1.2 * ATR_pct nefes alma alanı, minimum sl_pct.
-                            # 2026-10-15 (denetim düzeltmesi, madde 7): 2026-10-07
-                            # "düzeltmesi" `max(sl_pct, min(sl_pct, 1.2*atr))` yazmıştı —
-                            # bu HER ZAMAN sl_pct döner (ATR ölü kod; denetimde
-                            # doğrulandı). Amaç: ATR stop'u yalnız GENİŞLETİR, asla
-                            # daraltmaz; genişletme `config.AUTO_PAPER_ATR_SL_CAP_PCT`
-                            # (%2,8) tavanıyla sınırlı. sl_pct tavandan genişse
-                            # (canlı %5 > %2,8) sonuç yine sl_pct — bu bilinçli.
-                            effective_sl_pct = _effective_sl_pct(sl_pct, atr_pct)
-            except Exception as atr_err:
-                logger.debug("auto_paper %s: ATR stop hesaplama atlandı: %s", symbol, atr_err)
+    fill_entry = plan["fill_entry"]
+    trade_data = {
+        "symbol": symbol,
+        "side": "LONG",
+        "status": "open",
+        "notification_id": notification_id_val,
+        "notification_key": notification_key,
+        "entry_price": fill_entry,
+        "quantity": plan["quantity"],
+        "order_value_try": plan["net_order_value"],
+        "stop_loss": plan["stop_loss_price"],
+        "take_profit": plan["take_profit_price"],
+        "peak_price": fill_entry,
+        "entry_time": now,
+        "notification_score": notification.get("score"),
+        "notification_target_pct": plan["target_pct"],
+        "notification_expected_price": notification.get("expected_price"),
+        "tp1_scalp_pct": float(plan["tp1_scalp_val"]) if plan["tp1_scalp_val"] is not None else None,
+        "tp2_runner_pct": float(plan["tp2_runner_val"]) if plan["tp2_runner_val"] is not None else None,
+        "confluence_4way": bool(notification.get("confluence_4way")),
+        "trailing_gap_pct": float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40)) if notification.get("confluence_4way") else None,
+        "exit_profile": plan["trade_exit_profile"],
+        "max_hold_minutes": plan["trade_max_hold"],
+        "plan_context": plan["plan_context"],
+        "created_at": now,
+        "updated_at": now,
+    }
+    signal = {
+        "timestamp": now,
+        "symbol": symbol,
+        "action": "BUY_SIGNAL",
+        "price": fill_entry,
+        "reason": (f"AUTO_PAPER skor {notification.get('score', 0):.1f} hedef +%{plan['target_pct']:.1f} "
+                   f"TP={plan['take_profit_price']:.6f} SL={plan['stop_loss_price']:.6f}"),
+        "strategy": "AUTO_PAPER",
+        "trade_id": None,
+        "max_open_positions": int(settings.get("max_open_positions",
+                                 getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0))),
+    }
+    return trade_data, signal
 
-        stop_loss_price = fill_entry * (1 - effective_sl_pct)
-        now = time.time()
-        # R3-09 (P0): `notification_id` bigint kolonuna yalnızca TAM SAYI yazılır.
-        # Reopen akışının string anahtarı ayrı `notification_key` (TEXT kolon)
-        # olarak taşınır. String `id` → notification_id NULL, key doldurulur.
+
+async def _apply_post_open_effects(symbol: str, notification: dict, plan: dict, current_price: float,
+                                   trade_id: int) -> None:
+    """Aşama 5 — açılış sonrası yan etkiler: state, giriş gecikmesi, akış evreni, WS, log."""
+    fill_entry = plan["fill_entry"]
+    now = plan["now"]
+    _AUTO_PAPER_STATE["total_opened"] += 1
+    # 2026-10-16 (giriş gecikmesi): yalnız gözlem; hata girişi bozmaz.
+    record_entry_latency(symbol, trade_id, now, fill_entry, notification, market_price=current_price)
+
+    # Açılan sembolü anında akış evrenine ekle (WS/tazelik verisi canlı aksın).
+    try:
+        extend_stream_universe([symbol], source="auto_paper_open")
+        asyncio.create_task(market.ensure_history(config.PRIORITY_TIMEFRAMES, symbols=[symbol.lower()]))
+    except Exception as exc:
+        logger.warning("auto_paper %s akış evrenine ekleme hatası: %s", symbol, exc)
+
+    await _broadcast_trade({
+        "action": "OPENED", "symbol": symbol,
+        "entry": fill_entry, "take_profit": plan["take_profit_price"],
+        "stop_loss": plan["stop_loss_price"], "quantity": plan["quantity"],
+        "order_value": plan["net_order_value"], "score": notification.get("score"),
+        "target_pct": plan["target_pct"], "trade_id": trade_id,
+    })
+
+    logger.info("auto_paper %s: AÇILDI miktar=%.4f giriş=%.6f TP=%.6f SL=%.6f değer=%.2f %s skor=%.1f",
+                symbol, plan["quantity"], fill_entry, plan["take_profit_price"], plan["stop_loss_price"],
+                plan["net_order_value"], config.QUOTE_ASSET, notification.get("score"))
+
+
+async def _handle_open_status(symbol: str, notification: dict, current_price: float,
+                              trade: dict | None, status: str) -> dict | None:
+    """Aşama 4 — DB açılış sonucu dallanması. Dönüş: açıldıysa trade_id içeren dict, yoksa None."""
+    if status == "already_open":
+        # Arada başka bir çağrı açmış — TP güncellemesini dene.
+        open_trade = await database.get_open_auto_paper_trade(symbol)
+        if open_trade:
+            return await _update_existing_trade(open_trade, notification, current_price)
+        return None
+    if status == "already_traded":
         raw_nid = notification.get("id")
-        notification_id_val = None
-        if isinstance(raw_nid, int):
-            notification_id_val = raw_nid
-        elif isinstance(raw_nid, str) and raw_nid.lstrip("-").isdigit():
-            notification_id_val = int(raw_nid)
-        notification_key = notification.get("notification_key")
-        if plan_exit is not None:
-            trade_exit_profile = PLAN_EXIT_PROFILE
-            trade_max_hold = (plan_exit["exit_at"] - now + plan_exit["grace_minutes"] * 60) / 60.0
-            if trade_max_hold <= 0:
-                # Süresi geçmiş plan: açılsa ilk turda kapanırdı; max_hold<=0 / 0.0 genel-ayar düşüşü de olmaz.
-                return _blocked(symbol, "plan_expired", price=current_price,
-                                exit_at=plan_exit["exit_at"], grace_minutes=plan_exit["grace_minutes"])
-            plan_context = json.dumps({"exit_at": plan_exit["exit_at"],
-                                       "grace_minutes": plan_exit["grace_minutes"],
-                                       "plan_key": plan_exit["plan_key"]})
-        else:
-            trade_exit_profile = exit_profile["name"] if exit_profile else None
-            trade_max_hold = (float(exit_profile["max_hold_minutes"])
-                              if exit_profile and exit_profile.get("max_hold_minutes") else None)
-            plan_context = None
+        notification_id_val = (raw_nid if isinstance(raw_nid, int)
+                               else int(raw_nid) if isinstance(raw_nid, str) and raw_nid.lstrip("-").isdigit()
+                               else None)
+        logger.info("auto_paper %s: bildirim id=%s key=%s zaten işlendi — açılmadı",
+                    symbol, notification_id_val, notification.get("notification_key"))
+        return None
+    if status == "max_open":
+        logger.warning("auto_paper %s: transaction içinde max açık pozisyon dolu — açılmadı", symbol)
+        return None
+    if status == "insufficient_balance":
+        logger.info("auto_paper %s: transaction'da bakiye yetersiz", symbol)
+        return None
+    if not trade or status != "opened":
+        return None
+    # Buradan itibaren `trade` bir açılış kaydıdır.
+    return {"status": "opened"}
 
-        # NOT (2026-10-07): Master Surge TP2 yükseltmesi buradan YUKARI taşındı
-        # (TP fiyatı hesaplanmadan önce). Burada ikinci kez uygulanırsa
-        # `take_profit_price` eski değerde kalırken `notification_target_pct`
-        # yükselir → kayıtta tutarsız/ulaşılamaz hedef görünürdü.
 
-        trade_data = {
-            "symbol": symbol,
-            "side": "LONG",
-            "status": "open",
-            "notification_id": notification_id_val,
-            "notification_key": notification_key,
-            "entry_price": fill_entry,
-            "quantity": quantity,
-            "order_value_try": net_order_value,
-            "stop_loss": stop_loss_price,
-            "take_profit": take_profit_price,
-            "peak_price": fill_entry,
-            "entry_time": now,
-            "notification_score": notification.get("score"),
-            "notification_target_pct": target_pct,
-            "notification_expected_price": notification.get("expected_price"),
-            "tp1_scalp_pct": float(tp1_scalp_val) if tp1_scalp_val is not None else None,
-            "tp2_runner_pct": float(tp2_runner_val) if tp2_runner_val is not None else None,
-            "confluence_4way": bool(notification.get("confluence_4way")),
-            "trailing_gap_pct": float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40)) if notification.get("confluence_4way") else None,
-            # 2026-10-21: çıkış profili satıra yazılır; yönetim döngüsü tutma süresini ve iz süren/başabaş kapalılığını buradan okur.
-            "exit_profile": trade_exit_profile,
-            "max_hold_minutes": trade_max_hold,
-            # 2026-10-27 (işlem planı): plan çıkış zamanı/ek süre/anahtarı (JSON metin); plansızda None.
-            "plan_context": plan_context,
-            "created_at": now,
-            "updated_at": now,
-        }
-        signal = {
-            "timestamp": now,
-            "symbol": symbol,
-            "action": "BUY_SIGNAL",
-            "price": fill_entry,
-            "reason": f"AUTO_PAPER skor {notification.get('score', 0):.1f} hedef +%{target_pct:.1f} TP={take_profit_price:.6f} SL={stop_loss_price:.6f}",
-            "strategy": "AUTO_PAPER",
-            "trade_id": None,  # insert sonrası id bilinir; DB'de dolduramayız, reason yeterli
-            # D-11/Erkan (2026-09-18): çalışma-anı sınırını DB katmanının
-            # advisory-lock'lu ikinci savunmasına taşı (yarış penceresi kapanır).
-            "max_open_positions": int(settings.get("max_open_positions",
-                                     getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0))),
-        }
+async def _open_new_trade(symbol: str, notification: dict, current_price: float, settings: dict,
+                          order_value: float | None = None, balance: float | None = None) -> dict | None:
+    """Yeni otonom paper pozisyonu aç — aşamalı orkestratör (atomik DB insert).
+
+    Aşamalar:
+      1. `_resolve_order_size`      — bakiye/sizing + min emir kapısı
+      2. `_calc_exit_plan`          — SL/TP/ATR/PPO/volume-breakout/fill/miktar
+      3. `_build_trade_record`      — trade_data + signal
+      4. DB insert + `_handle_open_status` — sonuç dallanması
+      5. `_apply_post_open_effects` — state/latency/akış evreni/WS/log
+
+    R3-06: `order_value`/`balance` önceden verilmişse yeniden okunmaz (tutarlılık).
+    """
+    try:
+        # 1) Sizing + min emir
+        balance, order_value, _min_order, block = await _resolve_order_size(
+            symbol, notification, settings, current_price, order_value, balance)
+        if block is not None:
+            return block
+
+        # 2) Çıkış planı (SL/TP/fill/miktar)
+        plan, block = await _calc_exit_plan(symbol, notification, current_price, settings, order_value)
+        if block is not None:
+            return block
+
+        # 3) DB kayıt girdileri
+        trade_data, signal = _build_trade_record(symbol, notification, plan, settings)
+
+        # 4) Atomik insert + sonuç dallanması
         trade, status = await database.open_auto_paper_trade(trade_data, signal)
-
-        if status == "already_open":
-            # Arada başka bir çağrı açmış — onu güncellemeyi dene
-            open_trade = await database.get_open_auto_paper_trade(symbol)
-            if open_trade:
-                return await _update_existing_trade(open_trade, notification, current_price)
+        handle = await _handle_open_status(symbol, notification, current_price, trade, status)
+        if handle is None:
             return None
-        if status == "already_traded":
-            # R3-09 sonrası düzeltme: burada `notification_id` ADI KULLANILMAZDI —
-            # R3-09 `notification_id_val` (bigint'e yazılabilir) ve
-            # `notification_key` (TEXT, string id) olarak ikiye ayırdı, bu satır
-            # eski adda kaldı → dal çalışınca NameError, sessizce yutuluyordu.
-            # Log, DB'ye yazılan değeri (`notification_id_val`) ve string id'yi
-            # (`notification_key`) birlikte gösterir: string id'de sadece key
-            # doludur, tam sayı id'de sadece notification_id_val.
-            logger.info("auto_paper %s: bildirim id=%s key=%s zaten işlendi — açılmadı",
-                        symbol, notification_id_val, notification_key)
-            return None
-        if status == "max_open":
-            # Advisory-lock'lu op içindeki ikinci savunma: arada başka tarama
-            # tetiği limiti doldurdu — sessiz None yerine görünür log.
-            logger.warning("auto_paper %s: transaction içinde max açık pozisyon dolu — açılmadı", symbol)
-            return None
-        if status == "insufficient_balance":
-            logger.info("auto_paper %s: transaction'da bakiye yetersiz", symbol)
-            return None
-        if not trade or status != "opened":
-            return None
+        if handle.get("status") != "opened":  # already_open → TP güncellemesi/no_change döndü
+            return handle
 
         trade_id = trade["id"]
-        # trade_id'yi sinyale geri yazamayız (transaction kapandı); id'yi state'te tut
-        _AUTO_PAPER_STATE["total_opened"] += 1
-        # 2026-10-16 (giriş gecikmesi): bildirim→dolum gecikmesi + giriş kayması
-        # ölçümü (yalnız gözlem; hata girişi bozmaz).
-        record_entry_latency(symbol, trade_id, now, fill_entry, notification,
-                             market_price=current_price)
 
-        # Açılan sembolü anında akış evrenine ekle (market.symbols içinde kalsın ve WS/tazelik verisi canlı aksın)
-        try:
-            extend_stream_universe([symbol], source="auto_paper_open")
-            asyncio.create_task(market.ensure_history(config.PRIORITY_TIMEFRAMES, symbols=[symbol.lower()]))
-        except Exception as exc:
-            logger.warning("auto_paper %s akış evrenine ekleme hatası: %s", symbol, exc)
-
-        await _broadcast_trade({
-            "action": "OPENED", "symbol": symbol,
-            "entry": fill_entry, "take_profit": take_profit_price,
-            "stop_loss": stop_loss_price, "quantity": quantity,
-            "order_value": net_order_value, "score": notification.get("score"),
-            "target_pct": target_pct, "trade_id": trade_id,
-        })
-
-        logger.info("auto_paper %s: AÇILDI miktar=%.4f giriş=%.6f TP=%.6f SL=%.6f değer=%.2f %s skor=%.1f",
-                    symbol, quantity, fill_entry, take_profit_price, stop_loss_price,
-                    net_order_value, config.QUOTE_ASSET, notification.get("score"))
+        # 5) Açılış sonrası yan etkiler
+        await _apply_post_open_effects(symbol, notification, plan, current_price, trade_id)
 
         return {"status": "opened", "trade_id": trade_id, "symbol": symbol}
 
@@ -2117,7 +2074,7 @@ async def _broadcast_trade(data: dict):
     try:
         await ws_manager.broadcast({"type": "auto_paper_trade", "data": data})
     except Exception:
-        pass
+        logger.debug("auto_paper: trade WS yayını başarısız", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

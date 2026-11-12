@@ -197,7 +197,8 @@ class TrainWiringTests(unittest.TestCase):
                 mock.patch.object(sk_ensemble, "HistGradientBoostingClassifier",
                                   _RecordingClassifier), \
                 mock.patch.object(joblib, "dump",
-                                  lambda obj, path, **kw: captured.update(obj)):
+                                  lambda obj, path, **kw: (captured.update(obj),
+                                                           open(path, "wb").close())):  # 2026-11-10: train() artık .tmp'ye yazıp os.replace ile taşır; mock dosyayı gerçekten oluşturmalı yoksa FileNotFoundError
             meta = ml_forecast.train(candles, rows or [])
         return meta, captured
 

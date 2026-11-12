@@ -316,7 +316,8 @@ async def main() -> int:
         H.append(f"<tr><td class='b'>{r['day']:%d.%m %H:%M}</td><td>{'→ ' + dt.datetime.fromtimestamp(r['end'] / 1000, TZ).strftime('%d.%m %H:%M') + (' (kısmi)' if r['partial'] else '')}</td>"
                  f"<td>{s['n']}</td><td class='pos'>{s['t2']}</td><td class='neg'>{s['stop']}</td><td>{s['zaman']}</td><td class='{c(s['net'])} b'>{ftl(s['net'])}</td>"
                  f"<td>{cap:,.0f} TL</td><td class='{c(s['net'])}'>{fpct(s['net'] / cap * 100 if cap else None)}</td>"
-                 f"<td>{fpct(s['mfe_mean'])}</td><td>{fpct(s['mfe_median'])}</td><td>{'—' if s['mfe_ge2'] is None else f'{s['mfe_ge2']:.0%}'}</td>"
+                 f'<td>{fpct(s["mfe_mean"])}</td><td>{fpct(s["mfe_median"])}</td>'
+                 f'<td>{"—" if s["mfe_ge2"] is None else format(s["mfe_ge2"], ".0%")}</td>'
                  f"<td>{fdur(s['mfe_min_mean'])}</td><td>{fdur(s['mfe_min_median'])}</td><td>{fpct(s['mae_mean'])}</td></tr>".replace(",", "."))
     H.append("</table></div>")
     # ---- hedef varyantları
@@ -383,7 +384,7 @@ async def main() -> int:
         print(f"  filtre {fname:26} açık {sum(flags)}/{len(flags)} sinyal {nsig:3} | " + " | ".join(f"{e}: {v:+7.0f}" for e, v in zip(EXITS, nets)), file=sys.stderr)
     H.append("</table></div>")
     H.append("<p class='sub'>BTC 24 sa değişimi (09:00): " + ", ".join(f"{r['day']:%d.%m} {fpct(r['btc'].get('_btc_chg24'), 1)}" for r in report)
-             + " · Genişlik (puan ≥ +1 payı): " + ", ".join(f"{r['day']:%d.%m} {('—' if r['btc'].get('_breadth') is None else f'{r['btc']['_breadth']:.0%}')}" for r in report) + "</p>")
+             + " · Genişlik (puan ≥ +1 payı): " + ", ".join(f'{r["day"]:%d.%m} ' + ("—" if r["btc"].get("_breadth") is None else format(r["btc"]["_breadth"], ".0%")) for r in report) + "</p>")
     for r in report:
         H += [f"<h2>{r['day']:%d.%m.%Y} 09:00 listesi — {len(r['rows'])} sinyal{' (pencere kısmi, ' + dt.datetime.fromtimestamp(r['end'] / 1000, TZ).strftime('%d.%m %H:%M') + ' itibarıyla)' if r['partial'] else ''}</h2>",
               f"<div class='wrap'><table><tr><th>Sembol</th><th>Giriş</th><th>Puan</th><th>T1</th><th>T2</th><th>T2 net</th><th>Görme / medyan</th><th>Stop (%{STOP_PCT:g})</th>"
@@ -392,7 +393,7 @@ async def main() -> int:
             tag = {"t2": "<span class='tag t2'>T2</span>", "stop": "<span class='tag st'>STOP</span>", "zaman": "<span class='tag zm'>ZAMAN</span>", None: "—"}[x["exit"]]
             H.append(f"<tr><td class='b'>{html.escape(x['sym'].replace('TRY', ''))}</td><td>{fp(x['entry'])}</td><td>{x['score']:+d}</td><td>{fp(x['t1'])}</td>"
                      f"<td>{fp(x['t2'])} <span class='flat'>({fpct(x['d2'], 1)})</span></td><td class='pos'>{fpct(x['net2'])}</td>"
-                     f"<td>{'—' if x['r2'] is None else f'{x['r2']:.0%}'} / {('—' if x['m2'] is None else f'{x['m2']:.1f} sa')}</td><td>{fp(x['entry'] * (1 - STOP_PCT / 100))}</td>"
+                     f'<td>{"—" if x["r2"] is None else format(x["r2"], ".0%")} / {("—" if x["m2"] is None else format(x["m2"], ".1f") + " sa")}</td><td>{fp(x["entry"] * (1 - STOP_PCT / 100))}</td>'
                      f"<td class='{c(x['mfe_pct'])}'>{fpct(x['mfe_pct'])}</td><td>{fdur(x['mfe_min'])}</td><td class='neg'>{fpct(x['mae_pct'])}</td>"
                      f"<td>{tag}</td><td>{fp(x['exit_price'])}</td><td>{fdur(x['exit_min'])}</td><td class='{c(x.get('net_tl'))} b'>{ftl(x.get('net_tl'))}</td></tr>")
         H.append("</table></div>")

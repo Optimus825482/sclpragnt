@@ -444,7 +444,8 @@ def test_notify_uses_gate_candidate(monkeypatch):
     bildirim ÜRETMEZ; tek kaynak `gate_candidate`."""
     import inspect
     from app.routers import monitoring as mo
-    assert "gate_candidate(" in inspect.getsource(mo._notify)
+    # 2026-11-10 refactor: aday skor/surge kapısı `_notify_score_gate`'e taşındı.
+    assert "gate_candidate(" in inspect.getsource(mo._notify_score_gate)
 
     async def _no_pending(symbols):
         return {}

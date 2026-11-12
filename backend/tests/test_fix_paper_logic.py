@@ -233,7 +233,8 @@ class AtrStopCapTests(unittest.TestCase):
 
     def test_old_dead_formula_is_gone(self):
         import inspect
-        src = inspect.getsource(auto_paper._open_new_trade)
+        # 2026-11-10 refactor: ATR mantığı `_calc_exit_plan`'e taşındı.
+        src = inspect.getsource(auto_paper._calc_exit_plan)
         self.assertNotIn("min(sl_pct, 1.2 * atr_pct)", src)
         self.assertIn("_effective_sl_pct(sl_pct, atr_pct)", src)
 

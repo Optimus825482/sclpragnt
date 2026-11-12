@@ -1,6 +1,7 @@
 import time
 import asyncio
 import json
+import logging
 import numpy as np
 import uuid
 from app.config import config
@@ -10,6 +11,11 @@ from app import database, paper_ledger
 from app import agent_learning
 from app import calibration as calibration_service
 from app.circuit_breaker import breaker as strategy_breaker
+
+# 2026-11-10: modül seviyesi logger. Önceden bazı `except` yolları hiç log
+# basmıyordu (sessiz yutma); `except: pass` → `logger.debug(...)` yapıldı ki
+# bir sonraki gizli hata (ör. NameError) en az debug seviyesinde görünsün.
+logger = logging.getLogger("scalper.analyzer")
 
 class ScalpAnalyzer:
     def __init__(self, market):
@@ -388,13 +394,13 @@ class ScalpAnalyzer:
                     if base > 0:
                         return round(float(vols[-1]) / base, 4)
             except Exception:
-                pass
+                logger.debug("analyzer: hacim oranı hesaplanamadı", exc_info=True)
             try:
                 candidate = (details or {}).get("volume_ratio")
                 if candidate is not None:
                     return round(float(candidate), 4)
             except (TypeError, ValueError):
-                pass
+                logger.debug("analyzer: volume_ratio adayı geçersiz", exc_info=True)
         return None
 
     @staticmethod
@@ -500,218 +506,206 @@ class ScalpAnalyzer:
             return min(float(price), trigger_val)
         return max(float(price), trigger_val)
 
+    def _refresh_peak_prices(self, pos: dict, price: float, kline) -> None:
+        """İntrabar modda mum high/low'su da tepe/dip sayılır; trailing gerçek tepeye göre hesaplanır."""
+        cur_hi = cur_lo = price
+        if config.VELOCITY_TRAIL_INTRABAR and kline:
+            try:
+                k_highs = kline.get("highs") or []
+                k_lows = kline.get("lows") or []
+                if k_highs:
+                    cur_hi = max(float(k_highs[-1]), price)
+                if k_lows:
+                    cur_lo = min(float(k_lows[-1]), price)
+            except (TypeError, ValueError, IndexError):
+                logger.debug("analyzer: max/min fiyat güncellemesi atlandı", exc_info=True)
+        pos["max_price"] = max(pos.get("max_price", pos["entry_price"]), cur_hi)
+        pos["min_price"] = min(pos.get("min_price", pos["entry_price"]), cur_lo)
+
+    async def _check_llm_paper_exit(self, symbol: str, price: float, pos: dict):
+        """LLM_PAPER çıkışları: LLM planı stop/TP/max-hold. Diğer strateji kuralları uygulanmaz."""
+        if pos.get("llm_stop_price") and price <= pos["llm_stop_price"]:
+            return await self.close_position(
+                symbol, self._trigger_fill_price(price, pos["llm_stop_price"], "stop"), "llm_stop_loss")
+        if pos.get("llm_take_profit_price") and price >= pos["llm_take_profit_price"]:
+            return await self.close_position(
+                symbol, self._trigger_fill_price(price, pos["llm_take_profit_price"], "take_profit"), "llm_take_profit")
+        if pos.get("llm_max_hold_sec"):
+            entry_time = float(pos.get("entry_time") or 0)
+            if entry_time and time.time() - entry_time >= float(pos["llm_max_hold_sec"]):
+                return await self.close_position(symbol, price, "llm_max_hold")
+        return None
+
+
+    async def _check_system_stop_exit(self, symbol: str, price: float, pos: dict):
+        """Sert stop + kâr kilidi zeminine göre çıkış — TÜM LLM_PAPER dışı pozisyonlara uygulanır."""
+        entry = float(pos.get("entry_price") or price)
+        system_stop = self._compute_system_stop(pos, entry)
+        if system_stop is not None and system_stop > float("-inf") and price <= system_stop:
+            return await self.close_position(
+                symbol, self._trigger_fill_price(price, system_stop, "stop"), "system_stop_loss")
+        return None
+
+
+    async def _check_velocity_arming(self, symbol: str, price: float, pos: dict):
+        """Chat/lead-lag: acil güvenlik stopu (kilitsiz) + kâr kilidi arming.
+
+        Sert stop tetiği (`_check_system_stop_exit`) BURADAN sonra çalışır; orijinal
+        sıra korunur: emergency -> arming -> system_stop -> plan TP/hold.
+        """
+        entry = float(pos.get("entry_price") or price)
+        lock_armed = self._lock_armed(pos)
+        no_initial_stop = not lock_armed and \
+            bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop"))
+
+        # Acil güvenlik stopu (kilit tetiklenmeden önce): kilit hiç devreye girmezse sınırsız zararı önler.
+        if no_initial_stop:
+            emg_stop = entry * (1 - config.VELOCITY_EMERGENCY_STOP_PCT / 100.0)
+            if price <= emg_stop:
+                return await self.close_position(
+                    symbol, self._trigger_fill_price(price, emg_stop, "stop"), "velocity_emergency_stop")
+
+        # Kâr kilidi (arming): +%0.5 görülünce stop round-trip maliyetin üstüne çekilir.
+        if not lock_armed:
+            lock_trigger = entry * (1 + config.VELOCITY_TRAIL_TRIGGER_PCT / 100.0)
+            if float(pos.get("max_price") or entry) >= lock_trigger:
+                pos["velocity_protection_armed"] = True
+                qty_value = float(pos.get("quantity", 0) or 0) * entry
+                # BİRİM: config.min_net_exit_pct bir FRAKSİYON döndürür (0.004 == %0.40).
+                lock_fraction = max(config.VELOCITY_PROFIT_LOCK_PCT / 100.0,
+                                    config.min_net_exit_pct(qty_value))
+                lock_stop = entry * (1 + lock_fraction)
+                raw_stop = float(pos.get("system_stop_price") or pos.get("stop_price")
+                                 or entry * (1 - (config.VELOCITY_AUTO_SL_PCT / 100.0)))
+                base_stop = raw_stop if raw_stop > float("-inf") else lock_stop
+                pos["system_stop_price"] = max(base_stop, lock_stop)
+                await self._persist_velocity_lock(pos, symbol=symbol)
+        return None
+
+    async def _check_plan_tp_hold(self, symbol: str, price: float, pos: dict):
+        """Chat/lead-lag sabit plan TP ve plan max-hold çıkışları."""
+        strategy = pos.get("strategy")
+        plan_tp = float(pos.get("system_take_profit_price") or pos.get("take_profit") or 0)
+        if plan_tp and price >= plan_tp:
+            reason_tp = "lead_lag_take_profit" if strategy == "GLOBAL_LEAD_LAG" else "chat_plan_take_profit"
+            return await self.close_position(
+                symbol, self._trigger_fill_price(price, plan_tp, "take_profit"), reason_tp)
+        ectx_hold = (pos.get("entry_context") or {}).get("max_hold_sec")
+        plan_hold = float(pos.get("velocity_max_hold_sec") or ectx_hold or 0)
+        if plan_hold > 0:
+            elapsed_hold = max(0.0, time.time() - float(pos.get("entry_time") or time.time()))
+            if elapsed_hold >= plan_hold:
+                reason_hold = "lead_lag_max_hold" if strategy == "GLOBAL_LEAD_LAG" else "chat_plan_max_hold"
+                return await self.close_position(symbol, price, reason_hold)
+        return None
+
+    def _compute_system_stop(self, pos: dict, entry: float) -> float | None:
+        """Sert stop + kâr kilidi zeminini birleştirir; kilit devredeyse en yüksek stop geçerlidir."""
+        strategy = pos.get("strategy")
+        if strategy in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
+            fallback_stop_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
+        else:
+            fallback_stop_pct = config.HARD_STOP_LOSS_PCT
+        lock_armed = self._lock_armed(pos)
+        lock_stop_persisted = self._lock_stop(pos)
+        # Restore edilen pozisyonda bellek alanları yoktur; `_runtime`'dan ilk tick'te geri yazılır.
+        if lock_armed:
+            pos.setdefault("velocity_protection_armed", True)
+            if pos.get("system_stop_price") is None and lock_stop_persisted is not None:
+                pos["system_stop_price"] = lock_stop_persisted
+                if pos.get("stop_price") is None:
+                    pos["stop_price"] = lock_stop_persisted
+        raw_stop = float(pos.get("system_stop_price") or pos.get("stop_price")
+                         or entry * (1 - fallback_stop_pct))
+        if lock_armed and lock_stop_persisted is not None:
+            raw_stop = max(raw_stop, lock_stop_persisted)
+        no_initial_stop = strategy in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") and not lock_armed and \
+            bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop"))
+        if no_initial_stop:
+            return float("-inf")
+        return raw_stop
+
+    async def _check_classic_exit(self, symbol: str, price: float, pos: dict, kline):
+        """Klasik strateji çıkışları: early-failure / stale / ATR trailing / stale-below-cost / system TP işareti."""
+        elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
+        entry = pos.get("entry_price", price)
+        max_progress = max(0.0, (pos.get("max_price", entry) - entry) / entry) if entry else 0.0
+        if elapsed >= config.EARLY_FAILURE_SEC and max_progress < config.EARLY_FAILURE_MIN_PROGRESS_PCT:
+            return await self.close_position(symbol, price, "early_failure_no_progress")
+        if elapsed >= config.STALE_POSITION_SEC and max_progress < config.STALE_POSITION_MIN_PROGRESS_PCT:
+            return await self.close_position(symbol, price, "stale_position_no_progress")
+        # Sabit yüzdeli trailing yerine ATR trailing; stop yalnız yukarı taşınır.
+        atr = self.calculate_atr(kline, config.SYSTEM_ATR_PERIOD) if kline else None
+        if atr and max_progress >= (atr * config.SYSTEM_ATR_TRAILING_ACTIVATION_ATR / entry):
+            candidate = pos.get("max_price", entry) - atr * config.SYSTEM_ATR_TRAILING_MULTIPLIER
+            previous = float(pos.get("system_trailing_stop_price") or 0)
+            pos["system_trailing_stop_price"] = max(previous, candidate)
+            net_floor = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
+            if price <= pos["system_trailing_stop_price"] and price >= net_floor:
+                return await self.close_position(
+                    symbol,
+                    self._trigger_fill_price(price, pos["system_trailing_stop_price"], "stop"),
+                    "atr_trailing_stop")
+        if (config.STALE_POSITION_EXIT_BELOW_COST and elapsed >= config.STALE_POSITION_SEC and
+                price < entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))):
+            return await self.close_position(symbol, price, "stale_position_below_cost")
+        # Sistem TP'si sabit erken kapanış değildir: RR hedefi görüldüğünde işaretlenir,
+        # pozisyon ATR trailing stop ile trendi takip etmeye devam eder.
+        system_target = pos.get("system_take_profit_price") or pos.get("take_profit")
+        if system_target and price >= float(system_target):
+            pos["system_target_reached"] = True
+        return None
+
+
     async def _manage_open_position(self, symbol, price, strat_name):
+        """Açık pozisyon yönetimi — aşamalı orkestratör.
+
+        Sıra (orijinal korunur): tazelik -> peak güncelle -> LLM_PAPER çıkışları ->
+        (LLM ise dur) -> emergency/arming (chat/lead-lag) -> system stop ->
+        plan TP/hold (chat/lead-lag) -> klasik trailing.
+        """
         tf = self._strategy_tf(strat_name)
         kline = self.market.get_ut_kline(symbol, tf)
         ticker = self.market.get_ticker(symbol) if self.market else None
         ticker_age = time.time() - float((ticker or {}).get("timestamp", 0) or 0) / 1000 if ticker else float("inf")
         if ticker_age > config.MAX_TICKER_AGE_SEC:
-            # Never turn a missing/stale public price into a fake flat move or
-            # a stale-position loss. The strategy loop will retry after the
-            # market adapter repairs the ticker through REST/WebSocket.
+            # Bayat/eksik public fiyatı sahte düz harekete ya da sahte zarara çevirme.
             return {"action": "POSITION_DATA_UNAVAILABLE", "symbol": symbol,
                     "price": price, "reason": "public_price_stale", "age_seconds": round(ticker_age, 2),
                     "strategy": strat_name, "paper_only": True}
-        # Önce hedef/stop kontrolü; aynı anda süre dolduysa gerçek kapanış nedeni korunur.
+
         pos = self.positions.get(symbol)
-        if pos:
-            # İntrabar modda mum high/low'su da tepe/dip sayılır — trailing stop
-            # kapanış fiyatına değil gerçek tepeye göre hesaplanır.
-            # kline yapısı: {"highs": [...], "lows": [...], "closes": [...], ...}
-            cur_hi = cur_lo = price
-            if config.VELOCITY_TRAIL_INTRABAR and kline:
-                try:
-                    k_highs = kline.get("highs") or []
-                    k_lows = kline.get("lows") or []
-                    if k_highs:
-                        cur_hi = max(float(k_highs[-1]), price)
-                    if k_lows:
-                        cur_lo = min(float(k_lows[-1]), price)
-                except (TypeError, ValueError, IndexError):
-                    pass
-            pos["max_price"] = max(pos.get("max_price", pos["entry_price"]), cur_hi)
-            pos["min_price"] = min(pos.get("min_price", pos["entry_price"]), cur_lo)
-        if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_stop_price") and price <= pos["llm_stop_price"]:
-            return await self.close_position(
-                symbol, self._trigger_fill_price(price, pos["llm_stop_price"], "stop"), "llm_stop_loss")
-        if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_take_profit_price") and price >= pos["llm_take_profit_price"]:
-            return await self.close_position(
-                symbol, self._trigger_fill_price(price, pos["llm_take_profit_price"], "take_profit"), "llm_take_profit")
-        if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_max_hold_sec"):
-            entry_time = float(pos.get("entry_time") or 0)
-            if entry_time and time.time() - entry_time >= float(pos["llm_max_hold_sec"]):
-                return await self.close_position(symbol, price, "llm_max_hold")
-        # LLM_PAPER exits are owned by the LLM plan and position manager. Do
-        # not apply legacy fixed early-failure, stale, trailing, time-decay,
-        # or legacy max-hold policies to these positions.
-        if pos and pos.get("strategy") == "LLM_PAPER":
+        if not pos:
             return None
-        if pos and pos.get("strategy") != "LLM_PAPER":
-            entry = float(pos.get("entry_price") or price)
-            if pos.get("strategy") in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
-                fallback_stop_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
-            else:
-                fallback_stop_pct = config.HARD_STOP_LOSS_PCT
-            # D-01/2026-09-26 (KRİTİK): kâr kilidi devredeyken stop, orijinal
-            # sert stop'tan DAHA YUKARIDA olmalıdır. `system_stop` tek kaynak
-            # olarak önce kilitliğe göre düzeltilir; aksi halde -%2.5 sert stop
-            # +%0.5'lik kilidi her tick'te ezer ve kâr koruması fiilen ölür.
-            # `velocity_protection_armed` ve kilit stop'u artık hem bellekten
-            # hem kalıcı `entry_context._runtime`'dan okunur (restart sonrası
-            # "stop'suz pozisyon" sözleşmesi bozulmasın).
-            lock_armed = self._lock_armed(pos)
-            lock_stop_persisted = self._lock_stop(pos)
-            # D-01/2026-09-26: restore edilen pozisyonda bellek alanları yoktur
-            # (kolon yok) ama `_runtime` taşır. İlk tick'te bu değerler belleğe
-            # geri yazılır: aksi halde rapor/izleme yüzeyleri stop'suz görür,
-            # `stop_price` None kalır ve kilit bloğu atlanırken stop hiç
-            # uygulanmazdı.
-            if lock_armed:
-                pos.setdefault("velocity_protection_armed", True)
-                if pos.get("system_stop_price") is None and lock_stop_persisted is not None:
-                    pos["system_stop_price"] = lock_stop_persisted
-                    if pos.get("stop_price") is None:
-                        pos["stop_price"] = lock_stop_persisted
-            raw_stop = float(pos.get("system_stop_price") or pos.get("stop_price")
-                             or entry * (1 - fallback_stop_pct))
-            if lock_armed and lock_stop_persisted is not None:
-                raw_stop = max(raw_stop, lock_stop_persisted)
-            system_stop = raw_stop
-            # Otonom hız avcısı no-initial-stop modu: açılışta sert stop yok.
-            # entry_context'taki no_initial_stop bayrağıyla başlangıç stopu
-            # etkisiz kılınır (system_stop_price=None + burada -inf); +%0.5
-            # kâr kilidi (velocity_protection_armed) aşağıdaki merdivende stop'u
-            # maliyet üstüne çeker, hedef TP çıkışı ayrıca işler.
-            # D-01 (devam, 2026-09-12): bu -inf geçersiz kılma HER tick'te
-            # yeniden uygulanıyordu. Kilit devreye girdikten sonraki ilk
-            # turda `velocity_protection_armed=True` olduğu için kilit bloğu
-            # atlanıyor, ama -inf hâlâ yazılıyordu → kilit stop'u bir kez
-            # kurulup hemen sonra SIFIRLANIYOR ve asla tetiklenmiyordu
-            # (kâr kilidi yalnızca kurulduğu tick'te çalışıyordu). Artık
-            # geçersiz kılma yalnızca kilitten ÖNCE uygulanır: "açılışta sert
-            # stop yok" sözleşmesi korunur, kilitlendikten sonra zemin kalıcı
-            # olur.
-            no_initial_stop = pos.get("strategy") in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") and not lock_armed and \
-                bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop"))
-            if no_initial_stop:
-                system_stop = float("-inf")
-            # Otonom hız avcısı güvenlik stopu (kâr kilidi tetiklenmeden ÖNCE):
-            # stopsuz açılış, fiyat +%0.5'i hiç görmezse sınırsız zarar demek
-            # (canlıda AXLTRY -%7.5 ile max_hold'da kapandı). Fiyat bu kadar
-            # düşerse acil kapat; kâr kilidi devreye girince bu stop zaten
-            # anlamsızlaşır (kâr kilidi daha yukarıda). Backtest: -%3 stop
-            # EV +0.182%, max kayıp -%3.
-            if no_initial_stop:
-                emg_stop = entry * (1 - config.VELOCITY_EMERGENCY_STOP_PCT / 100.0)
-                if price <= emg_stop:
-                    return await self.close_position(
-                        symbol, self._trigger_fill_price(price, emg_stop, "stop"), "velocity_emergency_stop")
-            # Chat Prediction (velocity auto-trade) ve Lead-Lag kâr koruma merdiveni:
-            # 1) +%0.5 kâr görülünce stop, round-trip maliyetin üstüne çekilir
-            #    → pozisyon artık zarara dönemez (D-01: eskiden dönüyordu).
-            # 2) Dinamik trailing YOK: çıkış, açılışta tahmin edilen hedefe
-            #    (target_pct → system_take_profit_price) göre TP'de yapılır;
-            #    kâr kilidi stop'u sabit tutar (tepeyi takip etmez).
-            # 3) Sert/acil stop: -%3 emergency stop + max-hold (30dk) korur.
-            if pos.get("strategy") in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG") and not lock_armed:
-                lock_trigger = entry * (1 + config.VELOCITY_TRAIL_TRIGGER_PCT / 100.0)
-                if float(pos.get("max_price") or entry) >= lock_trigger:
-                    pos["velocity_protection_armed"] = True
-                    qty_value = float(pos.get("quantity", 0) or 0) * entry
-                    # D-01 (2026-09-12) — KRİTİK PARA MATEMATİĞİ.
-                    # BİRİM SÖZLEŞMESİ: config.min_net_exit_pct(...) bir
-                    # FRAKSİYON döndürür (0.004 == %0.40), yüzde DEĞİL.
-                    # VELOCITY_PROFIT_LOCK_PCT ise yüzde birimindedir (/100).
-                    # TEK DOĞRULUK KAYNAĞI: round-trip maliyet formülü
-                    # config.min_net_exit_pct — burada yeni formül uydurulmaz.
-                    # İçerdiği bileşenler: 2 × EFEKTİF komisyon (GİRİŞ + ÇIKIŞ
-                    # bacağı; 2026-10-16 (maliyet/çıkış): BNB indirimi/override
-                    # dahil, config.effective_commission_pct) + 2 ×
-                    # ESTIMATED_SLIPPAGE_PCT + asgari net kâr
-                    # payı (MIN_EXPECTED_NET_PNL_TRY / order_value).
-                    # ESKİ HATA: önceki kod yalnızca GİRİŞ komisyonunu
-                    # ekliyordu → üretilen gross %0.160, gereken round-trip
-                    # maliyet %0.300 → "kilitli kâr" çıkışlarının HEPSİ zarar
-                    # yazıyordu (10.000 TRY notionalda −14.02 TRY net).
-                    # Kilit zemini: konfigüre edilmiş sabit kâr tamponu ile
-                    # round-trip maliyetin BÜYÜĞÜ (ikisini de karşılar).
-                    lock_fraction = max(config.VELOCITY_PROFIT_LOCK_PCT / 100.0,
-                                        config.min_net_exit_pct(qty_value))
-                    lock_stop = entry * (1 + lock_fraction)
-                    # D-01/2026-09-26: kilit stop'u daima en yüksek stop'tur —
-                    # `max(system_stop, lock_stop)` yerine sert stop düşük,
-                    # kilit yüksek olduğunda TAVAN kilittir. no_initial_stop
-                    # modunda `system_stop` -inf olduğu için `max` inf'i
-                    # yutmaz; burada atlanması gereken negatif-sonsuz değeri
-                    # normalleştiriyoruz.
-                    base_stop = raw_stop if raw_stop > float("-inf") else lock_stop
-                    pos["system_stop_price"] = max(base_stop, lock_stop)
-                    system_stop = pos["system_stop_price"]
-                    # KİLİT + STOP KALICILIĞI: `positions` tablosunda bu
-                    # kolonlar yok; `entry_context` JSONB'nin `_runtime`
-                    # alt sözlüğü `database._position_entry_context` tarafından
-                    # otomatik taşınır. Restart sonrası `load_positions`
-                    # bu alanları geri yükler → stop'suz pozisyon sözleşmesi
-                    # korunur.
-                    await self._persist_velocity_lock(pos, symbol=symbol)
-            if price <= system_stop:
-                # Kâr kilidi stop'u bir trailing değil, kârı koruyan sabit bir
-                # zemindir; normal stop-loss çıkışı olarak işlenir.
-                return await self.close_position(
-                    symbol, self._trigger_fill_price(price, system_stop, "stop"), "system_stop_loss")
-            if pos.get("strategy") in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG"):
-                # Replay planı, otonom hız avcısı ve Lead-Lag çıkışları: sabit plan TP
-                # (hedef fiyat) ve max-hold. TP girişte
-                # system_take_profit_price olarak yazılır ve positions.take_profit
-                # kolonuna da düşer; restart sonrası restore'da system_ alanı
-                # yoksa take_profit devreye girer. Max-hold reason'ı "max_hold_"
-                # ön ekli değildir ki 24 saatlik timeout re-entry bloğu
-                # tetiklenmesin (15 dk scalp planı için aşırı).
-                plan_tp = float(pos.get("system_take_profit_price") or pos.get("take_profit") or 0)
-                if plan_tp and price >= plan_tp:
-                    reason_tp = "lead_lag_take_profit" if pos.get("strategy") == "GLOBAL_LEAD_LAG" else "chat_plan_take_profit"
-                    return await self.close_position(
-                        symbol, self._trigger_fill_price(price, plan_tp, "take_profit"), reason_tp)
-                # velocity_max_hold_sec bellek alanıdır; restart sonrası
-                # restore edilen pozisyonlar için plan süresi kalıcı
-                # entry_context'ten okunur.
-                ectx_hold = (pos.get("entry_context") or {}).get("max_hold_sec")
-                plan_hold = float(pos.get("velocity_max_hold_sec") or ectx_hold or 0)
-                if plan_hold > 0:
-                    elapsed_hold = max(0.0, time.time() - float(pos.get("entry_time") or time.time()))
-                    if elapsed_hold >= plan_hold:
-                        reason_hold = "lead_lag_max_hold" if pos.get("strategy") == "GLOBAL_LEAD_LAG" else "chat_plan_max_hold"
-                        return await self.close_position(symbol, price, reason_hold)
-        if pos:
-            elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
-            entry = pos.get("entry_price", price)
-            max_progress = max(0.0, (pos.get("max_price", entry) - entry) / entry) if entry else 0.0
-            if elapsed >= config.EARLY_FAILURE_SEC and max_progress < config.EARLY_FAILURE_MIN_PROGRESS_PCT:
-                return await self.close_position(symbol, price, "early_failure_no_progress")
-            if elapsed >= config.STALE_POSITION_SEC and max_progress < config.STALE_POSITION_MIN_PROGRESS_PCT:
-                return await self.close_position(symbol, price, "stale_position_no_progress")
-            # Klasik stratejilerde sabit yüzdeli trailing yerine ATR trailing kullanılır.
-            # Stop yalnızca yukarı taşınır; trend devam ettiği sürece pozisyon süreyle kesilmez.
-            atr = self.calculate_atr(kline, config.SYSTEM_ATR_PERIOD) if kline else None
-            if atr and max_progress >= (atr * config.SYSTEM_ATR_TRAILING_ACTIVATION_ATR / entry):
-                candidate = pos.get("max_price", entry) - atr * config.SYSTEM_ATR_TRAILING_MULTIPLIER
-                previous = float(pos.get("system_trailing_stop_price") or 0)
-                pos["system_trailing_stop_price"] = max(previous, candidate)
-                net_floor = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
-                if price <= pos["system_trailing_stop_price"] and price >= net_floor:
-                    return await self.close_position(
-                        symbol,
-                        self._trigger_fill_price(price, pos["system_trailing_stop_price"], "stop"),
-                        "atr_trailing_stop")
-            if (config.STALE_POSITION_EXIT_BELOW_COST and elapsed >= config.STALE_POSITION_SEC and
-                    price < entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))):
-                return await self.close_position(symbol, price, "stale_position_below_cost")
-            # Sistem TP'si sabit erken kapanış değildir: RR hedefi görüldüğünde
-            # işaretlenir, pozisyon ATR trailing stop ile trendi takip etmeye devam eder.
-            system_target = pos.get("system_take_profit_price") or pos.get("take_profit")
-            if system_target and price >= float(system_target):
-                pos["system_target_reached"] = True
-        return None
+
+        self._refresh_peak_prices(pos, price, kline)
+
+        # LLM_PAPER çıkışları LLM planına aittir; eski sabit kurallar uygulanmaz.
+        if pos.get("strategy") == "LLM_PAPER":
+            return await self._check_llm_paper_exit(symbol, price, pos)
+
+        is_autonomous = pos.get("strategy") in ("CHAT_PREDICTION", "GLOBAL_LEAD_LAG")
+
+        # Otonom: acil stop + kâr kilidi arming (system stop'tan ÖNCE — orijinal sıra).
+        if is_autonomous:
+            result = await self._check_velocity_arming(symbol, price, pos)
+            if result is not None:
+                return result
+
+        # Sert stop / kâr kilidi zeminine göre çıkış — tüm LLM dışı pozisyonlara uygulanır.
+        result = await self._check_system_stop_exit(symbol, price, pos)
+        if result is not None:
+            return result
+
+        # Otonom: sabit plan TP ve plan max-hold (system stop'tan SONRA — orijinal sıra).
+        if is_autonomous:
+            result = await self._check_plan_tp_hold(symbol, price, pos)
+            if result is not None:
+                return result
+
+        # Klasik stratejiler: early-failure / stale / ATR trailing.
+        return await self._check_classic_exit(symbol, price, pos, kline)
+
 
     def llm_position_context(self, symbol, price=None):
         symbol = str(symbol).replace("_", "").upper()

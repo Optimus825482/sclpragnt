@@ -2021,6 +2021,283 @@ def _note_notify_skip(sym: str, text: str) -> None:
         pass
 
 
+def _notify_new_gates(sym: str, c: dict, score: float, base_px: float, settings: dict,
+                      now: float, now_mono: float) -> str | None:
+    """YENİ bildirim yolunun kapıları: debounce, cooldown, bekleyen hedef, fiyat değişimi,
+    R/R, MACD histerezisi, velocity-only izleme, günlük/soğuma politikası.
+
+    Döner: None → geçti (bildirim üretilebilir); aksi halde atlama nedeni metni.
+    Yan etki: `candidate_streak`, `pending_targets`, sayaçlar güncellenir (orijinal davranış).
+    """
+    # Debounce: fast-lane altındaki adaylar N ardışık taramada aday kalmalı
+    # (tek-tarama gürültüsünü keser). Yüksek skor hızlı pump'ta gelir — fast-lane beklemeden geçer.
+    streak = int(_monitoring_state["candidate_streak"].get(sym, 0)) + 1
+    fast_lane = score >= float(config.MONITORING_FAST_LANE_SCORE)
+    if not fast_lane and streak < config.MONITORING_DEBOUNCE_SCANS:
+        _monitoring_state["candidate_streak"][sym] = streak
+        return f"debounce: {streak}/{config.MONITORING_DEBOUNCE_SCANS} ardışık tarama (hızlı şerit ≥{config.MONITORING_FAST_LANE_SCORE:g})"
+    _monitoring_state["candidate_streak"][sym] = streak
+    # Kısa vadeli soğama (F-07: monotonik ölçüm → duvar saati adımına dayanıklı)
+    last_sent = _monitoring_state["notified_symbols"].get(sym)
+    if last_sent is not None and now_mono - last_sent < NOTIFY_COOLDOWN_SEC:
+        return f"sembol soğuma ({NOTIFY_COOLDOWN_SEC / 60:g} dk)"
+    # Beklenen fiyata ulaşana kadar aynı sembolü tekrar bildirme
+    pending = _monitoring_state["pending_targets"].get(sym)
+    if pending:
+        horizon_sec = int(pending.get("horizon_minutes", 5) + 2) * 60
+        if now - float(pending.get("set_at", 0)) < horizon_sec:
+            return "beklenen fiyata ulaşılmadı (ufuk dolmadı; tekrar bildirim yok)"
+        _monitoring_state["pending_targets"].pop(sym, None)
+    # D-07: fiyat son bildirimden beri yeterince değişmediyse aynı sinyalin tekrarı sayılır.
+    last_px = _num(_monitoring_state["notified_prices"].get(sym), 0.0) or 0.0
+    if last_px > 0 and base_px > 0 and (
+            abs(base_px - last_px) / last_px * 100 < MONITORING_REFIRE_MIN_MOVE_PCT):
+        _monitoring_state["refire_blocked"] = int(_monitoring_state.get("refire_blocked", 0)) + 1
+        return "fiyat son bildirimden beri yeterince değişmedi"
+    # A4: R/R kapısı — düşük risk/ödül adayı yalnızca YENİ bildirimde engellenir.
+    if _rr_gate_blocks(base_px, float(c.get("target_pct") or 0) or 0.0):
+        _monitoring_state["rr_blocked"] = int(_monitoring_state.get("rr_blocked", 0)) + 1
+        return "risk/ödül kapısı"
+    # A5: MACD-teyitli histerezis — skor yükselmediyse ve MACD teyidi zayıfsa yeniden bildirim yok.
+    if bool((settings or {}).get("macd_refire_gate",
+                                 getattr(config, "MONITORING_MACD_REFIRE_GATE", True))):
+        _ns = _monitoring_state.setdefault("notified_scores", {})
+        prev_score = _ns.get(sym)
+        macd_strong = bool(c.get("macd_bullish") or c.get("macd_rising"))
+        if prev_score is not None and not macd_strong and score <= float(prev_score):
+            return "MACD histerezisi: skor yükselmedi, MACD teyidi zayıf"
+    # 2026-10-15: yalnız-velocity aday push GÖNDERİLMEZ; izleme listesine alınır.
+    if _NOTIFY_LEADLAG_PRIORITY and _is_velocity_only(c):
+        c["watchlist_only"] = True
+        logger.info("radar: velocity-only aday izleme listesine alındı %s", sym)
+        return "yalnız-hız adayı izleme listesine alındı"
+    # 2026-10-15: sembol soğuma + günlük tavan (mevcut kapılardan SONRA çalışır).
+    _policy_reason = _notify_policy_allows(sym, now)
+    if _policy_reason:
+        logger.info("radar bildirimi atlandı %s: %s", sym, _policy_reason)
+        return str(_policy_reason)
+    return None
+
+
+async def _notify_finalize(notified: list, new_entries: list, plan_batch: list, candidates_list: list,
+                           settings: dict, quiet: bool, now: float, now_mono: float,
+                           pending_by_symbol: dict, heartbeat_pool) -> list:
+    """Döngü sonrası: plan ekleme, politika ön-kontrolü, sessizlik nabzı, blok düşürme."""
+    if plan_batch:
+        # Güncellenen (zaten bildirilmiş) adayın planı saklıysa yeniden kurulmaz.
+        await notification_plan.attach_plans(plan_batch, "radar")
+    if new_entries:
+        for n in new_entries:
+            n["sent_via_push"] = False
+        _notification_policy.precheck(new_entries)
+        # 2026-10-17: gölge kural kaydı (≥2 kaynak ∧ trend_devam) — canlı karardan bağımsız.
+        await _record_notification_shadow(new_entries)
+    # 2026-10-16: lavaboda bloklanan bildirimler `policy_blocked` taşır; push/WS/otonom paper
+    # /LLM ikinci göz yollarına GİRMEZ. Otonom giriş kuralları burada dokunulmaz.
+    # 2026-10-18 SESSİZLİK NABZI: politikaya takılanlar aşağıda düşer; nabız BURADA eklenir.
+    try:
+        _hb = await _heartbeat_notification(candidates_list, notified, settings, quiet, now, now_mono,
+                                            pending_by_symbol, heartbeat_pool=heartbeat_pool)
+    except Exception as exc:  # noqa: BLE001 — nabız hiçbir zaman tarama turunu düşürmez
+        logger.warning("sessizlik nabzı hatası: %s", exc)
+        _hb = None
+    if _hb is not None:
+        _hb["quiet_hours"] = bool(quiet)
+        notified.append(_hb)
+    _policy_blocked = [n for n in notified if n.get("policy_blocked")]
+    if _policy_blocked:
+        for n in _policy_blocked:
+            logger.info("bildirim politikası: %s (mod=%s) teslimden düşürüldü — %s",
+                        n.get("symbol"), n.get("mode"), n.get("policy_blocked"))
+            _note_notify_skip(n.get("symbol"), str(n.get("policy_blocked")))
+        notified = [n for n in notified if not n.get("policy_blocked")]
+        if not notified:
+            return []
+    # Sessiz saat bilgisi bildirim nesnesine işaretlenir (teslim aşaması okur).
+    for n in notified:
+        n["quiet_hours"] = bool(quiet)
+    # NOT: oturum geçmişi burada DOLDURULMAZ; yalnız push denenen bildirimler
+    # `_register_push_notifications` içinde geçmişe girer (panel bildirimi yok).
+    # B5: Push/WS/otonom paper denemeleri STATE KİLİDİ DIŞINA taşındı
+    # (`_deliver_scan_notifications`) — ağır ağ I/O'su GET /state ve /scan'i bloklamasın.
+    return notified
+
+
+async def _notify_update_existing(sym: str, c: dict, settings: dict, score: float, target: float,
+                                  pending_by_symbol: dict, now: float,
+                                  notified: list, plan_batch: list) -> bool:
+    """Ufku dolmamış BEKLİYOR bildirimi varsa onu GÜNCELLER (veya dondurur).
+
+    Döner: True → bu aday işlendi (çağıran `continue` etmeli); False → mevcut kayıt yok.
+    """
+    # Bu sembol için ufku dolmamış (sonucu bekleyen) bildirim var mı kontrol et.
+    # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
+    # ayni kayit guncellenir. (monitoring_notifications'ta status kolonu yok;
+    # bekliyor tanimi okuma tarafindaki window_closed ile ayni olmalidir.)
+    horizon_min = int(_num(c.get("horizon_minutes", 5), 5) or 5)
+    existing_pending = pending_by_symbol.get(sym)
+    if not existing_pending:
+        return False
+    if not (now - float(existing_pending.get("detected_at") or 0)
+            < (int(existing_pending.get("horizon_minutes") or horizon_min) + 2) * 60):
+        return False
+    # Mevcut BEKLIYOR bildirimi guncelle (detected_at korunur); ML alanlari
+    # da guncellenir (aksi halde guncelleme yolunda kaybolurdu, 2026-09-04).
+    # Giris fiyati ILK bildirim anindaki fiyat olarak SABIT kalir (2026-09-04
+    # kullanici karari): hedef fiyati son taramanin hedef yuzdesiyle ILK
+    # giris fiyatindan yeniden hesaplanir — kullanici ilk giris + guncel
+    # hedefi aynen takip edebilir (grafik cizgileri de bu iki seviyeyi
+    # gosterir).
+    # 2026-10-18 (RADAR_NOTIFY_FREEZE_ON_SEND, varsayılan açık — kullanıcı kararı): bildirim gönderildikten
+    # sonra hedef/skor/ufuk/beklenen fiyat/kalibre isabet DEĞİŞMEZ. Güncelleme yok; kullanıcıya WS ile yeni
+    # değer yayınlanmaz ve otonom paper TP'si yeniden yazılmaz. Yalnız eksikse ölçüm bağı (candidate_id) kurulur.
+    if getattr(config, "RADAR_NOTIFY_FREEZE_ON_SEND", False):
+        if not existing_pending.get("candidate_id") and c.get("candidate_id"):
+            await database.set_monitoring_notification_candidate(existing_pending["id"], c.get("candidate_id"))
+        _monitoring_state["candidate_streak"].pop(sym, None)
+        _note_notify_skip(sym, "bildirim zaten gönderildi (ufuk dolmadı; hedef/skor donduruldu)")
+        return True
+    first_price = float(existing_pending.get("price") or 0) or float(c.get("price", 0) or 0)
+    # Ufuk daralmasın: bildirim SON ufuk süresi dolana kadar takipte kalır;
+    # 5dk taraması 15dk bildirimin penceresini kısaltamaz (2026-09-04).
+    horizon_keep = max(int(existing_pending.get("horizon_minutes") or 0), horizon_min)
+    cand_id_keep = existing_pending.get("candidate_id") or c.get("candidate_id")
+    await database.update_monitoring_notification(
+        existing_pending["id"],
+        score=score,
+        target_pct=target,
+        price=first_price,
+        expected_price=first_price * (1 + target / 100),
+        horizon_minutes=horizon_keep,
+        mode=c.get("mode"),
+        ml_target_pct=c.get("ml_target_pct"),
+        ml_hit_probability=c.get("ml_hit_probability"),
+        candidate_id=cand_id_keep,
+        # 2026-10-18: hedef yenilendi → kalibre isabet / başabaş isabet de yeniden hesaplanır
+        metrics=notify_metrics.notification_metrics(
+            target, c.get("atr_pct") if c.get("atr_pct") is not None else c.get("atr_pct_15m"),
+            horizon_keep),
+    )
+    # Eski kayitlar kalir - sinyal tarihcesi icin
+    # Bildirim olarak da ekle (push için)
+    notif = _build_notification(sym, c, settings, first_price=first_price)
+    # B2: `detected_at` DB kaydındaki İLK tespit zamanıyla eşitlenir;
+    # `_build_notification` taze zaman üretiyordu — sessiz saat kuyruğuna
+    # düşerse TTL hesabı gerçek yaşından uzun ömür verecekti.
+    orig_detected = float(existing_pending.get("detected_at") or 0)
+    if orig_detected > 0:
+        notif["detected_at"] = orig_detected
+    notif["id"] = existing_pending["id"]
+    # Güncelleme, asıl satırın push sonucunu taşır (push'u gitmemiş satır uygulamaya güncelleme olarak da düşmez).
+    notif["sent_via_push"] = bool(existing_pending.get("sent_via_push"))
+    # Aynı bildirim (aynı tag + ilk detected_at) → aynı plan anahtarı; ilk plan kazanır.
+    plan_batch.append(notif)  # döngü sonrası TOPLU (eşzamanlı) eklenir
+    notif["updated"] = True
+    notified.append(notif)
+    # Güncellenen bildirimin streak'i temizlenir (bildirim zaten aktif)
+    _monitoring_state["candidate_streak"].pop(sym, None)
+    return True
+
+
+def _notify_score_gate(c: dict, settings: dict, min_raw: float, eff_min_score: float,
+                       now: float):
+    """Aday skor/eşik/surge kapısı. Döner: (geçti: bool, score, target)."""
+    sym = str(c.get("symbol", "") or "").upper()
+    # BİRLEŞİK SİNYAL (2026-09-17): füzyon-tek adaylar (radar ham skor kapısını
+    # geçemeyip MACD öncüsüyle güçlü olanlar) `unified_pass` ile girer; skorları
+    # füzyon panel skoru (0-100) olur. Radar adaylarında davranış DEĞİŞMEZ.
+    unified_pass = bool(c.get("unified_pass"))
+    # normalize_score'a geçilir (2026-09-04 teşhis). upside_rank yalnızca
+    # SIRALAMA anahtarıdır (dk-başı yükseliş × kalite × mikro-yapı).
+    # #9 (2026-09-26): `_num` koruması — tek bozuk satır turu düşürmez.
+    raw = _num(c.get("velocity_score", 0), 0.0) or 0.0
+    unified_score = _num(c.get("unified_score"), 0.0) or 0.0
+    score = unified_score if unified_pass else normalize_score(raw)
+    target = _num(c.get("target_pct"), 2.0)
+    target = 2.0 if target is None else target
+    min_target = 0.0 if _target_gates_skipped() else (_num(settings.get("min_target_pct"), 0.0) or 0.0)
+    # EŞİK KONTROLÜ (2026-09-21): panel eşiği (eff_min_score) tüm adaylar için
+    # bağlayıcıdır. Normal radar adayları ayrıca ham skor kapısını (min_raw) da geçmelidir.
+    if not sym:
+        return False, score, target
+    if unified_pass:
+        if score < eff_min_score:
+            return False, score, target
+    else:
+        if raw < min_raw or score < eff_min_score:
+            return False, score, target
+    if min_target > 0 and target < min_target:
+        return False, score, target
+    # MASTER SURGE SERT RİSK KAPISI (2026-09-26 denetimi bölüm 2.2 + P0-1
+    # 2026-10-07 düzeltmesi): yalnızca GERÇEK risk blokları (EXTREME_LONG
+    # fonlaması, BTC panik döküşü, BTC rejim kalkanı) karar yolunu kapatır.
+    # "Yetersiz 4'lü teyit / düşük kompozit" artık SKORLAMA girdisidir —
+    # bildirimi öldürmez (P0-1: aksi halde adayların çoğu sessizce elenirdi).
+    # 2026-10-15: TEK kapı `gate_candidate` — sert risk + katman 1 +
+    # passes/exhausted/üst fitil/spread; kombine liste de aynısı.
+    _surge_block = gate_candidate(c)
+    if _surge_block:
+        _monitoring_state["surge_blocked"] = int(
+            _monitoring_state.get("surge_blocked", 0)) + 1
+        # Neden rozeti: bildirim ÜRETİLMEZ ama panel/rapor blok nedenini
+        # görebilsin (sessiz eleme olmaz). Sınırlı tutulur (GÖREV 5 deseni).
+        _sb = _monitoring_state.setdefault("surge_blocked_symbols", {})
+        _sb[sym] = {"reason": _surge_block, "at": now}
+        if len(_sb) > 250:
+            for k in sorted(_sb, key=lambda s: _sb[s].get("at", 0))[:len(_sb) - 250]:
+                _sb.pop(k, None)
+        return False, score, target
+    return True, score, target
+
+
+def _notify_record_new(sym: str, c: dict, notif: dict, score: float, base_px: float,
+                       now: float, now_mono: float, new_entries: list) -> None:
+    """Kabul edilen YENİ bildirimin yan etkileri: sayımlar, cooldown, bekleyen hedef, budama."""
+    notif["updated"] = False
+    new_entries.append(notif)
+    # 2026-10-15 (radar iyileştirme): bildirim kabul edildi → politika sayaçları işlenir
+    # (soğuma + günlük sayı). Push teslimi sonradan denenir; kayıt burada yazılır, aynı
+    # `notified_symbols` kaydı gibi.
+    _notify_policy_record(sym, now)
+    _monitoring_state["notified_symbols"][sym] = now_mono
+    _monitoring_state.setdefault("notified_scores", {})[sym] = score
+    _prune_notified_scores()
+    if base_px > 0:
+        _monitoring_state["notified_prices"][sym] = base_px
+    _monitoring_state["candidate_streak"].pop(sym, None)
+    expected_price = _num(notif.get("expected_price"), 0.0) or 0.0
+    horizon_minutes = int(_num(c.get("horizon_minutes"), 5) or 5)
+    entry_price = _num(notif.get("price"), 0.0) or base_px or 0.0
+    # `target_pct` pending'e YAZILMAZ: hedef EMA'sı bu yoldan beslenmez
+    # (gerçekleşen MFE ölçülemiyor) — 2026-09-17 denetimi.
+    if expected_price > 0:
+        _monitoring_state["pending_targets"][sym] = {
+            "expected": expected_price,
+            "entry_price": entry_price,
+            # 2026-09-26 (#7 sınıfı): config'te `AUTO_PAPER_SL_PCT` YOK;
+            # yalnız `AUTO_PAPER_SL_PCT_DEFAULT` var (env `AUTO_PAPER_SL_PCT`,
+            # varsayılan %5.0). 2026-10-07: literal `1.5` fallback KALDIRILDI —
+            # öznitelik her zaman tanımlı; eksikse AttributeError doğru/gürültülü
+            # hatadır. Bayat 1.5 fallback sessizce ESKİ stop tabanını (ve
+            # panelde gösterilen `sl_pct`'i) yalan olarak geri getirirdi.
+            "sl_pct": float(config.AUTO_PAPER_SL_PCT_DEFAULT),
+            "horizon_minutes": horizon_minutes,
+            "set_at": now,
+            # MACD MTF ölçüm takipçileri: pencere içi zirve/dip + DB satır
+            # bağlantısı (`_check_pending_targets` çözümleyince yazar).
+            "max_price": entry_price,
+            "min_price": entry_price,
+            "notification_id": None,
+        }
+    if len(_monitoring_state["notified_symbols"]) > 500:
+        for k in sorted(_monitoring_state["notified_symbols"], key=_monitoring_state["notified_symbols"].get)[:-250]:
+            _monitoring_state["notified_symbols"].pop(k, None)
+    # D-07: fiyat geçmişi de sınırlı (sonsuz büyüme yok).
+    if len(_monitoring_state["notified_prices"]) > 500:
+        for k in list(_monitoring_state["notified_prices"])[:-250]:
+            _monitoring_state["notified_prices"].pop(k, None)
+
+
 async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
     """Eşikleri geçen adaylar için bildirim üret ve web push gönder.
 
@@ -2074,285 +2351,29 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
         candidates_list = sorted(candidates_list, key=lambda c: 0 if _is_leadlag_confirmed(c) else 1)
     for c in candidates_list:
         sym = str(c.get("symbol", "") or "").upper()
-        # BİRLEŞİK SİNYAL (2026-09-17): füzyon-tek adaylar (radar ham skor kapısını
-        # geçemeyip MACD öncüsüyle güçlü olanlar) `unified_pass` ile girer; skorları
-        # füzyon panel skoru (0-100) olur. Radar adaylarında davranış DEĞİŞMEZ.
-        unified_pass = bool(c.get("unified_pass"))
-        # normalize_score'a geçilir (2026-09-04 teşhis). upside_rank yalnızca
-        # SIRALAMA anahtarıdır (dk-başı yükseliş × kalite × mikro-yapı).
-        # #9 (2026-09-26): `_num` koruması — tek bozuk satır turu düşürmez.
-        raw = _num(c.get("velocity_score", 0), 0.0) or 0.0
-        unified_score = _num(c.get("unified_score"), 0.0) or 0.0
-        score = unified_score if unified_pass else normalize_score(raw)
-        target = _num(c.get("target_pct"), 2.0)
-        target = 2.0 if target is None else target
-        min_target = 0.0 if _target_gates_skipped() else (_num(settings.get("min_target_pct"), 0.0) or 0.0)
-        # EŞİK KONTROLÜ (2026-09-21): Kullanıcının belirlediği panel eşiği (eff_min_score)
-        # tüm adaylar için bağlayıcıdır. Skor altındaki hiçbir zayıf fırsat bildirilmez.
-        # Normal radar adayları ayrıca ham skor kapısını (min_raw) da geçmelidir.
-        if not sym:
-            continue
-        if unified_pass:
-            if score < eff_min_score:
-                continue
-        else:
-            if raw < min_raw or score < eff_min_score:
-                continue
-        if min_target > 0 and target < min_target:
-            continue
-        # MASTER SURGE SERT RİSK KAPISI (2026-09-26 denetimi bölüm 2.2 + P0-1
-        # 2026-10-07 düzeltmesi): yalnızca GERÇEK risk blokları (EXTREME_LONG
-        # fonlaması, BTC panik döküşü, BTC rejim kalkanı) karar yolunu kapatır.
-        # "Yetersiz 4'lü teyit / düşük kompozit" artık SKORLAMA girdisidir —
-        # bildirimi öldürmez (P0-1: aksi halde adayların çoğu sessizce elenirdi).
-        # 2026-10-15 (radar düzeltmesi): TEK kapı `gate_candidate` — sert risk +
-        # katman 1 + passes/exhausted/üst fitil/spread; kombine liste de aynısı.
-        _surge_block = gate_candidate(c)
-        if _surge_block:
-            _monitoring_state["surge_blocked"] = int(
-                _monitoring_state.get("surge_blocked", 0)) + 1
-            # Neden rozeti: bildirim ÜRETİLMEZ ama panel/rapor blok nedenini
-            # görebilsin (sessiz eleme olmaz). Sınırlı tutulur (GÖREV 5 deseni).
-            _sb = _monitoring_state.setdefault("surge_blocked_symbols", {})
-            _sb[sym] = {"reason": _surge_block, "at": now}
-            if len(_sb) > 250:
-                for k in sorted(_sb, key=lambda s: _sb[s].get("at", 0))[:len(_sb) - 250]:
-                    _sb.pop(k, None)
+        _ok, score, target = _notify_score_gate(c, settings, min_raw, eff_min_score, now)
+        if not _ok:
             continue
 
-        sources = c.get("sources") or c.get("unified_sources")
-        # Bu sembol icin ufku dolmamis (sonucu bekleyen) bildirim var mi kontrol et.
-        # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
-        # ayni kayit guncellenir. (monitoring_notifications'ta status kolonu yok;
-        # bekliyor tanimi okuma tarafindaki window_closed ile ayni olmalidir.)
-        horizon_min = int(_num(c.get("horizon_minutes", 5), 5) or 5)
-        existing_pending = pending_by_symbol.get(sym)
-        if existing_pending and (
-            now - float(existing_pending.get("detected_at") or 0)
-            < (int(existing_pending.get("horizon_minutes") or horizon_min) + 2) * 60
-        ):
-            # Mevcut BEKLIYOR bildirimi guncelle (detected_at korunur); ML alanlari
-            # da guncellenir (aksi halde guncelleme yolunda kaybolurdu, 2026-09-04).
-            # Giris fiyati ILK bildirim anindaki fiyat olarak SABIT kalir (2026-09-04
-            # kullanici karari): hedef fiyati son taramanin hedef yuzdesiyle ILK
-            # giris fiyatindan yeniden hesaplanir — kullanici ilk giris + guncel
-            # hedefi aynen takip edebilir (grafik cizgileri de bu iki seviyeyi
-            # gosterir).
-            # 2026-10-18 (RADAR_NOTIFY_FREEZE_ON_SEND, varsayılan açık — kullanıcı kararı): bildirim gönderildikten
-            # sonra hedef/skor/ufuk/beklenen fiyat/kalibre isabet DEĞİŞMEZ. Güncelleme yok; kullanıcıya WS ile yeni
-            # değer yayınlanmaz ve otonom paper TP'si yeniden yazılmaz. Yalnız eksikse ölçüm bağı (candidate_id) kurulur.
-            if getattr(config, "RADAR_NOTIFY_FREEZE_ON_SEND", False):
-                if not existing_pending.get("candidate_id") and c.get("candidate_id"):
-                    await database.set_monitoring_notification_candidate(existing_pending["id"], c.get("candidate_id"))
-                _monitoring_state["candidate_streak"].pop(sym, None)
-                _note_notify_skip(sym, "bildirim zaten gönderildi (ufuk dolmadı; hedef/skor donduruldu)")
-                continue
-            first_price = float(existing_pending.get("price") or 0) or float(c.get("price", 0) or 0)
-            # Ufuk daralmasın: bildirim SON ufuk süresi dolana kadar takipte kalır;
-            # 5dk taraması 15dk bildirimin penceresini kısaltamaz (2026-09-04).
-            horizon_keep = max(int(existing_pending.get("horizon_minutes") or 0), horizon_min)
-            cand_id_keep = existing_pending.get("candidate_id") or c.get("candidate_id")
-            await database.update_monitoring_notification(
-                existing_pending["id"],
-                score=score,
-                target_pct=target,
-                price=first_price,
-                expected_price=first_price * (1 + target / 100),
-                horizon_minutes=horizon_keep,
-                mode=c.get("mode"),
-                ml_target_pct=c.get("ml_target_pct"),
-                ml_hit_probability=c.get("ml_hit_probability"),
-                candidate_id=cand_id_keep,
-                # 2026-10-18: hedef yenilendi → kalibre isabet / başabaş isabet de yeniden hesaplanır
-                metrics=notify_metrics.notification_metrics(
-                    target, c.get("atr_pct") if c.get("atr_pct") is not None else c.get("atr_pct_15m"),
-                    horizon_keep),
-            )
-            # Eski kayitlar kalir - sinyal tarihcesi icin
-            # Bildirim olarak da ekle (push için)
-            notif = _build_notification(sym, c, settings, first_price=first_price)
-            # B2: `detected_at` DB kaydındaki İLK tespit zamanıyla eşitlenir;
-            # `_build_notification` taze zaman üretiyordu — sessiz saat kuyruğuna
-            # düşerse TTL hesabı gerçek yaşından uzun ömür verecekti.
-            orig_detected = float(existing_pending.get("detected_at") or 0)
-            if orig_detected > 0:
-                notif["detected_at"] = orig_detected
-            notif["id"] = existing_pending["id"]
-            # Güncelleme, asıl satırın push sonucunu taşır (push'u gitmemiş satır uygulamaya güncelleme olarak da düşmez).
-            notif["sent_via_push"] = bool(existing_pending.get("sent_via_push"))
-            # Aynı bildirim (aynı tag + ilk detected_at) → aynı plan anahtarı; ilk plan kazanır.
-            plan_batch.append(notif)  # döngü sonrası TOPLU (eşzamanlı) eklenir
-            notif["updated"] = True
-            notified.append(notif)
-            # Güncellenen bildirimin streak'i temizlenir (bildirim zaten aktif)
-            _monitoring_state["candidate_streak"].pop(sym, None)
+        # Ufku dolmamış BEKLİYOR bildirimi varsa güncelle (veya dondur) ve adayı bitir.
+        if await _notify_update_existing(sym, c, settings, score, target, pending_by_symbol,
+                                         now, notified, plan_batch):
             continue
-        # Debounce: fast-lane altındaki adaylar N ardışık taramada aday kalmalı
-        # (tek-tarama gürültüsünü keser). Yüksek skor hızlı pump'ta gelir —
-        # fast-lane (>= MONITORING_FAST_LANE_SCORE) beklemeden geçer.
-        streak = int(_monitoring_state["candidate_streak"].get(sym, 0)) + 1
-        fast_lane = score >= float(config.MONITORING_FAST_LANE_SCORE)
-        if not fast_lane and streak < config.MONITORING_DEBOUNCE_SCANS:
-            _monitoring_state["candidate_streak"][sym] = streak
-            _note_notify_skip(sym, f"debounce: {streak}/{config.MONITORING_DEBOUNCE_SCANS} ardışık tarama (hızlı şerit ≥{config.MONITORING_FAST_LANE_SCORE:g})")
-            continue
-        _monitoring_state["candidate_streak"][sym] = streak
-        # Kısa vadeli soğama (F-07: monotonik ölçüm → duvar saati adımına dayanıklı)
-        last_sent = _monitoring_state["notified_symbols"].get(sym)
-        if last_sent is not None and now_mono - last_sent < NOTIFY_COOLDOWN_SEC:
-            _note_notify_skip(sym, f"sembol soğuma ({NOTIFY_COOLDOWN_SEC / 60:g} dk)")
-            continue
-        # Beklenen fiyata ulaşana kadar aynı sembolü tekrar bildirme
-        pending = _monitoring_state["pending_targets"].get(sym)
-        if pending:
-            horizon_sec = int(pending.get("horizon_minutes", 5) + 2) * 60
-            if now - float(pending.get("set_at", 0)) < horizon_sec:
-                _note_notify_skip(sym, "beklenen fiyata ulaşılmadı (ufuk dolmadı; tekrar bildirim yok)")
-                continue
-            _monitoring_state["pending_targets"].pop(sym, None)
-        # D-07: fiyat DEGISTI mi? Zaman kapıları doldu ama fiyat aynıysa
-        # bu "yeni sinyal" değil, aynı sinyalin tekrarıdır (donmuş fiyat /
-        # likit olmayan sembol). Taban fiyat aynı kuraldan: taze ticker,
-        # yoksa adayın kendi fiyatı (D-05 ile aynı tek taban).
+        # D-07: taban fiyat — taze ticker, yoksa adayın kendi fiyatı (tek taban).
         cand_px = _num(c.get("price"), 0.0) or 0.0
         tick_px = _ticker_price(sym)
         base_px = tick_px if tick_px else cand_px
-        last_px = _num(_monitoring_state["notified_prices"].get(sym), 0.0) or 0.0
-        if last_px > 0 and base_px > 0 and (
-                abs(base_px - last_px) / last_px * 100 < MONITORING_REFIRE_MIN_MOVE_PCT):
-            _monitoring_state["refire_blocked"] = int(_monitoring_state.get("refire_blocked", 0)) + 1
-            _note_notify_skip(sym, "fiyat son bildirimden beri yeterince değişmedi")
-            continue
-        # A4: R/R kapisi — dusuk risk/odul adayi yalnizca YENI bildirimde
-        # engellenir (mevcut BEKLIYOR bildirim guncellenmesi etkilenmez).
-        # Sayaç kaliibrasyon icin tutulur: "kac aday bastirildi" gorunur olmali.
-        if _rr_gate_blocks(base_px, float(c.get("target_pct") or 0) or 0.0):
-            _monitoring_state["rr_blocked"] = int(_monitoring_state.get("rr_blocked", 0)) + 1
-            _note_notify_skip(sym, "risk/ödül kapısı")
-            continue
-        # A5: MACD-teyitli histerezis — skor yukselmedigi ve MACD teyidi zayif
-        # oldugunda yeniden bildirim basma. Anahtar SETTINGS'ten okunur (admin
-        # panelinden kapatilabilir); settings'te yoksa config varsayilanina duser.
-        if bool((settings or {}).get("macd_refire_gate",
-                                     getattr(config, "MONITORING_MACD_REFIRE_GATE", True))):
-            _ns = _monitoring_state.setdefault("notified_scores", {})
-            prev_score = _ns.get(sym)
-            macd_strong = bool(c.get("macd_bullish") or c.get("macd_rising"))
-            if prev_score is not None and not macd_strong and score <= float(prev_score):
-                _note_notify_skip(sym, "MACD histerezisi: skor yükselmedi, MACD teyidi zayıf")
-                continue
-        # 2026-10-15 (radar iyileştirme): yalnız-velocity aday (bayrak açıkken) push GÖNDERİLMEZ;
-        # izleme listesine alınır (`last_candidates` üzerinden görünür kalır).
-        if _NOTIFY_LEADLAG_PRIORITY and _is_velocity_only(c):
-            c["watchlist_only"] = True
-            logger.info("radar: velocity-only aday izleme listesine alındı %s", sym)
-            _note_notify_skip(sym, "yalnız-hız adayı izleme listesine alındı")
-            continue
-        # 2026-10-15 (radar iyileştirme): sembol soğuma + günlük tavan. Mevcut kapılardan
-        # SONRA çalışır; mevcut sembol soğuması (NOTIFY_COOLDOWN_SEC) aynen korunur.
-        _policy_reason = _notify_policy_allows(sym, now)
-        if _policy_reason:
-            logger.info("radar bildirimi atlandı %s: %s", sym, _policy_reason)
-            _note_notify_skip(sym, str(_policy_reason))
+        _gate_reason = _notify_new_gates(sym, c, score, base_px, settings, now, now_mono)
+        if _gate_reason:
+            _note_notify_skip(sym, _gate_reason)
             continue
         notif = _build_notification(sym, c, settings)
         plan_batch.append(notif)
-        notif["updated"] = False
-        new_entries.append(notif)
         notified.append(notif)
-        # 2026-10-15 (radar iyileştirme): bildirim kabul edildi → politika sayaçları işlenir
-        # (soğuma + günlük sayı). Push teslimi sonradan denenir; kayıt burada yazılır, aynı
-        # `notified_symbols` kaydı gibi.
-        _notify_policy_record(sym, now)
-        _monitoring_state["notified_symbols"][sym] = now_mono
-        _monitoring_state.setdefault("notified_scores", {})[sym] = score
-        _prune_notified_scores()
-        if base_px > 0:
-            _monitoring_state["notified_prices"][sym] = base_px
-        _monitoring_state["candidate_streak"].pop(sym, None)
-        expected_price = _num(notif.get("expected_price"), 0.0) or 0.0
-        horizon_minutes = int(_num(c.get("horizon_minutes"), 5) or 5)
-        entry_price = _num(notif.get("price"), 0.0) or base_px or 0.0
-        # `target_pct` pending'e YAZILMAZ: hedef EMA'sı bu yoldan beslenmez
-        # (gerçekleşen MFE ölçülemiyor) — 2026-09-17 denetimi.
-        if expected_price > 0:
-            _monitoring_state["pending_targets"][sym] = {
-                "expected": expected_price,
-                "entry_price": entry_price,
-                # 2026-09-26 (#7 sınıfı): config'te `AUTO_PAPER_SL_PCT` YOK;
-                # yalnız `AUTO_PAPER_SL_PCT_DEFAULT` var (env `AUTO_PAPER_SL_PCT`,
-                # varsayılan %5.0). 2026-10-07: literal `1.5` fallback KALDIRILDI —
-                # öznitelik her zaman tanımlı; eksikse AttributeError doğru/gürültülü
-                # hatadır. Bayat 1.5 fallback sessizce ESKİ stop tabanını (ve
-                # panelde gösterilen `sl_pct`'i) yalan olarak geri getirirdi.
-                "sl_pct": float(config.AUTO_PAPER_SL_PCT_DEFAULT),
-                "horizon_minutes": horizon_minutes,
-                "set_at": now,
-                # MACD MTF ölçüm takipçileri: pencere içi zirve/dip + DB satır
-                # bağlantısı (`_check_pending_targets` çözümleyince yazar).
-                "max_price": entry_price,
-                "min_price": entry_price,
-                "notification_id": None,
-            }
-        if len(_monitoring_state["notified_symbols"]) > 500:
-            for k in sorted(_monitoring_state["notified_symbols"], key=_monitoring_state["notified_symbols"].get)[:-250]:
-                _monitoring_state["notified_symbols"].pop(k, None)
-        # D-07: fiyat geçmişi de sınırlı (sonsuz büyüme yok).
-        if len(_monitoring_state["notified_prices"]) > 500:
-            for k in list(_monitoring_state["notified_prices"])[:-250]:
-                _monitoring_state["notified_prices"].pop(k, None)
-    # 2026-10-17 (PANEL BİLDİRİMİ KALDIRILDI): bildirim satırı artık BURADA yazılmaz.
-    # Bir radar bildirimi `monitoring_notifications`'a / WS'e / oturum geçmişine YALNIZ
-    # web push gerçekten DENENECEKSE girer (`_deliver_scan_notifications` push'tan hemen
-    # önce yazar; sessiz saatte ertelenenler `_flush_deferred_push` içinde, push
-    # denendiğinde yazılır). Push denenmeyecek adaylar (VAPID yok, boot grace, bildirimler
-    # kapalı...) kayıt/yayın üretmez; ÖLÇÜM kaydı (velocity_candidates /
-    # unified_candidate_outcomes / blok nedenleri) tarama aşamasında zaten yazılmıştır.
-    # Sink politikası (`notification_policy`) kararı burada KAYIT YAZMADAN işlenir ki
-    # bloklanan aday push/WS/otonom paper yollarına girmesin (eski davranış aynen).
-    if plan_batch:
-        # Güncellenen (zaten bildirilmiş) adayın planı saklıysa yeniden kurulmaz (tarama başına REST yok).
-        await notification_plan.attach_plans(plan_batch, "radar")
-    if new_entries:
-        for n in new_entries:
-            n["sent_via_push"] = False
-        _notification_policy.precheck(new_entries)
-        # 2026-10-17: gölge kural kaydı (≥2 kaynak ∧ trend_devam) — canlı karardan bağımsız.
-        await _record_notification_shadow(new_entries)
-    # 2026-10-16 (sinyal politikası): lavaboda (save_monitoring_notifications) bloklanan
-    # bildirimler `policy_blocked` taşır; push / WhatsApp / otonom paper / WS / LLM ikinci
-    # göz yollarına GİRMEZ. Politika bildirim politikasıdır; otonom giriş kuralları
-    # (AUTO_PAPER_ALLOWED_MODES) ayrıdır ve burada dokunulmaz.
-    # 2026-10-18 SESSİZLİK NABZI: politikaya takılanlar aşağıda düşer; nabız adayı BURADA eklenir
-    # (tarama listesinin en yüksek skorlusu; `notify_tier=teyitsiz` lavaboda yeniden bloklanmaz).
-    try:
-        _hb = await _heartbeat_notification(candidates_list, notified, settings, quiet, now, now_mono,
-                                            pending_by_symbol, heartbeat_pool=heartbeat_pool)
-    except Exception as exc:  # noqa: BLE001 — nabız hiçbir zaman tarama turunu düşürmez
-        logger.warning("sessizlik nabzı hatası: %s", exc)
-        _hb = None
-    if _hb is not None:
-        _hb["quiet_hours"] = bool(quiet)
-        notified.append(_hb)
-    _policy_blocked = [n for n in notified if n.get("policy_blocked")]
-    if _policy_blocked:
-        for n in _policy_blocked:
-            logger.info("bildirim politikası: %s (mod=%s) teslimden düşürüldü — %s",
-                        n.get("symbol"), n.get("mode"), n.get("policy_blocked"))
-            _note_notify_skip(n.get("symbol"), str(n.get("policy_blocked")))
-        notified = [n for n in notified if not n.get("policy_blocked")]
-        if not notified:
-            return []
-    # Sessiz saat bilgisi bildirim nesnesine işaretlenir (teslim aşaması okur).
-    for n in notified:
-        n["quiet_hours"] = bool(quiet)
-    # NOT: oturum geçmişi (`_monitoring_state["history"]`) artık burada DOLDURULMAZ;
-    # yalnız push denenen (kaydedilen) bildirimler `_register_push_notifications`
-    # içinde geçmişe girer (panel bildirimi yok).
-    # B5: Push gönderimi, WS yayını ve otonom paper denemeleri STATE KİLİDİ
-    # DIŞINA taşındı (`_deliver_scan_notifications`) — ağırlıklı ağ I/O'su kilit
-    # altında GET /state ve GET /scan isteklerini saniyelerce blokluyordu.
-    return notified
+        _notify_record_new(sym, c, notif, score, base_px, now, now_mono, new_entries)
+    # Döngü sonrası: plan/politika/nabız aşamaları (bkz. `_notify_finalize`).
+    return await _notify_finalize(notified, new_entries, plan_batch, candidates_list, settings,
+                                  quiet, now, now_mono, pending_by_symbol, heartbeat_pool)
 
 
 def _vapid_configured() -> bool:
@@ -2604,7 +2625,9 @@ async def _llm_second_eye_task(notif: dict) -> None:
                 await _post_llm_second_eye_entry(notif, None)  # fail-open
             return
     except Exception:
-        pass
+        # 2026-11-10: sessiz yutma kaldırıldı. Sessiz saat kontrolü başarısız
+        # olursa giriş kararı fail-open sürer; yine de neden görünmeli.
+        logger.debug("monitoring: quiet_hours_active kontrolü başarısız (fail-open)", exc_info=True)
     # 2026-10-16 (sinyal politikası): zarf modu devre dışıysa push/WS yapılmaz; karar
     # (fail-open giriş dahil) aşağıda aynen sürer, yalnız kullanıcıya bildirim gitmez.
     from app import notification_policy as _notif_policy
@@ -3759,7 +3782,7 @@ async def daily_momentum_loop():
                     [str(r.get("symbol") or "").upper() for r in _dr_rows])
                 await database.fill_daily_rising_outcomes(live_prices=_dr_live)
             except Exception:
-                pass
+                logger.debug("monitoring: daily_rising outcome güncellemesi atlandı", exc_info=True)
             # Kullanıcı takip listesi başarı ölçümü — CANLI güncelleme (her turda).
             # Fiyatlar WS ticker'dan; yoksa ölçüm yalnız kapanmış 5m mumlarla.
             try:
@@ -3774,7 +3797,7 @@ async def daily_momentum_loop():
                     _wl_live = {}
                 await database.fill_user_watchlist_outcomes(live_prices=_wl_live)
             except Exception:
-                pass
+                logger.debug("monitoring: user_watchlist outcome güncellemesi atlandı", exc_info=True)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -6338,104 +6361,108 @@ def _is_push_notification_row(row: dict) -> bool:
     return bool(row.get("sent_via_push") or row.get("push_attempted"))
 
 
-@router.get("/api/reports/notifications")
-async def report_notifications(
-    limit: int = 200,
-    day: str = None,
-    min_score: float = None,
-    confluence_min: int = None,
-    master_surge_only: bool = False,
-    channel: str = "all",
-    source: str = "all",
-    include_archived: bool = False,
-    history_only: bool = False,
-):
-    """Radar bildirim raporu - gercek kapanis M1 olcmeye dayali basari.
-    day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
-    min_score: Skor eşiği filtresi (opsiyonel; belirtilmezse admin min_score kullanılır).
-    confluence_min / master_surge_only: Çoklu teyit filtresi.
-    channel: GERİYE DÖNÜK UYUM için kabul edilir, ETKİSİZDİR. Panel bildirimi kavramı
-    kaldırıldı (2026-10-17): rapor HER ZAMAN yalnız push bildirimlerini (teslim edilmiş
-    `sent_via_push` VEYA push'u denenmiş `push_attempted`) listeler; eski "yalnız panel"
-    satırları dışarıda kalır. 'panel' değeri yok sayılır.
-    source: 'all', 'velocity', 'jump', 'early', 'rising'.
-    include_archived: True ise RAPOR BAŞLANGICI öncesi bildirimler de listelenir
-    ("arşivi göster"). Varsayılan False → yalnız deploy sonrası sinyaller.
-    history_only: UI tarama geçmişi için tüm dönem başarı istatistiğini ve paper
-    trade eşlemesini atlar; adayların MFE/sonuç alanları yine listelenir.
-    """
+def _report_resolve_day(day, limit):
+    """Rapor parametrelerini doğrular: limit sınırı + geçerli gün (yoksa bugün TRT)."""
     limit = max(1, min(int(limit), 1000))
     if day == "all":
-        effective_day = None
-    elif day:
+        return limit, None
+    if day:
         try:
             time.strptime(str(day), "%Y-%m-%d")
-            effective_day = str(day)
+            return limit, str(day)
         except ValueError:
             raise HTTPException(status_code=400, detail="Geçersiz tarih: YYYY-MM-DD bekleniyor")
-    else:
-        from datetime import datetime, timezone, timedelta
-        effective_day = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
-    settings = await get_user_notification_settings()
-    # Tek eşik ilkesi: belirtilmediyse admin etkin eşiği kullanılır.
-    threshold = float(min_score) if min_score is not None else _effective_min_score(settings)
-    rows = await database.get_monitoring_velocity_matches(
-        limit=limit, day=effective_day, ignore_reports_baseline=include_archived,
-        apply_radar_floor=True, include_own_outcomes=True)
-    # Eşik filtresi panel (0-100) skoru üzerinden; eski ham kayıtlar tek kez
-    # normalize edilir (bkz. _stored_panel_score).
-    rows = [r for r in rows
-            if _stored_panel_score(r) >= threshold]
-    now = time.time()
+    from datetime import datetime, timezone, timedelta
+    return limit, datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
 
-    def _parse_sources(raw) -> list[str]:
-        """DB `sources` kolonunu listeye çevir (NULL/boş → tek kaynak: radar)."""
-        if not raw:
-            return ["velocity"]
-        if isinstance(raw, list):
-            return [str(s) for s in raw if s]
-        try:
-            parsed = json.loads(str(raw))
-            if isinstance(parsed, list) and parsed:
-                return [str(s) for s in parsed if s]
-        except (TypeError, ValueError):
-            pass
+
+def _report_parse_sources(raw) -> list[str]:
+    """DB `sources` kolonunu listeye çevir (NULL/boş → tek kaynak: radar)."""
+    if not raw:
         return ["velocity"]
+    if isinstance(raw, list):
+        return [str(s) for s in raw if s]
+    try:
+        parsed = json.loads(str(raw))
+        if isinstance(parsed, list) and parsed:
+            return [str(s) for s in parsed if s]
+    except (TypeError, ValueError):
+        pass
+    return ["velocity"]
 
-    req_conf = 4 if master_surge_only else (int(confluence_min) if confluence_min is not None else 1)
+
+def _report_filter_rows(rows, threshold, req_conf, source_clean):
+    """Eşik / teyit sayısı / push-yalnız / kaynak filtrelerini tek geçişte uygular."""
+    rows = [r for r in rows if _stored_panel_score(r) >= threshold]
     if req_conf > 1:
-        rows = [r for r in rows if len(_parse_sources(r.get("sources"))) >= req_conf]
-
-    # Panel bildirimi YOK (2026-10-17): yalnız push bildirimleri. `channel` parametresi
-    # (all/push/panel) geriye dönük uyum için kabul edilir ama yok sayılır.
+        rows = [r for r in rows if len(_report_parse_sources(r.get("sources"))) >= req_conf]
+    # Panel bildirimi YOK (2026-10-17): yalnız push bildirimleri. `channel` yok sayılır.
     rows = [r for r in rows if _is_push_notification_row(r)]
-
-    # Kaynak filtresi (velocity, jump, early, rising)
-    source_clean = (source or "all").lower().strip()
     if source_clean != "all":
-        rows = [r for r in rows if source_clean in _parse_sources(r.get("sources"))]
+        rows = [r for r in rows if source_clean in _report_parse_sources(r.get("sources"))]
+    return rows
 
-    # Otonom paper trade eşleştirmesi için son işlemleri çek
+
+async def _report_load_trades(history_only: bool):
+    """Otonom paper trade eşleştirmesi için son 1000 işlemi (nid + sembol) indisler."""
     trades_by_nid = {}
     trades_by_sym = {}
-    if not history_only:
-        try:
-            def _fetch_trades_op(conn):
-                trades = conn.execute(
-                    "SELECT id, symbol, notification_id, status, pnl, pnl_pct, exit_reason, entry_time, exit_time FROM auto_paper_trades ORDER BY entry_time DESC LIMIT 1000"
-                ).fetchall()
-                return [dict(t) for t in trades]
-            t_rows = await database._run_db(_fetch_trades_op)
-            for td in t_rows:
-                nid = td.get("notification_id")
-                if nid and nid not in trades_by_nid:
-                    trades_by_nid[nid] = td
-                sym = td.get("symbol")
-                if sym:
-                    trades_by_sym.setdefault(sym, []).append(td)
-        except Exception as exc:
-            logger.debug("auto_paper_trades eslesmesi yuklenemedi: %s", exc)
+    if history_only:
+        return trades_by_nid, trades_by_sym
+    try:
+        def _fetch_trades_op(conn):
+            trades = conn.execute(
+                "SELECT id, symbol, notification_id, status, pnl, pnl_pct, exit_reason, entry_time, exit_time FROM auto_paper_trades ORDER BY entry_time DESC LIMIT 1000"
+            ).fetchall()
+            return [dict(t) for t in trades]
+        t_rows = await database._run_db(_fetch_trades_op)
+        for td in t_rows:
+            nid = td.get("notification_id")
+            if nid and nid not in trades_by_nid:
+                trades_by_nid[nid] = td
+            sym = td.get("symbol")
+            if sym:
+                trades_by_sym.setdefault(sym, []).append(td)
+    except Exception as exc:
+        logger.debug("auto_paper_trades eslesmesi yuklenemedi: %s", exc)
+    return trades_by_nid, trades_by_sym
 
+
+def _report_match_trade(nid, symbol, detected_at, trades_by_nid, trades_by_sym):
+    """Bildirime eşleşen otonom trade'i bulur (önce nid, sonra ±180 sn zaman penceresi)."""
+    matched_trade = trades_by_nid.get(nid)
+    if not matched_trade and symbol and trades_by_sym.get(symbol):
+        for cand_trade in trades_by_sym[symbol]:
+            etime = float(cand_trade.get("entry_time") or 0)
+            if abs(etime - detected_at) <= 180:
+                matched_trade = cand_trade
+                break
+    if not matched_trade:
+        return None
+    return {
+        "id": matched_trade.get("id"),
+        "status": matched_trade.get("status"),
+        "pnl": float(matched_trade["pnl"]) if matched_trade.get("pnl") is not None else None,
+        "pnl_pct": float(matched_trade["pnl_pct"]) if matched_trade.get("pnl_pct") is not None else None,
+        "exit_reason": matched_trade.get("exit_reason"),
+    }
+
+
+def _report_row_status(candidate_status, mfe_pct, touched, window_closed) -> str:
+    """M1/P0 (R3-04): TAMAMEN BAŞARILI yalnızca hedefe GERÇEKTEN dokunulduysa."""
+    if candidate_status == "evaluated" and mfe_pct is not None:
+        if touched:
+            return "TAMAMEN BAŞARILI"
+        if mfe_pct > 0:
+            return "KISMİ"
+        return "BAŞARISIZ"
+    if candidate_status == "pending" and not window_closed:
+        return "BEKLİYOR"
+    return "ÖLÇÜLEMEDİ" if window_closed else "BEKLİYOR"
+
+
+def _report_build_items(rows, now, trades_by_nid, trades_by_sym) -> list[dict]:
+    """DB satırlarını rapor öğelerine dönüştürür (durum + trade eşleşmesi + metrik alanları)."""
     result = []
     for row in rows:
         nid = row.get("id")
@@ -6451,39 +6478,8 @@ async def report_notifications(
         # #19: değerlendirme penceresi ufuk-duyarlı (radar ile AYNI kural).
         max_outcome_min = _outcome_window_minutes(horizon)
         window_closed = bool(detected_at and (now - detected_at) >= max_outcome_min * 60)
-        # M1/P0 (R3-04): TAMAMEN BAŞARILI YALNIZCA hedefe GERÇEKTEN dokunulduysa.
-        if candidate_status == "evaluated" and mfe_pct is not None:
-            if touched:
-                status = "TAMAMEN BAŞARILI"
-            elif mfe_pct > 0:
-                status = "KISMİ"
-            else:
-                status = "BAŞARISIZ"
-        elif candidate_status == "pending" and not window_closed:
-            status = "BEKLİYOR"
-        else:
-            status = "ÖLÇÜLEMEDİ" if window_closed else "BEKLİYOR"
-
-        # Eşleşen otonom trade var mı?
-        matched_trade = trades_by_nid.get(nid)
-        if not matched_trade and symbol and trades_by_sym.get(symbol):
-            # Zaman penceresi eşleşmesi (±180 sn)
-            for cand_trade in trades_by_sym[symbol]:
-                etime = float(cand_trade.get("entry_time") or 0)
-                if abs(etime - detected_at) <= 180:
-                    matched_trade = cand_trade
-                    break
-
-        trade_info = None
-        if matched_trade:
-            trade_info = {
-                "id": matched_trade.get("id"),
-                "status": matched_trade.get("status"),
-                "pnl": float(matched_trade["pnl"]) if matched_trade.get("pnl") is not None else None,
-                "pnl_pct": float(matched_trade["pnl_pct"]) if matched_trade.get("pnl_pct") is not None else None,
-                "exit_reason": matched_trade.get("exit_reason"),
-            }
-
+        status = _report_row_status(candidate_status, mfe_pct, touched, window_closed)
+        trade_info = _report_match_trade(nid, symbol, detected_at, trades_by_nid, trades_by_sym)
         result.append({
             "id": nid,
             "symbol": symbol,
@@ -6502,7 +6498,7 @@ async def report_notifications(
             "horizon_minutes": horizon,
             "detected_at": detected_at,
             "sent_via_push": bool(row.get("sent_via_push")),
-            "sources": _parse_sources(row.get("sources")),
+            "sources": _report_parse_sources(row.get("sources")),
             "candidate_id": row.get("candidate_id"),
             "ml_hit_probability": row.get("ml_hit_probability"),
             # 2026-10-18: dürüst sayılar (sözleşme: bu dört ad sabit)
@@ -6515,11 +6511,38 @@ async def report_notifications(
             "trade": trade_info,
             "outcome_details": row.get("outcome_details") or {},
         })
+    return result
 
-    # 2026-10-24: /notifications sayfası da ana sayfayla AYNI "Bugün #N" sırasını göstersin.
-    await _attach_daily_seq(result)
 
-    # SEMA ÇEŞİTLİLİĞİ (R5)
+def _report_channel_stats(items: list[dict]) -> dict:
+    """Bir öğe kümesi için başarı/TP/MFE/paper-trade istatistikleri."""
+    total_cnt = len(items)
+    ev_items = [i for i in items if i.get("status") in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ")]
+    ev_cnt = len(ev_items)
+    succ_cnt = sum(1 for i in ev_items if i.get("status") == "TAMAMEN BAŞARILI")
+    tp1_cnt = sum(1 for i in ev_items if (i.get("mfe_pct") or 0) >= 1.2)
+    tp2_cnt = sum(1 for i in ev_items if (i.get("mfe_pct") or 0) >= 3.0)
+    pos_cnt = sum(1 for i in ev_items if (i.get("mfe_pct") or 0) > 0)
+    trades_cnt = sum(1 for i in items if i.get("trade"))
+    trade_pnl = sum(float(i["trade"]["pnl"] or 0) for i in items if i.get("trade") and i["trade"].get("pnl") is not None)
+    return {
+        "count": total_cnt,
+        "evaluated": ev_cnt,
+        "success_count": succ_cnt,
+        "success_rate": (succ_cnt / ev_cnt * 100) if ev_cnt else None,
+        "tp1_count": tp1_cnt,
+        "tp1_rate": (tp1_cnt / ev_cnt * 100) if ev_cnt else None,
+        "tp2_count": tp2_cnt,
+        "tp2_rate": (tp2_cnt / ev_cnt * 100) if ev_cnt else None,
+        "mfe_positive_count": pos_cnt,
+        "mfe_positive_rate": (pos_cnt / ev_cnt * 100) if ev_cnt else None,
+        "trades_opened": trades_cnt,
+        "trade_pnl": round(trade_pnl, 2),
+    }
+
+
+def _report_breakdowns(result, req_conf) -> dict:
+    """Gün kırılımı + çok-kaynak özeti + kanal/teyit/kaynak istatistikleri."""
     symbol_counter = Counter(item["symbol"] for item in result if item.get("symbol"))
     unique_symbols = len(symbol_counter)
     symbol_counts = [{"symbol": sym, "count": cnt} for sym, cnt in symbol_counter.most_common(5)]
@@ -6534,52 +6557,24 @@ async def report_notifications(
     evaluated = sum(counts[k] for k in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ"))
     success = counts["TAMAMEN BAŞARILI"]
 
-    # Kısmi pozitif kazanç ve scalp kâr kilidi metrikleri
     evaluated_items = [i for i in result if i.get("status") in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ")]
     mfe_pos_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) > 0)
     tp1_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) >= 1.2)
     tp2_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) >= 3.0)
 
-    # 1. İSTATİSTİK YARDIMCISI (kanal ayrımı kaldırıldı; push/panel kartı yok)
-    def _compute_channel_stats(items: list[dict]) -> dict:
-        total_cnt = len(items)
-        ev_items = [i for i in items if i.get("status") in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ")]
-        ev_cnt = len(ev_items)
-        succ_cnt = sum(1 for i in ev_items if i.get("status") == "TAMAMEN BAŞARILI")
-        tp1_cnt = sum(1 for i in ev_items if (i.get("mfe_pct") or 0) >= 1.2)
-        tp2_cnt = sum(1 for i in ev_items if (i.get("mfe_pct") or 0) >= 3.0)
-        pos_cnt = sum(1 for i in ev_items if (i.get("mfe_pct") or 0) > 0)
-        trades_cnt = sum(1 for i in items if i.get("trade"))
-        trade_pnl = sum(float(i["trade"]["pnl"] or 0) for i in items if i.get("trade") and i["trade"].get("pnl") is not None)
-        return {
-            "count": total_cnt,
-            "evaluated": ev_cnt,
-            "success_count": succ_cnt,
-            "success_rate": (succ_cnt / ev_cnt * 100) if ev_cnt else None,
-            "tp1_count": tp1_cnt,
-            "tp1_rate": (tp1_cnt / ev_cnt * 100) if ev_cnt else None,
-            "tp2_count": tp2_cnt,
-            "tp2_rate": (tp2_cnt / ev_cnt * 100) if ev_cnt else None,
-            "mfe_positive_count": pos_cnt,
-            "mfe_positive_rate": (pos_cnt / ev_cnt * 100) if ev_cnt else None,
-            "trades_opened": trades_cnt,
-            "trade_pnl": round(trade_pnl, 2),
-        }
-
     # `push_stats` geriye dönük uyum için kalır (artık tüm liste push'tur); `panel_stats` KALDIRILDI.
-    push_stats = _compute_channel_stats(list(result))
+    push_stats = _report_channel_stats(list(result))
 
-    # 2. TEYİT SAYISI (CONFLUENCE) İSTATİSTİKLERİ
     confluence_stats = {}
     for c_level in (1, 2, 3, 4):
-        c_items = [i for i in result if (len(i.get("sources") or []) == c_level if c_level < 4 else len(i.get("sources") or []) >= 4)]
-        confluence_stats[str(c_level)] = _compute_channel_stats(c_items)
+        c_items = [i for i in result
+                   if (len(i.get("sources") or []) == c_level if c_level < 4 else len(i.get("sources") or []) >= 4)]
+        confluence_stats[str(c_level)] = _report_channel_stats(c_items)
 
-    # 3. KAYNAK BAZLI İSTATİSTİKLER (Velocity, Jump, Early, Rising)
     source_stats = {}
     for s_name in ("velocity", "jump", "early", "rising"):
         s_items = [i for i in result if s_name in (i.get("sources") or [])]
-        source_stats[s_name] = _compute_channel_stats(s_items)
+        source_stats[s_name] = _report_channel_stats(s_items)
 
     day_breakdown = {
         "counts": counts,
@@ -6603,8 +6598,11 @@ async def report_notifications(
         "confluence_stats": confluence_stats,
         "source_stats": source_stats,
     }
+    return day_breakdown
 
-    # BİRLEŞİK SİNYAL (2026-09-17)
+
+def _report_multi_source(result) -> dict:
+    """BİRLEŞİK SİNYAL (2026-09-17): kaynak başına sayım/itibar ve çok-kaynak özeti."""
     source_counts: dict[str, int] = {}
     source_success: dict[str, int] = {}
     multi_evaluated = 0
@@ -6620,35 +6618,24 @@ async def report_notifications(
                 multi_evaluated += 1
                 if item.get("status") == "TAMAMEN BAŞARILI":
                     multi_success += 1
-    day_breakdown["by_source"] = source_counts
-    day_breakdown["multi_source"] = {
-        "evaluated": multi_evaluated,
-        "success_count": multi_success,
-        "success_rate": (multi_success / multi_evaluated * 100) if multi_evaluated else None,
+    return {
+        "by_source": source_counts,
+        "multi_source": {
+            "evaluated": multi_evaluated,
+            "success_count": multi_success,
+            "success_rate": (multi_success / multi_evaluated * 100) if multi_evaluated else None,
+        },
     }
 
-    # Seçilen gün / dönem genel başarı dökümü (day=all ise tüm zamanlar).
-    # History UI bu özetleri kullanmıyor; day=all isteğinde sınırsız geçmişi
-    # tekrar eşleştirmek 12sn timeout'a neden olabiliyordu.
-    all_rows = []
-    if not history_only:
-        all_rows = await database.get_monitoring_velocity_matches(
-            limit=None, day=effective_day, slim=True,
-            ignore_reports_baseline=include_archived, apply_radar_floor=True,
-            include_own_outcomes=True)
-    all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
-    if req_conf > 1:
-        all_rows = [r for r in all_rows if len(_parse_sources(r.get("sources"))) >= req_conf]
-    all_rows = [r for r in all_rows if _is_push_notification_row(r)]
-    if source_clean != "all":
-        all_rows = [r for r in all_rows if source_clean in _parse_sources(r.get("sources"))]
 
+def _report_overall(rows) -> dict:
+    """Tüm dönem (day=all) başarı dökümü."""
     all_evaluated = 0
     all_success = 0
     all_mfe_pos = 0
     all_tp1 = 0
     all_tp2 = 0
-    for r in all_rows:
+    for r in rows:
         mfe_val = r.get("mfe_pct")
         mfe_f = float(mfe_val) if mfe_val is not None else None
         tch = r.get("touched_target")
@@ -6663,7 +6650,7 @@ async def report_notifications(
                 all_tp1 += 1
             if mfe_f >= 3.0:
                 all_tp2 += 1
-    overall_breakdown = {
+    return {
         "evaluated": all_evaluated,
         "success_count": all_success,
         "success_rate": (all_success / all_evaluated * 100) if all_evaluated else None,
@@ -6674,6 +6661,70 @@ async def report_notifications(
         "tp2_count": all_tp2,
         "tp2_rate": (all_tp2 / all_evaluated * 100) if all_evaluated else None,
     }
+
+
+@router.get("/api/reports/notifications")
+async def report_notifications(
+    limit: int = 200,
+    day: str = None,
+    min_score: float = None,
+    confluence_min: int = None,
+    master_surge_only: bool = False,
+    channel: str = "all",
+    source: str = "all",
+    include_archived: bool = False,
+    history_only: bool = False,
+):
+    """Radar bildirim raporu - gercek kapanis M1 olcmeye dayali basari.
+
+    Aşamalar: parametre çözümü -> satır çekme+filtre -> öğe inşası ->
+    kırılım/istatistik -> dönem özeti.
+    day: YYYY-MM-DD formatinda gun filtresi (opsiyonel), 'all' → tüm zamanlar.
+    min_score: Skor eşiği filtresi (opsiyonel; belirtilmezse admin min_score kullanılır).
+    confluence_min / master_surge_only: Çoklu teyit filtresi.
+    channel: GERİYE DÖNÜK UYUM için kabul edilir, ETKİSİZDİR (yalnız push bildirimleri).
+    source: 'all', 'velocity', 'jump', 'early', 'rising'.
+    include_archived: True ise rapor başlangıcı öncesi bildirimler de listelenir.
+    history_only: UI tarama geçmişi için tüm dönem başarı istatistiğini ve paper
+    trade eşlemesini atlar; adayların MFE/sonuç alanları yine listelenir.
+    """
+    limit, effective_day = _report_resolve_day(day, limit)
+    settings = await get_user_notification_settings()
+    # Tek eşik ilkesi: belirtilmediyse admin etkin eşiği kullanılır.
+    threshold = float(min_score) if min_score is not None else _effective_min_score(settings)
+    req_conf = 4 if master_surge_only else (int(confluence_min) if confluence_min is not None else 1)
+    source_clean = (source or "all").lower().strip()
+    now = time.time()
+
+    # 1) Seçilen günün satırları
+    rows = await database.get_monitoring_velocity_matches(
+        limit=limit, day=effective_day, ignore_reports_baseline=include_archived,
+        apply_radar_floor=True, include_own_outcomes=True)
+    rows = _report_filter_rows(rows, threshold, req_conf, source_clean)
+
+    # 2) Paper trade eşleştirmesi + öğe inşası
+    trades_by_nid, trades_by_sym = await _report_load_trades(history_only)
+    result = _report_build_items(rows, now, trades_by_nid, trades_by_sym)
+
+    # 2026-10-24: /notifications sayfası da ana sayfayla AYNI "Bugün #N" sırasını göstersin.
+    await _attach_daily_seq(result)
+
+    # 3) Kırılım + birleşik sinyal istatistikleri
+    day_breakdown = _report_breakdowns(result, req_conf)
+    day_breakdown.update(_report_multi_source(result))
+
+    # 4) Seçilen gün / dönem genel başarı dökümü (day=all ise tüm zamanlar).
+    # History UI bu özetleri kullanmıyor; day=all isteğinde sınırsız geçmişi
+    # tekrar eşleştirmek 12sn timeout'a neden olabiliyordu.
+    all_rows = []
+    if not history_only:
+        all_rows = await database.get_monitoring_velocity_matches(
+            limit=None, day=effective_day, slim=True,
+            ignore_reports_baseline=include_archived, apply_radar_floor=True,
+            include_own_outcomes=True)
+        all_rows = _report_filter_rows(all_rows, threshold, req_conf, source_clean)
+    overall_breakdown = _report_overall(all_rows)
+
     return {"paper_only": True, "day": effective_day or "all", "notifications": result, "total": len(result),
             "breakdown": day_breakdown, "overall": overall_breakdown}
 
