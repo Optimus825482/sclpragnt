@@ -126,6 +126,33 @@ mesafede iki eşik varsa ve kazanma oranı %56,7 ise yine de kaybedilir,
 
 ## 5. Öneri (öncelik sırası)
 
+### 5a. ⚙ DÜZELTME (2026-11-10): `max_sl_tp_ratio` — SL/TP oran tavanı
+
+Oranı aşan durumlarda SL DARALTILIR (hedef asla değişmez). Panelden
+ayarlanabilir; varsayılan **0.0 = KAPALI** (üretim davranışı değişmez).
+Önerilen değer **0.64** (gereken 0,764'ün altında güvenli marj).
+
+**Gerçek 1m mum yoluyla ölçüm** (1.200 işlem, giriş/hedef sabit, yalnız SL
+daralır):
+
+| oran | ort net | medyan | kazanan | TP | SL |
+|---|---|---|---|---|---|
+| mevcut | −0,796% | −3,300% | %44,6 | 527 | 640 |
+| 0,80 | −0,748% | −2,700% | %37,0 | 437 | 737 |
+| 0,64 | −0,724% | −2,284% | %31,9 | 377 | 802 |
+| **0,55** | **−0,641%** | **−2,084%** | %29,7 | 350 | 833 |
+
+**DÜRÜST SONUÇ:** SL daraltmak **iyileştiriyor** — ort +0,155 puan (0,55),
+medyan −3,300% → **−2,084%** (çok belirgin). AMA **pozitife ÇEVİRMİYOR**.
+Kazanma oranı %44,6 → %29,7'ye düşüyor: dar SL kazananları da erken kesiyor.
+
+**Kök sorun asimetri değil, giriş kalitesi.** `min_atr_pct` filtresi asıl
+kaldıraç; `max_sl_tp_ratio` onun tamamlayıcısı (kayıp kuyruğunu kırpıyor).
+İkisi birlikte kullanıldığında sistem başabaşın üstüne taşınabilir — tek
+başına yeterli değil.
+
+## 5. Öneri (öncelik sırası)
+
 1. **SL/TP oranını düzelt: SL en fazla TP'nin %70'i olsun.**
    Mevcut oran 1,03 → hedef ≤ 0,70. Bu tek değişiklik, kazanma oranını
    %56,7'de tutarken sistemi başabaşın üstüne taşır (gereken oran 0,764

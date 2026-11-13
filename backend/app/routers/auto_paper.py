@@ -1220,6 +1220,52 @@ def _exit_fill_and_quantity(current_price: float, order_value: float) -> tuple[f
     return fill_entry, quantity, fill_entry * quantity
 
 
+def _exit_apply_rr_ratio(symbol: str, sl_pct: float, target_pct: float,
+                         settings: dict, plan_exit: dict | None,
+                         exit_profile: dict | None) -> tuple[float, float]:
+    """SL/TP oranını sınırla: SL en fazla `max_sl_tp_ratio` × TP olsun.
+
+    Dönüş: `(sl_pct, target_pct)` — ikisi de KESİR cinsinden.
+
+    2026-11-10 BULGUSU (docs/TARAMA_AILESI_ANALIZI_2026-11-10.md):
+    Gerçekleşmiş 1.757 işlemde ortalama SL %3,88, ortalama TP %3,75 — yani
+    SL/TP oranı **1,03**. Kazanma oranı %56,7 olmasına rağmen sistem zarar
+    ediyordu (kazanç +1,595% vs kayıp −2,915%; kazanç/kayıp 0,547 iken
+    başabaş için 0,764 gerekiyor → açık −0,217 puan).
+    `stop_loss` çıkışı 391 işlem, ort −4,276% (diğer kayıp nedenlerinin 3-4 katı).
+
+    Kural: oran aşılırsa **SL DARALTILIR** (hedef asla değiştirilmez).
+    Hedefi büyütmek hit oranını düşürürdü; stopu daraltmak aynı kazanma
+    oranını korurken kayıp büyüklüğünü küçültür — asimetriyi düzelten yön bu.
+    Bu, "SL yalnız genişletir" kuralının (PPO/volatilite) BİLİNÇLİ istisnasıdır:
+    o kurallar sinyal kalitesini korumak için, bu kural ise risk asimetrisini
+    düzeltmek için çalışır ve EN SON uygulanır.
+
+    Kullanıcı planı (`plan_exit`) varsa DOKUNULMAZ — plan brüt hedefi ve stopu
+    ücret/kaymayla birlikte kendi içinde tutarlı hesaplar.
+
+    `max_sl_tp_ratio` = 0 → KAPALI (eski davranış).
+    """
+    ratio_cap = float(settings.get("max_sl_tp_ratio", 0.0) or 0.0)
+    if ratio_cap <= 0:
+        return sl_pct, target_pct
+    # Kullanıcı planı: dokunma (kendi tutarlı hesabı).
+    if plan_exit is not None:
+        return sl_pct, target_pct
+    # Kural profili: kendi SL/hedef geometrisini taşır, dokunma.
+    if exit_profile:
+        return sl_pct, target_pct
+    if target_pct <= 0 or sl_pct <= 0:
+        return sl_pct, target_pct
+    allowed_sl = (target_pct / 100.0) * ratio_cap
+    if sl_pct <= allowed_sl:
+        return sl_pct, target_pct
+    logger.info("auto_paper %s: SL/TP oranı sınırlandı — SL %.2f%% -> %.2f%% "
+                "(hedef %.2f%%, üst oran %.2f)",
+                symbol, sl_pct * 100, allowed_sl * 100, target_pct, ratio_cap)
+    return allowed_sl, target_pct
+
+
 async def _calc_exit_plan(symbol: str, notification: dict, current_price: float, settings: dict,
                           order_value: float
                           ) -> tuple[dict | None, dict | None]:
@@ -1266,6 +1312,13 @@ async def _calc_exit_plan(symbol: str, notification: dict, current_price: float,
     # PPO SL: yalnız volatilite SL açıkken ve stopu GENİŞLETİYORSA (asla daraltmaz).
     if ppo_apply and volatility_sl_enabled and ppo_sl_pct is not None:
         effective_sl_pct = max(effective_sl_pct, ppo_sl_pct)
+
+    # R:R sınırı EN SON: genişletici kurallardan (ATR/PPO) sonra, asimetriyi düzeltir.
+    _tp_net_ratio = target_pct if plan_exit is not None else target_pct + cost_markup * 100
+    effective_sl_pct, _ = _exit_apply_rr_ratio(
+        symbol, effective_sl_pct, _tp_net_ratio, settings, plan_exit, exit_profile)
+    if plan_exit is not None:
+        target_pct = plan_exit["target_pct"]
 
     stop_loss_price = fill_entry * (1 - effective_sl_pct)
     now = time.time()
@@ -2385,6 +2438,12 @@ def _default_exit_settings(_exit_def: dict) -> dict:
         # Hedef tavanı (2026-10-07): bildirimin kendi target_pct'i bunu aşarsa
         # TP bu değere çekilir. Env: AUTO_PAPER_MAX_TARGET_PCT. 0 = sınırsız.
         "max_target_pct": getattr(config, "AUTO_PAPER_MAX_TARGET_PCT", 0.0),
+        # SL/TP oran tavanı (2026-11-10 bulgusu). 0 = KAPALI (eski davranış).
+        # Gerçekleşmiş 1.757 işlemde ort SL %3,88 > ort TP %3,75 (oran 1,03);
+        # kazanma oranı %56,7 olmasına rağmen zarar (kazanç/kayıp 0,547, eşik 0,764).
+        # Bu oran aşılırsa SL DARALTILIR (hedef değişmez). Önerilen: 0,64.
+        # Kanıt: docs/TARAMA_AILESI_ANALIZI_2026-11-10.md
+        "max_sl_tp_ratio": 0.0,
         "breakeven_enabled": getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False),
         "breakeven_trigger_pct": config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT,
         "trailing_enabled": config.AUTO_PAPER_TRAILING_ENABLED,
@@ -2507,7 +2566,8 @@ async def update_settings_endpoint(payload: dict, request: Request):
                 "sl_cooldown_minutes", "post_win_cooldown_minutes",
                 "llm_gate_enabled", "llm_min_confidence",
                 "volatility_sl_enabled",
-                "allowed_modes", "dedup_cooldown_minutes", "min_atr_pct")
+                "allowed_modes", "dedup_cooldown_minutes", "min_atr_pct",
+                "max_sl_tp_ratio")
     existing = await get_auto_paper_settings()
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
     _exit_def = _exit_defaults()  # 2026-10-16 (maliyet/çıkış): profil varsayılanları (payload/DB önce)
@@ -2520,6 +2580,9 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "default_target_pct": max(0.5, min(20.0, float(merged.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT)))),
         # 0 = sınırsız (eski davranış, geriye dönük uyum). Üst sınır 20.
         "max_target_pct": max(0.0, min(20.0, float(merged.get("max_target_pct", getattr(config, "AUTO_PAPER_MAX_TARGET_PCT", 0.0))))),
+        # SL/TP oran tavanı. 0 = kapalı. Üst sınır 3,0 (bunun üstü zaten��y���yle zararlı
+        # oranı 'onaylamak' olur; alt sınır 0,1 — çok dar stop gürültüde kesilir).
+        "max_sl_tp_ratio": max(0.0, min(3.0, float(merged.get("max_sl_tp_ratio", 0.0) or 0.0))),
         # 2026-09-27: taban `10.0` TRY cinsinden sabitlenmişti; deployment
         # quote'ünden gelir: TRY'de 10 (değişmeyen davranış). Üst sınır
         # koymadık — operatör bilerek küçük eşik seçebilir.
