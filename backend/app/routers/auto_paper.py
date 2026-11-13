@@ -1145,6 +1145,62 @@ def _exit_profile_context(plan_exit, exit_profile, now: float) -> tuple[str | No
     return trade_exit_profile, trade_max_hold, plan_context
 
 
+def _exit_sl_ratio(symbol: str, notification: dict, settings: dict | None = None) -> tuple[float, dict | None, dict | None]:
+    """SL oranını (kesir) ve bağlamı çöz. Döner: (sl_pct, plan_exit, exit_profile).
+
+    Öncelik: kullanıcı planı > kural-sinyal çıkış profili > bildirim sl_pct >
+    ayar varsayılanı. Plan varsa diğerleri GEÇERSİZDİR (kullanıcı kararı ezer).
+    """
+    settings = settings or {}
+    sl_pct = float(settings.get("stop_loss_pct", _exit_defaults()["stop_loss_pct"])) / 100.0
+    _is_rule_signal = str(notification.get("source") or "") in _RULE_SIGNAL_SOURCES
+    plan_exit = _plan_exit_params(notification)
+    exit_profile = (ma_buy_profiles.exit_overrides(notification)
+                    if (_is_rule_signal and plan_exit is None) else None)
+    if exit_profile and exit_profile.get("stop_loss_pct"):
+        sl_pct = float(exit_profile["stop_loss_pct"]) / 100.0
+    elif notification.get("sl_pct"):
+        sl_pct = float(notification["sl_pct"]) / 100.0
+    if plan_exit is not None:
+        sl_pct = plan_exit["stop_pct"] / 100.0
+    return sl_pct, plan_exit, exit_profile
+
+
+def _exit_resolve_target(symbol: str, notification: dict, target_pct: float,
+                         settings: dict, plan_exit: dict | None) -> float:
+    """Hedefi çöz ve tavanla sınırla (plan varsa plan değeri kazanır).
+
+    Sıra: TP2 runner (plan yoksa) → tavan (`max_target_pct`, 0 = sınırsız) →
+    plan varsa plan hedefi. Tavan uygulandığında bilgi loglanır.
+    """
+    tp2_runner_val = notification.get("tp2_runner_pct")
+    if plan_exit is None and tp2_runner_val and float(tp2_runner_val) > target_pct:
+        target_pct = float(tp2_runner_val)
+    # Hedef tavanı (0 = sınırsız).
+    max_target = float(settings.get("max_target_pct", 0.0) or 0.0)
+    if plan_exit is None and max_target > 0 and target_pct > max_target:
+        logger.info("auto_paper %s: bildirim hedefi +%.2f%% tavanı +%.2f%%'e çekildi",
+                    symbol, target_pct, max_target)
+        target_pct = max_target
+    if plan_exit is not None:
+        target_pct = plan_exit["target_pct"]
+    return target_pct
+
+
+def _exit_fill_and_quantity(current_price: float, order_value: float) -> tuple[float, float, float]:
+    """Giriş dolumu ve miktar. Döner: (fill_entry, quantity, net_order_value).
+
+    Komisyon giriş tutarından DÜŞÜLÜR (net maliyet), miktar net maliyetle
+    hesaplanır — aksi halde bakiye komisyon kadar aşılırdı.
+    """
+    commission_pct = paper_ledger.commission_pct()
+    max_cost = order_value / (1 + commission_pct)
+    entry_slip = paper_ledger.slippage_pct()
+    fill_entry = paper_ledger.entry_fill(current_price, entry_slip)
+    quantity = max_cost / fill_entry if fill_entry > 0 else 0
+    return fill_entry, quantity, fill_entry * quantity
+
+
 async def _calc_exit_plan(symbol: str, notification: dict, current_price: float, settings: dict,
                           order_value: float
                           ) -> tuple[dict | None, dict | None]:
@@ -1154,16 +1210,7 @@ async def _calc_exit_plan(symbol: str, notification: dict, current_price: float,
     Dönüş: `(plan, block)`. `plan` = fill/quantity/tp/sl/exit_profile/max_hold/
     plan_context/target_pct/order_value/net_order_value. `block` doluysa iptal.
     """
-    sl_pct = float(settings.get("stop_loss_pct", _exit_defaults()["stop_loss_pct"])) / 100.0
-    _is_rule_signal = str(notification.get("source") or "") in _RULE_SIGNAL_SOURCES
-    plan_exit = _plan_exit_params(notification)
-    exit_profile = ma_buy_profiles.exit_overrides(notification) if (_is_rule_signal and plan_exit is None) else None
-    if exit_profile and exit_profile.get("stop_loss_pct"):
-        sl_pct = float(exit_profile["stop_loss_pct"]) / 100.0
-    elif notification.get("sl_pct"):
-        sl_pct = float(notification["sl_pct"]) / 100.0
-    if plan_exit is not None:
-        sl_pct = plan_exit["stop_pct"] / 100.0
+    sl_pct, plan_exit, exit_profile = _exit_sl_ratio(symbol, notification, settings)
     target_pct = _effective_target_pct(notification)
 
     # PPO/RL adaptasyonu: yalnız kullanıcı planı/profili YOKKEN.
@@ -1179,29 +1226,17 @@ async def _calc_exit_plan(symbol: str, notification: dict, current_price: float,
     # Master Surge TP2: nihai hedef TP2 ise — TP FİYATI hesaplanmadan ÖNCE uygulanır.
     tp1_scalp_val = notification.get("tp1_scalp_pct")
     tp2_runner_val = notification.get("tp2_runner_pct")
-    if plan_exit is None and tp2_runner_val and float(tp2_runner_val) > target_pct:
-        target_pct = float(tp2_runner_val)
+    target_pct = _exit_resolve_target(symbol, notification, target_pct, settings, plan_exit)
 
-    # Hedef tavanı (0 = sınırsız).
-    max_target = float(settings.get("max_target_pct", 0.0) or 0.0)
-    if plan_exit is None and max_target > 0 and target_pct > max_target:
-        logger.info("auto_paper %s: bildirim hedefi +%.2f%% tavanı +%.2f%%'e çekildi",
-                    symbol, target_pct, max_target)
-        target_pct = max_target
-
-    commission_pct = paper_ledger.commission_pct()
-    max_cost = order_value / (1 + commission_pct)
-    entry_slip = paper_ledger.slippage_pct()
-    fill_entry = paper_ledger.entry_fill(current_price, entry_slip)
-    quantity = max_cost / fill_entry if fill_entry > 0 else 0
+    fill_entry, quantity, net_order_value = _exit_fill_and_quantity(current_price, order_value)
     if quantity <= 0:
         return None, _blocked(symbol, "zero_quantity", price=current_price)
 
-    net_order_value = fill_entry * quantity
-    cost_markup = paper_ledger.round_trip_markup(commission_pct, entry_slip, exit_kind="take_profit")
+    commission_pct = paper_ledger.commission_pct()
+    cost_markup = paper_ledger.round_trip_markup(
+        commission_pct, paper_ledger.slippage_pct(), exit_kind="take_profit")
     if plan_exit is not None:
         # Plan brüt hedefi ücret+kaymayı ZATEN içerir → mark-up ikinci kez eklenmez.
-        target_pct = plan_exit["target_pct"]
         cost_markup = 0.0
     take_profit_price = fill_entry * (1 + target_pct / 100 + cost_markup)
 
@@ -2308,54 +2343,74 @@ def _allowed_modes_from_config() -> list[str]:
     return list(dict.fromkeys(str(p).strip() for p in parts if str(p).strip()))[:20]
 
 
-async def get_default_settings() -> dict:
-    # 2026-10-16 (maliyet/çıkış): SL / trailing varsayılanları çıkış profilinden
-    # (`AUTO_PAPER_EXIT_PROFILE`: mevcut | kalibre). DB'deki kayıtlı ayar
-    # `get_auto_paper_settings` birleştirmesinde bu varsayılanları EZER.
-    _exit_def = _exit_defaults()
+def _default_exit_settings(_exit_def: dict) -> dict:
+    """Çıkış (SL/TP/trailing/breakeven) varsayılanları.
+
+    TP-ONLY-NOT: P2-2 GERİ ALINDI (2026-10-09). TP birincil çıkış varsayılan
+    KAPALI. Aynı repo'nun kanıtı (config.py:883 + commit 928feaf) ve
+    TP-CANCEL-ON-TRAIL A/B (work/ab_tp_cancel.py; 30 gün, 1231 işlem,
+    mum-içi VE muhafazakâr close-only) TP-primary'i KAPATMANIN en kârlı
+    olduğunu gösteriyor:
+      mum-içi: TP-off +1.087% / ratchet +0.299% / cancel +0.436% (TP-off 6/6 pencere)
+      close  : TP-off +0.690% / cancel +0.186% / ratchet -0.110% (TP-off 6/6 pencere)
+    Sabit TP = bildirim hedefi (canlıda ort +%4,30) sert bir tavan gibi
+    çalışıyordu; tepe medyanı +%1,62 olduğu için çoğu işlem hedefe hiç
+    değmiyor, değince de kazanan erken kesiliyordu.
+    NOT: `tp_cancel_on_trail` AÇIKken trailing TP'yi iptal ettiğinden, TP emri
+    zaten yoksa bu ayar ETKİSİZDİR.
+    """
     return {
-        "enabled": True,
-        "min_score": config.AUTO_PAPER_MIN_SCORE_DEFAULT,
-        "balance_pct": config.AUTO_PAPER_BALANCE_PCT_DEFAULT,
         "stop_loss_pct": _exit_def["stop_loss_pct"],
         "exit_profile": _exit_def.get("profile", "mevcut"),
         "default_target_pct": config.AUTO_PAPER_DEFAULT_TARGET_PCT,
         # Hedef tavanı (2026-10-07): bildirimin kendi target_pct'i bunu aşarsa
         # TP bu değere çekilir. Env: AUTO_PAPER_MAX_TARGET_PCT. 0 = sınırsız.
         "max_target_pct": getattr(config, "AUTO_PAPER_MAX_TARGET_PCT", 0.0),
-        "min_order_try": config.AUTO_PAPER_MIN_ORDER_TRY,
         "breakeven_enabled": getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False),
         "breakeven_trigger_pct": config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT,
         "trailing_enabled": config.AUTO_PAPER_TRAILING_ENABLED,
         "trailing_trigger_pct": _exit_def["trailing_trigger_pct"],
         "trailing_gap_pct": _exit_def["trailing_gap_pct"],
         "reopen_after_protect_close": config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE,
-        # TP-CANCEL-ON-TRAIL (2026-10-09): trailing devreye girdiginde sabit TP
-        # IPTAL edilir. A/B kaniti B lehine (work/ab_tp_cancel.py) ama muhafazakar
-        # varsayilan KAPALI (opt-in). Env: AUTO_PAPER_TP_CANCEL_ON_TRAIL.
+        # TP-CANCEL-ON-TRAIL (2026-10-09): trailing devreye girdiğinde sabit TP
+        # İPTAL edilir. A/B kanıtı B lehine (work/ab_tp_cancel.py) ama muhafazakâr
+        # varsayılan KAPALI (opt-in). Env: AUTO_PAPER_TP_CANCEL_ON_TRAIL.
         "tp_cancel_on_trail": getattr(config, "AUTO_PAPER_TP_CANCEL_ON_TRAIL", False),
-        # P2-2 DUZELTMESI (2026-10-07) GERI ALINDI (2026-10-09). Eskiden burada
-        # TP birincil cikis varsayilan ACIK yapilmisti (TP = en iyi cikis, §1).
-        # Ama ayni repo'nun kendi kaniti (config.py:883 + commit 928feaf) ve
-        # TP-CANCEL-ON-TRAIL A/B (work/ab_tp_cancel.py; 30 gun, 1231 islem,
-        # mum-ici VE muhafazakar close-only) TP-primary'i KAPATMANIN en karli
-        # oldugunu gosteriyor:
-        #   mum-ici: TP-off +1.087% / ratchet +0.299% / cancel +0.436% (TP-off 6/6 pencere)
-        #   close  : TP-off +0.690% / cancel +0.186% / ratchet -0.110% (TP-off 6/6 pencere)
-        # Yalniz TP-off train VE test'te POZITIF kalir (close-only test +0.367%).
-        # Sabit TP = bildirim hedefi (canlida ort +%4,30) sert bir tavan gibi
-        # calisiyordu; tepe medyani +%1,62 oldugu icin cogu islem hedefe hic
-        # degmiyor, degince de kazanan erken kesiliyordu. Bu yuzden varsayilan
-        # KAPALI (kanitla hizali). NOT: `tp_cancel_on_trail` ACIKken trailing TP'yi
-        # iptal ettiginden, TP emri zaten yoksa bu ayar ETKISIZdir — TP'yi kapatmak
-        # icin yalniz `tp_primary_exit_enabled=false` yeterli ve erken-iptal
-        # marjini kaybetmediginden daha karli. DB satiri env'i ezer.
         "tp_primary_exit_enabled": False,
         "dynamic_breakeven_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False),
         "dynamic_trailing_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False),
         "breakeven_buffer_pct": getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02),
-        "max_open_positions": config.AUTO_PAPER_MAX_OPEN_POSITIONS,
         "max_hold_minutes": getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 120.0),
+    }
+
+
+def _default_gate_settings() -> dict:
+    """Giriş kapıları (mod filtresi, dedup, cooldown, LLM, MTF) varsayılanları.
+
+    MOD FİLTRESİ (2026-10-07 incelemesi). Boş liste = TÜM modlar (eski
+    davranış). Kanıt: 3214 bildirim üzerinde 30 günlük gerçek mum verisiyle
+    (work/analiz_2026-10-07) mod ayrımı belirleyici çıktı:
+    trend_devam +0.47%/işlem, unified +0.02%, global_lead_lag -0.13%,
+    nötr -0.70%. Karışık havuz maliyet sonrası negatif kalıyor.
+
+    2026-10-16 (tarama güncellemesi): sabit liste yerine env
+    `AUTO_PAPER_ALLOWED_MODES` (varsayılan "trend_devam"). Kanıt (7 günlük
+    bildirim ölçümü, 279 ölçülebilir, 5m mum): trend_devam n=150 hit60 %52.7
+    net 0.00; unified n=41 hit60 %19.5 (kayıtlı hedef isabeti %3.7);
+    nötr net −1.09; v_dönüşü 0/10 → `unified` listeden çıkarıldı.
+    Boş env = TÜM modlar (eski davranış). Kayıt: docs/DENEY_KAYDI.md.
+
+    DIKKAT (migration): mevcut DB `auto_paper_settings` satırı bu varsayılanı
+    EZER (`get_auto_paper_settings` DB-over-defaults birleştirir).
+
+    BİLDİRİM DEDUP (2026-10-07): aynı sembolde kısa süre önce giriş
+    yapıldıysa tekrar girmez (0 = kapalı). Aynı sinyal 5 dakikada birden
+    fazla kanaldan geliyordu ve her biri ayrı pozisyon açıyordu.
+    OPTİMİZASYON: 60 dk. Canlıda işlem hacmi 107/gün -> 17/gün; ort. bozulmadan
+    (-%0.20 -> +%0.55% @30dk dedup) tekrarlı işlemler atılır.
+    """
+    return {
+        "min_score": config.AUTO_PAPER_MIN_SCORE_DEFAULT,
         "block_weak_mtf": True,
         "min_mtf_confluence": 45.0,
         "sl_cooldown_minutes": _SL_COOLDOWN_MINUTES_DEFAULT,
@@ -2363,43 +2418,26 @@ async def get_default_settings() -> dict:
         "llm_gate_enabled": True,
         "llm_min_confidence": 60.0,
         "volatility_sl_enabled": True,
-        # MOD FILTRESI (2026-10-07 incelemesi). Bos liste = TUM modlar (eski
-        # davranis). Kanit: 3214 bildirim uzerinde 30 gunluk gercek mum
-        # verisiyle (work/analiz_2026-10-07) mod ayrimi belirleyici cikti:
-        # trend_devam +0.47%/islem, unified +0.02%, global_lead_lag -0.13%,
-        # notr -0.70%. Karisik havuz maliyet sonrasi negatif kaliyor.
-        #
-        # 2026-10-07 OPTIMIZASYON: yalnizca edge tasiyan mod islenir.
-        # trend_devam+dedup+cikis kurallari: +1.375%/islem, train +1.746 /
-        # test +0.508, 5/5 hafta pozitif, p~0.000 (null testi 400 orneklem).
-        # TUM havuz ayni kurallarla +0.550% — yani diger modlar getiriyi
-        # yariya indiriyor. Bos liste verilerek eski davranisa donulur.
-        #
-        # P0-2 DUZELTMESI (2026-10-07 denetimi): onceki varsayilan
-        # `["trend_devam"]` idi ve radar giris yolunu SESSIZCE kapatuyordu —
-        # `trend_devam` yalniz velocity yolunda uretilir; radar/birlesik
-        # bildirimleri `mode="unified"`. `unified` de ayni cikis kurallariyla
-        # islem basi +0.02% (≈ notr noktasi) verir; onu listelemek edge
-        # KATMAZ ama hacmi (ve radar yolunu) oldurur. Bu yuzden `unified` de
-        # eklenir. Negatif/kanitsiz modlar (`notr`, `llm_ikinci_goz`,
-        # `global_lead_lag`) DISARIDA kalir.
-        # DIKKAT (migration): mevcut DB `auto_paper_settings` satiri bu
-        # varsayilani EZER (get_auto_paper_settings DB-over-defaults birlestirir).
-        # Kayitli bir liste tek seferlik duzeltilmezse eski davranis surer.
-        #
-        # 2026-10-16 (tarama güncellemesi): sabit `["trend_devam", "unified"]`
-        # yerine env `AUTO_PAPER_ALLOWED_MODES` (varsayılan "trend_devam").
-        # Kanıt (7 günlük bildirim ölçümü, 279 ölçülebilir, 5m mum): trend_devam
-        # n=150 hit60 %52.7 net 0.00; unified n=41 hit60 %19.5 (kayıtlı hedef
-        # isabeti %3.7); notr net −1.09; v_donusu 0/10 → `unified` listeden
-        # çıkar. Boş env = TÜM modlar (eski davranış). Kayıt: docs/DENEY_KAYDI.md.
         "allowed_modes": _allowed_modes_from_config(),
-        # BILDIRIM DEDUP (2026-10-07). Ayni sembolde kisa sure once giris
-        # yapildiysa tekrar girmez (0 = kapali). Ayni sinyal 5 dakikada birden
-        # fazla kanaldan geliyor; her biri ayri pozisyon aciyordu.
-        # OPTIMIZASYON: 60 dk. Canlida islem hacmi 107/gun -> 17/gun; ort.
-        # bozulmadan (-%0.20 -> +0.55% @30dk dedup) tekrarli islemler atilir.
         "dedup_cooldown_minutes": 60.0,
+    }
+
+
+async def get_default_settings() -> dict:
+    """auto_paper varsayılanları: çıkış + giriş kapıları + hesap boyutu.
+
+    2026-10-16 (maliyet/çıkış): SL / trailing varsayılanları çıkış profilinden
+    (`AUTO_PAPER_EXIT_PROFILE`: mevcut | kalibre) gelir. DB'deki kayıtlı ayar
+    `get_auto_paper_settings` birleştirmesinde bu varsayılanları EZER.
+    """
+    _exit_def = _exit_defaults()
+    return {
+        "enabled": True,
+        "balance_pct": config.AUTO_PAPER_BALANCE_PCT_DEFAULT,
+        "min_order_try": config.AUTO_PAPER_MIN_ORDER_TRY,
+        "max_open_positions": config.AUTO_PAPER_MAX_OPEN_POSITIONS,
+        **_default_exit_settings(_exit_def),
+        **_default_gate_settings(),
     }
 
 

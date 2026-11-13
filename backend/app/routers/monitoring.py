@@ -34,95 +34,131 @@ from contextlib import asynccontextmanager
 logger = logging.getLogger("scalper.monitoring")
 router = APIRouter()
 
+def _suite_indicators(c: dict) -> dict:
+    """AI Trading Suite girdileri: gösterge sözlüğü (sembol fiyatından türetilir).
+
+    Hedef sembolün kendine ait gerçek gösterge serisi yoksa buradaki sentetik
+    ama tutarlı değerler üretilir (skor/ATR/hacim oranına bağlı). Panelde
+    "10 proje uzlaşması" rozeti bu çıktıyla beslenir.
+    """
+    price = float(c.get("price") or 0.0)
+    atr_pct = float(c.get("atr_pct") or c.get("atr_pct_15m") or 1.5)
+    score = float(c.get("panel_score") or c.get("velocity_score") or 70.0)
+    vr = float(c.get("volume_ratio") or 1.2)
+    ret3 = float(c.get("ret3_pct") or c.get("ret_8h_pct") or 2.0)
+    indicators = {
+        "rsi": 55.0 + min(20.0, (score - 60.0) * 0.5) if score > 60 else 45.0,
+        "macd_hist": 0.05 if score > 65 else -0.02,
+        "ema_fast": price * 1.002 if price > 0 else 1.002,
+        "ema_slow": price * 0.998 if price > 0 else 0.998,
+        "bb_lower": price * (1.0 - (atr_pct / 100.0) * 1.5) if price > 0 else 0.98,
+        "bb_upper": price * (1.0 + (atr_pct / 100.0) * 1.5) if price > 0 else 1.02,
+        "atr": price * (atr_pct / 100.0) if price > 0 else 1.0,
+        "adx": 28.0 if score > 70 else 20.0,
+    }
+    return {
+        "price": price, "atr_pct": atr_pct, "score": score, "vr": vr, "ret3": ret3,
+        "indicators": indicators,
+    }
+
+
+def _suite_enrich_one(c: dict) -> None:
+    """Tek adayı 10 AI projesi uzlaşısıyla zenginleştir (yerinde değiştirir).
+
+    Her model kendi değerlendirme sınıfını döndürür; c üzerine panelde
+    gösterilen alanlar yazılır. Tek bozuk model tüm adayı düşürmez.
+    """
+    s = _suite_indicators(c)
+    price, atr_pct, vr, ret3 = s["price"], s["atr_pct"], s["vr"], s["ret3"]
+    ind = s["indicators"]
+
+    from app.ai_trading_suite.octobot_matrix import evaluate_octobot_matrix
+    from app.ai_trading_suite.vibe_trading import evaluate_vibe_momentum
+    from app.ai_trading_suite.ai_trader_reflection import audit_trade_reflection
+    from app.ai_trading_suite.qlib_alpha_evaluator import evaluate_qlib_alpha
+    from app.ai_trading_suite.jesse_adaptive_risk import evaluate_jesse_risk
+    from app.ai_trading_suite.fingpt_sentiment import evaluate_fingpt_sentiment
+    from app.ai_trading_suite.kalman_filter_trend import evaluate_kalman_trend
+    from app.ai_trading_suite.volume_profile_poc import evaluate_volume_profile
+
+    sym = str(c.get("symbol") or "").upper()
+    atr_val = price * (atr_pct / 100.0) if price > 0 else 1.0
+
+    octo = evaluate_octobot_matrix(indicators=ind, timeframe="5m")
+    c["octobot_consensus_pct"] = round(octo.consensus_pct, 1)
+    c["octobot_signal"] = octo.overall_signal
+
+    # Qlib Multi-Factor Alpha
+    qlib = evaluate_qlib_alpha(symbol=sym, price=price, indicators=ind)
+    c["qlib_score"] = qlib.alpha_score
+    c["qlib_rank"] = qlib.alpha_rank
+
+    # Jesse Adaptive Risk & R:R
+    jesse = evaluate_jesse_risk(symbol=sym, entry_price=price, atr=atr_val)
+    c["jesse_rr"] = jesse.risk_reward_ratio
+
+    # FinGPT Narrative
+    fingpt = evaluate_fingpt_sentiment(symbol=sym, social_volume_ratio=vr)
+    c["fingpt_narrative"] = fingpt.narrative_type
+
+    # Kalman Zero-Lag Trend
+    kalman = evaluate_kalman_trend(
+        symbol=sym,
+        prices=[price * 0.996, price * 0.998, price],
+        current_atr=atr_val,
+    )
+    c["kalman_trend"] = kalman.trend_state
+    c["kalman_velocity"] = kalman.kalman_velocity
+
+    # Volume Profile POC
+    vp = evaluate_volume_profile(
+        symbol=sym,
+        candles=[{"high": price * 1.003, "low": price * 0.997,
+                  "close": price, "volume": vr * 50.0}],
+    )
+    c["poc_price"] = vp.point_of_control
+
+    vibe = evaluate_vibe_momentum(
+        symbol=sym, price_change_24h_pct=ret3, volume_ratio=vr,
+        mentions_score=0.6, sentiment_positive_ratio=0.75,
+    )
+    c["vibe_status"] = ("FOMO Tuzağı" if vibe.fomo_trap_detected
+                        else ("Onaylı Hacim" if vibe.breakout_confirmed else "Nötr Momentum"))
+
+    ref = audit_trade_reflection(
+        proposed_action="BUY",
+        timeframe_confluence=octo.consensus_pct >= 60.0,
+        volume_divergence=vibe.fomo_trap_detected or vr < 0.75,
+        adverse_risk_factors=[vibe.reason] if vibe.fomo_trap_detected else [],
+    )
+
+    if ref.bull_trap_warning:
+        c["trap_warning"] = "Boğa Tuzağı!"
+    elif vibe.fomo_trap_detected:
+        c["trap_warning"] = "FOMO Tuzağı"
+    elif vr < 0.7:
+        c["trap_warning"] = "Hacim Uyumsuzluğu"
+    else:
+        c["trap_warning"] = None
+
+
 def enrich_candidates_with_ai_suite(candidates: list[dict]) -> list[dict]:
-    """10 AI Trading projesi uzlaşısı: OctoBot ağırlıklı gösterge uzlaşısı ve Vibe/Tuzak tespiti."""
+    """10 AI projesi uzlaşısı: OctoBot ağırlıklı gösterge uzlaşısı ve Vibe/Tuzak tespiti."""
     if not candidates:
         return candidates
     try:
-        from app.ai_trading_suite.octobot_matrix import evaluate_octobot_matrix
-        from app.ai_trading_suite.vibe_trading import evaluate_vibe_momentum
-        from app.ai_trading_suite.ai_trader_reflection import audit_trade_reflection
-        from app.ai_trading_suite.qlib_alpha_evaluator import evaluate_qlib_alpha
-        from app.ai_trading_suite.jesse_adaptive_risk import evaluate_jesse_risk
-        from app.ai_trading_suite.fingpt_sentiment import evaluate_fingpt_sentiment
-        from app.ai_trading_suite.kalman_filter_trend import evaluate_kalman_trend
-        from app.ai_trading_suite.volume_profile_poc import evaluate_volume_profile
+        # _suite_enrich_one içinde import edilir; burada yalnız modülün
+        # yüklendiğini erken doğrula (tümü yoksa sessizce hiç zenginleştirme yapma).
+        import app.ai_trading_suite.octobot_matrix  # noqa: F401
+        import app.ai_trading_suite.vibe_trading  # noqa: F401
     except Exception as exc:
         logger.debug("AI trading suite import hatası: %s", exc)
         return candidates
-
     for c in candidates:
         if not isinstance(c, dict):
             continue
         try:
-            sym = str(c.get("symbol") or "").upper()
-            price = float(c.get("price") or 0.0)
-            atr_pct = float(c.get("atr_pct") or c.get("atr_pct_15m") or 1.5)
-            score = float(c.get("panel_score") or c.get("velocity_score") or 70.0)
-            vr = float(c.get("volume_ratio") or 1.2)
-            ret3 = float(c.get("ret3_pct") or c.get("ret_8h_pct") or 2.0)
-
-            indicators = {
-                "rsi": 55.0 + min(20.0, (score - 60.0) * 0.5) if score > 60 else 45.0,
-                "macd_hist": 0.05 if score > 65 else -0.02,
-                "ema_fast": price * 1.002 if price > 0 else 1.002,
-                "ema_slow": price * 0.998 if price > 0 else 0.998,
-                "bb_lower": price * (1.0 - (atr_pct / 100.0) * 1.5) if price > 0 else 0.98,
-                "bb_upper": price * (1.0 + (atr_pct / 100.0) * 1.5) if price > 0 else 1.02,
-                "atr": price * (atr_pct / 100.0) if price > 0 else 1.0,
-                "adx": 28.0 if score > 70 else 20.0,
-            }
-
-            octo = evaluate_octobot_matrix(indicators=indicators, timeframe="5m")
-            c["octobot_consensus_pct"] = round(octo.consensus_pct, 1)
-            c["octobot_signal"] = octo.overall_signal
-
-            # Qlib Multi-Factor Alpha
-            qlib = evaluate_qlib_alpha(symbol=sym, price=price, indicators=indicators)
-            c["qlib_score"] = qlib.alpha_score
-            c["qlib_rank"] = qlib.alpha_rank
-
-            # Jesse Adaptive Risk & R:R
-            jesse = evaluate_jesse_risk(symbol=sym, entry_price=price, atr=price * (atr_pct / 100.0) if price > 0 else 1.0)
-            c["jesse_rr"] = jesse.risk_reward_ratio
-
-            # FinGPT Narrative
-            fingpt = evaluate_fingpt_sentiment(symbol=sym, social_volume_ratio=vr)
-            c["fingpt_narrative"] = fingpt.narrative_type
-
-            # Kalman Zero-Lag Trend
-            kalman = evaluate_kalman_trend(symbol=sym, prices=[price * 0.996, price * 0.998, price], current_atr=price * (atr_pct / 100.0) if price > 0 else 1.0)
-            c["kalman_trend"] = kalman.trend_state
-            c["kalman_velocity"] = kalman.kalman_velocity
-
-            # Volume Profile POC
-            vp = evaluate_volume_profile(symbol=sym, candles=[{"high": price * 1.003, "low": price * 0.997, "close": price, "volume": vr * 50.0}])
-            c["poc_price"] = vp.point_of_control
-
-            vibe = evaluate_vibe_momentum(
-                symbol=sym,
-                price_change_24h_pct=ret3,
-                volume_ratio=vr,
-                mentions_score=0.6,
-                sentiment_positive_ratio=0.75,
-            )
-            c["vibe_status"] = "FOMO Tuzağı" if vibe.fomo_trap_detected else ("Onaylı Hacim" if vibe.breakout_confirmed else "Nötr Momentum")
-
-            ref = audit_trade_reflection(
-                proposed_action="BUY",
-                timeframe_confluence=octo.consensus_pct >= 60.0,
-                volume_divergence=vibe.fomo_trap_detected or vr < 0.75,
-                adverse_risk_factors=[vibe.reason] if vibe.fomo_trap_detected else [],
-            )
-
-            if ref.bull_trap_warning:
-                c["trap_warning"] = "Boğa Tuzağı!"
-            elif vibe.fomo_trap_detected:
-                c["trap_warning"] = "FOMO Tuzağı"
-            elif vr < 0.7:
-                c["trap_warning"] = "Hacim Uyumsuzluğu"
-            else:
-                c["trap_warning"] = None
+            _suite_enrich_one(c)
         except Exception as item_err:
             logger.debug("Aday zenginleştirme atlandı %s: %s", c.get("symbol"), item_err)
     return candidates
@@ -3213,6 +3249,79 @@ def _rising_summary_safe() -> dict | None:
     return payload
 
 
+# Yükseliş sinyali metin şablonları (2026-11-10 refactor).
+# Her giriş: (başlık soneki, mesaj gövdesi). Gövde `{sym}/{target}/{price}` alır;
+# `extra` sözlüğü türe özgü ek alan taşır (ör. KDJ'nin J değeri).
+_RISING_TEXT_TEMPLATES = {
+    "kdj_dip": (
+        "🎯 [KDJ DİP] {sym} · Altcoin Aşırı Satım Kırılımı (J <= 15)",
+        "🎯 {sym} | KDJ J-Çizgisi Dip Dönüşü (J: {j_val} <= 15) | "
+        "Hedef: +%{target:.2f} (TP1: %1.50, TP2: %2.80) | SL: -%1.00 | "
+        "Anlık: {price:.6f} TRY",
+    ),
+    "supertrend": (
+        "🚀 [SUPERTREND] {sym} · Boğa Trend Kırılımı (Sharpe: 13.2)",
+        "🚀 {sym} | SuperTrend Boğa Kırılımı | "
+        "Hedef: +%{target:.2f} (TP1: %1.50) | SL: -%1.00 | "
+        "Anlık: {price:.6f} TRY",
+    ),
+    "ema_bounce": (
+        "⚡ [EMA50 BOUNCE] {sym} · Trend Desteği Sekmesi (WinRate: %83+)",
+        "⚡ {sym} | EMA50 Pullback Sekmesi + KDJ | "
+        "Hedef: +%{target:.2f} (TP1: %2.00, TP2: %3.50) | SL: -%1.00 | "
+        "Anlık: {price:.6f} TRY",
+    ),
+}
+
+
+def _rising_text(candidate: dict, symbol: str, kind: str, label: str,
+                 target: float, score: float, price: float,
+                 expected_price: float, prox_txt: str) -> tuple[str, str]:
+    """Sinyal türüne göre (başlık, mesaj) üret.
+
+    Özel türler `_RISING_TEXT_TEMPLATES` tablosundan gelir; bilinmeyen türler
+    genel şablonu kullanır. Metinler kullanıcıya giden bildirimin TA KENDİSİDİR
+    — biçim değişikliği doğrudan görünür, bu yüzden karakter karakter korunur.
+    """
+    tpl = _RISING_TEXT_TEMPLATES.get(kind)
+    if tpl is not None:
+        extra = {}
+        if kind == "kdj_dip":
+            kdj_data = candidate.get("kdj") or {}
+            extra["j_val"] = round(float(kdj_data.get("j", 0.0)), 1)
+        return (tpl[0].format(sym=symbol),
+                tpl[1].format(sym=symbol, target=target, price=price, **extra))
+    return (
+        f"🎯 {symbol} · {label} +%{target:g} potansiyel",
+        f"🎯 {symbol} | Skor: {score:.1f} | Potansiyel: +%{target:g} (5dk){prox_txt} | "
+        f"Anlık: {price:.6f} TRY | Beklenen: {expected_price:.6f} TRY",
+    )
+
+
+def _rising_tp_sl_defaults(kind: str, candidate: dict) -> dict:
+    """Sinyal türüne özgü TP/SL ve 4'lü teyit varsayılanları.
+
+    Özel türlerde (kdj_dip/supertrend/ema_bounce) kullanıcıya SABİT geometri
+    bildirilir: mesajda yazan TP1/TP2/SL ile otonom paper'ın uyguladığı
+    değerler AYNI olmalı, aksi halde bildirim yalan söyler.
+    """
+    if kind == "ema_bounce":
+        tp1, tp2, sl = 2.00, 3.50, 1.0
+    elif kind == "kdj_dip":
+        tp1, tp2, sl = 1.50, 2.80, 1.0
+    elif kind == "supertrend":
+        tp1, tp2, sl = 1.50, 2.50, 1.0
+    else:
+        return {
+            "tp1_scalp_pct": candidate.get("tp1_scalp_pct"),
+            "tp2_runner_pct": candidate.get("tp2_runner_pct"),
+            "sl_pct": candidate.get("sl_pct"),
+            "confluence_4way": bool(candidate.get("confluence_4way")),
+        }
+    return {"tp1_scalp_pct": tp1, "tp2_runner_pct": tp2, "sl_pct": sl,
+            "confluence_4way": True}
+
+
 def _build_rising_notification(candidate: dict, price: float) -> dict:
     """Yükseliş adayını `_send_push` + `try_open_from_notification` zarfına çevir.
 
@@ -3239,39 +3348,14 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
     _risk_reason, _risk_evidence = _rising_risk_block_reason(symbol)
     _regime_badge = (_risk_evidence or {}).get("regime_badge")
     _badge_prefix = "⚠ BTC REJİM · " if _regime_badge else ""
-    if kind == "kdj_dip":
-        kdj_data = candidate.get("kdj") or {}
-        j_val = round(float(kdj_data.get("j", 0.0)), 1)
-        title = f"{_badge_prefix}🎯 [KDJ DİP] {symbol} · Altcoin Aşırı Satım Kırılımı (J <= 15)"
-        message = (
-            f"{_badge_prefix}🎯 {symbol} | KDJ J-Çizgisi Dip Dönüşü (J: {j_val} <= 15) | "
-            f"Hedef: +%{target:.2f} (TP1: %1.50, TP2: %2.80) | SL: -%1.00 | "
-            f"Anlık: {price:.6f} TRY"
-        )
-    elif kind == "supertrend":
-        title = f"{_badge_prefix}🚀 [SUPERTREND] {symbol} · Boğa Trend Kırılımı (Sharpe: 13.2)"
-        message = (
-            f"{_badge_prefix}🚀 {symbol} | SuperTrend Boğa Kırılımı | "
-            f"Hedef: +%{target:.2f} (TP1: %1.50) | SL: -%1.00 | "
-            f"Anlık: {price:.6f} TRY"
-        )
-    elif kind == "ema_bounce":
-        title = f"{_badge_prefix}⚡ [EMA50 BOUNCE] {symbol} · Trend Desteği Sekmesi (WinRate: %83+)"
-        message = (
-            f"{_badge_prefix}⚡ {symbol} | EMA50 Pullback Sekmesi + KDJ | "
-            f"Hedef: +%{target:.2f} (TP1: %2.00, TP2: %3.50) | SL: -%1.00 | "
-            f"Anlık: {price:.6f} TRY"
-        )
-    else:
-        title = f"{_badge_prefix}🎯 {symbol} · {label} +%{target:g} potansiyel"
-        message = (
-            f"{_badge_prefix}🎯 {symbol} | Skor: {score:.1f} | Potansiyel: +%{target:g} (5dk){prox_txt} | "
-            f"Anlık: {price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
-        )
+    _title, _message = _rising_text(candidate, symbol, kind, label, target,
+                                    score, price, expected_price, prox_txt)
+    _exits = _rising_tp_sl_defaults(kind, candidate)
+    _mtf = macd_mtf.cached_compact(symbol) or {}
     return {
         "symbol": symbol,
-        "message": message,
-        "title": title,
+        "message": f"{_badge_prefix}{_message}",
+        "title": f"{_badge_prefix}{_title}",
         "url": f"/charts?symbol={symbol}",
         "tag": f"rising-{symbol}",
         "detected_at": now,
@@ -3288,10 +3372,7 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
         "proximity": proximity,
         "green": candidate.get("green"),
         "strength": candidate.get("strength"),
-        "tp1_scalp_pct": 2.00 if kind == "ema_bounce" else (1.50 if kind in ("kdj_dip", "supertrend") else candidate.get("tp1_scalp_pct")),
-        "tp2_runner_pct": 3.50 if kind == "ema_bounce" else (2.80 if kind == "kdj_dip" else (2.50 if kind == "supertrend" else candidate.get("tp2_runner_pct"))),
-        "sl_pct": 1.0 if kind in ("kdj_dip", "supertrend", "ema_bounce") else candidate.get("sl_pct"),
-        "confluence_4way": True if kind in ("kdj_dip", "supertrend", "ema_bounce") else bool(candidate.get("confluence_4way")),
+        **_exits,
         # Aynı saat kovasında aynı sembol için TEK otonom giriş (churn koruması
         # `auto_paper` tarafında `notification_key` ile uygulanır).
         "notification_key": f"rising-{kind}-{symbol}-{int(now // 3600)}",
@@ -3306,8 +3387,8 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
         # LLM ikinci göz kanıtı: risk bayrakları (ölçüldü/ölçülemedi dahil).
         "master_surge": (dict(_risk_evidence) if _risk_evidence else None),
         # MACD MTF konfluans snapshot'ı (bildirim ANI — ölçüm raporu için).
-        "macd_mtf_verdict": (macd_mtf.cached_compact(symbol) or {}).get("verdict"),
-        "macd_mtf_confluence": (macd_mtf.cached_compact(symbol) or {}).get("confluence"),
+        "macd_mtf_verdict": _mtf.get("verdict"),
+        "macd_mtf_confluence": _mtf.get("confluence"),
     }
 
 
@@ -3669,6 +3750,92 @@ def _rising_build_notification(candidate: dict, symbol: str, price, quiet: bool,
     return notif
 
 
+async def _rising_process_candidate(candidate, symbol, ctx) -> dict | None:
+    """Tek yükseliş adayını işle: hedef → erken/yukselis yolu → kanıt → bildirim.
+
+    Döner: bildirim sözlüğü (ateşlendi) ya da `None` (kayıt yok / bastırıldı).
+    `ctx` çağrı bağlamı: ortak durumu taşır (notified listesi, eşikler).
+    """
+    rising_signals = ctx["rising_signals"]
+    summary = ctx["summary"]
+    notify_enabled = ctx["notify_enabled"]
+    candidate["target_pct"] = await _rising_apply_dynamic_target(candidate, symbol)
+
+    # ── ERKEN (KIND_EARLY) sinyali: push yok ──────────────────────────────
+    kind = str(candidate.get("kind") or "")
+    if kind == rising_signals.KIND_EARLY:
+        await _rising_handle_early(candidate, symbol, notify_enabled, summary, rising_signals)
+        return None
+
+    # ── YÜKSELİŞ (KIND_STRENGTH) sinyali ───────────────────────────────────
+    # Histerezis: AYNI öncü kümesi sürüyorsa yeni bilgi yoktur → ne kayıt ne
+    # bildirim (aksi halde kanıt tablosu her turda şişerdi).
+    prev_key = rising_signals.last_key(symbol)
+    cur_key = rising_signals.signal_key(candidate)
+    if prev_key is not None and not rising_signals.rising_edge_trigger(prev_key, cur_key):
+        return None
+    is_first_observation = prev_key is None
+
+    # Fiyat: bayat ticker ile bildirim/beklenti üretme (radar ile AYNI kural).
+    price = _ticker_price(symbol) if notify_enabled else None
+    if notify_enabled and (not price or price <= 0):
+        summary["skipped_price"] += 1
+        return None
+
+    fire, update_change, _risk_blocked = _rising_decide_fire(
+        candidate, symbol, price, ctx["now"], ctx["settings"], notify_enabled,
+        ctx["unified_mode"], is_first_observation, ctx["notified"],
+        ctx["max_per_scan"], rising_signals, unified_signals)
+    if fire and len(ctx["notified"]) >= ctx["max_per_scan"]:
+        return None
+    notif = _rising_build_notification(candidate, symbol, price, ctx["quiet"],
+                                       update_change, notify_enabled, rising_signals)
+
+    # Kanıt katmanı: bildirimden ÖNCE yazılır ki her sinyal ölçülebilir olsun.
+    alert_id = await database.record_rising_alert({
+        **candidate,
+        "price": float(price) if notify_enabled else None,
+        "expected_price": notif["expected_price"] if notif else None,
+        "created_at": time.time(),
+        "notified": bool(fire),
+    })
+    if not fire:
+        # Sessiz arm: durumu ilerlet (cooldown BAŞLATMA) ki cooldown'sız
+        # ilk turda birikme olmasın.
+        if is_first_observation:
+            rising_signals.observe(candidate)
+        else:
+            # Kanıt kaydı yazıldı ama ateşleme olmadı (cooldown/unified bastırma).
+            # Histerezis anahtarını güncel konuma ilerlet ki aynı key osilaston
+            # (CVD/break5 flip) tekrar histerezisi geçip yeni kayıt üretmesin.
+            rising_signals.advance_key(candidate)
+        return None
+    rising_signals.mark_fired(candidate, ctx["now"])
+    # Son bildirim ayrıntısını kaydet (sonraki UPDATE kontrolü için)
+    rising_signals.record_fired_detail(candidate, float(price or 0))
+    if notif is None:
+        return None
+    if alert_id:
+        notif["alert_id"] = alert_id
+    return notif
+
+
+async def _rising_finish_scan(ctx) -> None:
+    """Ateşlenen bildirimleri planla ve teslim et."""
+    notified = ctx["notified"]
+    if not notified:
+        return
+    await asyncio.gather(*(notification_plan.attach_plan(
+        n, signal_eta.bucket_for("rising", {"kind": n.get("kind")})) for n in notified))
+    _monitoring_state["rising_notified"] = int(_monitoring_state.get("rising_notified", 0)) + len(notified)
+    try:
+        await _rising_deliver(notified)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("Yükseliş teslimi: %s", exc)
+
+
 async def _run_rising_scan() -> dict:
     """Yükseliş taraması: tespit → fiyat → histerezis → kanıt → bildirim.
 
@@ -3693,90 +3860,31 @@ async def _run_rising_scan() -> dict:
     if not candidates:
         summary["stale"] = rising_signals.rising_is_stale()
         return summary
-    quiet = _in_quiet_hours(settings)
-    now = time.monotonic()
-    max_per_scan = max(1, int(getattr(config, "RISING_MAX_PER_SCAN", 3) or 3))
     # Çapraz bastırma yalnızca BİRLEŞİK moddayken: kullanıcı tek-bildirim modunu
     # kapatırsa bayat `note_notified` kayıtları (≤30 dk) yükseliş push'unu
     # engellememeli (mod değişimi anında sessizleşme hatası).
-    unified_mode = bool(settings.get("radar_unified_notify"))
-    notify_enabled = bool(getattr(config, "RISING_NOTIFY_ENABLED", True))
-    notified: list = []
+    ctx = {
+        "summary": summary,
+        "rising_signals": rising_signals,
+        "settings": settings,
+        "quiet": _in_quiet_hours(settings),
+        "now": time.monotonic(),
+        "max_per_scan": max(1, int(getattr(config, "RISING_MAX_PER_SCAN", 3) or 3)),
+        "unified_mode": bool(settings.get("radar_unified_notify")),
+        "notify_enabled": bool(getattr(config, "RISING_NOTIFY_ENABLED", True)),
+        "notified": [],
+    }
     for candidate in candidates:
         symbol = str(candidate.get("symbol") or "").upper()
         if not symbol:
             continue
-        candidate["target_pct"] = await _rising_apply_dynamic_target(candidate, symbol)
-
-        # ── ERKEN (KIND_EARLY) sinyali: push yok ──────────────────────────────
-        kind = str(candidate.get("kind") or "")
-        if kind == rising_signals.KIND_EARLY:
-            await _rising_handle_early(candidate, symbol, notify_enabled, summary, rising_signals)
-            continue
-
-        # ── YÜKSELİŞ (KIND_STRENGTH) sinyali ───────────────────────────────────
-        # Histerezis: AYNI öncü kümesi sürüyorsa yeni bilgi yoktur → ne kayıt ne
-        # bildirim (aksi halde kanıt tablosu her turda şişerdi).
-        prev_key = rising_signals.last_key(symbol)
-        cur_key = rising_signals.signal_key(candidate)
-        if prev_key is not None and not rising_signals.rising_edge_trigger(prev_key, cur_key):
-            continue
-        is_first_observation = prev_key is None
-
-        # Fiyat: bayat ticker ile bildirim/beklenti üretme (radar ile AYNI kural).
-        price = _ticker_price(symbol) if notify_enabled else None
-        if notify_enabled and (not price or price <= 0):
-            summary["skipped_price"] += 1
-            continue
-
-        fire, update_change, _risk_blocked = _rising_decide_fire(
-            candidate, symbol, price, now, settings, notify_enabled, unified_mode,
-            is_first_observation, notified, max_per_scan, rising_signals, unified_signals)
-        if fire and len(notified) >= max_per_scan:
-            continue
-        notif = _rising_build_notification(candidate, symbol, price, quiet,
-                                          update_change, notify_enabled, rising_signals)
-
-        # Kanıt katmanı: bildirimden ÖNCE yazılır ki her sinyal ölçülebilir olsun.
-        alert_id = await database.record_rising_alert({
-            **candidate,
-            "price": float(price) if notify_enabled else None,
-            "expected_price": notif["expected_price"] if notif else None,
-            "created_at": time.time(),
-            "notified": bool(fire),
-        })
-        if not fire:
-            # Sessiz arm: durumu ilerlet (cooldown BAŞLATMA) ki cooldown'sız
-            # ilk turda birikme olmasın.
-            if is_first_observation:
-                rising_signals.observe(candidate)
-            else:
-                # Kanıt kaydı yazıldı ama ateşleme olmadı (cooldown/unified bastırma).
-                # Histerezis anahtarını güncel konuma ilerlet ki aynı key osilaston
-                # (CVD/break5 flip) tekrar histerezisi geçip yeni kayıt üretmesin.
-                rising_signals.advance_key(candidate)
-            continue
-        rising_signals.mark_fired(candidate, now)
-        # Son bildirim ayrıntısını kaydet (sonraki UPDATE kontrolü için)
-        rising_signals.record_fired_detail(candidate, float(price or 0))
-        if notif is None:
-            continue
-        if alert_id:
-            notif["alert_id"] = alert_id
-        notified.append(notif)
-    if notified:
-        await asyncio.gather(*(notification_plan.attach_plan(
-            n, signal_eta.bucket_for("rising", {"kind": n.get("kind")})) for n in notified))
-    if notified:
-        _monitoring_state["rising_notified"] = int(_monitoring_state.get("rising_notified", 0)) + len(notified)
-        try:
-            await _rising_deliver(notified)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("Yükseliş teslimi: %s", exc)
-    summary["notified"] = len(notified)
+        notif = await _rising_process_candidate(candidate, symbol, ctx)
+        if notif is not None:
+            ctx["notified"].append(notif)
+    await _rising_finish_scan(ctx)
+    summary["notified"] = len(ctx["notified"])
     return summary
+
 
 # Kanıt doldurma periyodu: ufuk 30 dk olduğundan 5 dakikalık tarama yeterli.
 _RISING_EVIDENCE_FILL_SEC = 300.0
@@ -4614,31 +4722,98 @@ async def _rising_report_context(parsed):
     return _px, now, _tz, _today_label
 
 
+def _measure_empty_totals() -> dict:
+    """Ölçüm toplamlarını sıfırla (tek kaynak: anahtar adları burada tanımlı).
+
+    Yuvarlanan sayaçlar tek bir sözlükte tutulur; eskiden 18 ayrı yerel
+    değişkendi ve iç içe `for` döngülerinde tek tek güncelleniyordu.
+    """
+    return {
+        "all_mfe_sum": 0.0, "all_mfe_n": 0,
+        "today_mfe_sum": 0.0, "today_mfe_n": 0,
+        "all_tgt_sum": 0.0, "all_tgt_n": 0,
+        "today_tgt_sum": 0.0, "today_tgt_n": 0,
+        "all_sim_sum": 0.0, "all_sim_n": 0,
+        "today_sim_sum": 0.0, "today_sim_n": 0,
+        "tot_measured": 0, "tot_hits": 0,
+        "tot_mfe_n": 0, "tot_pending": 0, "tot_mfe_sum": 0.0,
+    }
+
+
+def _measure_accumulate(tot: dict, *, mfes, tgts, sims, is_today: bool) -> None:
+    """Bir listenin MFE/hedef/sim değerlerini tüm-zaman ve bugün toplamlarına ekle."""
+    for m in mfes:
+        tot["all_mfe_sum"] += m
+        tot["all_mfe_n"] += 1
+        if is_today:
+            tot["today_mfe_sum"] += m
+            tot["today_mfe_n"] += 1
+    if tgts:
+        tot["all_tgt_sum"] += sum(tgts)
+        tot["all_tgt_n"] += len(tgts)
+        if is_today:
+            tot["today_tgt_sum"] += sum(tgts)
+            tot["today_tgt_n"] += len(tgts)
+    for s in sims:
+        tot["all_sim_sum"] += s
+        tot["all_sim_n"] += 1
+        if is_today:
+            tot["today_sim_sum"] += s
+            tot["today_sim_n"] += 1
+
+
+def _measure_rows(rows, by_symbol: dict) -> None:
+    """Her satıra anchor + carried taşı (modal grafiği ve rozet kullanır)."""
+    for r in rows:
+        src_c = by_symbol.get(str(r.get("symbol") or "").upper()) or {}
+        r["anchor_price"] = src_c.get("anchor_price") or r.get("entry_price")
+        r["carried"] = bool(src_c.get("carried"))
+
+
+def _measure_source_stats(rows, by_symbol: dict, src_meas, src_hits, src_mfe_sum) -> None:
+    """KAYNAK (strateji) bazında kırılım: hangi motorun isabetli olduğu ölçülür."""
+    for r in rows:
+        src = str((by_symbol.get(str(r.get("symbol") or "").upper()) or {}).get("strategy") or "combined")
+        if r.get("mfe_pct") is not None:
+            src_meas[src] += 1
+            src_mfe_sum[src] += float(r["mfe_pct"])
+        if r.get("hit_ceiling") is True:
+            src_hits[src] += 1
+
+
+def _measure_report_row(*, rid, rep, sent_at, window_end, rows, is_pending,
+                        measured, hits, avg_mfe, avg_target, avg_sim, sim_n) -> dict:
+    """Tek bir listenin ölçüm satırını kurar."""
+    return {
+        "id": rid,
+        "kind": rep.get("kind"),
+        "sent_at": sent_at,
+        "window_end": window_end,
+        "count": len(rows),
+        "measured": measured,
+        "ceiling_hits": hits,
+        "hit_rate": round(100.0 * hits / measured, 1) if measured else None,
+        "avg_mfe_pct": avg_mfe,
+        "avg_target_pct": avg_target,
+        "avg_sim_pct": avg_sim,
+        "sim_measured": sim_n,
+        "pending": bool(is_pending),
+        "rows": rows,
+    }
+
+
 async def _rising_report_measure(parsed, next_at, newest_id, _px, now, _tz, _today_label):
     per_report: list[dict] = []
     # KAYNAK (strateji) bazında kırılım: hangi motorun isabetli olduğu ölçülür.
     src_meas: Counter = Counter()
     src_hits: Counter = Counter()
     src_mfe_sum: Counter = Counter()
-    tot_measured = tot_hits = tot_mfe_n = tot_pending = 0
-    tot_mfe_sum = 0.0
     # ORTALAMA GERÇEKLEŞEN YÜKSELME (kullanıcı isteği 2026-10-11): her gönderilen
     # listenin adaylarının seçildiği andan itibaren ulaştığı EN YÜKSEK yükselme
     # (MFE) ortalaması. Tüm zamanlar + bugün ayrı toplanır.
-    all_mfe_sum = 0.0
-    all_mfe_n = 0
-    today_mfe_sum = 0.0
-    today_mfe_n = 0
-    all_tgt_sum = 0.0
-    all_tgt_n = 0
-    today_tgt_sum = 0.0
-    today_tgt_n = 0
     # GERÇEKLEŞEBİLİR % (2026-10-12): adayların otonom paper kurallarıyla net
     # getirisi (MFE'nin aksine realize edilebilir taban). Yan yana gösterilir.
-    all_sim_sum = 0.0
-    all_sim_n = 0
-    today_sim_sum = 0.0
-    today_sim_n = 0
+    tot = _measure_empty_totals()
     for rep, c in parsed:
         rid = int(rep.get("id") or 0)
         sent_at = float(rep.get("sent_at") or 0)
@@ -4655,11 +4830,7 @@ async def _rising_report_measure(parsed, next_at, newest_id, _px, now, _tz, _tod
             list(c), sent_at, live_prices=_px, max_sec=max_sec)
         # Sembol → orijinal aday (kaynak + carried bilgisi için).
         by_symbol = {str(x.get("symbol") or "").upper(): x for x in c}
-        # Her satıra anchor + carried taşı (modal grafiği ve rozet kullanır).
-        for r in rows:
-            src_c = by_symbol.get(str(r.get("symbol") or "").upper()) or {}
-            r["anchor_price"] = src_c.get("anchor_price") or r.get("entry_price")
-            r["carried"] = bool(src_c.get("carried"))
+        _measure_rows(rows, by_symbol)
         mfes = [float(r["mfe_pct"]) for r in rows if r.get("mfe_pct") is not None]
         hits = sum(1 for r in rows if r.get("hit_ceiling") is True)
         measured = len(mfes)
@@ -4674,78 +4845,29 @@ async def _rising_report_measure(parsed, next_at, newest_id, _px, now, _tz, _tod
         # gösterilir (kullanıcı isteği 2026-10-11).
         tgts = [float(r["ceiling_pct"]) for r in rows if r.get("ceiling_pct") is not None]
         avg_target = round(sum(tgts) / len(tgts), 2) if tgts else None
-        all_tgt_sum += sum(tgts)
-        all_tgt_n += len(tgts)
-        if is_today:
-            today_tgt_sum += sum(tgts)
-            today_tgt_n += len(tgts)
-        for m in mfes:
-            all_mfe_sum += m
-            all_mfe_n += 1
-            if is_today:
-                today_mfe_sum += m
-                today_mfe_n += 1
         # GERÇEKLEŞEBİLİR: sim_pct (otonom paper kurallarıyla net%). MFE'nin
         # yanına konur → "iyimser zirve" vs "gerçekleşebilir" farkı görünür.
         sims = [float(r["sim_pct"]) for r in rows if r.get("sim_pct") is not None]
         avg_sim = round(sum(sims) / len(sims), 2) if sims else None
-        for s in sims:
-            all_sim_sum += s
-            all_sim_n += 1
-            if is_today:
-                today_sim_sum += s
-                today_sim_n += 1
-        for r in rows:
-            src = str((by_symbol.get(str(r.get("symbol") or "").upper()) or {}).get("strategy") or "combined")
-            if r.get("mfe_pct") is not None:
-                src_meas[src] += 1
-                src_mfe_sum[src] += float(r["mfe_pct"])
-            if r.get("hit_ceiling") is True:
-                src_hits[src] += 1
-        per_report.append({
-            "id": rid,
-            "kind": rep.get("kind"),
-            "sent_at": sent_at,
-            "window_end": window_end,
-            "count": len(rows),
-            "measured": measured,
-            "ceiling_hits": hits,
-            "hit_rate": round(100.0 * hits / measured, 1) if measured else None,
-            "avg_mfe_pct": avg_mfe,
-            "avg_target_pct": avg_target,
-            "avg_sim_pct": avg_sim,
-            "sim_measured": len(sims),
-            "pending": bool(is_pending),
-            "rows": rows,
-        })
-        tot_measured += measured
-        tot_hits += hits
-        tot_pending += 1 if is_pending else 0
+        _measure_accumulate(tot, mfes=mfes, tgts=tgts, sims=sims, is_today=is_today)
+        _measure_source_stats(rows, by_symbol, src_meas, src_hits, src_mfe_sum)
+        per_report.append(_measure_report_row(
+            rid=rid, rep=rep, sent_at=sent_at, window_end=window_end, rows=rows,
+            is_pending=is_pending, measured=measured, hits=hits,
+            avg_mfe=avg_mfe, avg_target=avg_target, avg_sim=avg_sim, sim_n=len(sims),
+        ))
+        tot["tot_measured"] += measured
+        tot["tot_hits"] += hits
+        tot["tot_pending"] += 1 if is_pending else 0
         for m in mfes:
-            tot_mfe_sum += m
-            tot_mfe_n += 1
+            tot["tot_mfe_sum"] += m
+            tot["tot_mfe_n"] += 1
     return {
         "per_report": per_report,
         "src_meas": src_meas,
         "src_hits": src_hits,
         "src_mfe_sum": src_mfe_sum,
-        "tot_measured": tot_measured,
-        "tot_hits": tot_hits,
-        "tot_mfe_n": tot_mfe_n,
-        "tot_pending": tot_pending,
-        "tot_mfe_sum": tot_mfe_sum,
-        "all_mfe_sum": all_mfe_sum,
-        "all_mfe_n": all_mfe_n,
-        "today_mfe_sum": today_mfe_sum,
-        "today_mfe_n": today_mfe_n,
-        "all_tgt_sum": all_tgt_sum,
-        "all_tgt_n": all_tgt_n,
-        "today_tgt_sum": today_tgt_sum,
-        "today_tgt_n": today_tgt_n,
-        "all_sim_sum": all_sim_sum,
-        "all_sim_n": all_sim_n,
-        "today_sim_sum": today_sim_sum,
-        "today_sim_n": today_sim_n,
+        **tot,
     }
 
 
@@ -4949,6 +5071,73 @@ async def daily_rising_evaluate_last(request: Request = None, kind: str = COMBIN
     }
 
 
+def _state_candidate_row(r: dict, *, entry, current, change_pct, created_at, status: str) -> dict:
+    """Sistem Adayları satırı (hem "son gönderilen liste" hem "anlık tarama" için).
+
+    İki kaynak AYNI alan kümesini döndürür ki panel sütunları kaynağa göre
+    değişmesin; yalnız fiyat/zaman/status alanları çağırandan gelir.
+    """
+    return {
+        "symbol": str(r.get("symbol") or "").upper(),
+        "created_at": created_at,
+        "horizon_minutes": r.get("horizon_minutes"),
+        "entry_price": entry,
+        "current_price": current,
+        "change_pct": change_pct,
+        "ceiling_pct": r.get("ceiling_pct"),
+        "ceiling_price": r.get("ceiling_price"),
+        "potential_pct": r.get("potential_pct"),
+        "potential_price": r.get("potential_price"),
+        "scan_score": r.get("scan_score"),
+        "quality_score": r.get("quality_score", r.get("scan_score")),
+        "confirm_sources": r.get("confirm_sources"),
+        "confirm_layers": r.get("confirm_layers"),
+        "target_probability": r.get("target_probability"),
+        "strategy": r.get("strategy"),
+        "status": status,
+    }
+
+
+def _state_sent_candidates(sent_rows: list, rep: dict, _px: dict) -> list[dict]:
+    """Son gönderilen listenin satırları: giriş = zincir başı / bildirim fiyatı."""
+    out = []
+    for r in sent_rows:
+        sym = str(r.get("symbol") or "").upper()
+        # Zincir başı referans (`anchor_price`) → yoksa bu listenin fiyatı.
+        entry = r.get("anchor_price") or r.get("notify_price") or r.get("price")
+        cur = _px.get(sym)
+        try:
+            e = float(entry) if entry else None
+            c_ = float(cur) if cur else None
+        except (TypeError, ValueError):
+            e = c_ = None
+        out.append(_state_candidate_row(
+            r, entry=e, current=c_,
+            change_pct=round((c_ / e - 1) * 100, 2) if (e and c_) else None,
+            created_at=r.get("notified_at") or rep.get("sent_at"), status="sent",
+        ))
+    return out
+
+
+async def _state_live_candidates(cfg: dict, top_n: int, generated_at: float) -> list[dict]:
+    """Gönderilmiş liste yoksa: anlık kombine tarama (eşik üstü ilk TOP-N)."""
+    try:
+        _min_sc = float(cfg.get("min_score", 10.0))
+        _scan = await _combined_scan_rows()
+        cands = [c for c in _scan if float(c.get("scan_score") or 0) >= _min_sc][:top_n]
+    except Exception as exc:
+        logger.debug("state anlık kombine tarama: %s", exc)
+        cands = []
+    return [
+        _state_candidate_row(
+            r, entry=r.get("price"), current=r.get("price"),
+            change_pct=0.0 if r.get("price") else None,
+            created_at=generated_at, status="live",
+        )
+        for r in cands
+    ]
+
+
 @router.get("/api/daily-rising/state")
 async def daily_rising_state(request: Request = None):
     """Günlük yükseliş "Sistem Adayları" — SON GÖNDERİLEN kombine listenin ilk 3'ü.
@@ -4988,71 +5177,15 @@ async def daily_rising_state(request: Request = None):
     if sent_rows:
         syms = [str(r.get("symbol") or "").upper() for r in sent_rows]
         _px = await _batch_prices(syms)
-        out = []
-        for r in sent_rows:
-            sym = str(r.get("symbol") or "").upper()
-            # Zincir başı referans (`anchor_price`) → yoksa bu listenin fiyatı.
-            entry = r.get("anchor_price") or r.get("notify_price") or r.get("price")
-            cur = _px.get(sym)
-            try:
-                e = float(entry) if entry else None
-                c_ = float(cur) if cur else None
-            except (TypeError, ValueError):
-                e = c_ = None
-            out.append({
-                "symbol": sym,
-                "created_at": r.get("notified_at") or rep.get("sent_at"),
-                "horizon_minutes": r.get("horizon_minutes"),
-                "entry_price": e,
-                "current_price": c_,
-                "change_pct": round((c_ / e - 1) * 100, 2) if (e and c_) else None,
-                "ceiling_pct": r.get("ceiling_pct"),
-                "ceiling_price": r.get("ceiling_price"),
-                "potential_pct": r.get("potential_pct"),
-                "potential_price": r.get("potential_price"),
-                "scan_score": r.get("scan_score"),
-                "quality_score": r.get("quality_score", r.get("scan_score")),
-                "confirm_sources": r.get("confirm_sources"),
-                "confirm_layers": r.get("confirm_layers"),
-                "target_probability": r.get("target_probability"),
-                "strategy": r.get("strategy"),
-                "status": "sent",
-            })
         return {"paper_only": True, "generated_at": generated_at,
                 "source": "last_sent", "sent_at": rep.get("sent_at"),
-                "schedule": schedule, "stats": stats, "candidates": out}
-    # 2) Gönderilmiş liste yok → anlık kombine tarama (eşik üstü ilk TOP-N).
-    try:
-        _min_sc = float(cfg.get("min_score", 10.0))
-        _scan = await _combined_scan_rows()
-        cands = [c for c in _scan if float(c.get("scan_score") or 0) >= _min_sc][:top_n]
-    except Exception as exc:
-        logger.debug("state anlık kombine tarama: %s", exc)
-        cands = []
-    out = []
-    for r in cands:
-        out.append({
-            "symbol": str(r.get("symbol") or "").upper(),
-            "created_at": generated_at,
-            "horizon_minutes": r.get("horizon_minutes"),
-            "entry_price": r.get("price"),
-            "current_price": r.get("price"),
-            "change_pct": 0.0 if r.get("price") else None,
-            "ceiling_pct": r.get("ceiling_pct"),
-            "ceiling_price": r.get("ceiling_price"),
-            "potential_pct": r.get("potential_pct"),
-            "potential_price": r.get("potential_price"),
-            "scan_score": r.get("scan_score"),
-            "quality_score": r.get("quality_score", r.get("scan_score")),
-            "confirm_sources": r.get("confirm_sources"),
-            "confirm_layers": r.get("confirm_layers"),
-            "target_probability": r.get("target_probability"),
-            "strategy": r.get("strategy"),
-            "status": "live",
-        })
+                "schedule": schedule, "stats": stats,
+                "candidates": _state_sent_candidates(sent_rows, rep, _px)}
+    # 2) Gönderilmiş liste yok → anlık kombine tarama.
     return {"paper_only": True, "generated_at": generated_at,
             "source": "live_scan", "sent_at": None,
-            "schedule": schedule, "stats": stats, "candidates": out}
+            "schedule": schedule, "stats": stats,
+            "candidates": await _state_live_candidates(cfg, top_n, generated_at)}
 
 
 @router.get("/api/daily-rising/live")
@@ -6625,6 +6758,46 @@ async def monitoring_state():
 
 
 @router.get("/api/monitoring/active-notification/{symbol}")
+async def _active_notif_fallback_to_trade(sym: str, row, expires_at: float, now: float,
+                                          open_trade: dict, detected_at: float,
+                                          horizon: int):
+    """Radar ufku dolmuş ama otonom paper pozisyonu açıksa bildirimi canlı tut.
+
+    Döner: (row, detected_at, horizon, expires_at). Ufuk hâlâ geçerliyse veya
+    trade yoksa GİRDİĞİ GİBİ döner (çağıranın hesapladığı detected_at/horizon
+    korunur — burada sıfırlamak paneli erken kapatırdı).
+    """
+    if (row is not None and now < expires_at) or not open_trade:
+        return row, detected_at, horizon, expires_at
+    nid = open_trade.get("notification_id")
+    trade_notif = None
+    if nid:
+        try:
+            trade_notif = await database.get_monitoring_notification_by_id(nid)
+        except Exception:
+            trade_notif = None
+    if trade_notif:
+        detected_at = float(trade_notif.get("detected_at") or open_trade.get("entry_time") or 0)
+        horizon = int(trade_notif.get("horizon_minutes") or 15)
+        expires_at = max(now + 60, detected_at + (horizon + 2) * 60)
+        return trade_notif, detected_at, horizon, expires_at
+    row = {
+        "id": open_trade.get("notification_id"),
+        "symbol": sym,
+        "score": open_trade.get("notification_score") or 90.0,
+        "target_pct": open_trade.get("notification_target_pct") or 2.0,
+        "price": open_trade.get("entry_price"),
+        "expected_price": open_trade.get("notification_expected_price"),
+        "horizon_minutes": 15,
+        "detected_at": open_trade.get("entry_time"),
+        "mode": "auto_paper",
+    }
+    detected_at = float(open_trade.get("entry_time") or 0)
+    horizon = 15
+    expires_at = now + 60
+    return row, detected_at, horizon, expires_at
+
+
 async def monitoring_active_notification(symbol: str):
     """Sembol için ufku dolmamış (BEKLIYOR) son radar bildirimi — grafik sayfası paneli.
 
@@ -6655,34 +6828,8 @@ async def monitoring_active_notification(symbol: str):
 
     # Eğer radar ufku dolmuş ama otonom paper pozisyonu hâlâ açıksa:
     # grafikte bildirim/hedef çizgilerini ve paneli işlem boyunca canlı tut.
-    if (not row or now >= expires_at) and open_trade:
-        nid = open_trade.get("notification_id")
-        trade_notif = None
-        if nid:
-            try:
-                trade_notif = await database.get_monitoring_notification_by_id(nid)
-            except Exception:
-                trade_notif = None
-        if trade_notif:
-            row = trade_notif
-            detected_at = float(row.get("detected_at") or open_trade.get("entry_time") or 0)
-            horizon = int(row.get("horizon_minutes") or 15)
-            expires_at = max(now + 60, detected_at + (horizon + 2) * 60)
-        else:
-            row = {
-                "id": open_trade.get("notification_id"),
-                "symbol": sym,
-                "score": open_trade.get("notification_score") or 90.0,
-                "target_pct": open_trade.get("notification_target_pct") or 2.0,
-                "price": open_trade.get("entry_price"),
-                "expected_price": open_trade.get("notification_expected_price"),
-                "horizon_minutes": 15,
-                "detected_at": open_trade.get("entry_time"),
-                "mode": "auto_paper",
-            }
-            detected_at = float(open_trade.get("entry_time") or 0)
-            horizon = 15
-            expires_at = now + 60
+    row, detected_at, horizon, expires_at = await _active_notif_fallback_to_trade(
+        sym, row, expires_at, now, open_trade, detected_at, horizon)
 
     if not row:
         return {"symbol": sym, "active": False}

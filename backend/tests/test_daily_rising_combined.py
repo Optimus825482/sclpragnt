@@ -387,8 +387,12 @@ def test_reports_summary_has_realizable_sim_fields():
     import inspect
     from app.routers import monitoring as mo
     from app import database as db
+    # 2026-11-10 refactor: satır kurulumu `_measure_report_row`'a, toplamlar
+    # `_measure_accumulate`'e taşındı; denetim bu yardımcıları da kapsar.
     summary_src = "".join(inspect.getsource(f) for f in (
-        mo.daily_rising_reports_summary, mo._rising_report_measure, mo._rising_report_summary))
+        mo.daily_rising_reports_summary, mo._rising_report_measure,
+        mo._measure_report_row, mo._measure_accumulate,
+        mo._rising_report_summary))
     for key in ("avg_sim_pct", "avg_sim_all_pct", "avg_sim_today_pct",
                 "avg_sim_all_n", "avg_sim_today_n", "sim_measured"):
         assert key in summary_src, f"özet sim alanı eksik: {key}"

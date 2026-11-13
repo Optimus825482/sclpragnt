@@ -1631,6 +1631,56 @@ class ScalpAnalyzer:
             raise
         return sig
 
+    def _build_position_fill(self, entry_price: float, order_value: float, try_balance: float
+                             ) -> tuple[float, float, float, float]:
+        """Dolum fiyatı, adet, komisyon ve kalan nakit.
+
+        D-08 (2026-09-12): fiilî ALIŞ dolumuna kayma (slippage) uygulanır.
+        Pozisyonun maliyet tabanı (entry_price) ve adet bu dolumdan türetilir;
+        böylece PnL = (satış_dolum - alış_dolum)*adet - komisyonlar giriş
+        kaymasını da yansıtır. Nakit düşümü order_value (komisyonla) üzerinden
+        yapıldığı için adet = order_value / fill; quantity*entry_price =
+        order_value kimliği korunur (boyut raporu ile muhasebe tutarlı kalır).
+        Tek kaynak: config.ESTIMATED_SLIPPAGE_PCT. TA anlık görüntüleri HAM
+        piyasa fiyatını kullanır — reassignment çağıranda, snapshot'lardan
+        SONRA yapılır.
+
+        2026-10-16 (maliyet/çıkış): açılış komisyonu efektif oranla — kapanıştaki
+        `_record_trade` giriş bacağını aynı oranla yeniden hesapladığından cüzdan
+        debit'i ile işlem kaydı tutarlı kalır (ham COMMISSION_PCT kullanılsaydı sapardı).
+        """
+        fill = paper_ledger.entry_fill(entry_price)
+        quantity = order_value / fill
+        commission = order_value * paper_ledger.commission_pct()
+        return fill, quantity, commission, try_balance - order_value - commission
+
+    def _build_position_dict(self, symbol: str, fill: float, quantity: float, strat_name: str,
+                             requested_tp_pct, entry_context: dict) -> dict:
+        """Yeni pozisyon kaydı (exit alanları SONRA `_apply_exit_plan_fields` ile yazılır)."""
+        return {
+            "side": "LONG",  # Binance TR Spot olduğu için her zaman LONG
+            "entry_price": fill,
+            "spot_profit_target": fill * (1 + (float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)),
+            "quantity": quantity, "entry_time": time.time(), "strategy": strat_name, "layers": 1,
+            "trade_id": uuid.uuid4().hex,
+            "max_price": fill, "min_price": fill, "entry_context": entry_context,
+            "entry_layers": [{"entry_price": float(fill), "quantity": quantity}],
+            "symbol": symbol,
+        }
+
+    def _build_open_signal(self, symbol: str, fill: float, strat_name: str, pos: dict,
+                           order_value: float, quantity: float) -> dict:
+        """Açılış sinyali (rapor/WS). D-03: raporlanan büyüklük FİİLEN kullanılan olsun.
+
+        Eskiden velocity tarafı talep ettiği %50'yi raporluyordu ama gerçekleşen
+        %10'du; artık ikisi aynı kaynaktan okunabilir.
+        BİRİM: TRY notional (quantity DEĞİL).
+        """
+        return {"symbol": symbol, "action": "BUY_SIGNAL", "price": fill, "reason": "position_opened",
+                "strategy": strat_name, "trade_id": pos.get("trade_id"),
+                "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time(),
+                "order_value_try": order_value, "quantity": quantity}
+
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="CHAT_PREDICTION", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None, entry_context_extra=None):
         """Pozisyon aç — aşamalı orkestratör (tüm giriş yollarının son yazıcı sınırı).
 
@@ -1690,48 +1740,16 @@ class ScalpAnalyzer:
             symbol, entry_price, strat_name, order_value, details, expected_gross, expected_net,
             planned_tp, planned_sl, planned_hold, entry_context_extra)
 
-        # D-08 (2026-09-12): fiilî ALIŞ dolumuna kayma (slippage) uygula.
-        # Pozisyonun maliyet tabanı (entry_price) ve adet bu dolumdan türetilir;
-        # böylece PnL = (satış_dolum - alış_dolum)*adet - komisyonlar giriş
-        # kaymasını da yansıtır. Nakit düşümü order_value (komisyonla) üzerinden
-        # yapıldığı için adet = order_value / fill; quantity*entry_price =
-        # order_value kimliği korunur (boyut raporu ile muhasebe tutarlı kalır).
-        # Tek kaynak: config.ESTIMATED_SLIPPAGE_PCT. Yukarıdaki TA anlık
-        # görüntüleri (entry_context.technical / mtf_snapshots) HAM piyasa
-        # fiyatını kullanır — maliyet tabanıyla karışmaması için reassignment
-        # burada (snapshot'lardan SONRA) yapılır.
-        entry_price = paper_ledger.entry_fill(entry_price)
-        quantity = order_value / entry_price
-        # 2026-10-16 (maliyet/çıkış): açılış komisyonu efektif oranla — kapanıştaki
-        # `_record_trade` giriş bacağını aynı oranla yeniden hesapladığından cüzdan
-        # debit'i ile işlem kaydı tutarlı kalır (ham COMMISSION_PCT kullanılsaydı sapardı).
-        commission = order_value * paper_ledger.commission_pct()
-
-        next_cash = try_balance - order_value - commission
-
+        fill, quantity, _commission, next_cash = self._build_position_fill(
+            entry_price, order_value, try_balance)
         # Pyramid/katman açılımı BB-MFI ile kaldırıldı: zaten açık pozisyon
         # yukarıda BUY_BLOCKED ile reddedilir; burada her zaman yeni pozisyon.
-        pos = {
-            "side": "LONG",  # Binance TR Spot olduğu için her zaman LONG
-            "entry_price": entry_price,
-            "spot_profit_target": entry_price * (1 + (float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)),
-            "quantity": quantity, "entry_time": time.time(), "strategy": strat_name, "layers": 1,
-            "trade_id": uuid.uuid4().hex,
-            "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context,
-            "entry_layers": [{"entry_price": float(entry_price), "quantity": quantity}],
-            "symbol": symbol,
-        }
+        pos = self._build_position_dict(symbol, fill, quantity, strat_name,
+                                        requested_tp_pct, entry_context)
         # Orijinal davranış: LLM_PAPER dışı tüm stratejilerde exit alanları
         # (market olmasa bile; atr None kalır) yazılır.
-        self._apply_exit_plan_fields(pos, entry_price, strat_name, planned_tp, planned_sl,
+        self._apply_exit_plan_fields(pos, fill, strat_name, planned_tp, planned_sl,
                                      planned_hold, no_initial_stop)
         self.positions[symbol] = pos
-        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened",
-               "strategy": strat_name, "trade_id": pos.get("trade_id"),
-               "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time(),
-               # D-03: raporlanan büyüklük FİİLEN kullanılan büyüklük olsun.
-               # Eskiden velocity tarafı talep ettiği %50'yi raporluyordu ama
-               # gerçekleşen %10'du; artık ikisi aynı kaynaktan okunabilir.
-               # BİRİM: TRY notional (quantity DEĞİL).
-               "order_value_try": order_value, "quantity": quantity}
-        return await self._commit_position(symbol, entry_price, strat_name, pos, sig, next_cash, quantity)
+        sig = self._build_open_signal(symbol, fill, strat_name, pos, order_value, quantity)
+        return await self._commit_position(symbol, fill, strat_name, pos, sig, next_cash, quantity)

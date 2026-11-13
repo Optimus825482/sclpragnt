@@ -151,8 +151,14 @@ def test_state_endpoint_shows_last_sent_top3():
     src = inspect.getsource(monitoring.daily_rising_state)
     assert "last_daily_rising_report" in src      # son gönderilen liste
     assert "COMBINED_LIST_KIND" in src
-    assert "_combined_scan_rows" in src           # gönderim yoksa anlık tarama
-    assert "notify_price" in src                  # bildirim anındaki fiyat
+    # 2026-11-10 refactor: iki kaynak yardımcılara taşındı.
+    #   _state_live_candidates -> gönderim yoksa anlık tarama
+    #   _state_sent_candidates -> bildirim anındaki fiyat (notify_price/anchor)
+    assert "_state_live_candidates" in src
+    live_src = inspect.getsource(monitoring._state_live_candidates)
+    assert "_combined_scan_rows" in live_src
+    sent_src = inspect.getsource(monitoring._state_sent_candidates)
+    assert "notify_price" in sent_src
     assert "list_daily_rising" not in src         # ham 7 günlük liste YOK
 
 
@@ -160,7 +166,8 @@ def test_state_endpoint_exposes_potential():
     """Sayfa 'Potansiyel' kolonu için /state potential_pct + potential_price vermeli."""
     import inspect
     from app.routers import monitoring
-    src = inspect.getsource(monitoring.daily_rising_state)
+    # 2026-11-10 refactor: satır projeksiyonu `_state_candidate_row`'da.
+    src = inspect.getsource(monitoring._state_candidate_row)
     assert '"potential_pct"' in src
     assert '"potential_price"' in src
 
