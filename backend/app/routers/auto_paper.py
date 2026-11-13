@@ -251,6 +251,7 @@ async def _log_blocked_decision(symbol: str, reason: str, price: float, extra: d
             "llm_fake_blocked": f"LLM İkinci Göz sahte sinyal/tuzak engeli (güven: %{extra.get('confidence')})",
             "llm_low_confidence": f"LLM İkinci Göz düşük güven engeli (güven: %{extra.get('confidence')} < %60)",
             "mode_not_allowed": f"Mod izinli listede değil ('{extra.get('mode') or '?'}' — izinli: {extra.get('allowed')})",
+            "atr_below_min": f"Volatilite tabanının altında (ATR %{extra.get('atr_pct')} < %{extra.get('min_atr_pct')})",
             "symbol_dedup": f"Aynı sembolde kısa süre önce giriş yapıldı, tekrar açılmadı (kalan: {extra.get('remaining_sec')} sn)",
             # 2026-10-18: eskiden sessiz `return None` olan engeller artık karar günlüğünde görünür.
             "auto_paper_disabled": "Otonom paper trade kapalı (ayarlardan devre dışı)",
@@ -637,6 +638,24 @@ async def _entry_context(notification: dict) -> tuple[dict | None, dict | None, 
         if notif_mode not in allowed_modes:
             return settings, _blocked(symbol, "mode_not_allowed", mode=notif_mode,
                                       allowed=allowed_modes), symbol, rule_signal
+
+    # VOLATİLİTE TABANI (2026-11-10 backtest bulgusu, varsayılan KAPALI).
+    # MFE dağılımı volatiliteyle monoton artıyor; gerçek 1m mum replay'inde
+    # atr>=1.0 ort net'i -0.46% -> +0.34%'e, kazanan oranını %34 -> %50'ye taşıdı.
+    # Ölçüm/kanıt: docs/RADAR_BACKTEST_ANALIZI_2026-11-10.md
+    # Kural sinyallerinde (kural seti kendi rejim kapılarını taşır) uygulanmaz.
+    # atr_pct bilinmiyorsa (None/0) filtre UYGULANMAZ — fail-open: veri eksikliği
+    # yüzünden sinyal kaybetmeyelim (ölçülemeyen aday zaten değerlendirilemez).
+    min_atr = float(settings.get("min_atr_pct", 0.0) or 0.0)
+    if min_atr > 0 and not rule_signal:
+        try:
+            atr_pct = float(notification.get("atr_pct") or 0.0)
+        except (TypeError, ValueError):
+            atr_pct = 0.0
+        if atr_pct > 0 and atr_pct < min_atr:
+            return settings, _blocked(symbol, "atr_below_min", price=0.0,
+                                      atr_pct=round(atr_pct, 3),
+                                      min_atr_pct=min_atr), symbol, rule_signal
 
     return settings, None, symbol, rule_signal
 
@@ -2420,6 +2439,17 @@ def _default_gate_settings() -> dict:
         "volatility_sl_enabled": True,
         "allowed_modes": _allowed_modes_from_config(),
         "dedup_cooldown_minutes": 60.0,
+        # ATR/volatilite tabanı (2026-11-10 backtest bulgusu). 0 = KAPALI (eski
+        # davranış). Ölçüm (411.375 gerçekleşmiş aday + gerçek 1m mum replay):
+        #   filtre yok -> ort net +0.005%, medyan -0.263%, kazanan %34.6
+        #   atr>=1.0  -> ort net +0.344%, medyan -0.004%, kazanan %49.7
+        #   atr>=1.5  -> ort net +0.549%, medyan +0.059%, kazanan %53.0
+        # 2500 örneklik bağımsız tekrarda aynı; tüm gap/SL varyantlarında
+        # +0.53..+0.64 (tek şanslı ayar değil); her hafta MFE>=0.8 oranı %68-76.
+        # Bedeli: evrenin yalnız %4.4'ü kalır (sinyal %95 azalır, kalan kazanır).
+        # Maliyete duyarlı: fee %0.30 -> +0.52, %0.60 -> +0.21.
+        # Kayıt: docs/RADAR_BACKTEST_ANALIZI_2026-11-10.md
+        "min_atr_pct": 0.0,
     }
 
 
@@ -2477,7 +2507,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
                 "sl_cooldown_minutes", "post_win_cooldown_minutes",
                 "llm_gate_enabled", "llm_min_confidence",
                 "volatility_sl_enabled",
-                "allowed_modes", "dedup_cooldown_minutes")
+                "allowed_modes", "dedup_cooldown_minutes", "min_atr_pct")
     existing = await get_auto_paper_settings()
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
     _exit_def = _exit_defaults()  # 2026-10-16 (maliyet/çıkış): profil varsayılanları (payload/DB önce)
@@ -2530,6 +2560,9 @@ async def update_settings_endpoint(payload: dict, request: Request):
             if isinstance(merged.get("allowed_modes") or [], list) else [])
             if str(m).strip()][:20],
         "dedup_cooldown_minutes": max(0.0, min(1440.0, float(merged.get("dedup_cooldown_minutes", 0.0) or 0.0))),
+        # Volatilite tabanı (% ATR). 0 = kapalı. Üst sınır 20: atr_pct bu değerin
+        # üstüne çıkarsa sistem hiç sinyal almaz — sessiz kapanma yerine sınırla.
+        "min_atr_pct": max(0.0, min(20.0, float(merged.get("min_atr_pct", 0.0) or 0.0))),
     }
 
     await database.set_llm_setting("auto_paper_settings", json.dumps(settings))
