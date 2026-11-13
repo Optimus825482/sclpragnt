@@ -113,8 +113,15 @@ def apply_symbol_universe(symbols, *, source: str = "") -> list[str]:
     """
     normalized = _normalize(symbols)
     _reject_empty(normalized, source)
+    _before = set(_normalize(market.symbols))
     market.symbols = [symbol.lower() for symbol in normalized]
     config.SYMBOLS = normalized
+    # 2026-11-10 (canlı bulgu): evren yazıldığı hâlde WS abonelikleri
+    # YENİLENMİYORDU (yalnız `stop()` içinde tetikleniyordu). Bu yüzden yeni
+    # eklenen sembolün bireysel miniTicker/kline akışı hiç açılmıyor, fiyat
+    # bayat kalıp REST yedeğine düşülüyordu.
+    if set(normalized) != _before:
+        market.request_stream_refresh()
     logger.info("sembol evreni güncellendi (kaynak: %s): %d sembol",
                 source or "bilinmiyor", len(normalized))
     return normalized
@@ -143,6 +150,10 @@ def extend_stream_universe(extra, *, source: str = "") -> list[str]:
     _reject_empty(merged, source)
     market.symbols = [symbol.lower() for symbol in merged]
     if set(additions) - set(current_stream):
+        # 2026-11-10: aboneliği GERÇEKTEN aç — aksi hâlde eklenen sembol için
+        # WS akışı hiç kurulmaz ve `auto_paper` her turda bayat ticker görüp
+        # REST yedeğine düşer (canlıda AXLTRY/SHELLTRY vb.).
+        market.request_stream_refresh()
         logger.info("akış evreni genişletildi (kaynak: %s): +%d sembol (toplam %d)",
                     source or "bilinmiyor", len(set(additions) - set(current_stream)),
                     len(merged))

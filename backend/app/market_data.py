@@ -1617,6 +1617,21 @@ class MarketData:
             "warmup_bypass": warmup_bypass,
         }
 
+    def request_stream_refresh(self):
+        """Akış evreni değiştiğinde abonelikleri yeniden kur (nesil +1).
+
+        2026-11-10 (canlı bulgu): `extend_stream_universe`/`apply_symbol_universe`
+        `market.symbols`'u yaziyor ama WS yeniden bağlanmasını tetiklemiyordu
+        (yalnızca `stop()` içinde yapılıyordu, o da çökme sayılır).
+        Sonuç: pozisyon açılan / aktivite kazanılan sembolün bireysel
+        `@miniTicker` aboneliği BAYAT kalıp REST yedeğine düşülüyordu.
+        Abonelik planı bir sonraki `connect` döngü turunda yeniden kurulur
+        (değişiklik uygulandığında `_build_ws_groups` yeni `market.symbols`'u
+        görür) ve makul bir eşiğin üstündeki artışlar için kanal anahtarını
+        korur.
+        """
+        self.reconnect_requested = True
+
     def stop(self):
         self.running = False
         self.connection_generation += 1
