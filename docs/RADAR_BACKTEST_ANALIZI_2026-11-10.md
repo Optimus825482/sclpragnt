@@ -205,6 +205,40 @@ Monoton artış, seed'den bağımsız (5 ayrı örneklem aynı yönü veriyor).
 **daha az güvenilir**. Başlangıç için **1,0** önerilir; 1,5 için en az
 300–400 işlem birikmesini beklemek gerekir.
 
+## 4c. `ret3_pct` ölü bölgesi — gerçek replay ile doğrulandı, FİLTRE EKLENMEDİ
+
+Proxy MFE analizi (bölüm 4) U-şekli gösteriyordu. Yanıltıcı olabileceği için
+gerçek 1m mum replay ile ölçüldü — **4 seed × 2.000 = 8.000 aday**:
+
+| bölge | n | ort net | sd | medyan | kazanan |
+|---|---|---|---|---|---|
+| **< −2%** (dip) | 168 | **+0,550%** | 0,216 | **+0,220%** | **%59,9** |
+| −2…−1% | 459 | +0,099% | 0,060 | −0,104% | %42,9 |
+| −1…0% | 2.196 | −0,036% | 0,028 | −0,240% | %33,2 |
+| **0…1% (ölü)** | **3.975** | **−0,064%** | 0,017 | −0,312% | **%29,7** |
+| 1…2% | 882 | +0,058% | 0,041 | −0,301% | %34,3 |
+| **> +2%** (momentum) | 296 | **+0,662%** | 0,104 | **+0,069%** | **%52,2** |
+
+U-şekli **gerçek** — hem dip hem momentum iyi, `0…1%` en kalabalık (%50)
+ve en kötü (%29,7 kazanan).
+
+### Ama filtre olarak eklemeye değmez
+
+| varyant | geçen | ort net | sd | kazanan |
+|---|---|---|---|---|
+| ATR≥1,0 | 261 | +0,247% | **0,056** | %47,5 |
+| ATR≥1,0 + ret3 dışla (0…1) | 191 | +0,290% | **0,101** | %49,1 |
+| ATR≥1,0 + sadece momentum (>2) | **32** | +0,622% | **0,317** | %51,3 |
+| ATR≥1,0 + uçlar (dip veya momentum) | **59** | +0,596% | 0,239 | %55,7 |
+
+**+0,043 puanlık kazanç, standart sapmanın 2 kat artmasıyla geliyor**
+(0,056 → 0,101) ve örneklem 261 → 191'e düşüyor. Uç filtrelerin görünen
+üstünlüğü (+0,35 puan) yalnız 32–59 işleme dayanıyor — sd 0,317 ile
+istatistiksel olarak anlamsız.
+
+**Karar: `ret3` kapısı EKLENMEDİ.** ATR filtresi tek başına daha güvenilir.
+Bu karar `tests/test_ret3_finding.py` ile kilitlendi.
+
 ## 5. Öneri (öncelik sırası)
 
 1. **`atr_pct ≥ 1,0` (muhafazakâr) / `≥ 1,5` (agresif) giriş filtresi ekle.**
@@ -237,6 +271,7 @@ Monoton artış, seed'den bağımsız (5 ayrı örneklem aynı yönü veriyor).
 | `scripts/trail_replay.py` | Gerçek 1m mumla trailing/SL dürüst replay |
 | `scripts/filt_replay.py` | `atr_pct` filtresi ile replay (filtrenin SQL kopyası) |
 | `scripts/gate_replay.py` | **Asıl kanıt:** adayı ÜRETİM kapısından geçirip replay eder |
+| `scripts/ret3_replay.py` | `ret3_pct` bölge analizi (gerçek 1m mum) |
 
 Çalıştırma:
 ```bash
