@@ -170,6 +170,41 @@ yeniden ele alınmalı — tek başına filtre olarak kullanılmamalı.
 
 ---
 
+## 4b. Üretim kapısı üzerinden doğrulama (asıl kanıt)
+
+`scripts/filt_replay.py` filtreyi SQL'de (`atr_pct >= X`) yeniden yazar — yani
+kapının **kopyasını** test eder. Gerçek kanıt için `scripts/gate_replay.py`
+adayı doğrudan üretim kapısından (`auto_paper._entry_context`) geçirir; sıralama,
+fail-open ve kural muafiyeti dahil.
+
+### Kapı gerçekten çalışıyor
+
+`min_atr_pct=1.0` ile 400 adayın kapı denetimi:
+
+```
+kabul=55  engel=345   (%13,8 geçti)
+  atr_below_min: 345
+```
+
+Engel nedeninin **tamamı** `atr_below_min` — başka bir kapı sızıntısı yok.
+
+### 5 bağımsız seed toplamı (her biri 3.000 aday, gerçek 1m mum replay)
+
+| min_atr | geçen (ort) | ort net | sd | medyan | kazanan |
+|---|---|---|---|---|---|
+| **0,0 (kapalı)** | 3.000 | +0,013% | 0,014 | −0,261% | %34,3 |
+| 0,5 | 1.380 | +0,127% | 0,025 | −0,180% | %39,8 |
+| **1,0** | 410 | **+0,346%** | **0,065** | −0,028% | %48,7 |
+| **1,5** | 156 | **+0,580%** | 0,148 | **+0,078%** | **%53,0** |
+
+Monoton artış, seed'den bağımsız (5 ayrı örneklem aynı yönü veriyor).
+
+**Karar notu — 1,0 mı 1,5 mi?** Ortalama 1,5'te daha yüksek (+0,580 vs
++0,346) ve medyan orada pozitif. AMA standart sapma 1,5'te 2,3 kat büyük
+(0,148 vs 0,065) çünkü örneklem 156'ya düşüyor. Yani 1,5'in üstünlüğü
+**daha az güvenilir**. Başlangıç için **1,0** önerilir; 1,5 için en az
+300–400 işlem birikmesini beklemek gerekir.
+
 ## 5. Öneri (öncelik sırası)
 
 1. **`atr_pct ≥ 1,0` (muhafazakâr) / `≥ 1,5` (agresif) giriş filtresi ekle.**
@@ -199,10 +234,15 @@ yeniden ele alınmalı — tek başına filtre olarak kullanılmamalı.
 | `scripts/radar_14d_eval.py` | 8 radar ailesini 14 günlük 1m mumla karşılaştırır |
 | `scripts/rsi_filter_search.py` | RSI filtre parametre araması |
 | `scripts/rsi_tf_geometry.py` | RSI zaman dilimi geometrisi |
-| `work/trail_replay.py` | **Yeni:** gerçek 1m mumla trailing/SL dürüst replay |
-| `work/filt_replay.py` | **Yeni:** `atr_pct` filtresi ile filtreli replay |
+| `scripts/trail_replay.py` | Gerçek 1m mumla trailing/SL dürüst replay |
+| `scripts/filt_replay.py` | `atr_pct` filtresi ile replay (filtrenin SQL kopyası) |
+| `scripts/gate_replay.py` | **Asıl kanıt:** adayı ÜRETİM kapısından geçirip replay eder |
 
-Çalıştırma: `cd backend && ./.venv/Scripts/python.exe work/trail_replay.py --limit 2000 --gap 0.3 --sl 1.5`
+Çalıştırma:
+```bash
+cd backend
+./.venv/Scripts/python.exe scripts/gate_replay.py --limit 3000 --gap 0.3 --sl 2.0
+```
 
 ---
 
