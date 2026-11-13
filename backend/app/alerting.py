@@ -239,6 +239,23 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
                 logger.warning("Push: abonelik temizleme hatası: %s", cleanup_exc)
         result = {"ok": success_count > 0, "count": success_count, "total": len(subscriptions),
                   "dead_count": len(dead_subscriptions)}
+        # 2026-11-10 (canli bulgu): abonelik yoksa ya da hepsi ölüyse `ok=False`
+        # dönüyordu ama `reason` BOŞ kaliyordu → çağıran taraf yalnizca
+        # "Monitoring push gönderilemedi" yaziyor, NEDEN göremedigi için
+        # sorun sessizce sürüyordu. Artik neden her zaman raporlanir.
+        if success_count > 0:
+            pass
+        elif not subscriptions:
+            result["reason"] = "no_subscriptions"
+            result["skipped"] = True
+            logger.info("Push: kayıtlı abonelik yok (%s) — gönderilecek cihaz bulunamadi",
+                        counter_symbol or "genel")
+        elif dead_count := len(dead_subscriptions):
+            result["reason"] = "all_subscriptions_dead"
+            logger.warning("Push: %d aboneliğin tamami ölü/expired (%s)",
+                           dead_count, counter_symbol or "genel")
+        else:
+            result["reason"] = "delivery_failed"
         if bumped_symbol and success_count == 0:
             # Hiçbir aboneliğe teslim edilemedi: sayım geri verilir (sembol boşuna kilitlenmesin),
             # `daily_count` döndürülmez → yeniden deneme sayacı baştan alır.

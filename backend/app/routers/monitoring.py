@@ -2597,7 +2597,11 @@ async def _scan_push_new(new_notifs: list, quiet: bool, vapid_configured: bool) 
                     except Exception as exc:
                         logger.warning("push etiketi güncellenemedi %s: %s", nid, exc)
             else:
-                logger.warning("Monitoring push gönderilemedi: %s", notif.get("symbol"))
+                # 2026-11-10: NEDEN gönderilemediği loglanır (abonelik yok / ölü /
+                # teslimat hatası). Eskiden yalnız "gönderilemedi" yazıyordu ve
+                # kök neden (ör. hiç kayıtlı cihaz olmaması) görünmüyordu.
+                logger.warning("Monitoring push gönderilemedi: %s (neden=%s)",
+                               notif.get("symbol"), notif.get("push_skip_reason") or "bilinmiyor")
         attempted = list(new_notifs)
     elif not quiet:
         # VAPID yok: push DENENEMEZ → bildirim kaydedilmez/yayınlanmaz (panel bildirimi yok).

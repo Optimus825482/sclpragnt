@@ -18,7 +18,15 @@ TARGET_NET_PCT = 3.0
 STOP_MIN_PCT = 2.0
 STOP_MAX_PCT = 10.0
 UNREALISTIC_GROSS_PCT = 8.0
-BUILD_TIMEOUT_SEC = 2.0
+# 2026-11-10 (canlı bulgu): `_build` İKİ gerçek REST çağrısı yapar
+# (`depth(symbol)` + `ticker_24h([symbol])`) ve her biri
+# `binance_tr_public.REST_TIMEOUT_SEC = 15.0` sn'ye kadar bekleyebilir.
+# Eski bütçe 2.0 sn idi → `wait_for` işi neredeyse HER ZAMAN iptal ediyordu
+# ve canlı loglarda sürekli "plan kurulamadı: TimeoutError()" görülüyordu,
+# yani plan üretimi fiilen hiç çalışmıyordu (bildirim planı/otonom çıkış
+# önerisi boş kalıyordu). Bütçe, REST tavanının üstüne çıkarıldı; iş yine de
+# bir çağrı askıda kalırsa iki çağrı toplamı kadar sınırlanır.
+BUILD_TIMEOUT_SEC = 20.0
 SAVE_TIMEOUT_SEC = 1.0
 _TZ = ZoneInfo("Europe/Istanbul")
 
@@ -96,7 +104,13 @@ async def build_plan(symbol, bucket, price, signal_target_pct, profile=None, now
     try:
         return await asyncio.wait_for(
             _build(symbol, bucket, price, signal_target_pct, profile, now), BUILD_TIMEOUT_SEC)
-    except Exception as exc:  # noqa: BLE001 — her hata (zaman aşımı dahil) → None
+    except asyncio.TimeoutError:
+        # Zaman aşımı AYRI raporlanır: sık tekrarlıyorsa REST yavaşlığı ya da
+        # bütçe/REST tavanı uyumsuzluğu vardır (2026-11-10 canlı bulgusu).
+        logger.warning("notification_plan: %s plan bütçesi aşıldı (%.1fs) — "
+                       "REST depth/ticker yanıtı gecikiyor", symbol, BUILD_TIMEOUT_SEC)
+        return None
+    except Exception as exc:  # noqa: BLE001 — her hata → None
         logger.warning("notification_plan: %s plan kurulamadı: %r", symbol, exc)
         return None
 
