@@ -676,3 +676,102 @@ denir. Burada **ters** sonuç çıktı. Olası sebep: TR spot'ta likidite ince,
 büyük taker buy'lar tek bir oyuncunun agresif girişi → tükenme; ayrıca
 velocity adayları **zaten yükselmiş** coinler olduğu için agresif alım
 "geç kalınmış giriş" demek.
+
+---
+
+## 19. ⭐ FUTURES ÖNCÜ GÖSTERGELERİ — İLK GERÇEK "YÜKSELECEK SEMBOL" SİNYALİ
+
+Bugüne kadar test edilen **her** sinyal fiyat türeviydi (velocity_score, ret15,
+ATR, ML prob, funding, order flow). Fiyat türevi sinyaller *geçmişi* ölçer.
+"Yüksel**ecek**" sembol için fiyattan **önce** oluşan **pozisyonlanma** verisi
+gerekir — ve bu veri tabloda duruyordu:
+
+| tablo | satır | içerik |
+|---|---|---|
+| **`hist_futures_metrics`** | **7.503.935** | OI, OI değeri, top-trader L/S, genel L/S, taker L/S hacim |
+| `hist_futures_bookdepth` | 7.332.621 | emir defteri derinliği (5 seviye) |
+| `futures_symbol_map` | 294 | TRY ↔ USDT-perp eşlemesi |
+
+Kapsam: 291 perp sembol, 5 dk aralık, 2026-07-19 → 2026-10-16.
+Velocity adaylarıyla kesişim: **538.649 aday**.
+
+### Yöntem: `scripts/futures_lead_test.py`
+
+Her aday için **önceki 60 dk** pencerede OI değişimi ve L/S ortalamaları.
+TRAIN/TEST = kronolojik %70/%30. Çıkış modeli: sabit `net_pct` **ve** trailing.
+
+### ⚠ İlk denememde hata vardı — düzelttim
+
+İlk koşuda `ORDER BY created_at LIMIT 3000` kullandım → örneklem **tek bir güne**
+(2026-09-25) sıkıştı. TRAIN ve TEST **aynı gün** çıktı; out-of-sample geçersizdi
+ve sonuçlar şişmişti (+0,828% gibi). Düzelttim: `ORDER BY random()` örnekleme +
+**orijinal diziyi kronolojik sıralama**. 26 günlük gerçek yayılım.
+
+### Sonuç: OI değişimi tek gerçek öncü gösterge
+
+**Sabit `net_pct` modelinde (zayıf):**
+
+| | TRAIN Q5−Q1 | TEST Q5−Q1 |
+|---|---|---|
+| OI değişimi % | +0,219% | **+0,159%** |
+| üst trader L/S | −0,046% | −0,100% |
+| genel L/S | −0,170% | −0,110% |
+| taker L/S hacim | +0,160% | +0,043% |
+
+**Trailing modelinde (güçlü ve tutarlı):**
+
+| seed | Q1 (düşük OI) | Q5 (yüksek OI) | **Q5−Q1** |
+|---|---|---|---|
+| 7 | −0,308% (kaz %25,5) | **+0,562%** (kaz %49,5) | +0,871% |
+| 11 | −0,360% (kaz %29,6) | +0,553% (kaz %48,1) | +0,913% |
+| 23 | −0,344% (kaz %24,7) | **+0,781%** (kaz %50,6) | +1,125% |
+| 42 | −0,411% (kaz %22,2) | +0,266% (kaz %40,5) | +0,677% |
+| 77 | −0,503% (kaz %18,5) | +0,494% (kaz %49,4) | +0,998% |
+
+**5/5 seed pozitif, ortalama +0,917%.** ATR'nin (+0,364) **2,5 katı.**
+Kazanma oranı Q1'de %18-30, Q5'te %40-51 — **temiz monoton ayrışma.**
+
+### Yorum: Taze para girişi
+
+OI **artıyorsa** yükseliş **yeni parayla** besleniyor → sürdürülebilir.
+OI artmıyorsa yükseliş **short covering** (kapanış) ile oluyor → tükenir.
+Bu, klasik "OI + fiyat birlikte yükseliyorsa trend sağlam" kuralının
+veriyle doğrulanması.
+
+### ⚠ KRİTİK: OI ve ATR **birbirini iptal ediyor**
+
+| kombinasyon | n | ortalama | medyan | kazanan |
+|---|---|---|---|---|
+| **OI yüksek + ATR<1,0** | 63 | **+0,558%** | −0,191% | **%47,6** |
+| OI yüksek + ATR≥1,0 | 60 | **+0,020%** | −0,572% | %31,7 |
+| OI düşük + ATR≥1,0 | 22 | −0,371% | −0,408% | %13,6 |
+| OI düşük + ATR<1,0 | 355 | −0,095% | −0,487% | %33,8 |
+
+**En iyi kombinasyon OI yüksek + ATR DÜŞÜK.** Yani iki filtre **aynı bilgiyi
+paylaşıyor**: yüksek ATR zaten "para giriyor" demek. İkisini birleştirmek
+fazla süzüyor (örneklem 63'e düşüyor) ve avantajı yok ediyor.
+
+### Karar: OI yeni bir boyut — ATR'nin yerine değil, yanına
+
+| | ATR | OI |
+|---|---|---|
+| ne ölçer | oynaklık **genliği** | para **girişi** |
+| etki (trailing) | +0,364% | **+0,917%** |
+| kazanma oranı | ~%45 | **%40-51** |
+| veri | her zaman | futures metriği olan 291 sembol |
+| birlikte | ❌ iptal ediyorlar | |
+
+**Öneri:** OI'yi **birincil** filtre yap, ATR'yi **çıkar** (ya da gevşet).
+`min_oi_change_pct` parametresi (~5-10%) panelden ayarlanabilir.
+
+### Açık soru: bookdepth (7,3M satır) test edilmedi
+
+Emir defteri dengesizliği (`bid_d1..bid_d5` vs `ask_d*`) hâlâ test edilmedi.
+Bir sonraki adım bu olabilir.
+
+### Alt yapı önerisi (kod değişikliği)
+
+1. `velocity_candidates`'a `oi_change_pct` + `oi_at_entry` yaz (şu an yalnız
+   anlık futures metriği var, geçmiş türev kaydedilmiyor)
+2. `min_oi_change_pct` panel parametresi (varsayılan 0.0 = kapalı, fail-open)
+3. ATR kapısını OI ile birlikte kullanırken **ikisini birden açma**

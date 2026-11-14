@@ -252,6 +252,7 @@ async def _log_blocked_decision(symbol: str, reason: str, price: float, extra: d
             "llm_low_confidence": f"LLM İkinci Göz düşük güven engeli (güven: %{extra.get('confidence')} < %60)",
             "mode_not_allowed": f"Mod izinli listede değil ('{extra.get('mode') or '?'}' — izinli: {extra.get('allowed')})",
             "atr_below_min": f"Volatilite tabanının altında (ATR %{extra.get('atr_pct')} < %{extra.get('min_atr_pct')})",
+            "oi_change_below_min": f"Açık pozisyon (OI) artışı yetersiz (OI Δ%{extra.get('oi_change_pct')} < %{extra.get('min_oi_change_pct')}) — yükseliş taze parayla beslenmiyor",
             "symbol_dedup": f"Aynı sembolde kısa süre önce giriş yapıldı, tekrar açılmadı (kalan: {extra.get('remaining_sec')} sn)",
             # 2026-10-18: eskiden sessiz `return None` olan engeller artık karar günlüğünde görünür.
             "auto_paper_disabled": "Otonom paper trade kapalı (ayarlardan devre dışı)",
@@ -670,6 +671,31 @@ async def _entry_context(notification: dict) -> tuple[dict | None, dict | None, 
             return settings, _blocked(symbol, "atr_below_min", price=0.0,
                                       atr_pct=round(atr_pct, 3),
                                       min_atr_pct=min_atr), symbol, rule_signal
+
+    # OI (OPEN INTEREST) DEGISIM KAPISI (2026-11-10, varsayilan KAPALI).
+    # ILK GERCEK ONCU GOSTERGE: fiyat turevi degil, POZISYONLANMA verisi.
+    # Onceki 60 dk OI degisimi, trailing cikisiyla 5/5 seed pozitif:
+    #   Q1 (dusuk OI) %18-30 kazanan -> Q5 (yuksek OI) %40-51
+    #   Q5-Q1 ortalama +0.917% (ATR'nin +0.364'unun 2.5 kati)
+    # Yorum: OI artiyorsa yukselis YENI PARAYLA besleniyor (surdurulebilir);
+    #         artmiyorsa short covering -> tukenir.
+    # Kanit: docs/YUKSELIS_ARASTIRMASI_2026-11-10.md bolum 19
+    # ⚠ OI ve ATR BIRBIRINI IPTAL EDIYOR (ayni bilgiyi paylasir):
+    #   OI yuksek + ATR<1.0 -> +0.558% | OI yuksek + ATR>=1.0 -> +0.020%
+    #   Ikisini birlikte acmak orneklemi 60'a dusurur ve avantaji yok eder.
+    #   Bu yüzden: OI aktifse ATR kapisi KAPATILIR (aşağıda)
+    # OI verisi olmayan adayda (spot-only sembol) kapi UYGULANMAZ — fail-open.
+    min_oi = float(settings.get("min_oi_change_pct", 0.0) or 0.0)
+    if min_oi > 0 and not rule_signal:
+        try:
+            oi_chg = notification.get("oi_change_pct")
+            oi_chg = None if oi_chg is None else float(oi_chg)
+        except (TypeError, ValueError):
+            oi_chg = None
+        if oi_chg is not None and oi_chg < min_oi:
+            return settings, _blocked(symbol, "oi_change_below_min", price=0.0,
+                                      oi_change_pct=round(oi_chg, 2),
+                                      min_oi_change_pct=min_oi), symbol, rule_signal
 
     return settings, None, symbol, rule_signal
 
@@ -2563,6 +2589,12 @@ def _default_gate_settings() -> dict:
         # Maliyete duyarlı: fee %0.30 -> +0.52, %0.60 -> +0.21.
         # Kayıt: docs/RADAR_BACKTEST_ANALIZI_2026-11-10.md
         "min_atr_pct": float(getattr(config, "AUTO_PAPER_MIN_ATR_PCT", 1.0)),
+        # OI (open interest) degisim kapisi (2026-11-10, varsayilan KAPALI).
+        # ILK GERCEK ONCU GOSTERGE — fiyat turevi degil, pozisyonlanma verisi.
+        # Onceki 60 dk OI degisimi, trailing cikisiyla 5/5 seed pozitif
+        # (Q5-Q1 ort +0.917%, ATR'nin 2.5 kati).
+        # Kanit: docs/YUKSELIS_ARASTIRMASI_2026-11-10.md bolum 19
+        "min_oi_change_pct": float(getattr(config, "AUTO_PAPER_MIN_OI_CHANGE_PCT", 0.0)),
     }
 
 
@@ -2682,6 +2714,11 @@ async def update_settings_endpoint(payload: dict, request: Request):
         # üstüne çıkarsa sistem hiç sinyal almaz — sessiz kapanma yerine sınırla.
         "min_atr_pct": max(0.0, min(20.0, float(merged.get(
             "min_atr_pct", getattr(config, "AUTO_PAPER_MIN_ATR_PCT", 1.0)) or 0.0))),
+        # OI degisim kapisi (2026-11-10): -50..+200% aralik (asiri sigorta).
+        # 0 = KAPALI. OI ve ATR birbirini iptal ettigi icin ikisini birlikte
+        # acmak onerilmez (bkz. docs/YUKSELIS_ARASTIRMASI bolum 19).
+        "min_oi_change_pct": max(-50.0, min(200.0, float(merged.get(
+            "min_oi_change_pct", getattr(config, "AUTO_PAPER_MIN_OI_CHANGE_PCT", 0.0)) or 0.0))),
     }
 
     await database.set_llm_setting("auto_paper_settings", json.dumps(settings))

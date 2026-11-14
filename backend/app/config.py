@@ -1316,6 +1316,21 @@ class Config:
     # 1.0 seçildi — 1.5 daha yüksek ortalama ama örneklem 26 işlem (sd 2.3x).
     # 0 = kapalı (eski davranış).
     AUTO_PAPER_MIN_ATR_PCT = float(os.getenv("AUTO_PAPER_MIN_ATR_PCT", "1.0"))
+    # OI (OPEN INTEREST) DEGISIM TABANI (2026-11-10, varsayilan 0 = KAPALI).
+    # ILK GERCEK ONCU GOSTERGE: fiyat turevi DEGIL, pozisyonlanma verisi.
+    # Onceki 60 dk OI degisimi, gercek 1m mum + trailing cikisiyla 5/5 seed
+    # pozitif (scripts/futures_lead_test.py):
+    #   Q1 (dusuk OI) kazanan %18-30 -> Q5 (yuksek OI) %40-51
+    #   Q5-Q1 ortalama +0.917% (ATR'nin +0.364'unun 2.5 kati)
+    # Yorum: OI artiyorsa yukselis YENI PARAYLA besleniyor -> surdurulebilir;
+    #         artmiyorsa yukselis short covering -> tukenir.
+    # ⚠ OI ve ATR BIRBIRINI IPTAL EDIYOR (ayni bilgi):
+    #   OI yuksek + ATR<1.0 -> +0.558% | OI yuksek + ATR>=1.0 -> +0.020%
+    #   Ikisini birlikte acmak onerilmez.
+    # Veri: hist_futures_metrics (7.5M satir, 291 perp sembol). Spot-only
+    # sembollerde OI yok -> kapi UYGULANMAZ (fail-open).
+    # Kanit: docs/YUKSELIS_ARASTIRMASI_2026-11-10.md bolum 19
+    AUTO_PAPER_MIN_OI_CHANGE_PCT = float(os.getenv("AUTO_PAPER_MIN_OI_CHANGE_PCT", "0.0"))
     # Başabaş (Breakeven) koruması: erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI. 2026-10-07 incelemesi: breakeven'i ZORUNLU kılmanın kanıtı
     # yok — gerçekleşen kazanan ortalaması (+%1,51) zaten net_floor'un üzerinde,
