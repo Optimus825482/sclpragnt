@@ -775,3 +775,83 @@ Bir sonraki adım bu olabilir.
    anlık futures metriği var, geçmiş türev kaydedilmiyor)
 2. `min_oi_change_pct` panel parametresi (varsayılan 0.0 = kapalı, fail-open)
 3. ATR kapısını OI ile birlikte kullanırken **ikisini birden açma**
+
+---
+
+## 20. LLM yetenek geliştirme — ölçülen bulguları modele aktarma
+
+### Tespit edilen boşluk
+
+LLM ikinci gözü (`llm_second_eye`) 20 araca ve 9 skill'e sahipti, **ama bu
+oturumun hiçbir bulgusunu bilmiyordu**:
+
+| kontrol | sonuç |
+|---|---|
+| `min_atr` / `oi_change` / `open interest` kodda | **0 geçiş** |
+| `atr_pct` kodda | 28 geçiş — ama **veri olarak**, yorum kuralı yok |
+| `OI` / `ATR` skill'lerde | **0 skill** |
+
+En kritik nokta: `derivatives_service.squeeze_confirmation` içinde
+`oi_change_1h_pct` **zaten hesaplanıyordu** (satır 324) ama LLM'e
+aktarılmıyordu. LLM "yükseliş yeni parayla mı yoksa short covering ile mi
+besleniyor" ayrımını yapamıyordu — yani **ölçülmüş en güçlü sinyali görmüyordu**.
+
+### 3 katmanlı geliştirme
+
+**Katman 1 — Kanıt (`app/llm_second_eye.py`, `derivatives_service.py`)**
+
+`derivatives_evidence` artık `oi_change_1h_pct`, `funding_trend`,
+`squeeze_confirmed` alanlarını paketliyor. Yeni `get_cached_squeeze_confirmation()`
+yalnız **ısınmış önbelleği** okur (300 sn TTL) → LLM yolunda **ağ beklemesi yok**
+(hız önceliği korunur). Önbellek soğuksa kanıtsız devam — fail-open.
+
+**Katman 2 — Skill'ler (DB `llm_skills`, 2 yeni kayıt)**
+
+1. **"Açık Pozisyon (OI) Öncü Göstergesi"** (1.311 karakter)
+   - Kural: OI ↑ + fiyat ↑ = **yeni para** → sürdürülebilir, işlemlenebilir
+   - OI düz/↓ + fiyat ↑ = **short covering** → tükenir, fade veya no-trade
+   - Ölçüm rakamları: %18-30 → %40-51 kazanan, +0,92pp fark, ATR'nin 2,5 katı
+   - OI + ATR **çift sayım yasağı**
+   - OI yoksa "veri eksik" de, fiyat/fonlamadan tahmin etme
+
+2. **"Ölçülmüş Sinyal Ağırlıkları (Ampirik)"**
+   - **Ölü sinyaller** açıkça listelendi: `velocity_score` (r=0,0002, ters),
+     ret15, saat, ML prob, funding seviyesi, order flow
+   - **Aşırı taker alım >%90 = EN KÖTÜ dilim** (kazanan %21-28) — teyit değil,
+     tükenme sinyali
+   - **Çalışan**: ATR (+0,36%, kazanan %34→%50), OI (+0,92pp)
+   - **Çıkış modeli bağımlılığı**: eşikler TRAILING'e göre doğrulandı; sabit
+     TP/SL'de ATR filtresi **zarara dönüyor** (−0,59%)
+
+**Katman 3 — Araç (`get_open_interest_lead`)**
+
+LLM canlı OI sorgulayabilir, 3 sözel hüküm döner:
+
+| OI Δ (1s) | hüküm |
+|---|---|
+| ≥ +5% | `new_money_rising` — sürdürülebilir yükseliş |
+| ≤ −5% | `oi_unwinding` — short covering, tükenir |
+| arası | `flat` — yön teyidi yok |
+| veri yok | `unknown` + "tahmin etme, veri eksik de" |
+
+Araç **asla exception fırlatmaz** (fail-open, `ok=True` + `oi=None`).
+
+Doğrulama (canlı Binance verisi):
+
+```
+BTCTRY            : oi=-0.4   verdict=flat — yön teyidi yok
+ETHTRY            : oi=-0.03  verdict=flat — yön teyidi yok
+YOKBOYLESEMBOLTRY : oi=None   verdict=unknown   (fail-open)
+```
+
+### Sonuç
+
+| | önce | sonra |
+|---|---|---|
+| LLM skill sayısı | 9 | **11** |
+| LLM araç sayısı | 20 | **22** |
+| OI değişimi kanıtta | ❌ yok | ✅ var |
+| Ölü sinyal uyarısı | ❌ yok | ✅ skill'de |
+| OI canlı sorgu | ❌ yok | ✅ araç |
+
+**17 yeni test** (`tests/test_llm_oi_capability.py`), tam suite **3791 passed**.

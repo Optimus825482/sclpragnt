@@ -472,9 +472,31 @@ LLM_VOLUME_BREAKOUT_TOOL = {
     }
 }
 
+LLM_OPEN_INTEREST_LEAD_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_open_interest_lead",
+        "description": (
+            "Açık Pozisyon (Open Interest / OI) öncü göstergesi — bu sistemde ÖLÇÜLMÜŞ TEK gerçek "
+            "öngörücü boyut. `oi_change_1h_pct` yükselişin YENİ PARAYLA mı (sürdürülebilir) yoksa "
+            "SHORT COVERING ile mi (tükenir) beslendiğini söyler. Ölçüm: gerçek 1m mum + trailing, "
+            "5 seed — düşük OI dilimi %18-30 kazanırken yüksek OI dilimi %40-51 kazanıyor; uç dilimler "
+            "arası fark +0.92% net, ATR filtresinin 2.5 katı. Salt okunur, emir vermez. "
+            "Girdi `oi_change_1h_pct` boş dönerse sembolün vadeli piyasası yok veya önbellek soğuk "
+            "demektir — OI boyutunu fiyat/fonlamadan TAHMİN ETME, veri eksik de."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Analiz edilecek sembol (örn. BTCTRY)"}
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
 AI_TRADING_SUITE_TOOLS = [
-    LLM_AI_TRADING_SUITE_EVALUATE_TOOL,
-    LLM_HEDGE_FUND_COUNCIL_TOOL,
+    LLM_AI_TRADING_SUITE_EVALUATE_TOOL,    LLM_HEDGE_FUND_COUNCIL_TOOL,
     LLM_RISK_CHIEF_VETO_TOOL,
     LLM_BULL_BEAR_DEBATE_TOOL,
     LLM_RISKFOLIO_ALLOCATION_TOOL,
@@ -494,6 +516,7 @@ AI_TRADING_SUITE_TOOLS = [
     LLM_INFINITY_GRID_TOOL,
     LLM_OBV_CMF_INFLOW_TOOL,
     LLM_VOLUME_BREAKOUT_TOOL,
+    LLM_OPEN_INTEREST_LEAD_TOOL,
 ]
 
 
@@ -832,3 +855,50 @@ async def execute_volume_breakout(args: dict) -> dict:
     data = res.model_dump()
     data["ok"] = True
     return data
+
+
+async def execute_open_interest_lead(args: dict) -> dict:
+    """OI öncü göstergesi: 1s değişim + funding trendi + squeeze teyidi.
+
+    2026-11-10 (docs/YUKSELIS_ARASTIRMASI §19): LLM'in OI'yi CANLI sorgulayabilmesi
+    için eklendi. `squeeze_confirmation` önbellekli çalışır (5 dk TTL); önbellek
+    soğuksa bir kez ağ çağrısı yapılır ve sonuç önbelleğe yazılır.
+    Fail-open: hata/boş veride `ok=True` + `oi_change_1h_pct=None` döner ki LLM
+    "veri yok" diyebilsin (uydurmasın).
+    """
+    raw = str(args.get("symbol") or "").replace("_", "").upper()
+    if not raw:
+        return {"ok": False, "error": "symbol gerekli"}
+    try:
+        from app.derivatives_service import (get_cached_squeeze_confirmation,
+                                             squeeze_confirmation)
+        cached = get_cached_squeeze_confirmation(raw)
+        data = dict(cached) if isinstance(cached, dict) else {}
+        if not data:
+            data = await squeeze_confirmation(raw)
+        oi = data.get("oi_change_1h_pct")
+        verdict = "unknown"
+        if oi is not None:
+            # Ölçülen yön: OI artışı = yeni para; erime = short covering/tükeniş.
+            if oi >= 5.0:
+                verdict = "new_money_rising — sürdürülebilir yükseliş"
+            elif oi <= -5.0:
+                verdict = "oi_unwinding — yükseliş short covering, tükenir"
+            else:
+                verdict = "flat — yön teyidi yok"
+        return {
+            "ok": True,
+            "symbol": raw,
+            "oi_change_1h_pct": oi,
+            "funding_trend": data.get("funding_trend"),
+            "squeeze_confirmed": data.get("squeeze_confirmed"),
+            "verdict": verdict,
+            "note": ("OI verisi yok (vadeli piyasa yok veya önbellek soğuk) — "
+                     "OI boyutunu tahmin etme, 'veri eksik' de."
+                     if oi is None else
+                     "OI ve ATR aynı bilgiyi taşır; ikisini birlikte zorunlu tutma."),
+        }
+    except Exception as exc:  # noqa: BLE001 — LLM aracı asla patlamamalı
+        return {"ok": True, "symbol": raw, "oi_change_1h_pct": None,
+                "verdict": "unknown", "error": str(exc),
+                "note": "OI okunamadı — veri eksik de, tahmin etme."}

@@ -199,10 +199,16 @@ def microstructure_evidence(symbol: str) -> dict | None:
 
 
 async def derivatives_evidence(symbol: str) -> dict | None:
-    """Türev kanıtı (funding/OI) — YALNIZCA önbellekten (90 sn TTL'i aşmışsa da kabul).
+    """Türev kanıtı (funding/OI/OI değişimi) — YALNIZCA önbellekten (90 sn TTL'i aşmışsa da kabul).
 
     Ağ beklemeye girmez: cache soğuksa kanıtsız devam eder (hız > genişlik —
     `get_derivatives_intel` 4 sn'ye kadar bloklayabilir, fırsat kaçar).
+
+    2026-11-10 (ölçülmüş bulgu — docs/YUKSELIS_ARASTIRMASI §19): `oi_change_1h_pct`
+    artık kanıta dahil. Gerçek 1m mum + trailing, 5 seed: OI artışı yüksek adaylar
+    Q1 (düşük OI) kazanan %18-30 → Q5 (yüksek OI) %40-51; Q5-Q1 ortalama +0.917%
+    (ATR'nin +0.364'ünün 2.5 katı). LLM bunu GÖRMEDEN yükselişin yeni parayla mı
+    yoksa short covering ile mi beslendiğini ayırt edemiyordu.
     """
     try:
         from app.derivatives_service import get_cached_derivatives_intel
@@ -217,6 +223,18 @@ async def derivatives_evidence(symbol: str) -> dict | None:
             "crowded_long_danger", "short_squeeze_potential", "derivatives_bias",
         ) if intel.get(k) is not None
     }
+    # OI değişim yönü — en güçlü öncü gösterge (ölçüldü). Ayrı önbellekten
+    # (300 sn TTL) okunur; hiç ağ beklemez, sadece ısınmışsa eklenir.
+    try:
+        from app.derivatives_service import get_cached_squeeze_confirmation
+        sq = get_cached_squeeze_confirmation(symbol)
+        if isinstance(sq, dict):
+            for k in ("oi_change_1h_pct", "funding_trend", "squeeze_confirmed"):
+                if sq.get(k) is not None:
+                    compact[k] = sq[k]
+    except Exception:  # noqa: BLE001 — OI önbelleği soğuksa kanıtsız devam
+        logger.debug("llm_second_eye %s: OI değişimi önbelleği okunamadı", symbol,
+                     exc_info=True)
     return compact or None
 
 

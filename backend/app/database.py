@@ -108,6 +108,31 @@ DEFAULT_SCALPER_SKILL_INSTRUCTIONS = (
     "evidence; never invent data or place real orders."
 )
 
+# OPEN INTEREST (OI) DEĞİŞİMİ — 2026-11-10 ÖLÇÜMÜ (docs/YUKSELIS_ARASTIRMASI §19).
+# Bu projede test edilen 10 hipotezin TEK gerçek öncü göstergesi buydu; tüm
+# fiyat türevi sinyaller (velocity_score, ret15, ML prob, funding, order flow)
+# ölü veya marjinal çıktı. LLM bunu görmeden yükselişin SÜRDÜRÜLEBİLİR mi
+# yoksa TÜKENMİŞ mi olduğunu ayırt edemiyordu.
+OI_SKILL_NAME = "Açık Pozisyon (OI) Öncü Göstergesi"
+OI_SKILL_INSTRUCTIONS = (
+    "Open interest (OI) is the ONLY validated leading indicator in this system. Use "
+    "`oi_change_1h_pct` in the derivatives evidence block as a primary dimension, not a footnote. "
+    "RULE: rising OI + rising price means the move is funded by NEW MONEY -> sustainable, tradeable. "
+    "Falling or flat OI + rising price means the move is SHORT COVERING -> it exhausts; treat as a fade "
+    "or no-trade, never as a fresh breakout. "
+    "MEASURED EVIDence (real 1m candles + trailing exit, 5 independent seeds): low-OI candidates won "
+    "18-30% of the time, high-OI candidates 40-51%; the top-vs-bottom quintile spread was +0.92% net, "
+    "2.5x larger than the ATR volatility filter. "
+    "Do NOT double-count: OI and ATR (atr_pct) largely encode the same information. When OI is high, "
+    "do not also demand a high ATR, and vice versa; stacking both filters collapses the sample and "
+    "erases the edge. "
+    "If `oi_change_1h_pct` is null or absent the symbol has no perp market or the cache is cold: say the "
+    "data is missing and do not infer the OI dimension from price or funding alone. "
+    "Also read `funding_trend` (strengthening/easing) and `squeeze_confirmed` for squeeze context: "
+    "positive funding with crowded longs is the worst measured bucket, negative funding with shorts "
+    "piling up is the squeeze setup — but OI CHANGE is the signal, funding LEVEL is only context."
+)
+
 def _json_value(value, fallback):
     if value in (None, ""): return fallback
     if isinstance(value, (dict, list)): return value
@@ -525,6 +550,9 @@ async def init_db():
         conn.execute("INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(%s,%s,TRUE,%s) "
                      "ON CONFLICT(name) DO NOTHING",
                      (DEFAULT_SCALPER_SKILL_NAME, DEFAULT_SCALPER_SKILL_INSTRUCTIONS, time.time()))
+        conn.execute("INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(%s,%s,TRUE,%s) "
+                     "ON CONFLICT(name) DO NOTHING",
+                     (OI_SKILL_NAME, OI_SKILL_INSTRUCTIONS, time.time()))
         # Reconcile migrated cash with trades and open positions.
         # Portföy reseti sonrası yeniden init, reset ÖNCESİ PnL'i cüzdana
         # geri yüklememeli — reset cutoff'u burada da uygulanır.
@@ -557,6 +585,11 @@ async def ensure_default_scalper_skill():
             f"INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,{enabled_literal},?) "
             "ON CONFLICT(name) DO NOTHING",
             (DEFAULT_SCALPER_SKILL_NAME, DEFAULT_SCALPER_SKILL_INSTRUCTIONS, time.time()),
+        )
+        conn.execute(
+            f"INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,{enabled_literal},?) "
+            "ON CONFLICT(name) DO NOTHING",
+            (OI_SKILL_NAME, OI_SKILL_INSTRUCTIONS, time.time()),
         )
         conn.commit()
     return await _run_db(op)

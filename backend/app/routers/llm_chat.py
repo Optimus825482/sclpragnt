@@ -43,6 +43,7 @@ from app.ai_trading_suite.chat_tools import (
     execute_infinity_grid,
     execute_obv_cmf_inflow,
     execute_volume_breakout,
+    execute_open_interest_lead,
 )
 from app.routers.llm_position_tools import (LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL,
                             LLM_CLOSE_POSITION_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
@@ -3949,6 +3950,7 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         if name == "get_infinity_grid": return await execute_infinity_grid(args)
         if name == "get_obv_cmf_inflow": return await execute_obv_cmf_inflow(args)
         if name == "get_volume_breakout": return await execute_volume_breakout(args)
+        if name == "get_open_interest_lead": return await execute_open_interest_lead(args)
         if name == "get_master_surge_prediction": return await _get_master_surge_tool(args)
         if name == "get_ml_price_forecast": return await _get_ml_forecast_tool(args)
         if name == "get_surge_learning_bias": return await _get_surge_bias_tool(args)

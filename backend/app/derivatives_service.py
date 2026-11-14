@@ -295,6 +295,26 @@ _OI_HIST_CACHE: dict[str, tuple[float, dict]] = {}
 OI_HIST_TTL_SEC = 300.0  # 5 dk TTL — openInterestHist çağrısını kısıtlar
 
 
+def get_cached_squeeze_confirmation(symbol: str,
+                                    max_age_sec: float | None = None) -> dict | None:
+    """Bellekteki son OI-değişimi/funding-trendi teyidini senkron döner.
+
+    2026-11-10: LLM ikinci gözü `oi_change_1h_pct`'i kanıt olarak okur
+    (docs/YUKSELIS_ARASTIRMASI §19: en güçlü öncü gösterge). `squeeze_confirmation`
+    async ve ağ çağrısı yaptığı için LLM yolundan doğrudan çağrılamaz — hız
+    önceliği nedeniyle YALNIZCA ısınmış önbellek okunur, ağ beklenmez.
+    Önbellek boşsa `None` döner (fail-open: kanıtsız devam).
+    """
+    cached = _OI_HIST_CACHE.get(symbol_to_futures(symbol))
+    if not cached:
+        return None
+    age = time.time() - cached[0]
+    ttl = float(max_age_sec if max_age_sec is not None else OI_HIST_TTL_SEC)
+    if ttl > 0 and age >= ttl:
+        return None
+    return cached[1]
+
+
 async def squeeze_confirmation(symbol: str) -> dict:
     """Short-squeeze teyit verisi: OI 1s değişimi + funding trendi.
 
