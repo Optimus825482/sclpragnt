@@ -329,7 +329,18 @@ async def squeeze_confirmation(symbol: str) -> dict:
         return cached[1]
 
     def _fetch_sync():
-        oi_url = f"{FAPI_BASE}/futures/data/openInterestHist?symbol={fut}&period=5m&limit=13"
+        # 2026-11-10 (docs/YUKSELIS_ARASTIRMASI §23): pencere TARANDI. 15 dk
+        # 4/4 seed'de en iyi (Q5-Q1 +0.878%) — 60 dk'da +0.502%. Etki monoton:
+        # kısa pencere daha güçlü (taze para akışı daha bilgili).
+        # `period=5m` sabit; bar sayısı = pencere/5 (+1 payı).
+        try:
+            from app.config import config as _c
+            _win = float(getattr(_c, "AUTO_PAPER_OI_WINDOW_MIN", 15.0) or 15.0)
+        except Exception:  # noqa: BLE001 — config yoksa ölçülen varsayılan
+            _win = 15.0
+        _bars = max(3, min(48, int(round(_win / 5.0)) + 1))
+        oi_url = (f"{FAPI_BASE}/futures/data/openInterestHist"
+                  f"?symbol={fut}&period=5m&limit={_bars}")
         fr_url = f"{FAPI_BASE}/fapi/v1/fundingRate?symbol={fut}&limit=3"
         return _fetch_fapi_json(oi_url), _fetch_fapi_json(fr_url)
 

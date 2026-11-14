@@ -933,3 +933,53 @@ Emir defteri dengesizliği bu evrende öngörücü değil. Test edilecek büyük
 | 9 | Trailing gap 0,30 | ⚠ replay/canlı çelişkisi |
 | 10 | **OI değişimi** | ✅✅ **+0,917%** |
 | 11 | Emir defteri dengesizliği | ❌ gürültü |
+
+---
+
+## 23. OI penceresi taraması — 60 dk keyfiydi, **15 dk kazandı** ✅
+
+§19'da OI'nin tek gerçek öncü gösterge olduğunu ölçtük — ama **60 dk penceresi
+keyfi bir seçimdi**, hiç taranmamıştı.
+
+`scripts/oi_window_sweep.py`: **Aynı adaylar, aynı replay, yalnız OI penceresi
+değişir.** Replay gürültüsü sabit → tek değişken pencere (kontrollü deney).
+
+### Sonuç: monoton, 4/4 seed'de 15 dk en iyi
+
+| pencere | Q5−Q1 (4 seed ort) | sd | en kötü seed | en iyi kaç seed |
+|---|---|---|---|---|
+| **15 dk** | **+0,878%** | 0,089 | **+0,749%** | **4/4** |
+| 20 dk | +0,731% | 0,066 | +0,640% | 0/4 |
+| 30 dk | +0,682% | 0,104 | +0,549% | 0/4 |
+| 60 dk (eski) | +0,502% | 0,180 | +0,285% | 0/4 |
+| 120 dk | +0,426% | 0,290 | +0,009% | 0/4 |
+| 240 dk | +0,380% | 0,239 | +0,088% | 0/4 |
+
+**Üç ayrı kanıt aynı yöne bakıyor:**
+1. 15 dk **her** seed'de en yüksek (4/4)
+2. Monoton azalma: 15 > 20 > 30 > 60 > 120 > 240
+3. Q5 kazanan oranı 15 dk'da **%50-56**, 60 dk'da **%38-49**
+
+**Yorum:** taze para akışı daha bilgili. OI 15 dk'da artıyorsa bu "şu an giren
+para", 4 saatte artıyorsa "haftalar önce giren para" — ikincisi adayın
+zaten fiyatlanmış olduğu anlamına gelir.
+
+### Neden 15 dk alt sınır?
+
+`hist_futures_metrics` **5 dk aralıklı** → değişim için en az 3 bar gerekir.
+5 ve 10 dk denendi, **örneklem 0 döndü**. 15 dk fiziksel alt sınır.
+
+### Uygulama (panelden ayarlanabilir, env değil)
+
+- `config.AUTO_PAPER_OI_WINDOW_MIN` = **15.0** (was: sabit 60)
+- `settings["oi_window_min"]`, clamp **15..240**
+- `derivatives_service` bar sayısını pencereden türetir:
+  `bars = clamp(pencere/5 + 1, 3, 48)` → 15 dk = **4 bar** (was: sabit 13 bar)
+- Canlı doğrulama (gerçek Binance): BTCTRY −0,67%, ETHTRY +0,15%,
+  SOLTRY −0,15%, AVAXTRY +0,06% — 15 dk penceresi canlıda çalışıyor
+
+### Sonuç
+
+OI sinyali **neredeyse 2× güçlendi**: +0,502% → **+0,878%** (Q5−Q1), aynı
+sinyal, yalnız doğru pencere. Ve sd düştü (0,180 → 0,089) — daha güçlü **ve**
+daha kararlı.

@@ -2595,6 +2595,9 @@ def _default_gate_settings() -> dict:
         # (Q5-Q1 ort +0.917%, ATR'nin 2.5 kati).
         # Kanit: docs/YUKSELIS_ARASTIRMASI_2026-11-10.md bolum 19
         "min_oi_change_pct": float(getattr(config, "AUTO_PAPER_MIN_OI_CHANGE_PCT", 0.0)),
+        # OI ölçüm penceresi (dk). Tarama: 15 dk 4/4 seed'de en iyi
+        # (+0.878% vs 60 dk +0.502%), monoton azalan. Alt sınır 15 (veri 5 dk).
+        "oi_window_min": float(getattr(config, "AUTO_PAPER_OI_WINDOW_MIN", 15.0)),
     }
 
 
@@ -2653,7 +2656,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
                 "llm_gate_enabled", "llm_min_confidence",
                 "volatility_sl_enabled",
                 "allowed_modes", "dedup_cooldown_minutes", "min_atr_pct",
-                "max_sl_tp_ratio")
+                "max_sl_tp_ratio", "min_oi_change_pct", "oi_window_min")
     existing = await get_auto_paper_settings()
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
     _exit_def = _exit_defaults()  # 2026-10-16 (maliyet/çıkış): profil varsayılanları (payload/DB önce)
@@ -2719,6 +2722,10 @@ async def update_settings_endpoint(payload: dict, request: Request):
         # acmak onerilmez (bkz. docs/YUKSELIS_ARASTIRMASI bolum 19).
         "min_oi_change_pct": max(-50.0, min(200.0, float(merged.get(
             "min_oi_change_pct", getattr(config, "AUTO_PAPER_MIN_OI_CHANGE_PCT", 0.0)) or 0.0))),
+        # OI penceresi: 15..240 dk. Alt sınır 15 çünkü hist_futures_metrics 5 dk
+        # aralıklı (3 bar gerekir). 15 dk taramada 4/4 seed'de en iyi.
+        "oi_window_min": max(15.0, min(240.0, float(merged.get(
+            "oi_window_min", getattr(config, "AUTO_PAPER_OI_WINDOW_MIN", 15.0)) or 15.0))),
     }
 
     await database.set_llm_setting("auto_paper_settings", json.dumps(settings))

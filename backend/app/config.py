@@ -1331,6 +1331,22 @@ class Config:
     # sembollerde OI yok -> kapi UYGULANMAZ (fail-open).
     # Kanit: docs/YUKSELIS_ARASTIRMASI_2026-11-10.md bolum 19
     AUTO_PAPER_MIN_OI_CHANGE_PCT = float(os.getenv("AUTO_PAPER_MIN_OI_CHANGE_PCT", "0.0"))
+    # OI PENCERESİ (2026-11-10, panelden ayarlanabilir). Önceki N dakikadaki OI
+    # değişimi ölçülür. 60 dk KEYFİ seçilmişti; tarama yapıldı
+    # (scripts/oi_window_sweep.py, AYNI adaylar + AYNI replay, yalnız pencere
+    # değişir — kontrollü deney). 4/4 seed'de 15 dk kazandı:
+    #   pencere  Q5-Q1 (4 seed ort)  sd     en kötü seed  en iyi
+    #    15 dk   +0.878%             0.089  +0.749%       4/4
+    #    20 dk   +0.731%             0.066  +0.640%       0/4
+    #    30 dk   +0.682%             0.104  +0.549%       0/4
+    #    60 dk   +0.502%             0.180  +0.285%       0/4
+    #   120 dk   +0.426%             0.290  +0.009%       0/4
+    #   240 dk   +0.380%             0.239  +0.088%       0/4
+    # Monoton: pencere kısaldıkça etki güçleniyor (taze para akışı daha bilgili).
+    # Q5 kazanan oranı 15 dk'da %50-56, 60 dk'da %38-49.
+    # ALT SINIR 15: hist_futures_metrics 5 dk aralıklı -> 3 bardan az olursa
+    # değişim hesaplanamaz (5/10 dk denendi, örneklem 0).
+    AUTO_PAPER_OI_WINDOW_MIN = float(os.getenv("AUTO_PAPER_OI_WINDOW_MIN", "15"))
     # Başabaş (Breakeven) koruması: erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI. 2026-10-07 incelemesi: breakeven'i ZORUNLU kılmanın kanıtı
     # yok — gerçekleşen kazanan ortalaması (+%1,51) zaten net_floor'un üzerinde,
