@@ -292,3 +292,93 @@ trailing'i kapatır, ATR filtresi sessizce zarar verir.
 | **ATR filtresi çıkış modeline bağımlı** | ⚠ KRİTİK kısıt, kilitlenmeli |
 
 **Tek gerçek kazanç ATR'de. Yön tahmini değil, genlik tahmini.**
+
+---
+
+## 12. ATR eşik taraması (`scripts/atr_threshold_sweep.py`)
+
+Gerçek 1m mum + **trailing çıkışı** (üretim modeli), `net_pct` kullanılmadı.
+4 bağımsız seed (7, 11, 23, 42, 77) toplandı:
+
+| atr eşiği | ort (seed ort.) | sd | ort n | min n | kabul |
+|---|---|---|---|---|---|
+| 0,0 | +0,018% | — | 1495 | — | %99,7 |
+| 1,0 | **+0,364%** | 0,168 | 114 | 101 | ~%13 |
+| 1,2 | +0,449% | 0,268 | 72 | 64 | ~%8 |
+| **1,5** | **+0,647%** | 0,406 | 38 | 29 | ~%5 |
+| 1,8 | +0,608% | 0,352 | 21 | 16 | ~%3 |
+| 2,0 | +0,810% | — | ~20 | 11 | ~%2 |
+
+### Karar: **1,0'da kalındı**
+
+Gerekçe:
+- 1,5 en yüksek ortalamayı veriyor (+0,647 vs +0,364) **ama** sd 2,4 kat büyük
+  (0,406 vs 0,168) ve örneklem **3 kat küçük** (38 vs 114).
+- Aynı güven düzeyi için 1,5'te **9 kat fazla işlem** gerekir.
+- 1,8+ örneklem 16-21'e düşüyor — tek bir aykırı işlem ortalamayı çevirir.
+- Aylık ~%5 kabul oranı, 20 sembollük evrende günde ~1 işlem demek; pratik değil.
+
+**1,0 en iyi risk/örneklem dengesi.** 1,5 istenirse panelden ayarlanabilir
+(kanıt hazır) ama varsayılan 1,0 kalmalı.
+
+---
+
+## 13. H3: Funding rate testi — ❌ MARJINAL, eklenmedi
+
+`scripts/funding_signal_test.py` (40.000 eşleşen aday, TRAIN/TEST 70/30).
+
+`futures_funding` tablosu TR sembolü + funding taşıyor (290 sembol, 519.887
+velocity adayıyla kesişim). Sistemde funding şu an yalnız "kötüyse engelle"
+filtresi; ters sinyal olarak hiç kullanılmıyor — ilk kez test edildi.
+
+### Sonuç: yön DOĞRU, etki ÇOK KÜÇÜK
+
+| funding dilimi | TRAIN ort | TEST ort | TEST kazanan |
+|---|---|---|---|
+| < −0,0291% | −0,282% | −0,301% | %40,7 |
+| −0,0291 … +0,005% | −0,612% | −0,233% | %42,0 |
+| **> +0,005%** | −0,571% | **−0,663%** | **%29,9** |
+
+**Ters sinyal hipotezi doğrulandı:** pozitif funding (kalabalık long) en kötü
+sonucu veriyor (−0,663%, kazanan yalnız %29,9). İki sette de tutarlı.
+
+**Ama filtre olarak değeri marjinal:**
+
+| | TEST ort | n |
+|---|---|---|
+| filtre yok | −0,254% | 12.000 |
+| funding ≤ +0,005% | −0,233% | 11.331 |
+| **kazanç** | **+0,021 puan** | %94,4 kaldı |
+
+En iyi dilim bile **negatif** (−0,233%). Tek başına kâr ettirmiyor.
+
+### ATR + funding birlikte — ek katkı yok
+
+| kombinasyon | TEST n | TEST ort |
+|---|---|---|
+| atr≥1,0 | 1.219 | −0,442% |
+| atr≥1,0 + funding≤0,005 | 1.195 | −0,455% |
+| atr≥1,5 | 338 | −0,143% |
+| atr≥1,5 + funding≤0,005 | 338 | −0,143% |
+
+Funding **hiçbir şey eklemiyor**; hatta atr≥1,0'da hafif kötüleştiriyor.
+
+> **Karar: funding filtresi SİSTEME EKLENMEYECEK.** Yön bilgisi doğru ama
+> büyüklük (+0,021) gürültü seviyesinde. Karmaşıklık eklemeye değmez.
+
+⚠ Not: bu tabloda `atr≥1,0` negatif çıkıyor (−0,442) çünkü `net_pct` = sabit
+TP/SL simülasyonu kullanılıyor. §10'daki çıkış-modeli bağımlılığı burada da
+geçerli: ATR'nin gerçek faydası **trailing** çıkışında görünür (§12).
+
+---
+
+## 14. Güncel öneri sıralaması
+
+| # | hipotez | durum |
+|---|---|---|
+| 1 | ATR eşiği optimizasyonu | ✅ yapıldı — **1,0 doğru**, 1,5 panelden denenebilir |
+| 2 | Funding ters sinyal | ❌ test edildi, marjinal (+0,021) |
+| 3 | Saat filtresi | ❌ test edildi, zayıf |
+| 4 | Göreli güç (ret15) | ❌ test edildi, reddedildi |
+| 5 | **Taker buy volume / order flow** | ⬜ HENÜZ TEST EDİLMEDİ — sıradaki |
+| 6 | **Cross-sectional long-short portföy** | ⬜ test edilmedi (TR spot'ta short yok) |
