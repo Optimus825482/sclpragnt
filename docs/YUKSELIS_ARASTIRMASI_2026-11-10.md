@@ -382,3 +382,107 @@ geçerli: ATR'nin gerçek faydası **trailing** çıkışında görünür (§12)
 | 4 | Göreli güç (ret15) | ❌ test edildi, reddedildi |
 | 5 | **Taker buy volume / order flow** | ⬜ HENÜZ TEST EDİLMEDİ — sıradaki |
 | 6 | **Cross-sectional long-short portföy** | ⬜ test edilmedi (TR spot'ta short yok) |
+
+---
+
+## 15. Taker buy volume / order flow — YAPILAMADI (veri yok)
+
+Kod taraması:
+
+| modül | durum |
+|---|---|
+| `app/microflow.py` | CVD hesaplıyor (`cvd_try` = buy_notional − sell_notional) |
+| saklama | ❌ **YOK** — bellek içi, canlı; geçmişe dönük replay imkânsız |
+| `velocity_candidates` kaydı | ❌ CVD/microflow alanı **kaydedilmiyor** |
+
+Doğrulama: `outcome_details` anahtarları yalnız
+`entry, stop_sec, leading_ok, m5_pattern, target_pct, m1_atr_prev, m3_atr_prev,
+window_bars, m5_pattern_ok, status_reason, stopped_at_minute, intrabar_ambiguous`.
+`cvd_try` içeren aday sayısı: **0**.
+
+> **Sonuç:** order flow literatürde en güçlü desteklenen boyut ama **geçmiş verisi
+> yok**. Test etmek için önce CVD'nin aday kaydına eklenmesi ve birkaç hafta
+> veri biriktirilmesi gerekir. Bu bir kod değişikliği + bekleme maliyeti demek.
+
+**Öneri (yapılabilir):** `velocity_candidates.outcome_details`'a `cvd_try`,
+`buy_sell_ratio`, `whale_buys/sells` alanlarını ekle. Birkaç hafta sonra
+replay edilebilir hale gelir. Şimdilik **yalnızca tohum atılabilir**, test edilemez.
+
+---
+
+## 16. ML hit probability testi — ❌ sabit modelde çalışıyor, trailing'de değil
+
+İlk kez test edildi (`scripts/ml_prob_test.py`). Veri: 370.867 adayda
+`ml_hit_probability` dolu.
+
+### Sabit TP/SL modelinde model GERÇEKTEN çalışıyor
+
+| prob dilimi | SL oranı | TP oranı | WR | ort net |
+|---|---|---|---|---|
+| 0,0-0,2 | **47,1%** | 30,9% | %36,8 | −0,420% |
+| 0,2-0,4 | 45,2% | 28,0% | %35,3% | −0,452% |
+| 0,4-0,6 | 30,0% | 26,8% | %38,5% | −0,410% |
+| 0,6-0,8 | 25,2% | 36,0% | %44,9% | −0,441% |
+| **0,8-1,0** | **29,4%** | **54,5%** | **%57,9** | −0,550% |
+
+`corr(prob, kazandı)` = **+0,1709** — güçlü ve anlamlı.
+SL oranı %47,1 → %29,4; TP oranı %30,9 → %54,5. **Model ayrıştırıyor.**
+
+### Ama trailing çıkışında ayrışma KAYBOLUYOR
+
+4 seed, gerçek 1m mum + trailing (gap 0,3%, SL 2%, 240 dk):
+
+| seed | prob 0,8-1,0 eksi 0,0-0,2 | eşik (+0,20) |
+|---|---|---|
+| 7 | +0,111% | ❌ |
+| 11 | +0,033% | ❌ |
+| 23 | −0,015% | ❌ |
+| 42 | +0,041% | ❌ |
+
+Ortalama ~+0,043 puan — **gürültü.**
+
+### Neden?
+
+`ml_hit_probability` "hedefe dokunacak mı" sorusunu öngörüyor. Bu, **sabit
+TP'li** bir rejimde değerli. Trailing'de "hedef" yok — kâr tepeyi takip ederek
+alınıyor. Yani model **yanlış soruya** cevap veriyor.
+
+### Karar: ML prob filtresi EKLENMEZ
+
+- Sabit TP/SL'de bile EV negatif (WR %57,9 iken ort −0,550%)
+- Trailing'de ayrışma yok (4/4 seed eşiğin altında)
+- `net_pct` ile korelasyon −0,028 (pratikte sıfır)
+
+---
+
+## 17. NİHAİ ÖZET — test edilen 7 hipotez
+
+| # | hipotez | sonuç | kanıt |
+|---|---|---|---|
+| 1 | `velocity_score` | ❌ ÖLÜ | r=0,0002, ters çalışıyor |
+| 2 | Göreli güç (ret15) | ❌ reddedildi | +0,144 (eşik +0,20), ATR ile ters |
+| 3 | Saat filtresi | ❌ zayıf | tüm saatler negatif, 0,307 fark |
+| 4 | Funding ters sinyal | ❌ marjinal | +0,021 puan |
+| 5 | **ATR filtresi** | ✅ **ÇALIŞIYOR** | +0,364% (trailing, 4 seed) |
+| 6 | ATR eşik optimizasyonu | ✅ 1,0 doğru | 1,5 daha yüksek ama sd 2,4x |
+| 7 | ML hit probability | ❌ trailing'de sıfır | 4/4 seed eşik altı |
+
+### Tek gerçek kazanç: ATR (volatilite genliği)
+
+**Ortak desen:** Sistemin tüm "yön tahmini" sinyalleri (velocity_score, ret15,
+ml_hit_probability, funding) **ölü veya marjinal**. Çalışan tek şey
+**genlik tahmini** (ATR).
+
+**Yorum:** Bu evrende yükselişin **yönünü** tahmin etmek mümkün değil, ama
+**hareketin büyüklüğünü** tahmin etmek mümkün. Strateji "hangi coin yükselecek"
+değil, "hangi coin yeterince oynak" sorusuna dayanmalı — ve kâr, trailing'in
+oynaklıktan topladığı tepe hareketinden gelmeli.
+
+### Test edilemeyen (veri yok)
+
+- **Order flow / CVD** — saklanmıyor (bölüm 15). Tohum atmak gerekir.
+
+### Test edilmemiş (veri var)
+
+- Cross-sectional long-short portföy — TR spot'ta short yok, uygulanamaz
+- ATR + farklı trailing gap/trigger kombinasyonları — ucuz, denenebilir
