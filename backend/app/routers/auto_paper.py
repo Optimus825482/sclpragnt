@@ -647,6 +647,20 @@ async def _entry_context(notification: dict) -> tuple[dict | None, dict | None, 
     # atr_pct bilinmiyorsa (None/0) filtre UYGULANMAZ — fail-open: veri eksikliği
     # yüzünden sinyal kaybetmeyelim (ölçülemeyen aday zaten değerlendirilemez).
     min_atr = float(settings.get("min_atr_pct", 0.0) or 0.0)
+    # ⚠ ÇIKIŞ MODELİ BAĞIMLILIĞI (2026-11-10 bulgusu — docs/YUKSELIS_ARASTIRMASI):
+    # Bu filtrenin kanıtı TRAILING çıkışına dayanır (+0.42% @atr>=1.0). Sabit
+    # TP/SL'de AYNI filtre ZARAR verir (-0.59%), çünkü oynak coin %5'lik sabit
+    # stopu 60 dk içinde daha sık deliyor (SL oranı %39.4 -> %53.6).
+    # Trailing kapalıysa filtre sessizce zarar vermesin: devre dışı bırakılır ve
+    # bir kez loglanır. Sessiz yanlış yapılandırma, filtresiz çalışmaktan kötüdür.
+    if min_atr > 0 and not bool(settings.get("trailing_enabled", True)):
+        if not getattr(_entry_context, "_atr_trail_warned", False):
+            logger.warning(
+                "auto_paper: min_atr_pct=%.2f AMA trailing_enabled=False — "
+                "ATR filtresi devre dışı (kanıtı trailing çıkışına dayanır; "
+                "sabit TP/SL'de zarar verir)", min_atr)
+            _entry_context._atr_trail_warned = True
+        min_atr = 0.0
     if min_atr > 0 and not rule_signal:
         try:
             atr_pct = float(notification.get("atr_pct") or 0.0)
