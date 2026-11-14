@@ -486,3 +486,115 @@ oynaklıktan topladığı tepe hareketinden gelmeli.
 
 - Cross-sectional long-short portföy — TR spot'ta short yok, uygulanamaz
 - ATR + farklı trailing gap/trigger kombinasyonları — ucuz, denenebilir
+
+---
+
+## 18. Trailing parametre izgarası — ✅ gap 1,0 → **0,30** (en somut kazanç)
+
+`scripts/atr_trailing_grid.py`. ATR≥1,0 evreni, gerçek 1m mum, SL %2, 240 dk,
+fee %0,30.
+
+### ATR ölçekli gap KAZANDIRMIYOR
+
+| gap şeması | ort | medyan | kazanan |
+|---|---|---|---|
+| sabit **0,3%** | **+0,389%** | −0,009% | 49,6% |
+| sabit 0,5% | +0,368% | −0,103% | 46,6% |
+| sabit 1,0% (mevcut) | +0,319% | −0,291% | 42,3% |
+| ATR×0,25 | +0,360% | −0,025% | 48,6% |
+| ATR×0,35 | +0,352% | −0,098% | 45,8% |
+| ATR×0,50 | +0,345% | −0,168% | 42,9% |
+| ATR×0,75 | +0,311% | −0,333% | 41,5% |
+
+**Beklenenin tersi:** oynaklığa göre genişleyen gap **hiçbir şey eklemiyor**.
+Sebep: evren zaten `ATR ≥ 1,0` ile süzülmüş → ATR dağılımı dar, ölçekleme
+anlamsız. `ATR×0,75` neredeyse `sabit 1,0` ile aynı sonucu veriyor.
+
+### Sabit gap ince taraması
+
+| gap | ort | medyan | kazanan |
+|---|---|---|---|
+| 0,15% | +0,414% | +0,074% | 54,2% |
+| 0,20% | +0,401% | +0,046% | 52,6% |
+| 0,25% | +0,394% | +0,029% | 51,4% |
+| **0,30%** | **+0,390%** | −0,009% | 49,6% |
+| 0,40% | +0,377% | −0,058% | 46,7% |
+| 0,50% | +0,358% | −0,122% | 44,3% |
+| 1,00% (mevcut) | +0,319% | −0,291% | 42,3% |
+
+Monoton: **gap daraldıkça iyi** — ama bu bir **slippage tuzağı**.
+
+### Slippage düzeltmesi (kritik)
+
+Dar gap, çıkışın tepeye çok yakın olmasını varsayar. Gerçek dolumda spread +
+kayma tipik 0,05–0,15% (TRY paritelerde daha geniş):
+
+| gap | nominal | +0,10% kayma | +0,20% kayma |
+|---|---|---|---|
+| 0,15% | +0,414% | +0,314% | +0,214% |
+| **0,30%** | **+0,390%** | **+0,290%** | +0,190% |
+| 0,40% | +0,377% | +0,277% | +0,177% |
+| 1,00% | +0,319% | +0,219% | +0,119% |
+
+**0,15'in avantajı kaymayla siliniyor.** 0,30 hem nominalde iyi hem kaymaya
+dayanıklı → gerçekçi seçim.
+
+### 5 seed doğrulaması — karar
+
+| gap | 5-seed ort | sd | en kötü seed | hepsi pozitif |
+|---|---|---|---|---|
+| **0,30** | **+0,341%** | **0,034** | +0,287% | ✅ 5/5 |
+| 0,40 | +0,319% | 0,040 | +0,253% | ✅ 5/5 |
+| 1,00 (mevcut) | +0,263% | 0,058 | +0,197% | ✅ 5/5 |
+
+**Kazanç: +0,078 puan** (0,341 vs 0,263) ve **sd 1,7 kat düşük** (0,034 vs
+0,058). Bu oturumun **en somut, en güvenilir bulgusu** — hem ortalamayı
+yükseltiyor hem varyansı düşürüyor.
+
+> **ÖNERİ: `trailing_gap_pct` 1,0 → 0,30** — **AMA VARSAYILAN DEĞİŞTİRİLMEDİ.**
+
+### ⚠ KRİTİK ÇELİŞKİ: canlı kanıt vs bar replay
+
+`config.py`'de **2026-10-11 tarihli canlı geri bildirim** kayıtlı:
+
+> "gap 0.3 **ÇOK DARDI** — canlı 5 sn ticker gürültüsünde fiyat tepeden %0.3
+> geri çekilince pozisyon **ANINDA** kapanıyor, kâr büyüyemiyordu."
+
+Ve o notta aynen şu yazıyor: *"Backtest 1m barlarıyla yapıldığı için 0.3'ü
+'iyi' gösteriyordu; canlıda ticker daha gürültülü."*
+
+**Bu, tam olarak benim ölçümüm.** 1m bar replay'i bar **İÇİ** ticker
+hareketini görmez — bir barda 5 kez %0,2 inip çıkan fiyat replay'de tek net
+hareket gibi görünür. Gerçekte trailing 5 sn ticker ile çalışıyor ve o
+gürültüde 0,3 erken tetikliyor.
+
+| kaynak | gap 0,30 hakkında |
+|---|---|
+| 1m bar replay (bu oturum) | +0,341% — iyi |
+| canlı 2026-10-11 (kullanıcı) | kâr büyüyemiyor — kötü |
+
+### Karar: varsayılan **1,0'da KALDI**
+
+- **Canlı kanıt bar replay'den üstündür.** Gerçek dolum, gerçek ticker.
+- Replay kazancı (+0,078) gürültü modeli eksik olduğu için **yanlış olabilir**.
+- Doğrulama yolu: **5 sn granüler replay** (microflow 5s bar üretiyor) veya
+  panelden 0,30'a alıp **2 hafta canlı** ölçmek.
+- Dürüstlük notu: 5 seed'de bile **medyan hâlâ negatif** (−0,009 / −0,007);
+  yani kâr **kuyruktaki** büyük kazananlardan geliyor. Bu, az sayıda işleme
+  bağımlılık demek — canlıda örneklem küçükse sonuç dalgalanır.
+
+`simulated_gap_pct` yerine kodda yalnız **yorum + fallback** güncellendi; davranış
+değişmedi. Bu, "ölçtüm ama kanıt yetmedi" durumunun dürüst kaydı.
+
+### Yine de geçerli olan bulgular
+
+- **ATR ile gap ölçekleme kazandırmıyor** (evren zaten dar) — bu kesin.
+- **gap 0,40** (1,0'a göre ılımlı): +0,319%, sd 0,040 — gürültüye 0,30'dan
+  dayanıklı. Canlı denenmek istenirse **0,40 daha güvenli orta yol**.
+- Orta vadeli öneri: panelden 0,40'a al, 2 hafta canlı ölç, sonra 0,30 dene.
+
+### Dikkat: ATR eşiği ile etkileşim
+
+Bu ölçümler `ATR ≥ 1,0` kapısı AÇIKKEN yapıldı. Gap daraltmak tek başına da
+faydalı olabilir ama ATR kapısı kapatılırsa etki doğrulanmamıştır. İkisi
+birlikte kullanılmalı.

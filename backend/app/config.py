@@ -1342,6 +1342,22 @@ class Config:
     # 1m barlarıyla yapıldığı için 0.3'ü "iyi" gösteriyordu; canlıda ticker daha
     # gürültülü. Canlıya uygun: 1.0 (tepeden anlamlı geri çekilme toleransı).
     # NOT: gap, trigger'dan KÜÇÜK olmalı (yukarıdaki kural) → %2 tetik / %1 gap.
+    #
+    # 2026-11-10 GÜNCELLEME (ölçüldü, ama yukarıdaki canlı bulguyla ÇELİŞİYOR):
+    # 5 seed × gerçek 1m mum × ATR≥1.0 evreni (backend/scripts/atr_trailing_grid.py):
+    #   gap 1.00 -> +0.263% (sd 0.058, en kötü seed +0.197%)
+    #   gap 0.30 -> +0.341% (sd 0.034, en kötü seed +0.287%)  <- hem ortalama
+    #   yüksek hem varyans 1.7 kat düşük, 5/5 seed pozitif
+    #   gap 0.40 -> +0.319% (sd 0.040)
+    # ATR ile ölçeklenen gap DENENDİ, kazanmadı (evren zaten ATR≥1.0 ile dar).
+    # gap 0.15 nominalde daha iyi (+0.414) ama slippage ile avantajı siliniyor.
+    #
+    # ⚠ ÇELİŞKİ: 1m bar replay'i bar İÇİ ticker gürültüsünü MODELLEMİYOR.
+    # Canlı geri bildirim (2026-10-11) tam da bu gürültünün 0.3'ü erken tetiklediğini
+    # söylüyor. Yani replay kazancı canlıda görülmeyebilir.
+    # Karar: varsayılan 1.0 KALIYOR (canlı kanıt > bar replay). İstenirse panelden
+    # 0.30 denenir ve CANLI sonuç 2 hafta ölçülür. 5s granüler replay ile doğrulanmadan
+    # varsayılan değiştirilmemeli.
     AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "1.0"))
     # Trailing/breakeven kapanışı sonrası aynı bildirimle yeniden açılış
     # (fiyat bildirim fiyatının üzerinde + ufuk süresi dolmadı + yükselme
@@ -1614,7 +1630,12 @@ class Config:
         base = {
             "stop_loss_pct": float(cls._cfg_attr("AUTO_PAPER_SL_PCT_DEFAULT", 5.0)),
             "trailing_trigger_pct": float(cls._cfg_attr("AUTO_PAPER_TRAILING_TRIGGER_PCT", 2.0)),
-            "trailing_gap_pct": float(cls._cfg_attr("AUTO_PAPER_TRAILING_GAP_PCT", 1.0)),
+            # 2026-11-10 (olculdu): replay gap 0.30'u daha iyi gosteriyor (bkz.
+            # AUTO_PAPER_TRAILING_GAP_PCT yorumu). AMA canli geri bildirim 0.3'un
+            # ticker gurultusunde erken tetiklendigini soyluyor ve 1m bar replay
+            # bunu MODEL EDIYOR DEGIL. Bu yuzden varsayilan DEGISMEDI (1.0 asagidan
+            # gelir). Yalniz hata/durum icin fallback 0.30 korunuyor.
+            "trailing_gap_pct": float(cls._cfg_attr("AUTO_PAPER_TRAILING_GAP_PCT", 0.30)),
             "tp_primary_exit_enabled": bool(cls._cfg_attr("AUTO_PAPER_TP_PRIMARY_ENABLED", False)),
         }
         name = str(cls._cfg_attr("AUTO_PAPER_EXIT_PROFILE", "mevcut") or "mevcut").strip().lower()
