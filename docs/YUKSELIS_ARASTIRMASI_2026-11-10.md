@@ -855,3 +855,81 @@ YOKBOYLESEMBOLTRY : oi=None   verdict=unknown   (fail-open)
 | OI canlı sorgu | ❌ yok | ✅ araç |
 
 **17 yeni test** (`tests/test_llm_oi_capability.py`), tam suite **3791 passed**.
+
+---
+
+## 21. Emir defteri dengesizliği (`hist_futures_bookdepth`) — ❌ GÜRÜLTÜ
+
+Son test edilmemiş büyük veri: **7.332.621 satır**, 290 perp sembol, 5 dk
+aralık, 3 ay. `bid_d1..bid_d5` / `ask_d1..ask_d5` = kümülatif derinlik.
+
+Literatürde bid/ask dengesizliği kısa vadeli yön tahmininin en güçlü
+mikro-yapı sinyallerinden biridir (Cont/Kukanov/Stoikov). Bu yüzden test
+etmeye değerdi.
+
+### Yöntem: `scripts/bookdepth_test.py`
+
+30.000 aday → 5.050'si emir defteriyle eşleşti. Önceki **15 dk** pencerede
+ortalama dengesizlik: `(bid − ask) / (bid + ask)`. TRAIN/TEST kronolojik %70/30.
+
+### Sonuç: sabit modelde ters, trailing'de gürültü
+
+**Sabit `net_pct`:**
+
+| boyut | TRAIN Q5−Q1 | TEST Q5−Q1 |
+|---|---|---|
+| dengesizlik d1 (en iyi fiyat) | +0,068% | **−0,264%** |
+| dengesizlik d5 (5 seviye) | +0,002% | −0,181% |
+
+**Trailing — sinyal yok:**
+
+| seed | Q1 (düşük) | Q5 (yüksek) | **Q5−Q1** |
+|---|---|---|---|
+| 7 | +0,221% (kaz %43,2) | −0,338% (kaz %27,8) | **−0,559%** |
+| 11 | −0,230% (kaz %32,8) | −0,187% (kaz %30,5) | +0,043% |
+| 23 | −0,363% (kaz %21,3) | −0,372% (kaz %31,0) | −0,009% |
+| 42 | −0,028% (kaz %27,9) | +0,082% (kaz %44,1) | +0,110% |
+
+**Ortalama −0,104%, sd 0,307, |ort|/sd = 0,34** → tam gürültü.
+İşaret seed'den seed'e **değişiyor** (+0,110 ↔ −0,559). Tek seed (7) sonucu
+aşağı çekiyor, diğer üçü sıfıra yakın.
+
+### Karar: EKLENMEZ
+
+Emir defteri dengesizliği bu evrende öngörücü değil. Test edilecek büyük veri
+**kalmadı** — tüm veri tabanları tükendi.
+
+---
+
+## 22. TAM VERİ ENVANTERİ — ne test edildi, ne bitti
+
+| tablo | satır | durum |
+|---|---|---|
+| `historical_candles` | 57,5M | ✅ kullanıldı (tüm replay'lerin temeli) |
+| `historical_trade_flow` | 13,9M | ❌ test edildi — ayrıştırmıyor, aşırı uç ters |
+| `hist_futures_metrics` | 7,5M | ✅ **OI = tek gerçek öncü gösterge (+0,92pp)** |
+| `futures_metrics` | 7,4M | (canlı kopya) |
+| `hist_futures_bookdepth` | 7,3M | ❌ test edildi — gürültü (bu bölüm) |
+| `futures_funding` | 140K | ❌ test edildi — marjinal (+0,021) |
+| `velocity_candidates` | 575K | ✅ ana örneklem |
+| `microstructure_snapshots` | **0** | boş — hiç dolmamış |
+
+**Büyük veri tükendi.** Yeni bir boyut için ya yeni veri toplanmalı
+(ör. likidasyon akışı, on-chain, haber duygu) ya da mevcut boyutların
+**kombinasyonları** taranmalı.
+
+### Test edilen 11 hipotez — nihai tablo
+
+| # | hipotez | sonuç |
+|---|---|---|
+| 1 | `velocity_score` | ❌ ölü (r=0,0002, ters) |
+| 2 | Göreli güç (ret15) | ❌ reddedildi |
+| 3 | Saat filtresi | ❌ zayıf |
+| 4 | Funding ters sinyal | ❌ marjinal (+0,021) |
+| 5 | Order flow / taker buy | ❌ ayrıştırmıyor, uç ters |
+| 6 | **ATR** | ✅ **+0,364%** |
+| 7 | ATR eşiği 1,0 | ✅ doğrulandı |
+| 8 | ML hit probability | ❌ trailing'de sıfır |
+| 9 | Trailing gap 0,30 | ⚠ replay/canlı çelişkisi |
+| 10 | **OI değişimi** | ✅✅ **+0,917%** |
+| 11 | Emir defteri dengesizliği | ❌ gürültü |
