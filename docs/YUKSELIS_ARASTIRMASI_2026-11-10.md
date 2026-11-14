@@ -463,9 +463,11 @@ alınıyor. Yani model **yanlış soruya** cevap veriyor.
 | 2 | Göreli güç (ret15) | ❌ reddedildi | +0,144 (eşik +0,20), ATR ile ters |
 | 3 | Saat filtresi | ❌ zayıf | tüm saatler negatif, 0,307 fark |
 | 4 | Funding ters sinyal | ❌ marjinal | +0,021 puan |
-| 5 | **ATR filtresi** | ✅ **ÇALIŞIYOR** | +0,364% (trailing, 4 seed) |
-| 6 | ATR eşik optimizasyonu | ✅ 1,0 doğru | 1,5 daha yüksek ama sd 2,4x |
-| 7 | ML hit probability | ❌ trailing'de sıfır | 4/4 seed eşik altı |
+| 5 | Order flow / taker buy | ❌ test edildi (13,9M satır) — ayrıştırmıyor | Q5−Q1 < +0,20; aşırı uç ters |
+| 6 | **ATR filtresi** | ✅ **ÇALIŞIYOR** | +0,364% (trailing, 4 seed) |
+| 7 | ATR eşik optimizasyonu | ✅ 1,0 doğru | 1,5 daha yüksek ama sd 2,4x |
+| 8 | ML hit probability | ❌ trailing'de sıfır | 4/4 seed eşik altı |
+| 9 | Trailing gap | ⚠ replay 0,30 der, canlı 1,0 der | çelişki — varsayılan değişmedi |
 
 ### Tek gerçek kazanç: ATR (volatilite genliği)
 
@@ -598,3 +600,79 @@ değişmedi. Bu, "ölçtüm ama kanıt yetmedi" durumunun dürüst kaydı.
 Bu ölçümler `ATR ≥ 1,0` kapısı AÇIKKEN yapıldı. Gap daraltmak tek başına da
 faydalı olabilir ama ATR kapısı kapatılırsa etki doğrulanmamıştır. İkisi
 birlikte kullanılmalı.
+
+---
+
+## 15b. ⚠ DÜZELTME + ORDER FLOW TESTİ (bölüm 15 yanlıştı)
+
+**Bölüm 15'te "veri yok" yazmıştım — YANLIŞ.** Geçmiş akış verisi **var**:
+
+```
+historical_trade_flow: 13.921.104 satır, 310 sembol
+  2026-07-19 -> 2026-10-17, dakika bazında
+  kolonlar: buy_quote, sell_quote, big_buy_quote, big_sell_quote,
+            whale_buy_quote, whale_sell_quote, n_trades, vwap, max_trade_quote
+  velocity adaylarıyla kesişim: 575.616 aday
+```
+
+İlk kontrolümde yalnız `microflow.py`'ye (bellek içi, canlı) baktım ve
+`velocity_candidates` kolonlarına baktım — `historical_trade_flow` tablosunu
+**atladım**. Veri vardı, bakmadım. Bu satır bunun kaydı.
+
+### Test: `scripts/orderflow_test.py`
+
+30.000 aday, aday anından önceki **15 dk** akış penceresi, TRAIN/TEST 70/30.
+
+| boyut | TRAIN Q5−Q1 | TEST Q5−Q1 | karar |
+|---|---|---|---|
+| taker buy oranı (%) | +0,100% | +0,117% | ❌ eşik +0,20 |
+| buy/sell notional oranı | +0,110% | +0,108% | ❌ |
+| büyük alım net payı | +0,062% | +0,029% | ❌ |
+| işlem sayısı (yoğunluk) | +0,160% | **−0,167%** | ❌ **ters** |
+
+Trailing ile doğrulama (n=500): Q5−Q1 = **+0,062%** — ayrışmıyor.
+
+**Dördü de başarısız.** Hiçbiri +0,20 eşiğine yaklaşmadı.
+
+### Asıl bulgu: AŞIRI uçlar TERS çalışıyor
+
+Dilim ortalamaları monoton değil; **uçlar en kötü**:
+
+| taker buy | TRAIN ort | TRAIN kazanan | TEST ort | TEST kazanan |
+|---|---|---|---|---|
+| **> %90** | **−0,697%** | **%21,3** | **−0,504%** | **%27,6** |
+| 70-90% | −0,311% | %39,4 | −0,502% | %32,9 |
+| 40-70% | −0,340% | %39,2 | −0,630% | %31,0 |
+| 10-40% | −0,361% | %40,2 | −0,748% | %29,0 |
+| **< %10** (saf satış) | −0,586% | %47,5 | −0,969% | %21,9 |
+
+**Aşırı agresif alım (>%90) kazanma oranı %21-28'e düşüyor.** Bu,
+"herkes alıyor → alım tükendi → dönüş" deseni. Klasik **aşırı kalabalık
+girişi (crowded entry)** işareti.
+
+**ATR ile birleşince felaket:**
+
+| TEST & ATR≥1,0 (n=1080) | ort |
+|---|---|
+| taker buy > %70 (n=30) | **−1,550%** |
+| taker buy ≤ %70 (n=1050) | −0,534% |
+
+Oynak coin + aşırı agresif alım = **en kötü kombinasyon**.
+
+### Karar: order flow filtre olarak EKLENMEZ
+
+- Yönlü bilgi zayıf (tüm Q5−Q1 < +0,20)
+- Ama **aşırı uç veto** olarak değerli olabilir: `taker_buy > %90` → at
+- Örneklem küçük (TRAIN 197 / TEST 210) — veto kuralı için yeterli ama zayıf
+
+> **Uygulanabilir tek kural:** `taker_buy_pct > 90` olan adayları ele.
+> TRAIN kazanan %21,3 / TEST %27,6 — geri kalanın %31-39'undan belirgin kötü.
+> Ancak adayların yalnız **%0,7**'sini etkiliyor; pratik katkı sınırlı.
+
+### Not: literatürle çelişki
+
+Literatürde "agresif alım kalıcı bilgi taşır" (order flow toxicity, VPIN)
+denir. Burada **ters** sonuç çıktı. Olası sebep: TR spot'ta likidite ince,
+büyük taker buy'lar tek bir oyuncunun agresif girişi → tükenme; ayrıca
+velocity adayları **zaten yükselmiş** coinler olduğu için agresif alım
+"geç kalınmış giriş" demek.
