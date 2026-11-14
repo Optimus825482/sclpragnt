@@ -1082,20 +1082,41 @@ async def _resolve_order_size(symbol: str, notification: dict, settings: dict, c
 
 
 def _exit_apply_ppo(symbol: str, sl_pct: float, target_pct: float, order_value: float,
-                    ppo_apply: bool) -> tuple[float, float | None, float]:
+                    ppo_apply: bool, atr_pct: float | None = None
+                    ) -> tuple[float, float | None, float]:
     """PPO/RL adaptasyonu — yalnız kullanıcı planı/profili YOKKEN.
 
     Döner: (target_pct, ppo_sl_pct | None, order_value). SL önerisi ATR'den
-    sonra birleştirilir; volatilite girdisi güncel `sl_pct`.
+    sonra birleştirilir.
+
+    BİRİM SÖZLEŞMESİ (2026-11-10 netleştirildi — burada hata yapılmıştı):
+      `volatility_atr_pct` GİRDİSİ ....... YÜZDE  (1.4 = %1.4)
+      `recommended_tp_pct` ÇIKTISI ...... KESİR  (0.0168 = %1.68)
+      `recommended_sl_pct` ÇIKTISI ...... KESİR  (0.009  = %0.9)
+      `target_pct` (buraya giren) ....... YÜZDE
+      `sl_pct`     (buraya giren) ....... KESİR
+
+    2026-11-10 BELİRTİSİ: hedef %1.98'den %700'e fırlıyordu. Kök neden:
+    volatilite girdisi olarak `sl_pct * 100` (= default SL, hep %5) geçiliyordu;
+    PPO `base_tp = 5.0 * 1.4 = 7.0` (kesir) -> %700 döndürüyordu. `max()` de
+    bunu seçtiği için hedef her işlemde %700 oluyordu. Artık gerçek `atr_pct`
+    (notification'dan) kullanılır; yoksa SL'e düşer ve sağduyu tavanı devreye girer.
     """
     ppo_sl_pct: float | None = None
     try:
         from app.ai_trading_suite import evaluate_ppo_adaptive_policy
+        vol_in = float(atr_pct) if atr_pct and float(atr_pct) > 0 else sl_pct * 100.0
         ppo_action = evaluate_ppo_adaptive_policy(
-            symbol=symbol, volatility_atr_pct=sl_pct * 100.0, daily_drawdown_pct=0.5)
+            symbol=symbol, volatility_atr_pct=vol_in, daily_drawdown_pct=0.5)
         if ppo_apply:
-            if ppo_action.recommended_tp_pct > 0:
-                target_pct = max(target_pct, ppo_action.recommended_tp_pct * 100.0)
+            tp_pct = float(ppo_action.recommended_tp_pct) * 100.0
+            # Sağduyu tavanı: scalper için makul üst sınır %8. ATR aşırı yüksek
+            # gelse bile (ör. %10 -> PPO %14) hedef şişmemeli.
+            if 0.05 <= tp_pct <= 8.0:
+                target_pct = max(target_pct, tp_pct)
+            elif tp_pct > 0:
+                logger.warning("auto_paper %s PPO TP önerisi mantıksız (%.2f%%) — yok sayıldı",
+                               symbol, tp_pct)
             if ppo_action.recommended_sl_pct > 0:
                 ppo_sl_pct = max(0.006, min(0.028, ppo_action.recommended_sl_pct))
             if ppo_action.position_size_multiplier != 1.0:
@@ -1281,7 +1302,8 @@ async def _calc_exit_plan(symbol: str, notification: dict, current_price: float,
     # PPO/RL adaptasyonu: yalnız kullanıcı planı/profili YOKKEN.
     ppo_apply = exit_profile is None and plan_exit is None
     target_pct, ppo_sl_pct, order_value = _exit_apply_ppo(
-        symbol, sl_pct, target_pct, order_value, ppo_apply)
+        symbol, sl_pct, target_pct, order_value, ppo_apply,
+        atr_pct=notification.get("atr_pct"))
 
     target_pct = _exit_apply_volume_breakout(symbol, current_price, target_pct)
 

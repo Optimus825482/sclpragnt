@@ -104,3 +104,70 @@ def test_honest_finding_recorded():
            / "TARAMA_AILESI_ANALIZI_2026-11-10.md").read_text(encoding="utf-8")
     assert "max_sl_tp_ratio" in doc, "parametre raporda yok"
     assert "pozitife" in doc.lower() or "POZITIF" in doc, "iyileştirme sınırı belirtilmemiş"
+
+
+# ---------------------------------------------------------------------------
+# P0 HATA (2026-11-10): PPO volatilite birimi yanlıştı -> hedef %700
+# ---------------------------------------------------------------------------
+# BELİRTİ: `_calc_exit_plan` hedefi %1.98 yerine %700 döndürüyordu.
+# KÖK NEDEN: `ppo_adaptive_policy.evaluate_ppo_adaptive_policy` girdi
+#   `volatility_atr_pct`i YÜZDE alıyor (1.4 = %1.4) ama `base_tp = atr * 1.4`
+#   hesabı KESİR üretmeliydi; atr kesire çevrilmediği için 100 kat büyüktü.
+#   Ayrıca `_exit_apply_ppo` volatilite girdisi olarak `atr_pct` yerine
+#   `sl_pct * 100` (= default SL %5, sabit) geçiyordu -> her işlemde %700.
+# Bu testler birim sözleşmesini kilitler.
+
+
+def test_ppo_returns_sane_tp_for_normal_atr():
+    """ATR %1.4 -> TP kesir ~0.0196 (yüzde 1.96), %196 DEĞİL."""
+    from app.ai_trading_suite import evaluate_ppo_adaptive_policy as ev
+    a = ev(symbol="XTRY", volatility_atr_pct=1.4, daily_drawdown_pct=0.5)
+    assert 0.005 < a.recommended_tp_pct < 0.10, f"TP kesir aralığı bozuk: {a.recommended_tp_pct}"
+    assert a.recommended_tp_pct * 100 < 10.0, "TP yüzde 10'u aşmamalı"
+
+
+def test_ppo_scales_with_atr():
+    """ATR arttıkça TP artmalı (orantı ~1.4x), ama makul bantta kalmalı."""
+    from app.ai_trading_suite import evaluate_ppo_adaptive_policy as ev
+    lo = ev(symbol="XTRY", volatility_atr_pct=1.0, daily_drawdown_pct=0.5)
+    hi = ev(symbol="XTRY", volatility_atr_pct=3.0, daily_drawdown_pct=0.5)
+    assert hi.recommended_tp_pct > lo.recommended_tp_pct
+    assert hi.recommended_tp_pct * 100 < 10.0
+
+
+def test_ppo_worst_case_atr_stays_sane():
+    """Aşırı ATR'de bile hedef %10 altında kalmalı (eski hata: %700)."""
+    from app.ai_trading_suite import evaluate_ppo_adaptive_policy as ev
+    for atr in (3.5, 5.0, 10.0):
+        a = ev(symbol="XTRY", volatility_atr_pct=atr, daily_drawdown_pct=0.5)
+        assert a.recommended_tp_pct * 100 < 10.0, f"atr={atr} -> {a.recommended_tp_pct * 100}%"
+
+
+def test_ppo_uses_notification_atr_not_stop_loss():
+    """`_exit_apply_ppo` volatilite girdisi olarak `atr_pct`'i kullanmalı.
+
+    Eskiden `sl_pct * 100` (default %5, sabit) geçiliyordu -> ATR'den bağımsız
+    hep aynı hedef. Kaynak kontrolü bunu kilitler.
+    """
+    src = inspect.getsource(ap._exit_apply_ppo)
+    assert "atr_pct" in src, "atr_pct parametresi yok"
+    assert "vol_in" in src, "gerçek ATR seçimi yok"
+    psrc = inspect.getsource(ap._calc_exit_plan)
+    assert 'atr_pct=notification.get("atr_pct")' in psrc, "çağrı yerinde ATR geçilmiyor"
+
+
+def test_ppo_sanity_cap_present():
+    """Absürt PPO TP önerisi YOK SAYILMALI (sağduyu tavanı)."""
+    src = inspect.getsource(ap._exit_apply_ppo)
+    assert "0.05 <= tp_pct <= 8.0" in src, "sağduyu tavanı yok"
+
+
+def test_ppo_does_not_explode_target():
+    """Uçtan uca: hedef %700'e fırlamamalı."""
+    notif = {"symbol": "XTRY", "score": 80.0, "mode": "trend_devam",
+             "source": "velocity", "atr_pct": 1.2, "price": 50.5, "target_pct": 1.978}
+    settings = {"max_sl_tp_ratio": 0.0}
+    settings.update(asyncio.run(ap.get_default_settings()))
+    plan, block = asyncio.run(ap._calc_exit_plan("XTRY", notif, 50.5, settings, 1000.0))
+    assert block is None
+    assert plan["target_pct"] < 10.0, f"hedef hâlâ absürt: {plan['target_pct']}%"

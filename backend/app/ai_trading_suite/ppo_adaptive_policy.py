@@ -36,14 +36,20 @@ def evaluate_ppo_adaptive_policy(
     sym = (symbol or "BTCUSDT").upper().strip()
     wr = float(recent_win_rate_pct)
     dd = float(daily_drawdown_pct)
-    atr = max(0.2, float(volatility_atr_pct))
+    # BİRİM: `volatility_atr_pct` YÜZDE olarak gelir (1.4 = %1.4).
+    # `base_tp`/`base_sl` ise KESİR üretir (0.0168 = %1.68). Bu yüzden
+    # atr önce kesire çevrilir — aksi halde `atr * 1.4` (1.68) kesir sanılıp
+    # %168'lik hedef üretiliyordu (2026-11-10 hatası).
+    atr = max(0.002, float(volatility_atr_pct) / 100.0)
     regime = (market_regime or "TRENDING").upper()
     streak = int(active_streak)
 
     # Actor-critic state representation
     # Higher volatility -> widen SL slightly to prevent stop-hunting, extend TP
-    base_tp = round(max(0.008, atr * 1.4), 4)
-    base_sl = round(max(0.004, atr * 0.75), 4)
+    # Üst sınır: scalper bağlamında TP kesiri %8'i (0.08), SL %4'ü (0.04)
+    # aşmamalı. Aşırı ATR girdisi (ör. %10) hedefi %14'e şişirmesin.
+    base_tp = round(min(0.08, max(0.008, atr * 1.4)), 4)
+    base_sl = round(min(0.04, max(0.004, atr * 0.75)), 4)
 
     # Streak & Drawdown adjustments
     if dd >= 2.5:
