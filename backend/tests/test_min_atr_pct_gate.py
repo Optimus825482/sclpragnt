@@ -28,12 +28,18 @@ def _notif(**kw):
     return base
 
 
-# ── varsayılan: KAPALI ───────────────────────────────────────────────────────
+# ── varsayılan: 2026-11-10'dan itibaren AKTİF (1.0) ─────────────────────────
 
-def test_default_is_disabled():
-    """Varsayılan 0.0 olmalı — üretim davranışı sessizce değişmesin."""
+def test_default_is_active_at_measured_value():
+    """2026-11-10 ölçümü sonrası varsayılan AKTİF: 1.0.
+
+    Kanıt (gerçek 1m mum, üretim kapısı üzerinden, 900 aday):
+      filtre yok -> ort +0.046% medyan -0.236% kazanan %36.2
+      ATR>=1.0   -> ort +0.421% medyan +0.070% kazanan %51.6
+    Atıl piyasada (ATR %1 altı) komisyon+kayma yenmiyor.
+    """
     d = _run(ap.get_default_settings())
-    assert d["min_atr_pct"] == 0.0
+    assert d["min_atr_pct"] == 1.0
 
 
 def test_disabled_lets_low_atr_through(monkeypatch):

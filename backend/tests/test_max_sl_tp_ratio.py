@@ -25,16 +25,17 @@ import pytest
 from app.routers import auto_paper as ap
 
 
-def _sl(target_pct, sl_pct, ratio):
+def _sl(target_pct, sl_pct, ratio, atr_floor=None):
     """`_exit_apply_rr_ratio` doğrudan (kesir cinsinden) çalıştır."""
     settings = {"max_sl_tp_ratio": ratio}
-    return ap._exit_apply_rr_ratio("XTRY", sl_pct / 100.0, target_pct, settings, None, None)
+    return ap._exit_apply_rr_ratio("XTRY", sl_pct / 100.0, target_pct, settings, None, None,
+                                   atr_floor_pct=atr_floor)
 
 
-def test_default_is_disabled():
-    """Varsayılan 0.0 — üretim davranışı sessizce değişmesin."""
+def test_default_active():
+    """2026-11-10: ölçüm sonrası AKTİF varsayılan 0.64 (config'ten)."""
     d = asyncio.run(ap.get_default_settings())
-    assert d["max_sl_tp_ratio"] == 0.0
+    assert d["max_sl_tp_ratio"] == 0.64, "ölçülmüş varsayılan uygulanmamış"
 
 
 def test_disabled_keeps_sl():
@@ -171,3 +172,56 @@ def test_ppo_does_not_explode_target():
     plan, block = asyncio.run(ap._calc_exit_plan("XTRY", notif, 50.5, settings, 1000.0))
     assert block is None
     assert plan["target_pct"] < 10.0, f"hedef hâlâ absürt: {plan['target_pct']}%"
+
+
+# ---------------------------------------------------------------------------
+# ATR TABANI (2026-11-10 çakışma düzeltmesi)
+# ---------------------------------------------------------------------------
+# `AUTO_PAPER_SL_PCT`=%5 kararı 30 gün / 3.214 bildirimlik gerçek replay'le
+# alınmış ("sıkı stop 5 dk gürültüsünde kesiliyor"). R:R tavanı (%64) SL'yi
+# ~%1,3'e indirip bu kararı TAMAMEN eziyordu -> eski "sıkı stop" hatası geri
+# gelirdi. Taban: daraltma, ATR'nin 0,75 katının altına inemez.
+
+
+def test_atr_floor_prevents_over_tightening():
+    """ATR tabanı varsa SL tabanın altına inmemeli."""
+    sl, _tp = _sl(2.0, 5.0, 0.64, atr_floor=0.015)   # naif sınır 1.28
+    assert abs(sl - 0.015) < 1e-9, f"taban korunmadı: {sl}"
+
+
+def test_atr_floor_never_widens():
+    """Taban, mevcut SL'yi GENİŞLETMEZ (yalnız daraltmayı sınırlar)."""
+    sl, _tp = _sl(2.0, 1.0, 0.64, atr_floor=0.03)   # taban 3% > SL 1%
+    assert abs(sl - 0.01) < 1e-9, "taban SL'yi genişletti"
+
+
+def test_no_floor_means_old_behavior():
+    """Taban yoksa eski davranış (naif R:R sınırı)."""
+    sl, _tp = _sl(2.0, 5.0, 0.64)
+    assert abs(sl - 0.0128) < 1e-9
+
+
+def test_plan_uses_atr_floor():
+    """`_calc_exit_plan` ATR tabanını gerçekten geçirmeli (kaynak kontrolü)."""
+    src = inspect.getsource(ap._calc_exit_plan)
+    assert "atr_floor_pct" in src, "ATR tabanı plana bağlanmamış"
+    assert "atr_floor_pct=atr_floor_pct" in src, "taban çağrıya geçmiyor"
+
+
+def test_sl_scales_with_atr_end_to_end():
+    """Uçtan uca: ATR arttıkça SL genişlemeli (sabit kalmamalı)."""
+    base = asyncio.run(ap.get_default_settings())
+    vals = []
+    for atr in (2.0, 3.0, 4.5):
+        notif = {"symbol": "XTRY", "score": 80.0, "mode": "trend_devam",
+                 "source": "velocity", "atr_pct": atr, "price": 50.5, "target_pct": 2.0}
+        plan, _b = asyncio.run(ap._calc_exit_plan("XTRY", notif, 50.5, base, 1000.0))
+        vals.append((plan["fill_entry"] - plan["stop_loss_price"]) / plan["fill_entry"] * 100)
+    assert vals[0] < vals[1] < vals[2], f"SL ATR ile ölçeklenmiyor: {vals}"
+
+
+def test_min_atr_and_max_target_defaults_active():
+    """Ölçülmüş varsayılanlar aktif olmalı (replay kanıtı)."""
+    d = asyncio.run(ap.get_default_settings())
+    assert d["min_atr_pct"] == 1.0, "ATR filtresi kapalı"
+    assert d["max_target_pct"] == 2.0, "TP tavanı ayarlanmamış"

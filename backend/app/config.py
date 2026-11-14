@@ -1291,8 +1291,31 @@ class Config:
     # TP buraya çekilir. NEDEN VAR: `AUTO_PAPER_DEFAULT_TARGET_PCT` yalnızca
     # bildirimde hedef YOKSA kullanılır; canlıda hedef ort. +%3,90 geliyordu,
     # ulaşılan tepe medyanı +%1,62 — yani işlemlerin %87'si hedefe hiç değmiyordu.
+    #
+    # 2026-11-10 (PPO birim hatası düzeltildikten SONRA ölçüm): gerçek 1m mum
+    # replay'i (500 aday) TP tavanı daralttıkça ortalamayı belirgin iyileştiriyor:
+    #   tavan yok -> -0.727% | 3.0% -> -0.519% | 2.0% -> -0.500%
+    #   1.5%      -> -0.441% | 1.0% -> -0.443%   (medyan -3.26% -> -0.94%)
+    # 2.0 seçildi: 1.5 ile arasındaki fark istatistiksel gürültü (0.059 puan) ama
+    # 2.0 kazananlara nefes alanı bırakır (kazanan oranı %33.3 vs %32.9).
     # 0 = sınırsız (eski davranış).
-    AUTO_PAPER_MAX_TARGET_PCT = float(os.getenv("AUTO_PAPER_MAX_TARGET_PCT", "0"))
+    AUTO_PAPER_MAX_TARGET_PCT = float(os.getenv("AUTO_PAPER_MAX_TARGET_PCT", "2.0"))
+    # SL/TP oran tavanı (2026-11-10): SL, TP'nin bu katından uzak olamaz.
+    # Gerçekleşmiş 1.757 işlemde ort SL %3,88 > ort TP %3,75 (oran 1,03) idi —
+    # kazanma oranı %56,7 olmasına rağmen zarar (kazanç/kayıp 0,547 < gereken 0,764).
+    # Gerçek mum replay'i (1.200 işlem): 0,64 -> ort -0,724% medyan -2,284%
+    # (mevcut -0,796% / -3,300%). Medyanı 1 puan düzeltiyor.
+    # 0 = kapalı (eski davranış).
+    AUTO_PAPER_MAX_SL_TP_RATIO = float(os.getenv("AUTO_PAPER_MAX_SL_TP_RATIO", "0.64"))
+    # Volatilite tabanı (2026-11-10): ATR% bu değerin altındaysa giriş BLOKLANIR.
+    # Ölçüm (gerçek 1m mum, üretim kapısı `_entry_context` üzerinden):
+    #   ATR>=1.0 -> ort +0.463% medyan +0.034% kazanan %51.4 (n=72)
+    #   ATR>=1.5 -> ort +0.781% medyan -0.053% kazanan %46.2 (n=26, örneklem küçük)
+    #   filtre yok -> ort +0.070% medyan -0.234% kazanan %34.9 (n=498)
+    # Atıl piyasada (ATR %1 altı) hareket yok: komisyon+kayma yenmıyor.
+    # 1.0 seçildi — 1.5 daha yüksek ortalama ama örneklem 26 işlem (sd 2.3x).
+    # 0 = kapalı (eski davranış).
+    AUTO_PAPER_MIN_ATR_PCT = float(os.getenv("AUTO_PAPER_MIN_ATR_PCT", "1.0"))
     # Başabaş (Breakeven) koruması: erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI. 2026-10-07 incelemesi: breakeven'i ZORUNLU kılmanın kanıtı
     # yok — gerçekleşen kazanan ortalaması (+%1,51) zaten net_floor'un üzerinde,
