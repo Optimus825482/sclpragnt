@@ -195,3 +195,72 @@ def test_page_flags_stale_flow():
 def test_all_status_labels_in_page(status):
     src = PAGE.read_text(encoding="utf-8")
     assert status in src
+
+
+# --- BOLUM 2: TEK TIKLA DUZELT (olculen degerler) ---
+
+def test_recommended_endpoint_registered():
+    from app.main import app
+    paths = [p for p in app.openapi().get("paths", {}) if "signal-insights" in p]
+    assert "/api/signal-insights/recommended" in paths
+
+
+def test_recommended_has_4_items():
+    import asyncio
+    from app.routers import signal_insights as si
+
+    class R:
+        pass
+
+    r = asyncio.run(si.recommended(R()))
+    keys = {i["key"] for i in r["items"]}
+    assert keys == {"min_atr_pct", "min_oi_change_pct", "oi_window_min",
+                    "max_sl_tp_ratio"}
+
+
+def test_recommended_values_match_measurements():
+    """Önerilen değerler ÖLÇÜLMÜŞ bulgularla birebir aynı olmalı."""
+    import asyncio
+    from app.routers import signal_insights as si
+
+    class R:
+        pass
+
+    items = {i["key"]: i for i in asyncio.run(si.recommended(R()))["items"]}
+    assert items["min_atr_pct"]["recommended"] == 1.0
+    assert items["min_oi_change_pct"]["recommended"] == 1.2
+    assert items["oi_window_min"]["recommended"] == 15.0
+    assert items["max_sl_tp_ratio"]["recommended"] == 0.64
+
+
+def test_recommended_endpoint_read_only():
+    """Bu uç SALT-OKUNUR — değişiklik yapmamalı."""
+    import asyncio
+    from app.routers import signal_insights as si
+
+    class R:
+        pass
+
+    res = asyncio.run(si.recommended(R()))
+    assert res["ok"] is True
+    assert "PUT /api/auto-paper/settings" in res["note"]
+
+
+def test_page_has_apply_button():
+    """Sayfada 'Hepsini Uygula' düğmesi olmalı (tek tıkla)."""
+    src = PAGE.read_text(encoding="utf-8")
+    assert "Hepsini Uygula" in src
+    assert "PUT" in src  # gerçek yazma ucu çağrılıyor
+    assert "/api/auto-paper/settings" in src
+
+
+def test_page_fetches_recommended():
+    src = PAGE.read_text(encoding="utf-8")
+    assert "/api/signal-insights/recommended" in src
+
+
+def test_page_notes_same_oi_warning():
+    """FARK rozeti + OI kapalı uyarısı birlikte çalışmalı."""
+    src = PAGE.read_text(encoding="utf-8")
+    assert "FARK" in src
+    assert "Ölçülen Değerlere Düzelt" in src

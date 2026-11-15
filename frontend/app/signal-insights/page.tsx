@@ -43,6 +43,16 @@ type Filters = {
 
 type Freshness = { last_candidate_at: number | null; age_sec: number | null; total: number | null };
 
+type Rec = {
+  key: string;
+  current: number | null;
+  recommended: number;
+  matches: boolean;
+  min: number;
+  max: number;
+  why: string;
+};
+
 type Evidence = {
   id: string;
   name: string;
@@ -82,6 +92,9 @@ export default function SignalInsightsPage() {
   const [overview, setOverview] = useState<any>(null);
   const [evidence, setEvidence] = useState<any>(null);
   const [outcomes, setOutcomes] = useState<any>(null);
+  const [recs, setRecs] = useState<Rec[]>([]);
+  const [applying, setApplying] = useState(false);
+  const [applyMsg, setApplyMsg] = useState<string | null>(null);
   const [days, setDays] = useState(7);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +111,12 @@ export default function SignalInsightsPage() {
       setOverview(ov);
       setEvidence(ev);
       setOutcomes(oc);
+      try {
+        const rc = await apiFetch("/api/signal-insights/recommended");
+        setRecs(rc.items ?? []);
+      } catch {
+        setRecs([]);
+      }
     } catch (e: any) {
       setError(e?.message || "Yüklenemedi");
     } finally {
@@ -108,6 +127,34 @@ export default function SignalInsightsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function applyAll() {
+    const todo = recs.filter((r) => !r.matches);
+    if (!todo.length) return;
+    setApplying(true);
+    setApplyMsg(null);
+    try {
+      const payload: Record<string, number> = {};
+      todo.forEach((r) => { payload[r.key] = r.recommended; });
+      const res = await apiFetch("/api/auto-paper/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const s = res?.settings ?? {};
+      const diff = todo
+        .filter((r) => Number(s[r.key]) !== r.recommended)
+        .map((r) => `${r.key}=${s[r.key]}`);
+      setApplyMsg(diff.length
+        ? `Kısmen uygulandı (sınırlandı): ${diff.join(", ")}`
+        : `${todo.length} parametre güncellendi.`);
+      await load();
+    } catch (e: any) {
+      setApplyMsg(`Uygulanamadı: ${e?.message || "hata"} (admin yetkisi gerekir)`);
+    } finally {
+      setApplying(false);
+    }
+  }
 
   const params: Params | null = overview?.params ?? null;
   const filters: Filters | null = overview?.filters_24h ?? null;
@@ -167,7 +214,49 @@ export default function SignalInsightsPage() {
         {params && Number(params.min_oi_change_pct) === 0 && (
           <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-300">
             OI eşiği şu an <b>0 (kapalı)</b>. Ölçülen değer 1,2% —
-            Ayarlar → Otonom Paper bölümünden açabilirsin.
+            aşağıdaki "Ölçülen Değerlere Düzelt" düğmesiyle açabilirsin.
+          </div>
+        )}
+
+        {recs.length > 0 && (
+          <div className="mt-4 rounded-xl border border-[var(--border)] p-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold">Ölçülen Değerlere Düzelt</div>
+              <div className="flex items-center gap-2">
+                {recs.filter((r) => !r.matches).length === 0 ? (
+                  <Badge tone="positive">tümü uyumlu</Badge>
+                ) : (
+                  <Badge tone="warning">
+                    {recs.filter((r) => !r.matches).length} fark
+                  </Badge>
+                )}
+                <Button
+                  onClick={() => void applyAll()}
+                  disabled={applying || recs.every((r) => r.matches)}
+                >
+                  {applying ? "Uygulanıyor…" : "Hepsini Uygula"}
+                </Button>
+              </div>
+            </div>
+            <div className="space-y-1">
+              {recs.map((r) => (
+                <div key={r.key}
+                  className="flex flex-wrap items-center gap-2 rounded-lg px-2 py-1 text-xs odd:bg-[var(--surface-2)]">
+                  {r.matches
+                    ? <Badge tone="positive">OK</Badge>
+                    : <Badge tone="warning">FARK</Badge>}
+                  <code className="font-medium">{r.key}</code>
+                  <span className="text-[var(--muted)]">
+                    {r.current === null ? "—" : r.current}
+                    {r.matches ? "" : ` → ${r.recommended}`}
+                  </span>
+                  <span className="text-[var(--muted)]">{r.why}</span>
+                </div>
+              ))}
+            </div>
+            {applyMsg && (
+              <div className="mt-2 text-xs text-[var(--muted)]">{applyMsg}</div>
+            )}
           </div>
         )}
       </Card>

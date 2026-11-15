@@ -312,3 +312,62 @@ async def outcomes(request: Request, days: int = 7):
         logger.debug("signal_insights: sonuçlar okunamadı: %s", exc)
         out["error"] = type(exc).__name__
     return out
+
+
+# ---------------------------------------------------------------------------
+# 4) Tek tıkla ayar düzeltme (panelden)
+# ---------------------------------------------------------------------------
+
+# Ölçülmüş önerilen değerler. `current` verilmezse mevcut değerle karşılaştırılır.
+RECOMMENDED: dict[str, dict] = {
+    "min_atr_pct": {
+        "value": 1.0, "min": 0.0, "max": 20.0,
+        "why": "ATR>='1,0%' kazanan oranı %34->%50 (5 seed, +0,364%). "
+               "1,5 daha yüksek ortalama ama sd 2,4x -> aynı güven için 9x işlem.",
+    },
+    "min_oi_change_pct": {
+        "value": 1.2, "min": 0.0, "max": 20.0,
+        "why": "ATR>=1 açıkken 4 seed: 1,2% -> +0,939% (taban +0,379%, 2,5x). "
+               "3,0% daha yüksek ama sd 2,4x, örneklem %37 az.",
+    },
+    "oi_window_min": {
+        "value": 15.0, "min": 15.0, "max": 240.0,
+        "why": "4/4 seed'de 15 dk en iyi (+0,878% vs 60 dk +0,502%), monoton. "
+               "Alt sınır 15 (veri 5 dk aralıklı, 3 bar gerekli).",
+    },
+    "max_sl_tp_ratio": {
+        "value": 0.64, "min": 0.0, "max": 5.0,
+        "why": "Asimetri düzeltmesi: kazanç +1,595% / kayıp -2,915%. "
+               "SL kısaltır, TP'ye dokunmaz.",
+    },
+}
+
+
+@router.get("/recommended")
+async def recommended(request: Request):
+    """Ölçülmüş önerilen değerler + mevcut değerle farkı.
+
+    Panel bunu kullanarak 'düzelt' düğmesi gösterir. Değişiklik YAPMAZ —
+    yalnız karşılaştırma döner. Gerçek yazma PUT /api/auto-paper/settings.
+    """
+    params = await _active_params()
+    items = []
+    for key, rec in RECOMMENDED.items():
+        cur = _num(params.get(key))
+        items.append({
+            "key": key,
+            "current": cur,
+            "recommended": rec["value"],
+            "matches": cur is not None and abs(cur - rec["value"]) < 1e-9,
+            "min": rec["min"],
+            "max": rec["max"],
+            "why": rec["why"],
+        })
+    mismatch = [i for i in items if not i["matches"]]
+    return {
+        "ok": True,
+        "items": items,
+        "mismatch_count": len(mismatch),
+        "note": ("Değişiklik yapmak için panel PUT /api/auto-paper/settings "
+                 "çağırır (admin yetkisi gerekir). Bu uç salt-okunurdur."),
+    }
