@@ -264,3 +264,63 @@ def test_page_notes_same_oi_warning():
     src = PAGE.read_text(encoding="utf-8")
     assert "FARK" in src
     assert "Ölçülen Değerlere Düzelt" in src
+
+
+# --- BOLUM 3: BOS PENCERE TESPITI (2026-11-10 canli veri) ---
+# TESPIT: 7 gunluk pencerede kayit yok ama sayfa 144 islem gosteriyordu.
+# auto_paper_trades son kaydi 2026-10-18. Bos pencere sessizce "0" donerse
+# kullanici eski ayarlarin sonucunu guncel sanar. Uc artik bunu SOYLER.
+
+def test_outcomes_reports_window_empty():
+    """Bos pencere acikca isaretlenmeli."""
+    import asyncio
+    from app.routers import signal_insights as si
+
+    class R:
+        pass
+
+    o = asyncio.run(si.outcomes(R(), days=1))
+    assert "window_empty" in o
+    if o["summary"] and o["summary"]["trades"] == 0:
+        assert o["window_empty"] is True
+        assert o["note"], "bos pencerede aciklama zorunlu"
+
+
+def test_outcomes_exposes_last_trade_at():
+    """Son islem zamani donmeli (kullanici ne kadar eski oldugunu gorsun)."""
+    import asyncio
+    from app.routers import signal_insights as si
+
+    class R:
+        pass
+
+    o = asyncio.run(si.outcomes(R(), days=7))
+    assert "last_trade_at" in o
+    if o["last_trade_at"] is not None:
+        assert isinstance(o["last_trade_at"], (int, float))
+
+
+def test_empty_note_warns_about_old_params():
+    """Bos pencere notu 'o tarihten sonra' uyarisi vermeli."""
+    import asyncio
+    from app.routers import signal_insights as si
+
+    class R:
+        pass
+
+    o = asyncio.run(si.outcomes(R(), days=7))
+    if o["window_empty"] and o["note"]:
+        assert "sonra" in o["note"].lower() or "yok" in o["note"].lower()
+
+
+def test_page_shows_empty_window_banner():
+    """Sayfada bos pencere bandi olmali."""
+    src = PAGE.read_text(encoding="utf-8")
+    assert "window_empty" in src
+    assert "Bu pencerede işlem yok" in src
+
+
+def test_page_suppresses_summary_when_empty():
+    """Bos pencerede ozet KARTLARI gizlenmeli (eski veri guncel gorunmesin)."""
+    src = PAGE.read_text(encoding="utf-8")
+    assert "outcome && !windowEmpty" in src

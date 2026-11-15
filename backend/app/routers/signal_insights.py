@@ -263,7 +263,8 @@ async def outcomes(request: Request, days: int = 7):
     days = max(1, min(int(days), 90))
     since = time.time() - days * 86400
     out = {"ok": True, "days": days, "summary": None, "by_reason": [],
-           "error": None}
+           "error": None, "window_empty": False, "last_trade_at": None,
+           "note": None}
     def _summary_op(conn):
         cur = conn.execute(
             """select count(*) c,
@@ -288,7 +289,15 @@ async def outcomes(request: Request, days: int = 7):
         )
         return [dict(r) for r in cur.fetchall()]
 
+    def _latest_op(conn):
+        cur = conn.execute(
+            "select max(entry_time) m, max(exit_time) x from auto_paper_trades")
+        row = cur.fetchone()
+        return dict(row) if row else None
+
     try:
+        latest = await database._run_db(_latest_op) or {}
+        out["last_trade_at"] = _num(latest.get("m")) or _num(latest.get("x"))
         r = await database._run_db(_summary_op)
         if r:
             total = int(r["c"] or 0)
@@ -308,6 +317,20 @@ async def outcomes(request: Request, days: int = 7):
              "avg_pnl_pct": round(_num(x["m"], 0.0), 3)}
             for x in reasons
         ]
+        total_now = int((out["summary"] or {}).get("trades") or 0)
+        if total_now == 0:
+            out["window_empty"] = True
+            last = out["last_trade_at"]
+            if last:
+                age_days = int((time.time() - last) / 86400)
+                out["note"] = (
+                    f"Seçilen {days} günlük pencerede işlem YOK. Son işlem "
+                    f"{age_days} gün önce. Bu pencerede ölçüm yapılamaz — "
+                    f"daha uzun bir pencere seç. KOYULAN PARAMETRELERİN "
+                    f"ETKİSİ yalnız O TARİHTEN SONRA açılan işlemlerde görülür."
+                )
+            else:
+                out["note"] = "Hiç kapanmış işlem yok."
     except Exception as exc:  # noqa: BLE001
         logger.debug("signal_insights: sonuçlar okunamadı: %s", exc)
         out["error"] = type(exc).__name__

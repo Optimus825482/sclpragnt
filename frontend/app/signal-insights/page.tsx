@@ -160,6 +160,11 @@ export default function SignalInsightsPage() {
   const filters: Filters | null = overview?.filters_24h ?? null;
   const fresh: Freshness | null = overview?.freshness ?? null;
   const outcome: Outcome | null = outcomes?.summary ?? null;
+  const windowEmpty = Boolean(outcomes?.window_empty);
+  const lastTradeAgeDays =
+    outcomes?.last_trade_at
+      ? Math.floor((Date.now() / 1000 - outcomes.last_trade_at) / 86400)
+      : null;
 
   const stale = fresh?.age_sec !== null && fresh?.age_sec !== undefined && fresh.age_sec > 3600;
 
@@ -192,6 +197,20 @@ export default function SignalInsightsPage() {
       {error && (
         <Card className="border-red-500/40">
           <div className="text-sm text-red-400">Hata: {error}</div>
+        </Card>
+      )}
+
+      {windowEmpty && (
+        <Card className="border-amber-500/50 bg-amber-500/10">
+          <div className="text-sm font-semibold text-amber-300">
+            Bu pencerede işlem yok — ölçüm yapılamaz
+          </div>
+          <p className="mt-1 text-xs text-amber-200/80">
+            Son işlem {lastTradeAgeDays ?? "?"} gün önce. Parametrelerin
+            etkisi yalnız <b>o tarihten sonra</b> açılan işlemlerde görülür.
+            Daha uzun bir pencere seç, ya da aşağıdaki ölçülen kanıt
+            tablosunu kullan.
+          </p>
         </Card>
       )}
 
@@ -303,7 +322,7 @@ export default function SignalInsightsPage() {
           <h2 className="text-base font-semibold">Canlı İşlem Sonuçları (son {days} gün)</h2>
           {outcomes?.error && <Badge tone="warning">kısmi veri</Badge>}
         </div>
-        {outcome ? (
+        {outcome && !windowEmpty ? (
           <>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
               <StatCard label="İşlem" value={outcome.trades} />
@@ -332,7 +351,11 @@ export default function SignalInsightsPage() {
             )}
           </>
         ) : (
-          <p className="text-sm text-[var(--muted)]">Veri yok.</p>
+          <p className="text-sm text-[var(--muted)]">
+            {windowEmpty
+              ? outcomes?.note || "Seçilen pencerede veri yok."
+              : "Veri yok."}
+          </p>
         )}
       </Card>
 
