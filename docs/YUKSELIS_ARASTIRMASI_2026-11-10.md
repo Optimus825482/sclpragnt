@@ -1179,3 +1179,78 @@ giriş optimizasyonu için doğru (güçlü sinyal), ama **çıkış optimizasyo
 
 Bu oturumda **ilk kez** bir bulgu "ölçüldü ama uygulanmadı" — çünkü kanıt
 gücü eşiğin altında kaldı.
+
+---
+
+## 27. Geniş evrende çıkış ızgarası — sonuç **TERS**, ve bu kez kanıt güçlü
+
+§26'da filtreli evrende (ATR≥1 + OI≥1,2, n≈70) **1,0/0,3** kazanmıştı ama
+örneklem yetersizdi. Burada aynı test **filtresiz geniş evrende** (n=1650)
+tekrarlandı — örneklem **24×** arttı.
+
+`scripts/exit_grid.py --nofilter`
+
+### Geniş evren (n=1650, 4 seed): mevcut varsayılan EN KÖTÜ
+
+| (trigger, gap) | ortalama | medyan | kazanan | erken |
+|---|---|---|---|---|
+| **(2,0, 1,0)** *mevcut* | −0,011% | **−0,171%** | %49,5 | %0,0 |
+| (1,5, 0,5) | +0,043% | **+0,800%** | %56,5 | %0,0 |
+| (1,5, 0,3) | +0,046% | **+0,974%** | %56,5 | %0,0 |
+
+**Medyan her seed'de ayrışıyor:**
+
+| seed | 2,0/1,0 medyan | 1,5/0,5 medyan |
+|---|---|---|
+| 7 | −0,234% | **+0,792%** |
+| 11 | +0,028% | **+0,824%** |
+| 23 | −0,320% | **+0,779%** |
+| 42 | −0,157% | **+0,805%** |
+
+Mevcut varsayılan **3/4 seed'de medyanda negatif.** Ortalama sıfıra yakın
+çünkü birkaç büyük kazanan onu yukarı çekiyor — ama işlemlerin **yarısından
+fazlası zararla** kapanıyor.
+
+### Filtreli evren (n≈60, canlı durum): mevcut varsayılan EN İYİ
+
+| (trigger, gap) | ortalama | kazanan |
+|---|---|---|
+| **(2,0, 1,0)** *mevcut* | **+1,124%** | %63,9 |
+| (1,5, 0,5) | +0,935% | %70,5 |
+| (1,5, 0,3) | +0,863% | %70,5 |
+
+### TAM TERS SONUÇ — ve açıklaması
+
+| | geniş evren | filtreli evren |
+|---|---|---|
+| en iyi | 1,5 / 0,5 | **2,0 / 1,0** |
+| mevcut varsayılan | **en kötü** | **en iyi** |
+
+**Neden:**
+- **Geniş evrende** adayların çoğu zayıf → kâr yavaş büyüyor; trigger %2'ye
+  ulaşmak uzun sürüyor, geri veriyor. **Erken kâr kilitlemek** işe yarıyor.
+- **Filtreli evrende** adaylar güçlü (ATR≥1 + OI≥1,2) → kâr hızla %2'ye
+  ulaşıyor; **daha geniş nefes alanı** (1,0 gap) daha çok kazandırıyor.
+
+### Karar: DEĞİŞİKLİK YOK — artık gerekçe daha güçlü
+
+Canlı evren **filtreli** (ATR≥1,0 + OI≥1,2 otomatik açık). O evrende mevcut
+varsayılan (2,0 / 1,0) **açık ara en iyi**.
+
+Önceki bölümde "kanıt yetersiz" demiştim; şimdi kanıt **güçlü** ve **yön ters**.
+İkisi de aynı sonuca çıkıyor: dokunma.
+
+### Oturumun en önemli metodoloji dersi
+
+**Çıkış parametreleri evrene özeldir. Tek bir "doğru" değer yok.**
+
+Bir çıkış parametresini, giriş filtresini **kapalı tutarak** optimize edersen,
+canlıda filtre **açıkken** yanlış değeri kullanırsın. İkisi **zıt yön**
+gösterebilir — burada gösterdi.
+
+Bu, oturumda bulunan **beşinci** eşik/bağlam tuzağı:
+1. ATR eşiği exit modeline bağlı (§12)
+2. OI penceresi 60 dk yanlıştı (§23)
+3. ATR×OI "iptal" 60 dk artefaktıydı (§24)
+4. OI eşiği 3,0% örneklem eritiyordu (§25)
+5. **Çıkış parametreleri evrene bağlı (§27)**

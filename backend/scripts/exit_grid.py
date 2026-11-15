@@ -107,7 +107,12 @@ def main():
     ap.add_argument("--limit", type=int, default=1800)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--max-min", type=int, default=240, dest="max_min")
+    ap.add_argument("--nofilter", action="store_true",
+                    help="ATR/OI filtresi uygulama (genis evren — cikis icin fazla ornek)")
     a = ap.parse_args()
+    global MIN_ATR, MIN_OI
+    if a.nofilter:
+        MIN_ATR, MIN_OI = 0.0, -999.0
 
     base = fetch(a.limit, a.seed)
     cands = []
@@ -116,14 +121,16 @@ def main():
             if float(atr) < MIN_ATR:
                 continue
             oi = oi_change(cur, perp, t0)
-            if oi is None or oi < MIN_OI:
+            if oi is None:
+                continue
+            if not a.nofilter and oi < MIN_OI:
                 continue
             b = bars_for(cur, sym, t0, a.max_min)
             if b:
                 cands.append((sym, t0, px, b))
 
-    print(f"aday={len(base)} filtre gecen (ATR>={MIN_ATR}, OI>={MIN_OI}%)="
-          f"{len(cands)} seed={a.seed} fee={FEE}%")
+    filt = "FILTRESIZ" if a.nofilter else f"ATR>={MIN_ATR}, OI>={MIN_OI}%"
+    print(f"aday={len(base)} evren=({filt}) eslesen={len(cands)} seed={a.seed} fee={FEE}%")
     if len(cands) < 60:
         print("orneklem yetersiz")
         return

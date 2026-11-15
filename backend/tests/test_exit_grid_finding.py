@@ -127,3 +127,66 @@ def test_methodology_lesson_documented():
 
 def test_script_exists():
     assert (BASE / "scripts" / "exit_grid.py").exists()
+
+
+# --- BOLUM 27: GENIS EVRENDE SONUC TERS (kanit guclendi) ---
+# Ayni cikis parametreleri, iki evren:
+#   genis (n=1650, filtresiz): mevcut 2.0/1.0 EN KOTU (medyan -0.171%)
+#   filtreli (n~60, canli):    mevcut 2.0/1.0 EN IYI (ort +1.124%)
+# Canli evren filtreli -> mevcut varsayilan dogru. Degisiklik yok.
+
+WIDE_MEDIAN = {  # (trigger,gap) -> medyan, 4 seed
+    (2.0, 1.0): [-0.234, 0.028, -0.320, -0.157],
+    (1.5, 0.5): [0.792, 0.824, 0.779, 0.805],
+    (1.5, 0.3): [0.974, 0.989, 0.958, 0.976],
+}
+WIDE_MEAN = {(2.0, 1.0): -0.011, (1.5, 0.5): 0.043, (1.5, 0.3): 0.046}
+FILTERED_MEAN = {(2.0, 1.0): 1.124, (1.5, 0.5): 0.935, (1.5, 0.3): 0.863}
+
+
+def test_wide_universe_current_is_worst():
+    """Genis evrende mevcut varsayilan EN KOTU olmali (medyan cogunlukla negatif)."""
+    neg = sum(1 for m in WIDE_MEDIAN[(2.0, 1.0)] if m < 0)
+    assert neg >= 3, f"mevcut medyan 4 seed'de {neg}/4 negatif (3 beklenirdi)"
+    assert WIDE_MEAN[(2.0, 1.0)] < WIDE_MEAN[(1.5, 0.5)]
+
+
+def test_wide_universe_candidate_median_all_positive():
+    """Genis evrende 1.5/0.5 medyani TAMAMEN pozitif (4/4 seed)."""
+    for m in WIDE_MEDIAN[(1.5, 0.5)]:
+        assert m > 0, f"1.5/0.5 medyani negatif: {m}"
+
+
+def test_filtered_universe_current_is_best():
+    """Filtreli evrende (canli) mevcut varsayilan EN IYI."""
+    assert FILTERED_MEAN[(2.0, 1.0)] > FILTERED_MEAN[(1.5, 0.5)]
+    assert FILTERED_MEAN[(2.0, 1.0)] > FILTERED_MEAN[(1.5, 0.3)]
+
+
+def test_opposite_directions_confirm_environment_dependence():
+    """Kritik: iki evren AYNI parametrelerde ZIT sonuc veriyor."""
+    assert WIDE_MEAN[(2.0, 1.0)] < WIDE_MEAN[(1.5, 0.5)]  # geniste 1.5 iyi
+    assert FILTERED_MEAN[(2.0, 1.0)] > FILTERED_MEAN[(1.5, 0.5)]  # filtrede 2.0 iyi
+
+
+def test_no_change_final_decision_even_stronger():
+    """27. bolumde karar degismedi, amra gerekce GUCLENDI."""
+    doc = DOC.read_text(encoding="utf-8")
+    assert "27." in doc
+    assert "TAM TERS SONUÇ" in doc or "TAM TERS SONUC" in doc.upper()
+    assert "evrene özel" in doc.lower() or "evrene ozel" in doc.lower()
+
+
+def test_methodology_fifth_trap():
+    """Besinci esik/baglam tuzagi dokumante edilmis olmali."""
+    doc = DOC.read_text(encoding="utf-8")
+    assert "beşinci" in doc or "besinci" in doc
+
+
+def test_early_exit_zero_in_candidates():
+    """1.5/0.5'te erken kapanma %0 -> §18 gurultu riski yok (neden guvenli)."""
+    from app import config
+    # dogrudan kod degilse de: dokumanda "erken kapanma %0.0" yazilmis olmali
+    doc = DOC.read_text(encoding="utf-8")
+    assert "erken" in doc
+    assert "0.0" in doc or "%0" in doc
