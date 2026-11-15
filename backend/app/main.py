@@ -92,7 +92,11 @@ from app.api_common import (  # noqa: F401
     begin_shutdown, end_shutdown, is_shutting_down, clear_background_registry)
 from app.routers import llm_chat as llm_chat_routes
 from app.routers import chart_forecast as chart_forecast_routes
-from app.routers import maintenance as maintenance_routes, reports as reports_routes
+from app.routers import (
+    maintenance as maintenance_routes,
+    reports as reports_routes,
+    signal_insights as signal_insights_routes,
+)
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
 from app.routers import global_radar as global_radar_routes
 from app.routers.global_radar import global_radar_loop
@@ -196,6 +200,7 @@ app.include_router(llm_chat_routes.router)
 app.include_router(chart_forecast_routes.router)
 app.include_router(system_routes.router)
 app.include_router(reports_routes.router)
+app.include_router(signal_insights_routes.router)
 app.include_router(velocity_routes.router)
 app.include_router(monitoring.router)
 

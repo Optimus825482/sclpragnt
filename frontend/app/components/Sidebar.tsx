@@ -19,6 +19,7 @@ const MENU_ITEMS = [
     { href: "/portfolio", label: "Sanal Portföy", icon: "💼", desc: "Canlı sanal portföy ve otonom işlemler" },
     { href: "/monitoring", label: "Radar", icon: "📡", desc: "Otonom izleme ve hız avcısı" },
     { href: "/daily-rising", label: "Yükseliş Adayları", icon: "🌅", desc: "Günlük momentum adayları ve takip" },
+    { href: "/signal-insights", label: "Sinyal İzleme", icon: "🎯", desc: "Ölçülmüş kanıt, filtre sayaçları ve canlı sonuçlar" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
     { href: "/technical-charts", label: "Teknik Grafik", icon: "🖥️", desc: "4'lü çoklu TradingView ekranı", adminOnly: true },
     { href: "/mtf-scanner", label: "MTF Tarama", icon: "🧠", desc: "MACD & Signal MTF canlı tarayıcı", adminOnly: true },
