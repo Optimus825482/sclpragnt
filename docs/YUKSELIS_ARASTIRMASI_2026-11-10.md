@@ -983,3 +983,66 @@ zaten fiyatlanmış olduğu anlamına gelir.
 OI sinyali **neredeyse 2× güçlendi**: +0,502% → **+0,878%** (Q5−Q1), aynı
 sinyal, yalnız doğru pencere. Ve sd düştü (0,180 → 0,089) — daha güçlü **ve**
 daha kararlı.
+
+---
+
+## 24. ATR × OI ızgarası — "iptal" YANLIŞTI, 15 dk'da tamamlayıcılar ⭐
+
+§19'da "ATR ve OI birbirini iptal ediyor, ikisini birlikte açma" yazmıştık.
+**O sonuç 60 dk penceresiyle ölçülmüştü.** §23'te doğru pencereyi (15 dk)
+bulunca bu bulguyu **yeniden test etmek zorunlu** oldu.
+
+`scripts/atr_oi_grid.py`: aynı adaylar, aynı replay, 2×2 ızgara
+ATR {<1, ≥1} × OI {≤medyan, >medyan}.
+
+### §19'un yasağı GEÇERSİZ — OI ve ATR tamamlayıcı
+
+| hücre | n | ort | kazanan |
+|---|---|---|---|
+| ATR<1 / OI düşük | 594 | −0,298% | %24,7 |
+| ATR<1 / **OI yüksek** | 597 | **+0,267%** | %42,7 |
+| ATR≥1 / OI düşük | 94 | −0,188% | %28,7 |
+| ATR≥1 / **OI yüksek** | 90 | **+0,631%** | %50,0 |
+
+**OI etkisi ATR'yi kontrol ederek de yaşıyor:**
+- ATR<1 içinde OI etkisi: **+0,565%**
+- ATR≥1 içinde OI etkisi: **+0,819%**
+
+Yani OI, ATR sabitken bile ayrıştırıyor → **tekrarlı bilgi DEĞİL.**
+
+### Tek başına vs birlikte (4 seed)
+
+| seed | ATR≥1 | OI yüksek | **ikisi birden** | sinerji? |
+|---|---|---|---|---|
+| 7 | +0,213% | +0,314% | **+0,631%** | ✅ |
+| 11 | +0,258% | +0,202% | **+0,487%** | ✅ |
+| 23 | +0,279% | +0,099% | **+0,657%** | ✅ |
+| 42 | +0,195% | +0,382% | +0,205% | ❌ |
+| **ort** | **+0,236%** | **+0,249%** | **+0,495%** | **3/4** |
+
+| filtre | ortalama | sd | en kötü seed |
+|---|---|---|---|
+| ATR≥1 | +0,236% | **0,039** | +0,195% |
+| OI yüksek | +0,249% | 0,125 | +0,099% |
+| **ikisi birden** | **+0,495%** | 0,207 | +0,205% |
+
+### Dürüst okuma: sinerji VAR ama ZAYIF
+
+- Ortalama olarak "ikisi birden" **2× daha iyi** (+0,495 vs +0,24)
+- Ama sinerji **3/4 seed**'de tekrarlandı — seed 42'de OI tek başına daha iyi
+- "İkisi birden" sd'si daha büyük (0,207) → daha az aday (n≈90), daha gürültülü
+- **Kesin sinerji iddiası için yetersiz; "iptal yok" iddiası ise KESİN**
+
+### Karar
+
+1. **§19'daki "ikisini birlikte açma" yasağı KALDIRILDI** — yanlış ölçümdü
+2. Birlikte açmak **güvenli ve ortalama olarak daha iyi**, ama tek başına da
+   geçerli seçenekler (ATR en kararlı: sd 0,039)
+3. `min_oi_change_pct` varsayılanı **0 (kapalı) kalıyor** — açmak kararı
+   kullanıcının, panelden yapılabilir, artık yasak yok
+
+### Metodoloji dersi
+
+Bu tek bir örnek değil, oturumun üçüncü örneği: **bir sinyalin eşiği yanlışsa
+"başka sinyalle çakışıyor" sonucu da yanlış çıkar.** Pencere/eşik taraması
+sadece sinyal gücünü değil, sinyaller arası ilişkiyi de değiştirir.

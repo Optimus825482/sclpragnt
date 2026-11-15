@@ -97,8 +97,24 @@ class DailyRisingFloorTests(unittest.IsolatedAsyncioTestCase):
         return seen["params"][0], time.time()
 
     async def test_floor_clamps_window_only_when_requested(self):
-        since, now = await self._since(apply_radar_floor=True)
-        self.assertEqual(max(CUT, now - 30 * 86400.0) // 1000, since // 1000)
-        self.assertGreaterEqual(since, CUT)
-        since, _ = await self._since()
-        self.assertLess(since, CUT)
+        # 2026-11-15 DUZELTME: bu test duvar saatine bagliydi ve CUT (2026-10-15)
+        # ile now-30g cakisti -> bugun patladi. Sorun testin kendi kurgusundaydi:
+        # "now-30g < CUT" varsayimi yalniz 2026-11-14'e kadar dogruydu.
+        # Cozum: now'u CUT'a yakin SABIT bir ana dondur (deterministik).
+        import time as _time
+        frozen = CUT + 1.0            # CUT'un 1 sn sonrasi
+        real_time = _time.time
+        try:
+            _time.time = lambda: frozen
+            since_floor, _ = await self._since(apply_radar_floor=True)
+            since_plain, _ = await self._since()
+        finally:
+            _time.time = real_time
+
+        # (a) floor istendiginde alt sinir CUT'tan asagi inemez
+        self.assertGreaterEqual(since_floor, CUT)
+        # (b) floor istenmediginde pencere kirpilmaz -> CUT'un ALTINDA kalabilir
+        self.assertLess(since_plain, CUT)
+        # (c) floor istendiginde 30 gunluk pencerenin basi ile CUT'un BUYUGU
+        self.assertEqual(max(CUT, frozen - 30 * 86400.0) // 1000,
+                         since_floor // 1000)
