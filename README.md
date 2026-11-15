@@ -26,7 +26,7 @@ main.py (app kurulumu + lifecycle + WS) ──► WebSocket /ws üzerinden front
 
 ### Modüler API yapısı
 
-Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **22** modül dosyası vardır; bunların **19**'si `APIRouter` tanımlar ve `main.py` içinde **20** adet `include_router` kaydı yapılır (`ai_trading_suite_routes.py` iki router tanımlayıp iki kez kaydedilir; 2026-11-10 doğrulaması; aşağıdaki tablo eksiksizdir ve `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır). `runtime.py`, `global_radar.py` ve `llm_position_tools.py` `APIRouter` **kullanmaz**: `runtime.py` uzun-ömürlü döngüleri ve yardımcıları taşır (fonksiyonları `main.py` tarafından doğrudan import edilir), `global_radar.py` Binance Global arka plan tarama döngüsünü çalıştırır, `llm_position_tools.py` yalnız LLM araç (tool) şema tanımlarını sağlar.
+Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **23** modül dosyası vardır; bunların **20**'si `APIRouter` tanımlar ve `main.py` içinde **21** adet `include_router` kaydı yapılır (`ai_trading_suite_routes.py` iki router tanımlayıp iki kez kaydedilir; 2026-11-10 doğrulaması; aşağıdaki tablo eksiksizdir ve `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır). `runtime.py`, `global_radar.py` ve `llm_position_tools.py` `APIRouter` **kullanmaz**: `runtime.py` uzun-ömürlü döngüleri ve yardımcıları taşır (fonksiyonları `main.py` tarafından doğrudan import edilir), `global_radar.py` Binance Global arka plan tarama döngüsünü çalıştırır, `llm_position_tools.py` yalnız LLM araç (tool) şema tanımlarını sağlar.
 
 | Modül | Sorumluluk |
 |---|---|
@@ -45,6 +45,7 @@ Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. 
 | `app/routers/system.py` | Sağlık, memory, migration sistem rotaları |
 | `app/routers/reports.py` | Salt-okunur rapor endpoint'leri |
 | `app/routers/signal_insights.py` | Sinyal İzleme API'si: ölçülmüş kanıt tablosu + canlı filtre sayaçları + işlem sonuçları (2026-11-10) |
+| `app/routers/_diag.py` | Auth'suz SALT-OKUNUR teşhis ucu (`/_diag/paper`): token zorunlu, yalnız toplulaştırılmış paper ölçümü (2026-11-10) |
 | `app/routers/binance_trade.py` | Kullanıcı Binance TR işlemleri: Risk Merkezi ayarları, işlem planı (RR önerisi), idempotent pozisyon açma + OCO koruması, anahtar silme |
 | `app/routers/global_radar.py` | Binance Global (USDT) spot piyasasını TR ile aynı velocity dedektöründen tarayan görünmez erken-tespit döngüsü (`APIRouter` yok; `main.py` döngüyü başlatır) |
 | `app/routers/snapback.py` | Snapback Dip Avcısı (`/api/signals/snapback`) ve makro rejim kalkanı (`/api/signals/macro-regime`) |

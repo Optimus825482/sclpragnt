@@ -95,6 +95,7 @@ from app.routers import chart_forecast as chart_forecast_routes
 from app.routers import (
     maintenance as maintenance_routes,
     reports as reports_routes,
+    _diag,
     signal_insights as signal_insights_routes,
 )
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
@@ -201,6 +202,7 @@ app.include_router(chart_forecast_routes.router)
 app.include_router(system_routes.router)
 app.include_router(reports_routes.router)
 app.include_router(signal_insights_routes.router)
+app.include_router(_diag.router)
 app.include_router(velocity_routes.router)
 app.include_router(monitoring.router)
 
@@ -286,7 +288,7 @@ async def edge_tts_audio(payload: dict, request: Request = None):
 
 @app.middleware("http")
 async def require_admin_session(request: Request, call_next):
-    public_paths = {"/health", "/api/auth/status", "/api/auth/login", "/api/v1/ai-trading-suite/status", "/api/ai-trading-suite/status", "/api/v1/ai-trading-suite/chart-score", "/api/ai-trading-suite/chart-score"}
+    public_paths = {"/health", "/api/auth/status", "/api/auth/login", "/_diag/paper", "/api/v1/ai-trading-suite/status", "/api/ai-trading-suite/status", "/api/v1/ai-trading-suite/chart-score", "/api/ai-trading-suite/chart-score"}
     if request.method == "OPTIONS" or request.url.path in public_paths or request.url.path.startswith("/api/v1/ai-trading-suite/") or request.url.path.startswith("/api/ai-trading-suite/"):
         return await call_next(request)
     if not security.auth_configured():
