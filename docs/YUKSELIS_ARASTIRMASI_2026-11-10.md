@@ -1115,3 +1115,67 @@ Tüm bu ölçümler **1m bar replay** ile. Canlıda 5 sn ticker gürültüsü va
 (§18'de trailing gap'te bunu gördük: bar replay 0,30'u iyi gösterdi, canlı
 kötüydü). OI eşiği için benzer bir tuzak **olabilir** — bu yüzden 1,2%
 muhafazakâr seçildi (3,0% değil) ve panelden geri alınabilir.
+
+---
+
+## 26. Çıkış tarafı ızgarası — güçlü desen bulundu ama **DEĞİŞİKLİK YAPILMADI**
+
+Tüm bulgular **giriş** tarafındaydı (ATR, OI). Çıkış parametreleri
+(`trailing_trigger_pct`=2.0, `trailing_gap_pct`=1.0) **hiç taranmamıştı**.
+
+`scripts/exit_grid.py`: aynı adaylar (ATR≥1,0 + OI≥1,2 filtresinden geçenler =
+canlı varsayılan), aynı replay, yalnız çıkış 5×5 ızgara.
+
+### Sonuç: tutarlı bir desen VAR
+
+| (trigger, gap) | ortalama | sd | en kötü seed | kazanan | erken kapanma | mevcutu yendi |
+|---|---|---|---|---|---|---|
+| **(2,0, 1,0)** *mevcut* | +0,641% | 0,482 | +0,069% | %64,2 | %0,0 | — |
+| **(1,0, 0,3)** | **+0,862%** | **0,276** | +0,663% | **%81,6** | %7,4 | **4/4** |
+| (1,0, 0,5) | +0,852% | 0,336 | +0,572% | %81,6 | %18,6 | 4/4 |
+| (1,5, 0,3) | +1,074% | 0,559 | +0,679% | %73,7 | %0,0 | 1/2 |
+
+**trigger 1,0 + gap 0,3**: 4/4 seed'de mevcutu yendi, ortalama **+34%** daha
+yüksek, sd **neredeyse yarı**, kazanan oranı **%64,2 → %81,6**.
+
+### Ama DEĞİŞİKLİK YAPILMADI — dört neden
+
+**1. Örneklem yetersiz.** ATR≥1 + OI≥1,2 filtresinden geçen aday sayısı
+**58-89** (seed'e göre). 25 konfigürasyon × ~70 aday → hücre başına ~70 örnek.
+Giriş tarafında 273-341 örnek vardı; bu **dörtte biri**.
+
+**2. gap 0,30 canlıda zaten kötü çıkmıştı.** §18 (2026-10-11 canlı geri
+bildirim): *"gap 0.3 ÇOK DARDI — canlı 5 sn ticker gürültüsünde pozisyon
+ANINDA kapanıyor, kâr büyüyemiyordu"*. Bar replay bunu **modelemiyor**.
+
+**3. Kritik fark ama yeterli değil.** §18'deki kötü deneyim **trigger 2,0** ile
+yaşandı. Şimdi **trigger 1,0** — trailing daha erken devreye giriyor, erken
+kapanma %7,4'e düşüyor. Yani aynı tuzak değil. **Ama %7,4 bar replay'in
+ölçüsü**; canlıda 5 sn ticker ile bu oran katlanır.
+
+**4. Kural korunuyor ama sınırda.** config'deki kural: *trigger > gap olmalı,
+böylece aktifleştiğinde stop en kötü girişin üstünde kalır*. 1,0/0,3 →
+stop +0,7'de kilitleniyor. Canlı ticker gürültüsü bunu kolayca deler.
+
+### Karar: varsayılan DEĞİŞMEDİ
+
+Yalnız 1m bar replay'e dayanarak, canlıda kötü çıkmış bir değeri geri
+getirmek **§18'de yapılmış hatayı tekrarlamak** olur.
+
+**Kanıt saklandı.** Canlıda test etmek istersen sıralama:
+1. `trailing_trigger_pct=1.5`, `trailing_gap_pct=0.75` (en muhafazakâr, erken %3)
+2. 2 hafta ölç
+3. İyi giderse `1.0 / 0.5`, sonra `1.0 / 0.3`
+
+### Metodoloji: örneklem daralması
+
+Giriş filtreleri (ATR + OI) evreni **~%95 daralttı** (1800 → 58-89). Bu,
+giriş optimizasyonu için doğru (güçlü sinyal), ama **çıkış optimizasyonu için
+örneklem bırakmadı.** İki tarafı aynı dar evrende optimize etmek mümkün değil:
+
+- Çıkış testi için filtresiz daha geniş evren kullanılmalı (ama o zaman çıkış
+  parametreleri farklı aday dağılımına göre optimize edilir — genellemez)
+- Ya da yeni veri toplanmalı
+
+Bu oturumda **ilk kez** bir bulgu "ölçüldü ama uygulanmadı" — çünkü kanıt
+gücü eşiğin altında kaldı.
