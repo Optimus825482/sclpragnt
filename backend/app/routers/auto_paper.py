@@ -1316,12 +1316,23 @@ def _exit_apply_rr_ratio(symbol: str, sl_pct: float, target_pct: float,
     ratio_cap = float(settings.get("max_sl_tp_ratio", 0.0) or 0.0)
     if ratio_cap <= 0:
         return sl_pct, target_pct
-    # Kullanıcı planı: dokunma (kendi tutarlı hesabı).
-    if plan_exit is not None:
-        return sl_pct, target_pct
-    # Kural profili: kendi SL/hedef geometrisini taşır, dokunma.
-    if exit_profile:
-        return sl_pct, target_pct
+    # 2026-11-16 CANLI BULGU (sunucu DB, son 7 gün): Buradaki iki erken
+    # `return` tavanı CANLIDA TAMAMEN ETKİSİZ bırakıyordu. 143 işlemin
+    # 79'u `plan` profilindeydi ve SL 4,77% / TP 3,58% (oran 1,46) ile
+    # açıldı — tavan hiç uygulanmadı. Kazanma oranı %60,8 olmasına rağmen
+    # ortalama −0,242% idi (kazanç/kayıp 0,68 < başabaş 0,764).
+    # Simülasyon (aynı 120 işlem): şimdi −89,0% toplam / −0,741% ortalama;
+    # tavan plan'da da uygulansaydı +5,1% / +0,043%.
+    #
+    # ESKİ DAVRANIŞ (kaldırıldı):
+    #   if plan_exit is not None: return sl_pct, target_pct
+    #   if exit_profile:         return sl_pct, target_pct
+    #
+    # YENİ: tavan HER profilde uygulanır. Yalnız SON ÇARE olarak, SL'yi
+    # aşırı daraltacaksa (piyasa gürültüsünün altına) ATR tabanı devreye
+    # girer — bu koruma zaten aşağıda var. `plan_exit` / `exit_profile`
+    # yalnız `sl_pct` & `target_pct` HESABINDA kullanılır; geometriyi
+    # sınırlamak ayrı bir karardır ve ölçüm bunun gerekli olduğunu gösterdi.
     if target_pct <= 0 or sl_pct <= 0:
         return sl_pct, target_pct
     allowed_sl = (target_pct / 100.0) * ratio_cap

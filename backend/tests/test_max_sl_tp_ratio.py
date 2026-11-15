@@ -65,18 +65,46 @@ def test_target_never_modified():
         assert abs(tp_v - 3.0) < 1e-9
 
 
-def test_user_plan_is_exempt():
-    """Kullanıcı planı varsa dokunulmaz (kendi tutarlı hesabı)."""
+def test_plan_is_now_capped():
+    """2026-11-16 (CANLI): plan profili de tavana tabi — eski muafiyet KALDIRILDI.
+
+    ÖLÇÜM (sunucu DB, son 7 gün, 143 işlem): `plan` profili 79 işlem,
+    SL −5,24% / TP +3,58% → oran 1,46. Tavan bu işlemlerde HİÇ uygulanmıyordu
+    (erken `return`). Kazanma oranı %60,8 iken ortalama −0,242%.
+    Aynı 120 işlemde simülasyon: şimdi −89,0% toplam / −0,741% ortalama;
+    tavan plan'da da uygulansaydı +5,1% / +0,043%.
+
+    Planın kendi stop'u (4,0%) artık TP×0,5 = 1,0%'e daraltılır.
+    """
     plan = {"target_pct": 2.0, "stop_pct": 4.0, "exit_at": 1e18, "grace_minutes": 5}
     sl, tp = ap._exit_apply_rr_ratio("XTRY", 0.04, 2.0, {"max_sl_tp_ratio": 0.5}, plan, None)
-    assert abs(sl - 0.04) < 1e-9, "plan stop'u değiştirilmemeli"
+    assert abs(sl - 0.01) < 1e-9, f"plan stop'u daraltılmalı: {sl}"
+    assert abs(tp - 2.0) < 1e-9, "hedef DEĞİŞMEMELİ"
 
 
-def test_exit_profile_is_exempt():
-    """Kural profili kendi SL/hedef geometrisini taşır."""
+def test_exit_profile_is_now_capped():
+    """Kural profili de tavana tabi — eski muafiyet KALDIRILDI (2026-11-16)."""
     prof = {"stop_loss_pct": 4.0}
     sl, _tp = ap._exit_apply_rr_ratio("XTRY", 0.04, 2.0, {"max_sl_tp_ratio": 0.5}, None, prof)
-    assert abs(sl - 0.04) < 1e-9
+    assert abs(sl - 0.01) < 1e-9
+
+
+def test_plan_cap_matches_live_measured_geometry():
+    """Canlı geometri: TP %3,58 → SL %3,58×0,64 = %2,29 (ölçülen 4,77% DEĞİL)."""
+    sl, tp = ap._exit_apply_rr_ratio("XTRY", 0.0524, 3.58, {"max_sl_tp_ratio": 0.64}, None, None)
+    assert abs(sl - 0.0358 * 0.64) < 1e-9, f"SL %2,29 olmalı, gelen {sl*100:.2f}%"
+    assert abs(tp - 3.58) < 1e-9
+
+
+def test_plan_cap_respects_atr_floor():
+    """Tavan uygulanır AMA ATR tabanı gürültünün altına indirmez.
+
+    Bu, `AUTO_PAPER_SL_PCT=5%` kararının (30 gün/3.214 bildirim replay)
+    korunmasıdır: sıkı stop 5 dk gürültüsünde kesilmesin.
+    """
+    sl, _tp = ap._exit_apply_rr_ratio("XTRY", 0.0524, 3.58, {"max_sl_tp_ratio": 0.64},
+                                      None, None, atr_floor_pct=0.03)
+    assert abs(sl - 0.03) < 1e-9, f"ATR tabanı korunmadı: {sl}"
 
 
 def test_editable_and_clamped():
