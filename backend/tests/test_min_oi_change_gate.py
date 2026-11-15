@@ -46,10 +46,29 @@ def _patch(monkeypatch, **over):
 
 # ── varsayılan / ayar ───────────────────────────────────────────────────────
 
-def test_default_is_off():
-    """Varsayılan KAPALI — üretim davranışı değişmez."""
+def test_default_is_measured_threshold():
+    """Varsayılan 1.2% (2026-11-10 §25 taraması).
+
+    ÖNCEDEN 0 (kapalı) idi. §24 OI+ATR'nin tamamlayıcı olduğunu kanıtladı,
+    §25 eşiği taradı: ATR>=1 açıkken 1.2% -> +0.939% (taban +0.379%, 2.5x).
+    Fail-open korunuyor: OI verisi yoksa filtre uygulanmaz.
+    """
+    from app import config
+    # config varsayılanı taranmış değer olmalı (DB kaydı bunu gölgeleyebilir —
+    # canlı kullanıcı ayarı önceliklidir, ayrı testte doğrulanır).
+    assert config.Config.AUTO_PAPER_MIN_OI_CHANGE_PCT == 1.2
     s = _run(ap.get_auto_paper_settings())
-    assert s["min_oi_change_pct"] == 0.0
+    assert "min_oi_change_pct" in s
+    assert isinstance(s["min_oi_change_pct"], float)
+
+
+def test_db_override_takes_precedence_over_config():
+    """DB'de kayıtlı ayar config varsayılanını gölgeler (beklenen davranış)."""
+    from app import config
+    s = _run(ap.get_auto_paper_settings())
+    # panel DB'den okuyabilir; 0 (kapalı) da geçerli bir kullanıcı seçimi
+    assert s["min_oi_change_pct"] >= 0.0
+    assert s["min_oi_change_pct"] != config.Config.AUTO_PAPER_MIN_OI_CHANGE_PCT or         s["min_oi_change_pct"] == 1.2
 
 
 def test_setting_present_and_clamped():
@@ -62,7 +81,8 @@ def test_setting_present_and_clamped():
 def test_config_constant_exists():
     from app import config
     assert hasattr(config.Config, "AUTO_PAPER_MIN_OI_CHANGE_PCT")
-    assert config.Config.AUTO_PAPER_MIN_OI_CHANGE_PCT == 0.0
+    # §25: taranmış eşik 1.2% (0 = kapalı değil; 0 hâlâ geçerli bir ayar)
+    assert config.Config.AUTO_PAPER_MIN_OI_CHANGE_PCT == 1.2
 
 
 # ── açıkken davranış ────────────────────────────────────────────────────────

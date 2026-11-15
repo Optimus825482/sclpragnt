@@ -1046,3 +1046,72 @@ Yani OI, ATR sabitken bile ayrıştırıyor → **tekrarlı bilgi DEĞİL.**
 Bu tek bir örnek değil, oturumun üçüncü örneği: **bir sinyalin eşiği yanlışsa
 "başka sinyalle çakışıyor" sonucu da yanlış çıkar.** Pencere/eşik taraması
 sadece sinyal gücünü değil, sinyaller arası ilişkiyi de değiştirir.
+
+---
+
+## 25. OI eşiği taraması — panel parametresi artık **1,2%** ✅
+
+§24'te OI'nin ATR ile tamamlayıcı olduğu kanıtlandı. Ama panel parametresi
+`min_oi_change_pct` **sayısal bir eşik** istiyor; §19/§24 **medyan** kullanmıştı
+(analiz için doğru, canlı panel için değil).
+
+### Kritik soru: eşik ATR'nin ÜSTÜNE değer ekliyor mu?
+
+Canlıda **ATR≥1,0 zaten açık**. OI'yi açmak için ATR'nin üstüne **gerçek**
+değer eklemesi lazım — yoksa gereksiz karmaşıklık.
+
+`scripts/oi_threshold_sweep.py`: aynı adaylar, aynı replay, iki rejim.
+**B rejimi** (ATR≥1,0 açıkken) karar için belirleyici.
+
+### B rejimi: ATR açıkken OI eşiği (4 seed, trailing)
+
+| eşik | ortalama | sd | en kötü seed | örneklem | kazanan |
+|---|---|---|---|---|---|
+| +0,0% | +0,794% | 0,109 | +0,709% | 341 | %57,0 |
+| +0,3% | +0,832% | 0,135 | +0,702% | 322 | %57,4 |
+| +0,5% | +0,854% | 0,104 | +0,739% | 308 | %58,0 |
+| +0,8% | +0,883% | 0,089 | +0,777% | 298 | %58,9 |
+| **+1,2%** | **+0,939%** | **0,118** | **+0,781%** | **273** | **%60,4** |
+| +2,0% | +0,996% | 0,204 | +0,780% | 219 | %61,3 |
+| +3,0% | +1,213% | 0,288 | +0,865% | 171 | %65,3 |
+
+**ATR≥1 tabanı (filtresiz): +0,379%** → 1,2% eşiği **2,5×**.
+
+### Neden 1,2% ve 3,0% değil?
+
+3,0% **daha yüksek** ortalama veriyor (+1,213% vs +0,939%) — ama:
+
+| | 1,2% | 3,0% |
+|---|---|---|
+| ortalama | +0,939% | **+1,213%** |
+| sd | **0,118** | 0,288 (**2,4×**) |
+| örneklem | **273** | 171 (**%37 kayıp**) |
+
+Bu, oturumda **dördüncü kez** aynı tuzak: en yüksek ortalamayı kovalarsan
+örneklem erir, sd patlar. Aynı karar ATR'de de verilmişti (1,0 vs 1,5).
+
+**1,2% = ortalamanın %90'ı, sd'nin %41'i, örneklemin %80'i.**
+
+### Kodda bulunan gerçek hata
+
+`_entry_context` yorumu hâlâ §19'un **yanlış yasağını** taşıyordu:
+
+> ~~"OI aktifse ATR kapısı KAPATILIR"~~
+
+§24'te bu çürütüldü. Yorum düzeltildi (davranış zaten yoktu — yalnız yanlış
+yorum riski vardı; biri okuyup "bu böyle olmalı" diye kod ekleyebilirdi).
+
+### Uygulama
+
+- `AUTO_PAPER_MIN_OI_CHANGE_PCT` varsayılanı **0 → 1,2**
+- Panelden ayarlanabilir, clamp −50..200
+- **Fail-open korunuyor**: OI verisi yok/geçersiz → filtre uygulanmaz
+- **Kural sinyalleri muaf**
+- `AUTO_PAPER_OI_WINDOW_MIN` = 15 dk (§23)
+
+### Dürüst sınır
+
+Tüm bu ölçümler **1m bar replay** ile. Canlıda 5 sn ticker gürültüsü var
+(§18'de trailing gap'te bunu gördük: bar replay 0,30'u iyi gösterdi, canlı
+kötüydü). OI eşiği için benzer bir tuzak **olabilir** — bu yüzden 1,2%
+muhafazakâr seçildi (3,0% değil) ve panelden geri alınabilir.

@@ -680,10 +680,16 @@ async def _entry_context(notification: dict) -> tuple[dict | None, dict | None, 
     # Yorum: OI artiyorsa yukselis YENI PARAYLA besleniyor (surdurulebilir);
     #         artmiyorsa short covering -> tukenir.
     # Kanit: docs/YUKSELIS_ARASTIRMASI_2026-11-10.md bolum 19
-    # ⚠ OI ve ATR BIRBIRINI IPTAL EDIYOR (ayni bilgiyi paylasir):
-    #   OI yuksek + ATR<1.0 -> +0.558% | OI yuksek + ATR>=1.0 -> +0.020%
-    #   Ikisini birlikte acmak orneklemi 60'a dusurur ve avantaji yok eder.
-    #   Bu yüzden: OI aktifse ATR kapisi KAPATILIR (aşağıda)
+    # OI + ATR ARTIK TAMAMLAYICI (2026-11-10 §24) — eski 'iptal' bulgusu YANLISTI.
+    # O olcum 60 dk penceresiyle yapilmisti. 15 dk ile 2x2 izgara:
+    #   ATR<1 /OI dus -0.298% | ATR<1 /OI yuk +0.267%
+    #   ATR>=1/OI dus -0.188% | ATR>=1/OI yuk +0.631%
+    # OI, ATR SABITKEN de ayristiriyor (ATR<1 icinde +0.565%, ATR>=1 icinde
+    # +0.819%) -> TEKRARLI BILGI DEGIL. Birlikte: 4 seed ort +0.495% vs
+    # ATR tek +0.236% / OI tek +0.249% (sinerji 3/4 seed, zayif ama pozitif).
+    # ESIK = 1.2% (scripts/oi_threshold_sweep.py, ATR>=1 acikken 4 seed:
+    #   0.0%->+0.794% | 0.8%->+0.883% | 1.2%->+0.939% | 3.0%->+1.213%).
+    # 3.0% daha yuksek ama sd 2.4x ve adaylarin yarisi gider -> 1.2% secildi.
     # OI verisi olmayan adayda (spot-only sembol) kapi UYGULANMAZ — fail-open.
     min_oi = float(settings.get("min_oi_change_pct", 0.0) or 0.0)
     if min_oi > 0 and not rule_signal:

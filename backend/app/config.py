@@ -1330,7 +1330,25 @@ class Config:
     # Veri: hist_futures_metrics (7.5M satir, 291 perp sembol). Spot-only
     # sembollerde OI yok -> kapi UYGULANMAZ (fail-open).
     # Kanit: docs/YUKSELIS_ARASTIRMASI_2026-11-10.md bolum 19
-    AUTO_PAPER_MIN_OI_CHANGE_PCT = float(os.getenv("AUTO_PAPER_MIN_OI_CHANGE_PCT", "0.0"))
+    AUTO_PAPER_MIN_OI_CHANGE_PCT = float(os.getenv("AUTO_PAPER_MIN_OI_CHANGE_PCT", "1.2"))
+    # OI EŞİĞİ = 1.2% (2026-11-10, panelden ayarlanabilir). Önceki N dakikadaki
+    # OI değişimi bundan azsa aday elenir ("yükseliş taze parayla beslenmiyor").
+    # Tarama: scripts/oi_threshold_sweep.py, ATR>=1.0 zaten açıkken (canlı
+    # varsayılan) 4 seed, trailing:
+    #   eşik    ort      sd     min      ort n  kazanan  toplam n
+    #   +0.0%  +0.794%  0.109  +0.709%    85    57.0%     341
+    #   +0.3%  +0.832%  0.135  +0.702%    80    57.4%     322
+    #   +0.5%  +0.854%  0.104  +0.739%    77    58.0%     308
+    #   +0.8%  +0.883%  0.089  +0.777%    74    58.9%     298
+    #   +1.2%  +0.939%  0.118  +0.781%    68    60.4%     273  <-- SEÇİLEN
+    #   +2.0%  +0.996%  0.204  +0.780%    55    61.3%     219
+    #   +3.0%  +1.213%  0.288  +0.865%    43    65.3%     171
+    # ATR>=1 tabanı (filtresiz): +0.379% -> 1.2% eşiği 2.5x.
+    # 3.0% DAHA YÜKSEK ortalama (+1.213%) ama sd 2.4x ve adayların yarısı gider
+    # -> aynı "az örneklem" tuzağı (bkz. ATR eşiği 1.0 vs 1.5 kararı).
+    # 1.2% = ortalamanın %90'ı, sd'nin %41'i, örneklemin %80'i.
+    # FAIL-OPEN: OI verisi eksik/geçersizse filtre UYGULANMAZ (aday elenmez).
+    # Kural sinyalleri (rule source) muaftır.
     # OI PENCERESİ (2026-11-10, panelden ayarlanabilir). Önceki N dakikadaki OI
     # değişimi ölçülür. 60 dk KEYFİ seçilmişti; tarama yapıldı
     # (scripts/oi_window_sweep.py, AYNI adaylar + AYNI replay, yalnız pencere

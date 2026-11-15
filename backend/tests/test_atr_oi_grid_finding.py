@@ -117,10 +117,16 @@ def test_ban_lifted_in_docs():
     assert "KALDIRILDI" in doc
 
 
-def test_default_stays_off():
-    """Varsayilan hala KAPALI — acmak kullanicinin karari."""
+def test_default_is_measured_12_pct():
+    """Varsayilan 1.2% (§25 esik taramasi); yasak kalkti ama muhafazakar secim.
+
+    §24 "iptal yok" kanitlandi -> birlikte acmak guvenli.
+    §25 esigi taradi -> 1.2% (3.0% daha yuksek ama sd 2.4x, orneklem %37 az).
+    """
     from app import config
-    assert float(getattr(config.Config, "AUTO_PAPER_MIN_OI_CHANGE_PCT", 0)) == 0.0
+    val = float(getattr(config.Config, "AUTO_PAPER_MIN_OI_CHANGE_PCT", 0))
+    assert val == 1.2
+    assert val < 3.0, "muhafazakar esik secilmeli (3.0 degil)"
 
 
 def test_methodology_lesson_documented():
