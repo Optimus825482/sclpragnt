@@ -91,3 +91,7 @@ $null
 
 # Python sanal ortamlari
 .venv/
+
+# Canli DB dump'lari (buyuk binary, repoya girmemeli)
+*.dump
+backend/work/rise/
