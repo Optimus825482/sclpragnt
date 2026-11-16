@@ -1305,8 +1305,19 @@ class Config:
     # kazanma oranı %56,7 olmasına rağmen zarar (kazanç/kayıp 0,547 < gereken 0,764).
     # Gerçek mum replay'i (1.200 işlem): 0,64 -> ort -0,724% medyan -2,284%
     # (mevcut -0,796% / -3,300%). Medyanı 1 puan düzeltiyor.
+    #
+    # 2026-11-16 — 0,64 -> 0,40: canlı 2.048 işlem üzerinde gerçek bar replay'i
+    # (TP sabit %4, 24s horizon, maliyet 0,275% dahil):
+    #   ratio 0,64 (SL 2,56%) -> ort -0,382% kazanan %37,5 SL-vurulma 1255
+    #   ratio 0,50 (SL 2,00%) -> ort -0,330% kazanan %32,7 SL-vurulma 1367
+    #   ratio 0,40 (SL 1,60%) -> ort -0,271% kazanan %28,9 SL-vurulma 1449
+    #   ratio 0,35 (SL 1,40%) -> ort -0,212% kazanan %27,3 SL-vurulma 1484
+    # Monoton iyileşme. 0,35 en iyi ortalama AMA kazanan %27,3'e düşüyor ve
+    # 5m bar gürültüsünde SL avına açık; 0,40 iyileşmenin ~%65'ini alırken
+    # kazanan oranını %29'da tutuyor. Bu yüzden 0,40 seçildi (denge noktası).
+    # NOT: hiçbir ratio kâra geçmiyor — SL daraltma kaybı AZALTIYOR, sıfırlamıyor.
     # 0 = kapalı (eski davranış).
-    AUTO_PAPER_MAX_SL_TP_RATIO = float(os.getenv("AUTO_PAPER_MAX_SL_TP_RATIO", "0.64"))
+    AUTO_PAPER_MAX_SL_TP_RATIO = float(os.getenv("AUTO_PAPER_MAX_SL_TP_RATIO", "0.40"))
     # Volatilite tabanı (2026-11-10): ATR% bu değerin altındaysa giriş BLOKLANIR.
     # Ölçüm (gerçek 1m mum, üretim kapısı `_entry_context` üzerinden):
     #   ATR>=1.0 -> ort +0.463% medyan +0.034% kazanan %51.4 (n=72)

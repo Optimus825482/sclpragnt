@@ -33,9 +33,20 @@ def _sl(target_pct, sl_pct, ratio, atr_floor=None):
 
 
 def test_default_active():
-    """2026-11-10: ölçüm sonrası AKTİF varsayılan 0.64 (config'ten)."""
+    """2026-11-16: canlı 2.048 işlem gerçek bar replay'i → AKTİF varsayılan 0.40.
+
+    ratio 0,64 (SL 2,56%) -> ort -0,382% | 0,50 -> -0,330% | 0,40 -> -0,271%
+    Monoton iyileşme; 0,40 iyileşmenin ~%65'i, kazanan oranı %29'da kalıyor.
+    """
     d = asyncio.run(ap.get_default_settings())
-    assert d["max_sl_tp_ratio"] == 0.64, "ölçülmüş varsayılan uygulanmamış"
+    assert d["max_sl_tp_ratio"] == 0.40, "ölçülmüş varsayılan uygulanmamış"
+
+
+def test_default_is_measured_tightening():
+    """Varsayılan 0.64'ten DAHA SIKI olmalı — gevşetme regresyonu yakalanır."""
+    d = asyncio.run(ap.get_default_settings())
+    assert d["max_sl_tp_ratio"] <= 0.64, "ölçülmüş daraltma geri alınmış"
+    assert d["max_sl_tp_ratio"] > 0.0, "kapatılmamalı"
 
 
 def test_disabled_keeps_sl():

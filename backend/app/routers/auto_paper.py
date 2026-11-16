@@ -2540,7 +2540,7 @@ def _default_exit_settings(_exit_def: dict) -> dict:
         # kazanma oranı %56,7 olmasına rağmen zarar (kazanç/kayıp 0,547, eşik 0,764).
         # Bu oran aşılırsa SL DARALTILIR (hedef değişmez). Önerilen: 0,64.
         # Kanıt: docs/TARAMA_AILESI_ANALIZI_2026-11-10.md
-        "max_sl_tp_ratio": float(getattr(config, "AUTO_PAPER_MAX_SL_TP_RATIO", 0.64)),
+        "max_sl_tp_ratio": float(getattr(config, "AUTO_PAPER_MAX_SL_TP_RATIO", 0.40)),
         "breakeven_enabled": getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False),
         "breakeven_trigger_pct": config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT,
         "trailing_enabled": config.AUTO_PAPER_TRAILING_ENABLED,
@@ -2689,7 +2689,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
         # SL/TP oran tavanı. 0 = kapalı. Üst sınır 3,0 (bunun üstü zaten��y���yle zararlı
         # oranı 'onaylamak' olur; alt sınır 0,1 — çok dar stop gürültüde kesilir).
         "max_sl_tp_ratio": max(0.0, min(3.0, float(merged.get(
-            "max_sl_tp_ratio", getattr(config, "AUTO_PAPER_MAX_SL_TP_RATIO", 0.64)) or 0.0))),
+            "max_sl_tp_ratio", getattr(config, "AUTO_PAPER_MAX_SL_TP_RATIO", 0.40)) or 0.0))),
         # 2026-09-27: taban `10.0` TRY cinsinden sabitlenmişti; deployment
         # quote'ünden gelir: TRY'de 10 (değişmeyen davranış). Üst sınır
         # koymadık — operatör bilerek küçük eşik seçebilir.
