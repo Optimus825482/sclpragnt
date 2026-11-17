@@ -1503,6 +1503,18 @@ class Config:
     # trailing + SL belirliyor). 120 dk secildi: 30-60 dk bandinda max_duration
     # kapanislari ort -%1,08 uretiyordu (bkz. teshis §2); sinyalin gercek
     # yukselisine nefes payi birakmak zarari kesiyor, asiri tasima da yok.
+    #
+    # 2026-11-16 — SÜRE LİMİTİ ETKİSİZ (süre taraması, 1.792 canlı işlem bar
+    # replay'i; tüm işlemler yeniden oynatıldı, sadece süreyle kapananlar değil):
+    #   mevcut geometri:  60dk -0,787% | 120dk -0,843% | 480dk -0,795% | 2880dk -0,775%
+    #   üretim (ratio=0,40): 30dk -0,355% | 120dk -0,381% | 480dk -0,366% | 1440dk -0,386%
+    # DÜZ ÇİZGİ. İstatistik: 60dk vs 120dk farkı +0,056%, ortak hata 0,105 →
+    # ANLAMSIZ. Mekanizma: süre uzadıkça TP ve SL AYNI hızda artıyor (TP/SL
+    # oranı 0,35-0,37 sabit) — beklemek yeni kazanan üretmiyor, sadece SL'ye
+    # gidenleri geciktiriyor.
+    # YORUM: süre-dolumu zararları BELİRTİ, SEBEP DEĞİL. O işlemler süre
+    # dolduğu için zarar etmiyor — zaten zararda oldukları için süre doluyor.
+    # Limiti kaldırsan SL'ye gidiyorlar. Bu yüzden 120 dk DOKUNULMAZ.
     AUTO_PAPER_MAX_HOLD_MINUTES = float(os.getenv("AUTO_PAPER_MAX_HOLD_MINUTES", "120.0"))
     # 2026-10-16 (tarama güncellemesi): otonom paper MOD listesi env'den
     # (virgüllü). Eski gömülü varsayılan `trend_devam,unified` idi. 7 günlük
