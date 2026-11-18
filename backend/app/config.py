@@ -1298,6 +1298,14 @@ class Config:
     #   1.5%      -> -0.441% | 1.0% -> -0.443%   (medyan -3.26% -> -0.94%)
     # 2.0 seçildi: 1.5 ile arasındaki fark istatistiksel gürültü (0.059 puan) ama
     # 2.0 kazananlara nefes alanı bırakır (kazanan oranı %33.3 vs %32.9).
+    #
+    # 2026-11-18 (§30): tavan eskiden plan profiline UYGULANMIYORDU (muafiyet
+    # `_exit_resolve_target` içindeydi) — canlıda plan TP'si +3,58% idi. Düzeltildi,
+    # artık tavan TÜM profillere uygulanıyor. Düzeltilmiş bar replay (1.798 işlem,
+    # maliyet 0,275% dahil), ratio=0,40 ile:
+    #   tavan YOK -0,421% | TP<=2,0% -0,325% | TP<=1,5% -0,300%
+    # 2.0 = +0,096 puan (1.5 ile aradaki ~0,025 puan gürültü; 1.5'in 0,6%'lik
+    # SL'si slippage/ücretin büyük payına düşüyor). Bu yüzden 2.0 korunuyor.
     # 0 = sınırsız (eski davranış).
     AUTO_PAPER_MAX_TARGET_PCT = float(os.getenv("AUTO_PAPER_MAX_TARGET_PCT", "2.0"))
     # SL/TP oran tavanı (2026-11-10): SL, TP'nin bu katından uzak olamaz.
@@ -1306,15 +1314,25 @@ class Config:
     # Gerçek mum replay'i (1.200 işlem): 0,64 -> ort -0,724% medyan -2,284%
     # (mevcut -0,796% / -3,300%). Medyanı 1 puan düzeltiyor.
     #
-    # 2026-11-16 — 0,64 -> 0,40: canlı 2.048 işlem üzerinde gerçek bar replay'i
-    # (TP sabit %4, 24s horizon, maliyet 0,275% dahil):
-    #   ratio 0,64 (SL 2,56%) -> ort -0,382% kazanan %37,5 SL-vurulma 1255
-    #   ratio 0,50 (SL 2,00%) -> ort -0,330% kazanan %32,7 SL-vurulma 1367
-    #   ratio 0,40 (SL 1,60%) -> ort -0,271% kazanan %28,9 SL-vurulma 1449
-    #   ratio 0,35 (SL 1,40%) -> ort -0,212% kazanan %27,3 SL-vurulma 1484
-    # Monoton iyileşme. 0,35 en iyi ortalama AMA kazanan %27,3'e düşüyor ve
-    # 5m bar gürültüsünde SL avına açık; 0,40 iyileşmenin ~%65'ini alırken
-    # kazanan oranını %29'da tutuyor. Bu yüzden 0,40 seçildi (denge noktası).
+    # 2026-11-16 — 0,64 -> 0,40: canlı işlemler üzerinde gerçek bar replay'i
+    # (TP korunur, 24s horizon, maliyet 0,275% dahil).
+    #
+    # ⚠ 2026-11-18 DÜZELTME — ilk replay harness'im ÜÇ ölçüm hatası içeriyordu
+    # ve aşağıdaki eski sayılar YANLIŞTI: (1) bar eşleştirmesi bir bar kayıyordu,
+    # (2) veri bitiminden sonraki işlemler son bara kilitleniyordu, (3) bar
+    # boşlukları eski bara düşürüyordu. Düzeltilmiş harness (1.798 kullanılabilir
+    # işlem, aynı maliyet):
+    #   taban      -> ort -0,724% med -2,371% kaz %47,9 TP 846 SL  891
+    #   ratio 0,64 -> ort -0,609% med -2,083% kaz %34,1 TP 603 SL 1168
+    #   ratio 0,55 -> ort -0,522% med -1,918% kaz %31,9 TP 565 SL 1211
+    #   ratio 0,50 -> ort -0,504% med -1,775% kaz %30,0 TP 532 SL 1247
+    #   ratio 0,45 -> ort -0,477% med -1,625% kaz %28,1 TP 499 SL 1281
+    #   ratio 0,40 -> ort -0,421% med -1,475% kaz %26,6 TP 472 SL 1310
+    #   ratio 0,35 -> ort -0,387% med -1,375% kaz %24,6 TP 439 SL 1349
+    #   ratio 0,30 -> ort -0,336% med -1,229% kaz %22,9 TP 408 SL 1381
+    # Yön doğrulandı (0,64 -> 0,40 = +0,188 puan, eski tahmin +0,111'den BÜYÜK).
+    # 0,40 seçildi: iyileşmenin ~%60'ı, kazanan oranı %26,6'da kalıyor; 0,30
+    # SL-vurulmayı 1381'e çıkarıyor ve 5m bar gürültüsünde SL avına açık.
     # NOT: hiçbir ratio kâra geçmiyor — SL daraltma kaybı AZALTIYOR, sıfırlamıyor.
     # 0 = kapalı (eski davranış).
     AUTO_PAPER_MAX_SL_TP_RATIO = float(os.getenv("AUTO_PAPER_MAX_SL_TP_RATIO", "0.40"))

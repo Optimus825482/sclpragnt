@@ -1256,20 +1256,26 @@ def _exit_resolve_target(symbol: str, notification: dict, target_pct: float,
                          settings: dict, plan_exit: dict | None) -> float:
     """Hedefi çöz ve tavanla sınırla (plan varsa plan değeri kazanır).
 
-    Sıra: TP2 runner (plan yoksa) → tavan (`max_target_pct`, 0 = sınırsız) →
-    plan varsa plan hedefi. Tavan uygulandığında bilgi loglanır.
+    Sıra: TP2 runner (plan yoksa) → plan hedefi → tavan (`max_target_pct`, 0 = sınırsız).
+    Tavan TÜM profillere uygulanır (plan dahil) — §30 ölçümü (2026-11-18):
+    düzeltilmiş bar replay, 1.798 canlı işlem, maliyet 0,275% dahil:
+      ratio=0,40  tavan YOK  ort -0,421%
+      ratio=0,40  TP<=2,0%   ort -0,325%  (plan profilinde TAVAN ATLANIYORDU —
+                panelde ayarlanıyordu ama canlıda hiç uygulanmıyordu, P0 sınıfı)
+    Tavan uygulandığında bilgi loglanır. ATR tabanı hâlâ daraltmayı gürültünün
+    altına indirmez (max_sl_tp_ratio ile aynı koruma).
     """
     tp2_runner_val = notification.get("tp2_runner_pct")
     if plan_exit is None and tp2_runner_val and float(tp2_runner_val) > target_pct:
         target_pct = float(tp2_runner_val)
-    # Hedef tavanı (0 = sınırsız).
-    max_target = float(settings.get("max_target_pct", 0.0) or 0.0)
-    if plan_exit is None and max_target > 0 and target_pct > max_target:
-        logger.info("auto_paper %s: bildirim hedefi +%.2f%% tavanı +%.2f%%'e çekildi",
-                    symbol, target_pct, max_target)
-        target_pct = max_target
     if plan_exit is not None:
         target_pct = plan_exit["target_pct"]
+    # Hedef tavanı (0 = sınırsız) — plan dahil TÜM profillere.
+    max_target = float(settings.get("max_target_pct", 0.0) or 0.0)
+    if max_target > 0 and target_pct > max_target:
+        logger.info("auto_paper %s: hedef +%.2f%% tavanı +%.2f%%'e çekildi",
+                    symbol, target_pct, max_target)
+        target_pct = max_target
     return target_pct
 
 
