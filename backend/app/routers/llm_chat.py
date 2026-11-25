@@ -998,6 +998,14 @@ async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
                 ath = (await cmc_client.performance_map([symbol])).get(base) or {}
                 merged = dict(profile)
                 merged.update({k: v for k, v in ath.items() if v is not None})
+                try:
+                    tags = (await cmc_client.info_tags([symbol])).get(base) or {}
+                    if tags.get("tags"):
+                        merged["tags"] = tags["tags"]
+                    if tags.get("category"):
+                        merged["coin_category"] = tags["category"]
+                except Exception:
+                    pass
                 if not merged.get("ath_distance_pct"):
                     peak = (await cmc_client.peak_180d([symbol])).get(
                         str(symbol).replace("_", "").upper()) or {}

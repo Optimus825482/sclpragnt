@@ -255,3 +255,81 @@ def test_attach_falls_back_to_peak_distance(store, monkeypatch):
     profile = rows[0]["cmc"]
     assert profile["peak_180d"] == 3.0
     assert profile["peak_distance_pct"] == pytest.approx(-50.0, abs=0.01)
+
+
+def test_brief_uses_free_plan_endpoints(store, monkeypatch):
+    """trending/gainers 403 olsa da ÜCRETSİZ uçlardan veri üretilmeli."""
+    seen = []
+
+    def fake_http(path, params=None, key="", timeout=6.0):
+        seen.append(path)
+        if "community/trending/token" in path:
+            return {"ok": True, "status": 200, "error": None,
+                    "data": [{"id": 1, "symbol": "PEPE", "name": "Pepe", "cmc_rank": 30}]}
+        if "listings/latest" in path:
+            direction = (params or {}).get("sort_dir")
+            pct = -12.0 if direction == "asc" else 8.5
+            return {"ok": True, "status": 200, "error": None, "data": [
+                {"id": 2, "symbol": "ABC", "name": "Abc", "cmc_rank": 100,
+                 "quote": [{"symbol": "USD", "price": 1.0, "percent_change_24h": pct,
+                            "percent_change_1h": 0.5, "volume_24h": 1e6}]}]}
+        if "fear-and-greed" in path:
+            return {"ok": True, "status": 200, "error": None,
+                    "data": [{"value": 20, "value_classification": "Fear"}]}
+        if "global-metrics" in path:
+            return {"ok": True, "status": 200, "error": None,
+                    "data": {"btc_dominance": 55.0, "quote": {"USD": {"total_market_cap": 1e12}}}}
+        if "content/latest" in path:
+            return {"ok": True, "status": 200, "error": None,
+                    "data": [{"title": "Haber başlığı", "source_name": "Kaynak"}]}
+        return {"ok": False, "status": 403, "data": None,
+                "error": "HTTP 403 (1006): plan doesn't support"}
+
+    monkeypatch.setattr(cmc_client, "_http_get", fake_http)
+    cmc_client._BRIEF_CACHE = None
+    cmc_client._PLAN_BLOCKED.clear()
+
+    data = asyncio.run(cmc_client.brief(force=True))
+
+    assert any("community/trending/token" in p for p in seen), "trending topluluk ucundan gelmeli"
+    assert data["fear_greed"]["value"] == 20
+    assert data["trending"][0]["symbol"] == "PEPE"
+    assert data["gainers"][0]["symbol"] == "ABC"
+    assert data["losers"][0]["symbol"] == "ABC"
+    assert data["news"][0]["title"] == "Haber başlığı"
+
+
+def test_categories_and_tags_are_used(store, monkeypatch):
+    """Kategoriler (sektör rotasyonu) ve sembol etiketleri ücretsiz uçlardan gelir."""
+    def fake_http(path, params=None, key="", timeout=6.0):
+        if "cryptocurrency/categories" in path:
+            return {"ok": True, "status": 200, "error": None, "data": [
+                {"id": "ai", "name": "AI", "market_cap": 5e10, "avg_price_change": 6.2, "num_tokens": 40},
+                {"id": "meme", "name": "Meme", "market_cap": 1e10, "avg_price_change": -2.0, "num_tokens": 90},
+            ]}
+        if "cryptocurrency/info" in path:
+            return {"ok": True, "status": 200, "error": None, "data": {
+                "OPG": {"id": 1, "symbol": "OPG", "category": "token", "tags": ["AI", "DePIN"]}}}
+        if "quotes/latest" in path:
+            return {"ok": True, "status": 200, "error": None, "data": {
+                "OPG": {"id": 1, "symbol": "OPG", "cmc_rank": 400,
+                        "quote": [{"symbol": "USD", "price": 0.16, "market_cap": 4e7}]}}}
+        return {"ok": False, "status": 403, "data": None, "error": "HTTP 403 (1006): plan"}
+
+    monkeypatch.setattr(cmc_client, "_http_get", fake_http)
+    cmc_client._CAT_CACHE = None
+    cmc_client._INFO_CACHE.clear()
+    cmc_client._QUOTES_CACHE.clear()
+    cmc_client._PERF_CACHE.clear()
+    cmc_client._PEAK_CACHE.clear()
+    cmc_client._PLAN_BLOCKED.clear()
+
+    cats = asyncio.run(cmc_client.categories(8, force=True))
+    assert cats[0]["name"] == "AI" and cats[0]["avg_change_24h"] == 6.2
+    assert cats[1]["name"] == "Meme"
+
+    rows = [{"symbol": "OPGTRY", "unified_score": 90}]
+    asyncio.run(cmc_client.attach_market_context(rows, top_n=1))
+    profile = rows[0]["cmc"]
+    assert profile["tags"] == ["AI", "DePIN"]
+    assert profile["coin_category"] == "token"

@@ -572,7 +572,9 @@ def _symbols(rows: Any, limit: int = 10) -> list[dict]:
     for row in (rows or [])[:limit]:
         if not isinstance(row, dict):
             continue
-        quote = ((row.get("quote") or {}).get("USD") or {})
+        # v3 yanıtında `quote` LİSTE olabilir (quotes/latest ve listings/latest);
+        # `_quote_usd` iki biçimi de okur.
+        quote = _quote_usd(row)
         out.append({
             "symbol": row.get("symbol"),
             "name": row.get("name"),
@@ -582,6 +584,115 @@ def _symbols(rows: Any, limit: int = 10) -> list[dict]:
             "change_24h": quote.get("percent_change_24h"),
             "volume_24h": quote.get("volume_24h"),
         })
+    return out
+
+
+_CAT_CACHE: tuple[float, dict] | None = None
+_CAT_TTL = 1800.0
+_INFO_CACHE: dict[str, tuple[float, dict]] = {}
+_INFO_TTL = 86400.0
+
+
+async def categories(limit: int = 8, force: bool = False) -> list[dict]:
+    """Sektör kategorileri (piyasa değeri + ortalama değişim). ÜCRETSİZ planda var.
+
+    Radar/LLM bağlamı için: "AI/meme sektörü bugün +%6" gibi rotasyon bilgisi.
+    Dönen liste piyasa değerine göre büyükten küçüğe sıralıdır. 30 dk önbellek.
+    """
+    global _CAT_CACHE
+    now = time.time()
+    if not force and _CAT_CACHE and (now - _CAT_CACHE[0]) < _CAT_TTL:
+        return _CAT_CACHE[1].get("items") or []
+    res = await _call("/v1/cryptocurrency/categories", {"limit": 100}, credits=1, public_ok=True)
+    items: list[dict] = []
+    if res["ok"]:
+        rows = res["data"] or []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                cap = float(row.get("market_cap") or 0)
+            except (TypeError, ValueError):
+                cap = 0.0
+            items.append({"id": row.get("id"), "name": row.get("name") or row.get("title"),
+                          "market_cap": cap, "avg_change_24h": row.get("avg_price_change"),
+                          "num_tokens": row.get("num_tokens")})
+        items.sort(key=lambda x: x.get("market_cap") or 0, reverse=True)
+        items = items[:max(1, min(30, limit))]
+    _CAT_CACHE = (now, {"items": items})
+    return items
+
+
+async def info_tags(symbols: list[str]) -> dict:
+    """Sembol etiketleri/kategorisi (`/v2/cryptocurrency/info`). 24 sa önbellek.
+
+    NEDEN: radar bir sembolü yalnız fiyatla değil SEKTÖRÜYLE de değerlendirsin
+    (AI, meme, RWA...). 1 kredi/250 sembol; etiketler nadiren değişir → 24 saat.
+    """
+    wanted = [str(s).upper() for s in dict.fromkeys(base_asset(x) for x in symbols or []) if s]
+    if not wanted:
+        return {}
+    now = time.time()
+    out: dict[str, dict] = {}
+    todo: list[str] = []
+    for sym in wanted:
+        cached = _INFO_CACHE.get(sym)
+        if cached and (now - cached[0]) < _INFO_TTL:
+            out[sym] = cached[1]
+        else:
+            todo.append(sym)
+    if todo:
+        res = await _call("/v2/cryptocurrency/info", {"symbol": ",".join(todo)},
+                          credits=max(1, len(todo) // 250 + 1), public_ok=True)
+        if res["ok"]:
+            data = res["data"] or {}
+            rows = data.values() if isinstance(data, dict) else data
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                sym = str(row.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                payload = {"category": row.get("category"),
+                           "tags": [t for t in (row.get("tags") or []) if isinstance(t, str)][:6]}
+                _INFO_CACHE[sym] = (now, payload)
+                if sym in todo:
+                    out[sym] = payload
+    return out
+
+
+async def listings_sorted(sort: str = "percent_change_24h", direction: str = "desc",
+                       limit: int = 10) -> dict:
+    """`listings/latest` ile sıralı liste — ÜCRETSİZ planda çalışır.
+
+    NEDEN: `trending/gainers-losers` Basic planda 403 (1006). Ama
+    `cryptocurrency/listings/latest` ücretsiz ve `sort`/`sort_dir` destekli;
+    aynı "en çok yükselen/düşen" bilgisini buradan üretiyoruz (1 kredi/250 kayıt).
+    """
+    return await _call("/v1/cryptocurrency/listings/latest",
+                       {"start": 1, "limit": max(1, min(100, limit)),
+                        "sort": sort, "sort_dir": direction,
+                        "convert": "USD", "cryptocurrency_type": "all"},
+                       credits=1, public_ok=True)
+
+
+async def community_trending(limit: int = 10) -> dict:
+    """Topluluk etkileşimine göre trend semboller — 0 KREDİ, ücretsiz planda var.
+
+    NEDEN: `cryptocurrency/trending/latest` Basic planda 403. Topluluk uç noktası
+    aynı işi (neyin konuşulduğu) sıfır krediyle verir.
+    """
+    return await _call("/v1/community/trending/token", {"limit": max(1, min(50, limit))},
+                       credits=0, public_ok=True)
+
+
+def _symbols_basic(rows, limit: int = 10) -> list[dict]:
+    """`community/trending/token` gibi quote içermeyen listeler için sade eşleme."""
+    out: list[dict] = []
+    for row in (rows or [])[:limit]:
+        if isinstance(row, dict):
+            out.append({"symbol": row.get("symbol"), "name": row.get("name"),
+                        "cmc_id": row.get("id"), "cmc_rank": row.get("cmc_rank")})
     return out
 
 
@@ -596,20 +707,41 @@ async def brief(force: bool = False) -> dict:
     if not force and _BRIEF_CACHE and (now - _BRIEF_CACHE[0]) < BRIEF_TTL:
         return _BRIEF_CACHE[1]
 
+    # 2026-11-25 (ücretsiz plan taraması): `trending/*` ve `gainers-losers`
+    # Basic planda 403 (1006) dönüyor. Aynı bilgiler ÜCRETSİZ uçlardan üretilir:
+    #   trending  → /v1/community/trending/token   (0 kredi)
+    #   gainers   → /v1/cryptocurrency/listings/latest sort=percent_change_24h
+    #   news      → /v1/content/latest             (0 kredi)
     fng = await _call("/v3/fear-and-greed/latest", credits=1, public_ok=True)
     glob = await _call("/v1/global-metrics/quotes/latest", credits=1, public_ok=True)
-    trending = await _call("/v1/cryptocurrency/trending/latest", {"limit": 10}, credits=2)
-    movers = await _call("/v1/cryptocurrency/trending/gainers-losers", {"limit": 10}, credits=2)
+    trending = await community_trending(10)
+    listed = await listings_sorted("percent_change_24h", "desc", 10)
+    listed_losers = await listings_sorted("percent_change_24h", "asc", 5)
+    news_rows = await _call("/v1/content/latest", {"limit": 5, "news_type": "news"},
+                            credits=0, public_ok=True)
+    cats = await categories(8)
+
+    def _news(rows):
+        out = []
+        for item in (rows or [])[:5]:
+            if isinstance(item, dict):
+                out.append({"title": item.get("title"), "source": item.get("source_name"),
+                            "published_at": item.get("released_at") or item.get("created_at")})
+        return out or None
 
     payload = {
         "fetched_at": now,
         "fear_greed": _fear_greed(fng["data"]) if fng["ok"] else None,
         "global": _global(glob["data"]) if glob["ok"] else None,
-        "trending": _symbols(trending["data"]) if trending["ok"] else None,
-        "gainers": _symbols(movers["data"], 10) if movers["ok"] else None,
+        "trending": (_symbols_basic(trending["data"], 10) if trending["ok"]
+                     else (_symbols(listed["data"], 10) if listed["ok"] else None)),
+        "gainers": _symbols(listed["data"], 10) if listed["ok"] else None,
+        "losers": _symbols(listed_losers["data"], 5) if listed_losers["ok"] else None,
+        "news": _news(news_rows["data"]) if news_rows["ok"] else None,
+        "categories": cats or None,
         "errors": {name: res["error"] for name, res in
-                   (("fear_greed", fng), ("global", glob),
-                    ("trending", trending), ("movers", movers)) if not res["ok"]},
+                   (("fear_greed", fng), ("global", glob), ("trending", trending),
+                    ("listings", listed), ("news", news_rows)) if not res["ok"]},
     }
     _BRIEF_CACHE = (now, payload)
     return payload
@@ -865,6 +997,11 @@ async def attach_market_context(rows: list[dict], top_n: int = 15) -> dict:
     if not profiles:
         return {"enriched": 0, "reason": "CMC verisi yok"}
     perf = await performance_map(symbols)
+    # Sektör etiketleri (ücretsiz uç; 24 sa önbellek) — LLP/radar bağlamı.
+    try:
+        tags_map = await info_tags(symbols)
+    except Exception:
+        tags_map = {}
     # ATH ucu plan dışıysa (403) 180 günlük zirveden YAKLAŞIK uzaklık hesaplanır.
     need_peak = [str(r.get("symbol") or "") for r in ordered
                  if not (perf.get(base_asset(str(r.get("symbol") or ""))) or {}).get("ath_distance_pct")]
@@ -879,6 +1016,11 @@ async def attach_market_context(rows: list[dict], top_n: int = 15) -> dict:
         merged = dict(profile)
         if ath:
             merged.update({k: v for k, v in ath.items() if v is not None})
+        tag_payload = tags_map.get(sym) or {}
+        if tag_payload.get("tags"):
+            merged["tags"] = tag_payload["tags"]
+        if tag_payload.get("category"):
+            merged["coin_category"] = tag_payload["category"]
         if not merged.get("ath_distance_pct"):
             high = (peaks.get(str(row.get("symbol") or "").replace("_", "").upper()) or {}).get("peak_180d")
             price = merged.get("price_usd")
