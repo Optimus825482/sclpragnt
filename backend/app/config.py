@@ -995,6 +995,14 @@ class Config:
     # DEĞİL. Push yalnız bildirim kanalıdır; giriş kalitesi skor/ATR/OI/kalite
     # kapılarıyla belirlenir. Açmak için AUTO_PAPER_ONLY_ON_PUSH=1.
     AUTO_PAPER_ONLY_ON_PUSH = os.getenv("AUTO_PAPER_ONLY_ON_PUSH", "0").strip().lower() in {"1", "true", "yes", "on"}
+    # 2026-11-25 (kullanıcı): TEK KANAL → SÜPER TARAMA. Push bildirimleri ve
+    # otonom paper YALNIZ süper taramadan beslenir; diğer radar yolları bildirim
+    # göndermez, işlem açmaz. Kapatmak için SUPER_SCAN_ONLY=0.
+    SUPER_SCAN_ONLY = os.getenv("SUPER_SCAN_ONLY", "1").strip().lower() not in {"0", "false", "no", "off"}
+    SUPER_SCAN_INTERVAL_SEC = max(20, int(os.getenv("SUPER_SCAN_INTERVAL_SEC", "60")))
+    SUPER_SCAN_PUSH_TOP_N = max(1, min(10, int(os.getenv("SUPER_SCAN_PUSH_TOP_N", "2"))))
+    SUPER_SCAN_PUSH_MIN_SCORE = float(os.getenv("SUPER_SCAN_PUSH_MIN_SCORE", "65"))
+    SUPER_SCAN_PUSH_COOLDOWN_MIN = float(os.getenv("SUPER_SCAN_PUSH_COOLDOWN_MIN", "30"))
     AUTO_PAPER_BLOCK_ON_REGIME_BADGE = os.getenv("AUTO_PAPER_BLOCK_ON_REGIME_BADGE", "0").strip().lower() in {"1", "true", "yes", "on"}
     # 2026-10-17 (aynı ölçüm, tablo 2/2b): kalkan kapalıyken MFI≥90/RSI≥80 ile elenen trend_devam
     # adayları geçenlerle aynı isabette (hit60 %19,0 vs %19,8, MAE daha küçük) → "penalty": eleme

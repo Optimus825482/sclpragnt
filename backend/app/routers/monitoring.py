@@ -2377,6 +2377,14 @@ async def _notify(candidates_list, settings, heartbeat_pool=None) -> list:
     """
     if not settings.get("enabled", True):
         return []
+    # 2026-11-25 (kullanıcı): TEK KANAL → SÜPER TARAMA. Bu bayrak açıkken radar
+    # döngüleri push ÜRETMEZ; bildirim yalnız süper tarama döngüsünden gider.
+    # Testler ve özel kurulumlar bu kapıyı kapatabilir
+    # (`monitoring.NOTIFY_SOURCES_UNRESTRICTED = True`). Üretimde False.
+    if getattr(config, "SUPER_SCAN_ONLY", False) and not NOTIFY_SOURCES_UNRESTRICTED:
+        candidates_list = [c for c in (candidates_list or []) if c.get("super_scan")]
+        if not candidates_list:
+            return []
     # TEK EŞİK (2026-09-26, #8): `min_raw` artık `eff_min_score`'nin ters
     # haritasıdır, yani ikisi AYNI kapıdır. İkisini birden uygulamak iki
     # AYRI kapı üretiyordu (ham 1400 vs panel 71.5→ham 1730) ve 1400-1730
@@ -7743,6 +7751,9 @@ def stop_monitoring_loop():
 # SÜPER TARAMA (2026-11-25, kullanıcı): tüm tarama algoritmaları TEK listede.
 # ---------------------------------------------------------------------------
 _SUPER_SCAN_CACHE: dict = {"generated_at": 0.0, "payload": None}
+
+#: Testlerde/özel kurulumlarda `_notify` kanal filtresini kapatır (üretimde False).
+NOTIFY_SOURCES_UNRESTRICTED = False
 
 
 @router.get("/api/radar/super-scan")

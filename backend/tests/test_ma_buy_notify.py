@@ -98,7 +98,8 @@ class RuleSignalGateTests(unittest.TestCase):
             self.assertNotIn(res.get("reason"), ("score_below_min", "mode_not_allowed"))
 
     def test_own_switch_blocks_when_off(self):
-        with patch.object(auto_paper.config, "MA_BUY_AUTO_PAPER_ENABLED", False, create=True):
+        # 2026-11-25: TEK KANAL kapısı kural testini maskelemesin.
+        with patch.object(auto_paper.config, "MA_BUY_AUTO_PAPER_ENABLED", False, create=True),              patch.object(auto_paper.config, "SUPER_SCAN_ONLY", False, create=True):
             res = self._run(self._notif(), {"min_score": 0.0})
         self.assertEqual(res.get("reason"), "ma_buy_paper_kapali")
 

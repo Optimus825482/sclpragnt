@@ -648,6 +648,11 @@ async def _entry_context(notification: dict) -> tuple[dict | None, dict | None, 
         return settings, None, None, False
 
     _source = str(notification.get("source") or "")
+    # 2026-11-25 (kullanıcı): TEK KANAL → SÜPER TARAMA. Otonom paper yalnız
+    # süper taramanın ürettiği zarfları kabul eder; diğer radar/LLM yolları
+    # işlem açamaz (SUPER_SCAN_ONLY=0 ile eski davranışa dönülür).
+    if getattr(config, "SUPER_SCAN_ONLY", False) and _source != "super_scan":
+        return settings, _blocked(symbol, "not_super_scan", source=_source or "bilinmiyor"), symbol, False
     rule_signal = _source in _RULE_SIGNAL_SOURCES
     if rule_signal and not getattr(config, _RULE_SIGNAL_SWITCHES[_source], True):
         return settings, _blocked(symbol, f"{_source}_paper_kapali"), symbol, rule_signal

@@ -32,6 +32,12 @@ def _confirm_rule_off_by_default(request, monkeypatch):
     monkeypatch.setattr(config, "RADAR_TARGET_ML_BLEND_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "RADAR_NOTIFY_SHOW_ML_PROB", True, raising=False)
     monkeypatch.setattr(config, "RADAR_FUSION_TARGET_DYNAMIC", False, raising=False)
+    # 2026-11-25: TEK KANAL → süper tarama kapısı. `_notify` artık yalnız
+    # süper tarama adaylarını geçirir; mekanik testler eski davranışı sınar →
+    # paket varsayılanında kanal filtresi KAPALI. Kapının kendisi
+    # `test_super_scan_channel.py` içinde açıkça sınanır.
+    from app.routers import monitoring as _monitoring
+    monkeypatch.setattr(_monitoring, "NOTIFY_SOURCES_UNRESTRICTED", True, raising=False)
 
 
 def pytest_configure(config):

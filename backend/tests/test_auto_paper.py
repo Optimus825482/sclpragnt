@@ -41,6 +41,10 @@ def _make_notification(symbol="APTEST", score=60.0, target_pct=2.0, price=100.0,
         "price": price,
         "mode": "trend_devam",
         "expected_price": price * (1 + target_pct / 100),
+        # 2026-11-25: TEK KANAL → süper tarama. Otonom paper yalnız
+        # source="super_scan" zarflarını kabul eder; fixture bu kaynağı taşır.
+        "source": "super_scan",
+        "super_scan": True,
     }
 
 

@@ -1366,6 +1366,11 @@ async def startup_services():
     # 5.000 TL sanal portföyün açık pozisyonlarını yönetir (TP/trailing/süre).
     # 2026-11-25 (kullanıcı): Kombine Paper kaldırıldı → yönetim döngüsü
     # yalnız COMBINED_PAPER_ENABLED=1 ise başlar (varsayılan kapalı).
+    # 2026-11-25 (kullanıcı): TEK KANAL → SÜPER TARAMA. Bildirim + otonom paper
+    # yalnız bu döngüden beslenir (SUPER_SCAN_ONLY=1 iken).
+    from app.super_scan_notify import super_scan_loop
+    if getattr(config, "SUPER_SCAN_ONLY", False):
+        _start_background(super_scan_loop, "super-scan")
     if getattr(config, "COMBINED_PAPER_ENABLED", False):
         _start_background(combined_paper_management_loop, "combined-paper")
     await asyncio.sleep(_yield)
