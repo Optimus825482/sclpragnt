@@ -99,3 +99,18 @@ def test_notify_filter_blocks_non_super_when_enforced(monkeypatch):
 
     out = asyncio.run(run())
     assert out == [], "süper tarama dışı aday bildirilmemeli"
+
+
+def test_envelope_has_push_required_fields():
+    """`_send_push` url/tag/title/message ZORUNLU okur; eksikse push düşer."""
+    notif = super_scan_notify._envelope({"symbol": "AAA_TRY", "super_score": 70.0})
+    for key in ("url", "tag", "title", "message"):
+        assert notif.get(key), f"eksik alan: {key}"
+    # hedef yoksa çökmemeli
+    assert "hedef —" in notif["message"]
+
+
+def test_envelope_target_formatting():
+    notif = super_scan_notify._envelope({"symbol": "AAA_TRY", "super_score": 70.0,
+                                         "target_pct": 3.0})
+    assert "hedef %3.0" in notif["message"]

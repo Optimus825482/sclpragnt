@@ -733,14 +733,18 @@ def _resolve_live_price(symbol_underscore: str) -> float | None:
     except Exception:
         pass
     try:
-        from app.binance_tr_public import ticker_price  # tembel import
-        rows = ticker_price([symbol])
+        # 2026-11-25 DÜZELTME (canlı log): `ticker_price` ASYNC; burada await
+        # edilmeden çağrıldığı için `rows` coroutine oluyordu →
+        # "coroutine 'ticker_price' was never awaited" ve fiyat DAİMA None.
+        # Toz kapısı hiç çalışmıyordu. Senkron `_get_json` kullanılır.
+        from app.binance_tr_public import _get_json  # tembel import
+        rows = _get_json("/api/v3/ticker/price", {"symbol": symbol})
         if isinstance(rows, list):
-            for row in rows:
-                if str(row.get("symbol") or "").upper() == symbol:
-                    price = float(row.get("price") or 0)
-                    if price > 0:
-                        return price
+            rows = next((r for r in rows if str(r.get("symbol") or "").upper() == symbol), None)
+        if isinstance(rows, dict):
+            price = float(rows.get("price") or 0)
+            if price > 0:
+                return price
     except Exception as exc:
         logger.debug("Binance TR canlı fiyat hidrasyonu başarısız (%s): %s", symbol, exc)
     return None

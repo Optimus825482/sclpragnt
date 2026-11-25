@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -679,6 +680,18 @@ async def info_tags(symbols: list[str]) -> dict:
     if todo:
         res = await _call("/v2/cryptocurrency/info", {"symbol": ",".join(todo)},
                           credits=max(1, len(todo) // 250 + 1), public_ok=True)
+        # 2026-11-25 (canlı log): CMC tek GEÇERSİZ sembolde 400 dönüp TÜM parti
+        # etiketlerini düşürüyordu ("Invalid value for 'symbol': 'AIGENSYN'").
+        # Hatalı sembolü ayıklayıp bir kez yeniden denenir; o sembol önbelleğe
+        # "etiket yok" olarak yazılır ki sonraki turlarda tekrar denenmesin.
+        if not res["ok"] and int(res.get("status") or 0) == 400:
+            bad = re.findall(r"'([A-Za-z0-9.\-]{1,20})'", str(res.get("error") or ""))
+            remaining = [s_ for s_ in todo if s_ not in set(bad)]
+            for sym in bad:
+                _INFO_CACHE[sym] = (now, {"category": None, "tags": []})
+            if remaining and len(remaining) < len(todo):
+                res = await _call("/v2/cryptocurrency/info", {"symbol": ",".join(remaining)},
+                                  credits=max(1, len(remaining) // 250 + 1), public_ok=True)
         if res["ok"]:
             data = res["data"] or {}
             rows = data.values() if isinstance(data, dict) else data

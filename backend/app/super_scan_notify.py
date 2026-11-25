@@ -57,13 +57,20 @@ def _envelope(item: dict) -> dict:
     tags = ", ".join(item.get("tags") or []) or ""
     flags = ", ".join(item.get("cmc_flags") or []) or ""
     extra = " · ".join(x for x in (tags, flags) if x)
-    message = (f"Skor {score:.1f} · hedef %{float(target):.1f} · {horizon} dk\n"
-               f"Kaynaklar: {sources}" + (f"\n{extra}" if extra else ""))
+    try:
+        target_txt = f"%{float(target):.1f}" if target is not None else "—"
+    except (TypeError, ValueError):
+        target_txt = "—"
+    head = f"Skor {score:.1f} · hedef {target_txt} · {horizon} dk"
+    message = head + "\n" + f"Kaynaklar: {sources}" + (("\n" + extra) if extra else "")
     return {
         "symbol": symbol,
         "title": f"⚡ Süper Tarama · {symbol.replace('_', '')}",
         "message": message,
         "tag": f"super-{symbol}",
+        # `_send_push` bu alanı ZORUNLU okuyor; eksikse "KeyError: 'url'" ile
+        # tüm bildirim düşüyordu (canlı log 2026-11-25).
+        "url": f"/symbol-analysis?symbol={symbol}",
         "score": score,
         "target_pct": target,
         "horizon_minutes": horizon,
