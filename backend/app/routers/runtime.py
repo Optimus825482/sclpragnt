@@ -1208,7 +1208,11 @@ async def bootstrap_symbol_activity():
                 if not fresh["timestamps"]:
                     return
                 market.klines["5m"][symbol] = fresh
-                market.tickers[symbol] = {"symbol": symbol, "last_price": float(rows[-1][4]), "timestamp": int(time.time() * 1000), "source": "binance_tr_public_rest"}
+                market.tickers[symbol] = {
+                    "symbol": symbol, "last_price": float(rows[-1][4]),
+                    "timestamp": int(time.time() * 1000), "source": "binance_tr_public_rest",
+                    "candle_close_time_ms": rows[-1][6], "candle_timeframe": "5m",
+                }
             except Exception as exc:
                 print(f"[Activity warmup] {symbol}: {exc}", flush=True)
     await asyncio.gather(*(warm(symbol) for symbol in hot_symbols))

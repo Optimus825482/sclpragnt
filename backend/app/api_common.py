@@ -331,6 +331,13 @@ async def _fresh_public_price(symbol: str):
         return price, {**ticker, "source": source}
     repaired = {"symbol": normalized, "last_price": price, "timestamp": int(time.time() * 1000),
                 "source": source}
+    # A fresh miniTicker can be returned with its specific WS source label.
+    # Keep the feed timestamp separately from the legacy cache repair timestamp.
+    if source and "_ws" in source:
+        observed = market.get_ticker(normalized) or {}
+        if observed.get("source") == source and observed.get("last_price") == price:
+            for key in ("exchange_event_time_ms", "candle_close_time_ms", "candle_timeframe", "candle_is_closed"):
+                repaired[key] = observed.get(key)
     market.tickers[normalized] = repaired
     return price, repaired
 

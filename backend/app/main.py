@@ -2837,7 +2837,10 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
                     "1d": market.klines.get("1d", {}).get(sym, {}),
                 }
                 last_price = float(hydrated["closes"][-1]) if hydrated["closes"] else float(rows[-1][4])
-                ticker = {"symbol": sym, "last_price": last_price, "timestamp": int(time.time() * 1000)}
+                ticker = {"symbol": sym, "last_price": last_price, "timestamp": int(time.time() * 1000),
+                          "source": "symbol_analysis_rest_kline", "candle_timeframe": tf,
+                          "candle_close_time_ms": hydrated.get("last_closed_at_ms") if hydrated["closes"] else None,
+                          "candle_is_closed": bool(hydrated["closes"])}
                 market.tickers[sym] = ticker
             else:
                 count = len(rows) if rows else 0

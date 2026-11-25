@@ -21,6 +21,7 @@ import logging
 import os
 import time
 import math
+from contextvars import ContextVar
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -45,6 +46,29 @@ def _session_username(request: Request) -> str | None:
 
 logger = logging.getLogger("scalper.auto_paper")
 router = APIRouter()
+_exit_evidence: ContextVar[dict | None] = ContextVar("auto_paper_exit_evidence", default=None)
+
+
+def _price_evidence(price: float, quote: dict | None, *, observed_at: float) -> dict:
+    quote = quote or {}
+    return {
+        "raw_price": price,
+        "source": quote.get("source"),
+        "cache_timestamp_ms": quote.get("timestamp"),
+        "exchange_event_time_ms": quote.get("exchange_event_time_ms"),
+        "candle_close_time_ms": quote.get("candle_close_time_ms"),
+        "candle_timeframe": quote.get("candle_timeframe"),
+        "candle_is_closed": quote.get("candle_is_closed"),
+        "observed_at": observed_at,
+    }
+
+
+def _settlement_input(reason: str, current: float, trigger: float | None = None) -> float:
+    evidence = _exit_evidence.get()
+    if evidence is not None:
+        evidence["raw_price"] = current
+        evidence["trigger_price"] = trigger
+    return paper_ledger.exit_fill(reason, current, trigger)
 
 #: 2026-10-18: push kapısı / nabız istisnası engel nedenleri. Nabız nedeni Türkçe metin olarak kalır:
 #: Radar → TARAMA LOGLARI satırı ("paper: engellendi (...)") eskisiyle birebir aynı görünsün.
@@ -698,6 +722,7 @@ async def _entry_context(notification: dict) -> tuple[dict | None, dict | None, 
                 "sabit TP/SL'de zarar verir)", min_atr)
             _entry_context._atr_trail_warned = True
         min_atr = 0.0
+    atr_pct = None
     if min_atr > 0 and not rule_signal:
         try:
             atr_pct = float(notification.get("atr_pct") or 0.0)
@@ -728,6 +753,7 @@ async def _entry_context(notification: dict) -> tuple[dict | None, dict | None, 
     # 3.0% daha yuksek ama sd 2.4x ve adaylarin yarisi gider -> 1.2% secildi.
     # OI verisi olmayan adayda (spot-only sembol) kapi UYGULANMAZ — fail-open.
     min_oi = float(settings.get("min_oi_change_pct", 0.0) or 0.0)
+    oi_chg = None
     if min_oi > 0 and not rule_signal:
         try:
             oi_chg = notification.get("oi_change_pct")
@@ -739,6 +765,13 @@ async def _entry_context(notification: dict) -> tuple[dict | None, dict | None, 
                                       oi_change_pct=round(oi_chg, 2),
                                       min_oi_change_pct=min_oi), symbol, rule_signal
 
+    diagnostics = notification.get("_paper_diagnostics")
+    if diagnostics is not None:
+        diagnostics["thresholds"] = {
+            "score": {"minimum": min_score, "evaluated": not rule_signal},
+            "atr_pct": {"minimum": min_atr, "evaluated": bool(atr_pct and atr_pct > 0)},
+            "oi_change_pct": {"minimum": min_oi, "evaluated": oi_chg is not None},
+        }
     return settings, None, symbol, rule_signal
 
 
@@ -939,9 +972,11 @@ async def _resolve_entry_price(notification: dict, symbol: str, settings: dict) 
         config.PASSIVE_SYMBOLS.discard(symbol)
 
     ticker = market.get_ticker(symbol)
+    price_quote = ticker
     current_price = float(ticker.get("last_price") or 0) if ticker else 0
     if current_price <= 0:
         current_price = float(notification.get("price") or 0)
+        price_quote = {"source": "notification_fallback"}
     if current_price <= 0:
         return current_price, _blocked(symbol, "no_price")
 
@@ -956,6 +991,7 @@ async def _resolve_entry_price(notification: dict, symbol: str, settings: dict) 
             if rest_px:
                 current_price = float(rest_px)
                 freshness = {"fresh": True, "age_sec": 0.0, "source": "binance_tr_rest_auto_paper"}
+                price_quote = {"source": freshness["source"]}
         except Exception as exc:
             logger.warning("auto_paper %s: REST ticker fetch hatasi: %s", symbol, exc)
 
@@ -967,6 +1003,7 @@ async def _resolve_entry_price(notification: dict, symbol: str, settings: dict) 
             current_price = float(notification["price"])
             freshness = {"fresh": True, "age_sec": round(time.time() - notif_time, 1),
                          "source": "notification_fallback"}
+            price_quote = {"source": freshness["source"], "timestamp": notif_time * 1000}
 
     if current_price <= 0:
         current_price = float(notification.get("price") or 0)
@@ -978,6 +1015,7 @@ async def _resolve_entry_price(notification: dict, symbol: str, settings: dict) 
 
     block_weak_mtf = bool(settings.get("block_weak_mtf", True))
     min_mtf_confluence = float(settings.get("min_mtf_confluence", 45.0))
+    mtf_verdict = mtf_confluence = None
     if block_weak_mtf:
         mtf_verdict = notification.get("macd_mtf_verdict")
         mtf_confluence = notification.get("macd_mtf_confluence")
@@ -996,6 +1034,14 @@ async def _resolve_entry_price(notification: dict, symbol: str, settings: dict) 
             return current_price, _blocked(symbol, "weak_mtf_confluence", price=current_price,
                                            confluence=mtf_confluence, verdict=mtf_verdict)
 
+    diagnostics = notification.get("_paper_diagnostics")
+    if diagnostics is not None:
+        diagnostics["price"] = _price_evidence(current_price, price_quote, observed_at=time.time())
+        diagnostics["price"]["gate_age_seconds"] = freshness.get("age_sec")
+        diagnostics["mtf"] = {
+            "enabled": block_weak_mtf, "minimum": min_mtf_confluence,
+            "verdict": mtf_verdict, "confluence": mtf_confluence,
+        }
     return current_price, None
 
 
@@ -1101,6 +1147,8 @@ async def _try_open_impl(notification: dict) -> dict | None:
     """
     try:
         # 1) Ayar + kimlik + skor/mod kapıları
+        if notification.get("source") == "super_scan":
+            notification = {**notification, "_paper_diagnostics": {"schema_version": 1}}
         settings, block, symbol, rule_signal = await _entry_context(notification)
         if block is not None:
             return block
@@ -1144,6 +1192,12 @@ async def _try_open_impl(notification: dict) -> dict | None:
         if block is not None:
             return block
 
+        diagnostics = notification.get("_paper_diagnostics")
+        if diagnostics is not None:
+            diagnostics["stages_without_block"] = [
+                "entry_context", "entry_quality", "cooldown", "price_and_mtf",
+                "reopen", "position_limit", "sizing",
+            ]
         # 8) Yeni pozisyon aç (atomik; DB tarafında çift-açılış kontrolü de var)
         return await _open_new_trade(symbol, notification, current_price, settings,
                                      order_value=order_value, balance=balance)
@@ -1655,6 +1709,17 @@ def _build_trade_record(symbol: str, notification: dict, plan: dict, settings: d
         "created_at": now,
         "updated_at": now,
     }
+    diagnostics = notification.get("_paper_diagnostics")
+    if diagnostics is not None:
+        trade_data["diagnostics"] = {
+            **diagnostics,
+            "scan": notification.get("scan_evidence"),
+            "source": notification.get("source"),
+            "detected_at": notification.get("detected_at"),
+            "sent_via_push": notification.get("sent_via_push"),
+            "initial_stop_price": plan["stop_loss_price"],
+            "initial_target_price": plan["take_profit_price"],
+        }
     signal = {
         "timestamp": now,
         "symbol": symbol,
@@ -1904,6 +1969,7 @@ async def _fresh_trade_price(trade: dict, symbol: str, now: float):
     # Güncel fiyat
     ticker = market.get_ticker(symbol)
     current_price = float(ticker.get("last_price") or 0) if ticker else 0
+    decision_quote = ticker if current_price > 0 else {"source": "stored_peak_or_entry"}
     # D-02 (2026-09-26 denetimi): TAZELİK KAPISI TÜM ÇIKIŞ YOLLARININ
     # ÖNÜNE alınır. Bayat/eksik ticker fiyatıyla kapanmak (aşağıdaki
     # max_hold ve symbol_deactivated yolları) gerçekleşmeyen bir fill fiyatı
@@ -1945,10 +2011,16 @@ async def _fresh_trade_price(trade: dict, symbol: str, now: float):
                 logger.debug("auto_paper %s: REST fiyat yedeği hatası (tekrar): %s", symbol, rest_exc)
         if rest_price and float(rest_price) > 0:
             current_price = float(rest_price)
+            decision_quote = _rest_info
             price_is_fresh = True
             if _stale_logged:
                 logger.info("auto_paper %s: bayat/eksik ticker yerine REST fiyatı kullanıldı (%.6f)",
                             symbol, current_price)
+    evidence = _exit_evidence.get()
+    if evidence is not None:
+        decision_price = current_price if price_is_fresh else last_known_price
+        evidence.update(_price_evidence(decision_price, decision_quote, observed_at=time.time()))
+        evidence["passed_freshness"] = price_is_fresh
     return current_price, price_is_fresh, last_known_price
 
 
@@ -1997,7 +2069,7 @@ async def _hold_stale_force_close(symbol: str, trade_id: int, now: float, hold_m
     logger.warning("auto_paper %s: taze fiyat alınamıyor ve süre %.1f dk >= max_hold %.0f dk × %.1f — "
                    "son bilinen fiyatla ZORLA kapatılıyor (çıkış=%.6f)",
                    symbol, hold_minutes, max_hold_minutes, _STALE_FORCE_CLOSE_FACTOR, last_known_price)
-    await _close_trade(trade_id, symbol, paper_ledger.exit_fill("stale_force_close", last_known_price),
+    await _close_trade(trade_id, symbol, _settlement_input("stale_force_close", last_known_price),
                        now, "stale_force_close")
     return True
 
@@ -2026,18 +2098,18 @@ async def _hold_plan_exit(trade: dict, symbol: str, trade_id: int, now: float, h
         return False
     # Hedef / stop aynı anda tetiklendiyse onlar kendi adı ve dolum modeliyle kapanır.
     if not tp_cancelled and take_profit is not None and current_price >= take_profit:
-        await _close_trade(trade_id, symbol, paper_ledger.exit_fill("take_profit", current_price, take_profit),
+        await _close_trade(trade_id, symbol, _settlement_input("take_profit", current_price, take_profit),
                            now, "take_profit")
         return True
     if effective_stop_loss is not None and current_price <= effective_stop_loss:
         _sl_reason = "breakeven_stop" if (effective_stop_loss != stop_loss) else "stop_loss"
         await _close_trade(trade_id, symbol,
-                           paper_ledger.exit_fill(_sl_reason, current_price, effective_stop_loss),
+                           _settlement_input(_sl_reason, current_price, effective_stop_loss),
                            now, _sl_reason)
         return True
     logger.info("auto_paper %s: PLAN SÜRESİ DOLDU (%.1f dk) — pozisyon kapatılıyor (çıkış=%.6f)",
                 symbol, hold_minutes, current_price)
-    await _close_trade(trade_id, symbol, paper_ledger.exit_fill(PLAN_EXIT_REASON, current_price),
+    await _close_trade(trade_id, symbol, _settlement_input(PLAN_EXIT_REASON, current_price),
                        now, PLAN_EXIT_REASON)
     return True
 
@@ -2081,7 +2153,7 @@ async def _hold_max_duration(trade: dict, symbol: str, trade_id: int, now: float
     exit_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
     logger.info("auto_paper %s: MAKSİMUM SÜRE DOLDU (%.1f dk >= %.1f dk) — pozisyon kapatılıyor (çıkış=%.6f)",
                 symbol, hold_minutes, max_hold_minutes, exit_price)
-    await _close_trade(trade_id, symbol, paper_ledger.exit_fill("max_duration", exit_price), now, "max_duration")
+    await _close_trade(trade_id, symbol, _settlement_input("max_duration", exit_price), now, "max_duration")
     return True
 
 
@@ -2137,7 +2209,7 @@ async def _check_tp_sl_exit(trade: dict, symbol: str, trade_id: int, now: float,
         tp_primary_exit_enabled = True
     if tp_primary_exit_enabled and not tp_cancelled and take_profit is not None and current_price >= take_profit:
         # D-08 (2026-09-12): TP dolumu TETİK fiyatından (gap-through: min(price, tp)).
-        await _close_trade(trade_id, symbol, paper_ledger.exit_fill("take_profit", current_price, take_profit),
+        await _close_trade(trade_id, symbol, _settlement_input("take_profit", current_price, take_profit),
                            now, "take_profit")
         return True, None
     # Peak güncelle
@@ -2153,7 +2225,7 @@ async def _check_tp_sl_exit(trade: dict, symbol: str, trade_id: int, now: float,
     # kapanış olur (aşağıdaki breakeven korumasıyla aynı mantık).
     if effective_stop_loss is not None and current_price <= effective_stop_loss:
         sl_reason = "breakeven_stop" if (effective_stop_loss != stop_loss) else "stop_loss"
-        await _close_trade(trade_id, symbol, paper_ledger.exit_fill(sl_reason, current_price, effective_stop_loss),
+        await _close_trade(trade_id, symbol, _settlement_input(sl_reason, current_price, effective_stop_loss),
                            now, sl_reason)
         return True, peak_price
     return False, peak_price
@@ -2218,7 +2290,7 @@ async def _apply_breakeven(trade: dict, symbol: str, trade_id: int, now: float, 
     # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ (min), gap iyimser yazılmaz.
     if breakeven_activated and current_breakeven_stop > 0 and current_price <= current_breakeven_stop:
         await _close_trade(trade_id, symbol,
-                           paper_ledger.exit_fill("breakeven_stop", current_price, current_breakeven_stop),
+                           _settlement_input("breakeven_stop", current_price, current_breakeven_stop),
                            now, "breakeven_stop")
         return True, breakeven_enabled, BREAKEVEN_TRAIL_GAP_PCT
     return False, breakeven_enabled, BREAKEVEN_TRAIL_GAP_PCT
@@ -2387,13 +2459,21 @@ async def _apply_trailing(trade: dict, symbol: str, trade_id: int, now: float, c
     # 2026-10-15 (madde 2): dolum iki fiyatın KÖTÜSÜ (min), gap iyimser yazılmaz.
     if trailing_activated and current_trailing_stop > 0 and current_price <= current_trailing_stop:
         await _close_trade(trade_id, symbol,
-                           paper_ledger.exit_fill("trailing_stop", current_price, current_trailing_stop),
+                           _settlement_input("trailing_stop", current_price, current_trailing_stop),
                            now, "trailing_stop")
         return True
     return False
 
 
 async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: float = 1.5, settings: dict | None = None):
+    token = _exit_evidence.set({"trade_id": trade["id"], "schema_version": 1, "trigger_price": None})
+    try:
+        await _manage_trade_step(trade, now, breakeven_trigger_pct, settings)
+    finally:
+        _exit_evidence.reset(token)
+
+
+async def _manage_trade_step(trade: dict, now: float, breakeven_trigger_pct: float, settings: dict | None):
     """Tek bir auto_paper pozisyonunu yönet — aşamalı orkestratör.
 
     Aşamalar: taze fiyat (WS+REST) -> süre çıkışları -> TP/SL + tepe ->
@@ -2490,9 +2570,16 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
 
         # DB güncelle + wallet iadesi + sinyal tek transaction'da
         # 2026-10-17: cüzdan iadesi PnL'in çıkış bacağıyla AYNI oranı kullanır.
+        evidence = _exit_evidence.get()
+        exit_diagnostics = {}
+        if evidence is not None and evidence["trade_id"] == trade_id:
+            exit_diagnostics["diagnostics"] = {
+                **evidence, "reason": reason, "before_slippage_price": exit_price,
+                "fill_price": fill_price, "recorded_exit_at": now,
+            }
         closed = await database.close_auto_paper_trade(
             trade_id, fill_price, now, pnl, pnl_pct, total_commission, reason,
-            exit_commission_pct=settled["exit_commission_pct"])
+            exit_commission_pct=settled["exit_commission_pct"], **exit_diagnostics)
         if not closed:
             logger.warning("auto_paper %s: kapanış başarısız (zaten kapalı?)", symbol)
             return

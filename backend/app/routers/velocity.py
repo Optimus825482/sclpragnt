@@ -2401,7 +2401,9 @@ async def _hydrate_market_cache_for(symbol: str):
                 now_ms = int(time.time() * 1000)
                 market.tickers[symbol] = {**(market.tickers.get(symbol) or {}),
                                             "symbol": symbol, "last_price": last_price,
-                                            "timestamp": now_ms, "source": "binance_tr_public_rest"}
+                                            "timestamp": now_ms, "source": "binance_tr_public_rest",
+                                            "exchange_event_time_ms": None, "candle_close_time_ms": None,
+                                            "candle_timeframe": None, "candle_is_closed": None}
     except Exception as exc:
         logger.warning("hydrate ticker %s: %s", symbol, exc)
     try:

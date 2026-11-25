@@ -351,6 +351,8 @@ class MarketData:
                             "last_price": last_price,
                             "timestamp": int(time.time() * 1000),
                             "source": f"{self.source_prefix}_rest_kline",
+                            "candle_close_time_ms": history["last_closed_at_ms"],
+                            "candle_timeframe": tf,
                         })
                     print(
                         f"[MarketData] geçmiş hazır | symbol={symbol} timeframe={tf} "
@@ -425,6 +427,8 @@ class MarketData:
                             "last_price": history["closes"][-1],
                             "timestamp": int(time.time() * 1000),
                             "source": f"{self.source_prefix}_rest_kline",
+                            "candle_close_time_ms": history["last_closed_at_ms"],
+                            "candle_timeframe": timeframe,
                         })
                     return True, None
                 except Exception as exc:
@@ -530,6 +534,10 @@ class MarketData:
                         "last_price": last_price,
                         "timestamp": now_ms,
                         "source": f"{self.source_prefix}_rest",
+                        "exchange_event_time_ms": None,
+                        "candle_close_time_ms": None,
+                        "candle_timeframe": None,
+                        "candle_is_closed": None,
                     }
             if not quote_volumes:
                 raise RuntimeError("24h ticker yanıtında geçerli sembol yok")
@@ -950,6 +958,7 @@ class MarketData:
                 "quote_volume": quote_volume,
                 "timestamp": event_ms,
                 "source": self.MINI_TICKER_ARR_SOURCE,
+                "exchange_event_time_ms": int(row.get("E") or 0) or None,
             }
             if sym in tracked:
                 current = self.tickers.get(sym) or {}
@@ -964,6 +973,10 @@ class MarketData:
                         "last_price": price,
                         "timestamp": event_ms,
                         "source": f"{self.source_prefix}_{self.MINI_TICKER_ARR_SOURCE}",
+                        "exchange_event_time_ms": int(row.get("E") or 0) or None,
+                        "candle_close_time_ms": None,
+                        "candle_timeframe": None,
+                        "candle_is_closed": None,
                     }
 
     def _process_ws_message(self, payload):
@@ -1024,6 +1037,7 @@ class MarketData:
                     "last_price": price,
                     "timestamp": int(data.get("E", time.time() * 1000) or time.time() * 1000),
                     "source": f"{self.source_prefix}_ws:ticker",
+                    "exchange_event_time_ms": int(data.get("E") or 0) or None,
                 }
                 self._mark_ws_event()
             return
@@ -1050,6 +1064,7 @@ class MarketData:
                     "last_price": price,
                     "timestamp": int(data.get("E", time.time() * 1000) or time.time() * 1000),
                     "source": f"{self.source_prefix}_ws:{sig[1]}",
+                    "exchange_event_time_ms": int(data.get("E") or 0) or None,
                 }
                 self._mark_ws_event()
             return
@@ -1097,6 +1112,10 @@ class MarketData:
             "last_price": close,
             "timestamp": event_ms,
             "source": f"{self.source_prefix}_ws",
+            "exchange_event_time_ms": int(kline_data.get("E") or 0) or None,
+            "candle_close_time_ms": closed_at_ms,
+            "candle_timeframe": tf,
+            "candle_is_closed": bool(candle.get("x")),
         }
         self._mark_ws_event()
 
@@ -1208,6 +1227,8 @@ class MarketData:
         # mini daha taze: fiyatı/zamanı devral, zengin alanları koru.
         return {**primary, "last_price": mini.get("last_price"),
                 "timestamp": mini_ms,
+                "exchange_event_time_ms": mini.get("exchange_event_time_ms"),
+                "candle_close_time_ms": None, "candle_timeframe": None, "candle_is_closed": None,
                 "source": f"{self.source_prefix}_{self.MINI_TICKER_ARR_SOURCE}"}
 
     def ticker_freshness(self, symbol, max_age_sec=None):

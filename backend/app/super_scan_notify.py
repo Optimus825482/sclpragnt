@@ -81,6 +81,14 @@ def _envelope(item: dict) -> dict:
         "url": f"/symbol-analysis?symbol={symbol}",
         "score": score,
         "super_score": rank_score,
+        "scan_evidence": {
+            key: item.get(key) for key in (
+                "sources", "source_families", "source_bonus", "cmc_bonus",
+                "cmc_flags", "score", "super_score", "detected_at",
+                "price", "target_pct", "horizon_minutes", "atr_pct_15m",
+                "oi_change_pct", "volume_24h_try", "confluence",
+            )
+        },
         "target_pct": target,
         "horizon_minutes": horizon,
         "price": item.get("price"),
@@ -116,7 +124,7 @@ async def run_once() -> dict:
                         key=lambda item: float(item.get("super_score") or 0), reverse=True)
     pushed = opened = attempted = 0
     blocked = Counter()
-    for item in candidates:
+    for rank, item in enumerate(candidates, start=1):
         if attempted >= top_n:
             break
         if float(item.get("super_score") or 0) < min_score:
@@ -128,6 +136,7 @@ async def run_once() -> dict:
         if await _recently_pushed(symbol, cooldown):
             continue
         notif = _envelope(item)
+        notif["scan_evidence"].update({"rank": rank, "minimum_rank_score": min_score, "top_n": top_n})
         notif["sent_via_push"] = False
         if not push_enabled:
             # Açık pozisyonu olan sembol deneme hakkını tüketmesin; aksi halde

@@ -42,8 +42,10 @@ async def _closed_trades(start: float, end: float, limit: int, offset: int, incl
                        'sources', n.sources, 'sent_via_push', n.sent_via_push
                    ) END AS notification,
                    opened.reason AS entry_decision,
-                   closed.reason AS exit_decision
+                   closed.reason AS exit_decision,
+                   d.entry_evidence, d.exit_evidence
             FROM selected t
+            LEFT JOIN auto_paper_trade_diagnostics d ON d.trade_id = t.id
             LEFT JOIN monitoring_notifications n ON n.id = t.notification_id AND n.symbol = t.symbol
             LEFT JOIN LATERAL (
                 SELECT reason FROM signals
@@ -72,8 +74,9 @@ async def _market_context(trade_id: int):
         conn.execute("SET TRANSACTION READ ONLY")
         conn.execute("SET LOCAL statement_timeout = '5s'")
         trade = conn.execute(
-            "SELECT symbol, entry_time, exit_time FROM auto_paper_trades WHERE id = ? "
-            "AND status = 'closed' AND exit_time IS NOT NULL",
+            """SELECT t.symbol, t.status, t.entry_time, t.exit_time, d.entry_evidence, d.exit_evidence
+               FROM auto_paper_trades t LEFT JOIN auto_paper_trade_diagnostics d ON d.trade_id = t.id
+               WHERE t.id = ? AND t.status IN ('open', 'closed')""",
             (trade_id,),
         ).fetchone()
         if trade is None:
@@ -82,6 +85,9 @@ async def _market_context(trade_id: int):
         symbol = trade["symbol"]
         context = {}
         for event, timestamp in (("entry", trade["entry_time"]), ("exit", trade["exit_time"])):
+            if timestamp is None:
+                context[event] = None
+                continue
             event_bar_ms = int(timestamp * 1000) // _BAR_MS * _BAR_MS
             start_ms = event_bar_ms - 6 * _BAR_MS
             end_ms = event_bar_ms + 7 * _BAR_MS
@@ -104,7 +110,11 @@ async def _market_context(trade_id: int):
                 "candles_5m": [dict(row) for row in candles],
                 "last_book_sample": dict(book) if book is not None else None,
             }
-        return {"trade_id": trade_id, "symbol": symbol, **context}
+        return {
+            "trade_id": trade_id, "symbol": symbol, "status": trade["status"],
+            "entry_evidence": trade["entry_evidence"], "exit_evidence": trade["exit_evidence"],
+            **context,
+        }
 
     return await database._run_db(op)
 
@@ -133,10 +143,10 @@ async def closed_trade_market(
     response: Response,
     trade_id: Annotated[int, Path(ge=1, le=9_223_372_036_854_775_807)],
 ):
-    """Return stored five-minute bars and preceding book samples around entry and exit."""
+    """Return recorded decision evidence and market context for a trade."""
     security.require_admin(request)
     data = await _market_context(trade_id)
     if data is None:
-        raise HTTPException(status_code=404, detail="Kapalı otonom paper işlemi bulunamadı")
+        raise HTTPException(status_code=404, detail="Otonom paper işlemi bulunamadı")
     response.headers["Cache-Control"] = "no-store"
     return data

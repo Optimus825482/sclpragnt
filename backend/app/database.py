@@ -7686,6 +7686,11 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
              trade.get("plan_context"), trade.get("entry_volume_ratio"),
              trade.get("oi_change_pct"))
         ).fetchone()
+        if row is not None and trade.get("diagnostics") is not None:
+            conn.execute(
+                "INSERT INTO auto_paper_trade_diagnostics(trade_id, entry_evidence) VALUES (?, ?::jsonb)",
+                (row["id"], _json_safe_dumps(trade["diagnostics"])),
+            )
         if signal:
             trade_id_val = row["id"] if row else None
             conn.execute(
@@ -8205,7 +8210,8 @@ async def update_auto_paper_trailing(trade_id: int, activated: bool, trailing_st
 
 async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: float,
                                  pnl: float, pnl_pct: float, commission: float, reason: str,
-                                 exit_commission_pct: float | None = None) -> bool:
+                                 exit_commission_pct: float | None = None, *,
+                                 diagnostics: dict | None = None) -> bool:
     """Auto paper pozisyonunu kapat VE wallet'a iade et (atomik).
 
     Tek transaction içinde pozisyon 'closed' yapılır, çıkış notional'ı
@@ -8241,6 +8247,13 @@ async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: fl
                WHERE id=? AND status='open'""",
             (exit_price, exit_time, pnl, pnl_pct, commission, reason, time.time(), commission_pct, trade_id)
         )
+        if diagnostics is not None:
+            conn.execute(
+                """INSERT INTO auto_paper_trade_diagnostics(trade_id, exit_evidence)
+                   VALUES (?, ?::jsonb) ON CONFLICT (trade_id)
+                   DO UPDATE SET exit_evidence = excluded.exit_evidence""",
+                (trade_id, _json_safe_dumps(diagnostics)),
+            )
         # Wallet'a iade: pozisyon değeri + kar/zarar (çıkış komisyonu düşülür).
         # Denetim 2.5 (2026-09-26): giriş bacağı `open_auto_paper_trade`de
         # `debit = order_value_try * (1 + giriş oranı)` ile alınmıştı; buradaki
