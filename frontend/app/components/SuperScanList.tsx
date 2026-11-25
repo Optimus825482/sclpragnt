@@ -80,6 +80,22 @@ export default function SuperScanList() {
         </button>
       </div>
 
+      {/* ROZET SÖZLÜĞÜ (2026-11-25, kullanıcı): kısaltmaların anlamı üstte. */}
+      <details className="rounded-lg border border-bunker-800 bg-bunker-900/40 px-3 py-2 text-[11px] text-bunker-muted">
+        <summary className="cursor-pointer font-mono text-xs text-bunker-muted">Rozetler ne demek?</summary>
+        <ul className="mt-2 space-y-1 leading-relaxed">
+          <li><span className="font-mono text-neon-green">Süper skor</span> (sağdaki sayı): birleşik skor + her ek teyit eden kaynak için +6 + CMC bonusu (hacim patlaması +5, zirveye yakın +3, 7g aşırı ısınma −5).</li>
+          <li><span className="font-mono text-white">skor X</span>: taramanın ham birleşik skoru (0–100).</li>
+          <li><span className="font-mono text-white">N kaynak</span>: aynı sembolü kaç bağımsız tarayıcı işaretledi (hız, momentum, squeeze, snapback, MACD MTF…).</li>
+          <li><span className="rounded border border-neon-green/40 bg-neon-green/10 px-1 text-neon-green">UYUŞMA</span>: Master Surge’un <b>4 katmanının tamamı</b> aynı yönde — likidite · volatilite · emir akışı · çoklu zaman dilimi trendi.</li>
+          <li><span className="font-mono text-white">ATR x%</span>: 15 dakikalık ortalama hareket (oynaklık). Stop ve hedef bunun üstüne kurulur.</li>
+          <li><span className="font-mono text-white">hedef %X</span>: bildirimin kâr hedefi · <span className="font-mono text-white">X dk</span>: beklenen tutma süresi.</li>
+          <li><span className="font-mono text-sky-300">AI · DePIN · Meme…</span>: CMC sektör etiketleri.</li>
+          <li><span className="font-mono text-amber-300">HACIM_PATLAMASI</span>: 24s hacim +%100’den fazla arttı · <span className="font-mono text-amber-300">ATH_YAKIN</span>: 180 günlük zirveye %3 içinde · <span className="font-mono text-amber-300">7G_ASIRI_ISINMA</span>: 7 günde +%40 üzeri (skordan −5) · <span className="font-mono text-amber-300">7G_SERT_DUSUS</span>: 7 günde −%25 altı · <span className="font-mono text-amber-300">DUSUK_SIRALAMA</span>: CMC sıralaması 300’ün altında.</li>
+          <li>Liste 90 saniyede bir, sekmeyi açtığında tazelenir (YENİLE anlık). Bildirim ve otonom işlem <b>yalnız</b> bu listeden beslenir.</li>
+        </ul>
+      </details>
+
       {error && <p className="rounded-lg bg-neon-red/10 p-3 text-sm text-neon-red">{error}</p>}
       {rows == null && !error && <p className="py-6 text-center text-sm text-bunker-muted">Taranıyor…</p>}
       {rows && rows.length === 0 && !error && (
