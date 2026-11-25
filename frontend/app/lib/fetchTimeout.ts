@@ -17,6 +17,27 @@ export function isTimeoutError(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "TimeoutError";
 }
 
+/** Deadline for fetch plus response-body reading, with optional caller cancellation. */
+export function createRequestDeadline(timeoutMs: number, parent?: AbortSignal) {
+  if (typeof AbortSignal.timeout === "function" && (!parent || typeof AbortSignal.any === "function")) {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    return { signal: parent ? AbortSignal.any([parent, timeout]) : timeout };
+  }
+
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(parent?.reason);
+  if (parent?.aborted) onAbort();
+  else parent?.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(makeTimeoutError(timeoutMs)), timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 export function fetchWithTimeout(
   fetchImpl: typeof fetch,
   input: RequestInfo | URL,

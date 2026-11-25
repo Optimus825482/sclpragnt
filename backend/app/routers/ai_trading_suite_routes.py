@@ -2,10 +2,18 @@
 FastAPI Router for Scalper Global Agent AI & Quantitative Trading Suite.
 Exposes endpoints for the 21 integrated open-source AI and quant trading architectures.
 """
+import json
+import logging
+import math
+import time
+import urllib.parse
+import urllib.request
+
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
+from app.ma_buy_signals import ema_series
 from app.ai_trading_suite import (
     evaluate_bull_bear_debate,
     evaluate_riskfolio_allocation,
@@ -42,6 +50,7 @@ router = APIRouter(prefix="/api/v1/ai-trading-suite", tags=["AI Trading Suite"])
 router_alias = APIRouter(prefix="/api/ai-trading-suite", tags=["AI Trading Suite"])
 
 orchestrator = AITradingSuiteOrchestrator()
+logger = logging.getLogger(__name__)
 
 
 class IndicatorInput(BaseModel):
@@ -192,46 +201,56 @@ router_alias.add_api_route("/status", get_suite_status, methods=["GET"])
 
 @router.get("/chart-score")
 def get_chart_score(symbol: str = "BTCUSDT", asset_type: str = "SPOT"):
-    """
-    Returns dynamic OctoBot and Microsoft Qlib Alpha scores for chart headers.
-    """
+    """Compute chart scores only when the requested market has usable candles."""
+    sym = symbol.strip().upper().replace("_", "")
+    atype = asset_type.strip().upper()
+    unavailable = {"status": "unavailable", "symbol": sym, "asset_type": atype}
+    if atype != "SPOT" or not sym.isascii() or not sym.isalnum() or len(sym) > 20:
+        return unavailable
+
     try:
-        sym = (symbol or "BTCUSDT").upper().strip()
-        atype = (asset_type or "SPOT").upper().strip()
+        fetch_sym = sym if sym.endswith(("USDT", "TRY", "BUSD", "FDUSD", "EUR", "BTC")) else f"{sym}USDT"
+        params = urllib.parse.urlencode({"symbol": fetch_sym, "interval": "15m", "limit": 25})
+        req = urllib.request.Request(f"https://api.binance.com/api/v3/klines?{params}", headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            candles = json.load(resp)
+        if not isinstance(candles, list) or len(candles) < 15:
+            return unavailable
 
-        price = 100.0
-        rsi = 52.0
-        vol_ratio = 1.05
-        trend_val = 0.5
+        times = [int(candle[0]) for candle in candles]
+        interval_ms = 15 * 60 * 1000
+        age_ms = time.time() * 1000 - times[-1]
+        if not 0 <= age_ms <= 2 * interval_ms or any(
+            later - earlier != interval_ms for earlier, later in zip(times, times[1:])
+        ):
+            return unavailable
 
-        try:
-            import urllib.request, json
-            fetch_sym = sym
-            if atype == "SPOT" and not fetch_sym.endswith(("USDT", "TRY", "BUSD", "FDUSD", "EUR", "BTC")):
-                fetch_sym = f"{fetch_sym}USDT"
-            url = f"https://api.binance.com/api/v3/klines?symbol={fetch_sym}&interval=15m&limit=25"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
-                data = json.loads(resp.read().decode())
-                if data and len(data) >= 15:
-                    closes = [float(k[4]) for k in data]
-                    volumes = [float(k[5]) for k in data]
-                    price = closes[-1]
-                    gains = [max(0.0, closes[i] - closes[i-1]) for i in range(1, len(closes))]
-                    losses = [max(0.0, closes[i-1] - closes[i]) for i in range(1, len(closes))]
-                    avg_gain = sum(gains[-14:]) / 14.0 if len(gains) >= 14 else 1.0
-                    avg_loss = sum(losses[-14:]) / 14.0 if len(losses) >= 14 else 1.0
-                    rs = (avg_gain / max(0.000001, avg_loss))
-                    rsi = round(100.0 - (100.0 / (1.0 + rs)), 1)
-                    avg_v = sum(volumes[-14:]) / 14.0 if len(volumes) >= 14 else 1.0
-                    vol_ratio = round(volumes[-1] / max(0.000001, avg_v), 2)
-                    trend_val = 1.0 if closes[-1] > closes[-5] else -1.0
-        except Exception:
-            seed = sum(ord(c) for c in sym)
-            price = 100.0 + (seed % 500)
-            rsi = 45.0 + (seed % 25)
-            vol_ratio = 0.9 + ((seed % 7) * 0.1)
-            trend_val = 1.0 if (seed % 2 == 0) else -0.5
+        highs, lows, closes, volumes = (
+            [float(candle[column]) for candle in candles] for column in (2, 3, 4, 5)
+        )
+        if any(
+            not all(math.isfinite(value) for value in (high, low, close, volume))
+            or not 0 < low <= close <= high or volume < 0
+            for high, low, close, volume in zip(highs, lows, closes, volumes)
+        ):
+            return unavailable
+
+        changes = [closes[i] - closes[i - 1] for i in range(len(closes) - 14, len(closes))]
+        gains = sum(max(0.0, change) for change in changes)
+        losses = sum(max(0.0, -change) for change in changes)
+        rsi = round(100.0 * gains / (gains + losses), 1) if gains + losses else 50.0
+        avg_volume = sum(volumes[-14:]) / 14
+        if avg_volume <= 0:
+            return unavailable
+        vol_ratio = round(volumes[-1] / avg_volume, 2)
+        trend_val = float(closes[-1] > closes[-5]) - float(closes[-1] < closes[-5])
+        price = closes[-1]
+        atr = sum(
+            max(highs[i] - lows[i], highs[i] - closes[i - 1], closes[i - 1] - lows[i])
+            for i in range(len(closes) - 14, len(closes))
+        ) / 14
+        ema_fast = ema_series(closes, 7)[-1]
+        ema_slow = ema_series(closes, 14)[-1]
 
         # 1. OctoBot Consensus
         octo_eval = OctoBotMatrixEvaluator(consensus_threshold=0.60)
@@ -239,7 +258,7 @@ def get_chart_score(symbol: str = "BTCUSDT", asset_type: str = "SPOT"):
             IndicatorEvaluation("RSI", 1.0 if rsi < 35 else (-1.0 if rsi > 70 else 0.5), 1.2),
             IndicatorEvaluation("Momentum", trend_val, 1.5),
             IndicatorEvaluation("VolumeSpike", 1.0 if vol_ratio > 1.2 else 0.0, 1.0),
-            IndicatorEvaluation("TrendEMA", 1.0 if trend_val > 0 else -1.0, 1.3),
+            IndicatorEvaluation("TrendEMA", float(ema_fast > ema_slow) - float(ema_fast < ema_slow), 1.3),
         ]
         octo_res = octo_eval.evaluate(sym, atype, eval_indicators)
 
@@ -247,7 +266,7 @@ def get_chart_score(symbol: str = "BTCUSDT", asset_type: str = "SPOT"):
         qlib_res = evaluate_qlib_alpha(
             symbol=sym,
             price=price,
-            indicators={"rsi": rsi, "volume_ratio": vol_ratio, "atr": price * 0.015}
+            indicators={"rsi": rsi, "volume_ratio": vol_ratio, "atr": atr, "ema_fast": ema_fast, "ema_slow": ema_slow},
         )
 
         octo_pct = int(octo_res.consensus_confidence * 100)
@@ -255,14 +274,15 @@ def get_chart_score(symbol: str = "BTCUSDT", asset_type: str = "SPOT"):
         octo_sig = octo_res.consensus_signal
 
         octo_tone = "positive" if octo_sig in ("BUY", "STRONG_BUY") else ("negative" if octo_sig in ("SELL", "STRONG_SELL") else "neutral")
-        qlib_tone = "positive" if "HIGH" in qlib_res.alpha_rank else ("neutral" if "MODERATE" in qlib_res.alpha_rank else "negative")
+        qlib_tone = "positive" if qlib_res.alpha_rank == "STRONG_ALPHA" else (
+            "negative" if qlib_res.alpha_rank == "NEGATIVE" else "neutral"
+        )
 
         qlib_label_tr = {
-            "HIGH_ALPHA": "Yüksek Alfa (Güçlü)",
+            "STRONG_ALPHA": "Yüksek Alfa (Güçlü)",
             "MODERATE_ALPHA": "Orta Alfa",
-            "NEUTRAL": "Nötr Alfa",
-            "LOW_ALPHA": "Düşük Alfa",
-            "NEGATIVE_ALPHA": "Zayıf Alfa (Negatif)"
+            "WEAK": "Düşük Alfa",
+            "NEGATIVE": "Zayıf Alfa (Negatif)"
         }.get(qlib_res.alpha_rank, qlib_res.alpha_rank)
 
         octo_signal_tr = {
@@ -274,6 +294,8 @@ def get_chart_score(symbol: str = "BTCUSDT", asset_type: str = "SPOT"):
         }.get(octo_sig, octo_sig)
 
         return {
+            "status": "ok",
+            "source": "binance_spot",
             "symbol": sym,
             "asset_type": atype,
             "current_price": price,
@@ -295,29 +317,9 @@ def get_chart_score(symbol: str = "BTCUSDT", asset_type: str = "SPOT"):
                 "z_score": round(float(getattr(qlib_res, "momentum_factor", 0.0)), 2)
             }
         }
-    except Exception as exc:
-        return {
-            "symbol": symbol,
-            "asset_type": asset_type,
-            "current_price": 100.0,
-            "octobot": {
-                "score": 75.0,
-                "consensus_pct": 78,
-                "signal": "BUY",
-                "signal_label": "Alım Uzlaşısı",
-                "badge_text": "OctoBot: %78 Alım Uzlaşısı (75.0 Puan)",
-                "tone": "positive",
-                "is_actionable": True
-            },
-            "qlib": {
-                "score": 71.5,
-                "rank": "MODERATE_ALPHA",
-                "rank_label": "Orta Alfa",
-                "badge_text": "Qlib Alpha: 71.5 (Orta Alfa)",
-                "tone": "positive",
-                "z_score": 0.5
-            }
-        }
+    except Exception:
+        logger.debug("Grafik skoru hesaplanamadı: %s", sym, exc_info=True)
+        return unavailable
 
 
 router_alias.add_api_route("/evaluate", evaluate_symbol, methods=["POST"])

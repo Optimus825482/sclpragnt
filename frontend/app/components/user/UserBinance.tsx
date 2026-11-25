@@ -275,7 +275,7 @@ export default function UserBinance() {
   const freeTry = tryRow ? tryRow.free : null;
 
   return (
-    <main className="space-y-4">
+    <div className="space-y-4">
       {toast && (
         <div
           role={toast.type === "error" ? "alert" : "status"}
@@ -346,6 +346,6 @@ export default function UserBinance() {
           />
         </>
       )}
-    </main>
+    </div>
   );
 }

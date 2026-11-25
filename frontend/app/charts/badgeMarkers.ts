@@ -10,6 +10,7 @@ import type {
     IChartApi, IPrimitivePaneRenderer, IPrimitivePaneView, ISeriesApi, ISeriesPrimitive, SeriesAttachedParameter, SeriesType, Time,
 } from "lightweight-charts";
 import type { Bar, StrategySignal } from "./signals";
+import { sortedCopy } from "../lib/sortedCopy";
 
 export type Badge = { time: number; price: number; text: string; bg: string; fg: string; above: boolean };
 
@@ -155,7 +156,7 @@ export class BadgeMarkers implements ISeriesPrimitive<Time> {
     }
 
     setBadges(badges: Badge[]): void {
-        this.badges = badges.slice().sort((a, b) => a.time - b.time);
+        this.badges = sortedCopy(badges, (a, b) => a.time - b.time);
         this.view.update();
         this.requestUpdate?.();
     }

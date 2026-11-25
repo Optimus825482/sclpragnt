@@ -24,6 +24,26 @@ type DashboardSummary = {
   auto_paper_today: { trades: number; pnl: number; winning: number; losing: number };
   portfolio: { balance: number; open_positions: number; total_value: number };
 };
+
+function hasMetrics<T extends object>(value: unknown, fields: readonly (keyof T)[]): value is T {
+  return typeof value === "object" && value !== null &&
+    fields.every((field) => Number.isFinite((value as Record<keyof T, unknown>)[field]));
+}
+
+function readSummary(value: unknown): Partial<DashboardSummary> {
+  const data = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const summary: Partial<DashboardSummary> = {};
+  if (hasMetrics<DashboardSummary["signals_today"]>(data.signals_today, ["total", "buy_signals", "close_signals"])) {
+    summary.signals_today = data.signals_today;
+  }
+  if (hasMetrics<DashboardSummary["auto_paper_today"]>(data.auto_paper_today, ["trades", "pnl", "winning", "losing"])) {
+    summary.auto_paper_today = data.auto_paper_today;
+  }
+  if (hasMetrics<DashboardSummary["portfolio"]>(data.portfolio, ["balance", "open_positions", "total_value"])) {
+    summary.portfolio = data.portfolio;
+  }
+  return summary;
+}
 type AutoPaperTrade = {
   id: number; symbol: string; entry_price: number; current_price?: number | null;
   quantity: number; take_profit?: number | null; stop_loss?: number | null;
@@ -64,7 +84,7 @@ function AdminHome() {
   const isAdvanced = mode === "advanced";
 
   // Dashboard verisi
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [summary, setSummary] = useState<Partial<DashboardSummary> | null>(null);
   const [autoPaperOpen, setAutoPaperOpen] = useState<AutoPaperTrade[]>([]);
   const [liveSignals, setLiveSignals] = useState<LiveSignal[]>([]);
   // H-05: ağ hatası "veri yok" gibi görünmemeli. Eskiden `load` hatayı yutup
@@ -85,11 +105,18 @@ function AdminHome() {
       getJson("/api/auto-paper/trades?status=open"),
       getJson("/api/signals?limit=30"),
     ]);
-    if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
-    if (apRes.status === "fulfilled") setAutoPaperOpen(apRes.value.trades || []);
-    if (signalsRes.status === "fulfilled") setLiveSignals((signalsRes.value.signals || []).slice(-10).reverse());
+    const nextSummary = summaryRes.status === "fulfilled" ? readSummary(summaryRes.value) : null;
+    const trades = apRes.status === "fulfilled" ? apRes.value?.trades : null;
+    const signals = signalsRes.status === "fulfilled" ? signalsRes.value?.signals : null;
+    if (nextSummary) setSummary(nextSummary);
+    if (Array.isArray(trades)) setAutoPaperOpen(trades);
+    if (Array.isArray(signals)) setLiveSignals(signals.slice(-10).reverse());
+    const malformed = (nextSummary && Object.keys(nextSummary).length !== 3)
+      || (apRes.status === "fulfilled" && !Array.isArray(trades))
+      || (signalsRes.status === "fulfilled" && !Array.isArray(signals));
     const failed = [summaryRes, apRes, signalsRes].filter((r) => r.status === "rejected").length;
-    setLoadError(failed === 0 ? null : failed === 3 ? "Backend'e bağlanılamadı — veriler alınamıyor." : "Bazı veriler alınamadı.");
+    setLoadError(failed === 3 ? "Backend'e bağlanılamadı — veriler alınamıyor."
+      : malformed || failed > 0 ? "Bazı veriler alınamadı." : null);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -115,7 +142,7 @@ function AdminHome() {
   // Özet henüz yüklenmediyse (s == null) nötr renk: eskiden bu durum KIRMIZI
   // gösteriyordu, yani sayfa açılırken "zarar" izlenimi oluşuyordu.
   // H-02: PnL alanı `null` ise de NÖTR — 0 sayıp yeşile boyamak yasak.
-  const apTodayPnl = s?.auto_paper_today.pnl ?? null;
+  const apTodayPnl = s?.auto_paper_today?.pnl ?? null;
   const pnlTone = apTodayPnl == null
     ? "text-bunker-muted"
     : apTodayPnl >= 0 ? "text-neon-green" : "text-neon-red";
@@ -148,7 +175,7 @@ function AdminHome() {
       {/* H-05: ağ hatası durumu — "veri yok"tan ayırt edilebilir olmalı */}
       {loadError && (
         <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neon-red/40 bg-neon-red/5 px-3 py-2">
-          <p className="font-mono text-xs text-neon-red">⚠ {loadError}</p>
+          <p role="status" className="font-mono text-xs text-neon-red">⚠ {loadError}</p>
           <button
             type="button"
             onClick={() => { setLoadError(null); void load(); }}
@@ -161,10 +188,10 @@ function AdminHome() {
 
       {/* 4 kart: 2 sütun mobil, 4 sütun masaüstü */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard label="BUGÜN SİNYAL" value={String(s?.signals_today.total ?? "…")} hint={`${s?.signals_today.buy_signals ?? 0} giriş · ${s?.signals_today.close_signals ?? 0} çıkış`} />
-        <MetricCard label="OTONOM İŞLEM" value={`${s?.auto_paper_today.trades ?? 0} · ${signedMoney(apPnl)}`} tone={s ? pnlTone : ""} hint={`${s?.auto_paper_today.winning ?? 0} kazanç · ${s?.auto_paper_today.losing ?? 0} kayıp`} />
-        <MetricCard label="PORTFÖY" value={money(s?.portfolio.total_value)} hint={`${money(s?.portfolio.balance)} serbest`} />
-        <MetricCard label="AÇIK POZİSYON" value={String(s?.portfolio.open_positions ?? 0)} hint={s?.portfolio.open_positions ? "pozisyon var" : "yok"} />
+        <MetricCard label="BUGÜN SİNYAL" value={String(s?.signals_today?.total ?? "—")} hint={s?.signals_today && `${s.signals_today.buy_signals} giriş · ${s.signals_today.close_signals} çıkış`} />
+        <MetricCard label="OTONOM İŞLEM" value={s?.auto_paper_today ? `${s.auto_paper_today.trades} · ${signedMoney(apPnl)}` : "—"} tone={pnlTone} hint={s?.auto_paper_today && `${s.auto_paper_today.winning} kazanç · ${s.auto_paper_today.losing} kayıp`} />
+        <MetricCard label="PORTFÖY" value={money(s?.portfolio?.total_value)} hint={s?.portfolio && `${money(s.portfolio.balance)} serbest`} />
+        <MetricCard label="AÇIK POZİSYON" value={String(s?.portfolio?.open_positions ?? "—")} />
       </div>
 
       {/* Hızlı modül erişim paneli */}
@@ -268,10 +295,10 @@ function AdminHome() {
             <Link href="/reports" className="font-mono text-[11px] text-bunker-muted hover:text-neon-green underline-offset-2 underline">{">"} Raporlar</Link>
           </div>
           <div className="mt-2 flex flex-wrap gap-3">
-            <APStatCard label="Bugün sinyal" value={String(s?.signals_today.total ?? 0)} />
-            <APStatCard label="Otonom işlem" value={String(s?.auto_paper_today.trades ?? 0)} sub={s ? signedMoney(apPnl) : ""} />
-            <APStatCard label="Serbest TL" value={money(s?.portfolio.balance)} />
-            <APStatCard label="Toplam Değer" value={money(s?.portfolio.total_value)} />
+            <APStatCard label="Bugün sinyal" value={String(s?.signals_today?.total ?? "—")} />
+            <APStatCard label="Otonom işlem" value={String(s?.auto_paper_today?.trades ?? "—")} sub={s?.auto_paper_today ? signedMoney(apPnl) : ""} />
+            <APStatCard label="Serbest TL" value={money(s?.portfolio?.balance)} />
+            <APStatCard label="Toplam Değer" value={money(s?.portfolio?.total_value)} />
           </div>
         </section>
       )}

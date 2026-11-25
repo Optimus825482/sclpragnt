@@ -5,6 +5,7 @@
  * tuzağına düşmemek için tüm okumalar `num()` üzerinden geçer ("veri yok" 0 DEĞİLDİR).
  */
 import { formatPrice } from "./format";
+import { sortedCopy } from "./sortedCopy";
 import type { TradePlan } from "../components/user/home/tradePlan";
 
 export type MaBuyStatus = "open" | "done" | "no_data";
@@ -241,7 +242,7 @@ export type SortDir = "asc" | "desc";
 export function sortSignals(items: readonly MaBuySignal[], key: SortKey, dir: SortDir): MaBuySignal[] {
   const sign = dir === "asc" ? 1 : -1;
   const t = (x: MaBuySignal) => signalTimeSec(x) ?? 0;
-  return [...items].sort((a, b) => {
+  return sortedCopy(items, (a, b) => {
     if (key === "rise15") {
       const ra = a.maxRise15;
       const rb = b.maxRise15;

@@ -927,7 +927,6 @@ export default function ChartsPage() {
                 } else {
                     // Normal indikatörler için standart çizim
                     arr.push(...plots.map((plot, pi) => {
-                        const lastPoint = [...plot].reverse().find((p) => p.value != null && !Number.isNaN(p.value));
                         const s = chart.addSeries(LineSeries, {
                             color: style.colors[pi] || PALETTE[pi % PALETTE.length],
                             lineWidth: widthFor(pi),
@@ -938,7 +937,7 @@ export default function ChartsPage() {
                             .filter((p) => p.value != null && !Number.isNaN(p.value))
                             .map((p) => ({ time: p.time as UTCTimestamp, value: p.value as number }));
                         s.setData(data);
-                        if (lastPoint && style.showPriceLine) {
+                        if (data.length > 0 && style.showPriceLine) {
                             s.applyOptions({ priceLineVisible: true, lastValueVisible: true });
                             try {
                                 (s as any).setData(data);
@@ -1751,7 +1750,7 @@ export default function ChartsPage() {
 
             {/* Sembol seçimi, AI puanları ve araç çubuğu (Basit ve Gelişmiş modda daima görünür) */}
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 sm:gap-3">
                 <select
                     value={symbol}
                     onChange={(e) => changeSymbol(e.target.value)}
@@ -1762,7 +1761,7 @@ export default function ChartsPage() {
                 </select>
 
                 {/* DİNAMİK OCTOBOT VE QLIB ALPHA PUANLARI (SEMBOLÜN HEMEN YANINDA DAİMA GÖRÜNÜR) */}
-                <ChartAiScoreHeader symbol={symbol} assetType="SPOT" className="flex items-center shrink-0" />
+                <ChartAiScoreHeader symbol={symbol} className="basis-full sm:basis-auto" />
 
                 {isAdvanced && (
                   <>

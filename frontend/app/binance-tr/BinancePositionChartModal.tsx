@@ -1567,7 +1567,7 @@ export default function BinancePositionChartModal({
         {/* ÜST BİLGİ VE KONTROL BARI */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800/80 bg-bunker-950/90 px-3 sm:px-4 py-2">
           {/* Sol: Varlık Bilgileri & Canlı Fiyat */}
-          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 sm:gap-3">
             <div className="flex items-center gap-2">
               <span className="text-base sm:text-lg font-black tracking-wider text-white">
                 {holding.asset}
@@ -1579,7 +1579,7 @@ export default function BinancePositionChartModal({
               </span>
             </div>
 
-            <ChartAiScoreHeader symbol={symbolConcat} assetType="SPOT" compact className="flex items-center shrink-0 mr-2" />
+            <ChartAiScoreHeader symbol={symbolConcat} compact className="basis-full sm:basis-auto" />
             {/* Anlık Fiyat */}
             <div className="flex items-baseline gap-2 font-mono">
               <span

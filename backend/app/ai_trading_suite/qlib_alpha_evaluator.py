@@ -36,7 +36,7 @@ def evaluate_qlib_alpha(
     px = max(price, 0.000001)
 
     # 1. Momentum Factors
-    rsi = float(indicators.get("rsi") or 50.0)
+    rsi = float(indicators["rsi"]) if indicators.get("rsi") is not None else 50.0
     adx = float(indicators.get("adx") or 20.0)
     ema_fast = float(indicators.get("ema_fast") or px * 1.002)
     ema_slow = float(indicators.get("ema_slow") or px * 0.998)
@@ -50,7 +50,7 @@ def evaluate_qlib_alpha(
     momentum_factor = round(max(-1.0, min(1.0, momentum_raw)), 3)
 
     # 2. Volatility Factors (normalized ATR and BB width)
-    atr = float(indicators.get("atr") or (px * 0.015))
+    atr = float(indicators["atr"]) if indicators.get("atr") is not None else px * 0.015
     atr_pct = (atr / px) * 100.0
     bb_upper = float(indicators.get("bb_upper") or (px * 1.02))
     bb_lower = float(indicators.get("bb_lower") or (px * 0.98))
@@ -66,7 +66,7 @@ def evaluate_qlib_alpha(
     volatility_factor = round(volatility_factor, 3)
 
     # 3. Volume Factors
-    vol_ratio = float(indicators.get("volume_ratio") or 1.2)
+    vol_ratio = float(indicators["volume_ratio"]) if indicators.get("volume_ratio") is not None else 1.2
     if vol_ratio >= 1.5:
         volume_factor = 0.9
     elif vol_ratio >= 1.0:

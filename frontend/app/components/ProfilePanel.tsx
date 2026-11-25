@@ -10,7 +10,7 @@ import { fmtDate as fmtDateOnly } from "../lib/format";
 type Notice = { kind: "ok" | "err"; text: string } | null;
 
 // 2026-10-17 (basit arayüz): sayfa gövdesi buraya taşındı; /profile (admin) ve Ayarlar > Profil
-// sekmesi (kullanıcı) aynı bileşeni kullanır. embedded=true: sayfa başlığı ve <main> sarmalayıcısı yok.
+// sekmesi (kullanıcı) aynı bileşeni kullanır. embedded=true: sayfa başlığı ve sayfa dolgusu yok.
 export default function ProfilePanel({ embedded = false }: { embedded?: boolean }) {
   const { username, role } = useAuth();
   const [uiMode, toggleUiMode] = useUiMode();
@@ -72,9 +72,8 @@ export default function ProfilePanel({ embedded = false }: { embedded?: boolean 
   const displayName = username ? String(username).charAt(0).toUpperCase() + String(username).slice(1) : "Kullanıcı";
   const fmtDate = (value: number | null) => (value ? fmtDateOnly(value) : "—");
 
-  const Wrap = embedded ? "div" : "main";
   return (
-    <Wrap className={embedded ? undefined : "page-shell"}>
+    <div className={embedded ? undefined : "page-shell"}>
       {!embedded && <div className="page-heading">
         <p className="eyebrow text-neon-green">KULLANICI PROFİLİ</p>
         <h1 className="font-mono text-2xl font-bold text-white">Profil</h1>
@@ -191,6 +190,6 @@ export default function ProfilePanel({ embedded = false }: { embedded?: boolean 
           </label>
         </div>
       </section>
-    </Wrap>
+    </div>
   );
 }

@@ -1344,6 +1344,7 @@ function ChatPageInner() {
 
                 {/* Mesaj Metin Alanı */}
                 <textarea
+                  aria-label="Asistana mesaj yaz"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   placeholder={isListening ? "Mikrofon dinliyor… konuşabilirsiniz" : "Bir soru sor… örn. BTC/TRY direnç ve trend analizi yap (veya 🎙️ ile sesli sor)"}

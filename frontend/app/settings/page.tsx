@@ -1,4 +1,5 @@
 "use client";
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
@@ -34,14 +35,17 @@ type Config = {
   top_gainers_refresh_sec: number;
 };
 
-import ChatSettingsPanel from "./ChatSettingsPanel";
 import RequireAdmin from "../components/RequireAdmin";
 import { useAuth } from "../lib/auth";
 
 import UserSettings from "../components/user/UserSettings";
 import { useIsUserView } from "../lib/adminView";
-import CmcSettings from "../components/CmcSettings";
-import DbStatsCard from "../components/DbStatsCard";
+const SettingsPanelLoading = () => <p role="status" className="text-sm text-bunker-muted">Ayarlar yükleniyor…</p>;
+const ChatSettingsPanel = dynamic(() => import("./ChatSettingsPanel"), { loading: SettingsPanelLoading });
+const CmcSettings = dynamic(() => import("../components/CmcSettings"), { loading: SettingsPanelLoading });
+const DbStatsCard = dynamic(() => import("../components/DbStatsCard"), { loading: SettingsPanelLoading });
+const SETTINGS_TABS = ["symbols", "radar", "app", "notifications", "strategies", "auto-paper", "macd", "llm", "chat"] as const;
+type SettingsTab = typeof SETTINGS_TABS[number];
 
 function AdminSettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
@@ -52,7 +56,12 @@ export default function SettingsPage() {
   return userView ? <UserSettings /> : <AdminSettingsPage />;
 }
 function SettingsPageInner() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd">("symbols");
+  const [activeTab, setActiveTab] = useState<SettingsTab | null>(null);
+  const [visitedTabs, setVisitedTabs] = useState<ReadonlySet<SettingsTab>>(() => new Set());
+  const activateTab = useCallback((tab: SettingsTab) => {
+    setActiveTab(tab);
+    setVisitedTabs((current) => current.has(tab) ? current : new Set([...current, tab]));
+  }, []);
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -67,15 +76,36 @@ function SettingsPageInner() {
   const [reconciling, setReconciling] = useState(false);
   const [reconcileDone, setReconcileDone] = useState(false);
   const [llm, setLlm] = useState<any>({ providers: [], models: [], skills: [], active_model_id: null, encryption_configured: false });
+  const [llmConfigState, setLlmConfigState] = useState<"loading" | "ready" | "error">("loading");
+  const reloadLlm = useCallback(async () => {
+    try {
+      const data = await getJSON<Record<string, unknown> | null>("/api/llm/config");
+      for (const [key, displayField, fieldType] of [
+        ["providers", "base_url", "string"],
+        ["models", "provider_id", "number"],
+        ["skills", "instructions", "string"],
+      ]) {
+        const items = data?.[key];
+        if (!Array.isArray(items) || items.some((item) => {
+          return !item || !Number.isSafeInteger(item.id) || typeof item.name !== "string"
+            || (item[displayField] != null && typeof item[displayField] !== fieldType);
+        })) {
+          throw new Error("LLM yapılandırması eksik veya geçersiz.");
+        }
+      }
+      setLlm(data);
+      setLlmConfigState("ready");
+    } catch (err) {
+      setLlmConfigState("error");
+      throw err;
+    }
+  }, []);
   const [llmForm, setLlmForm] = useState({ name: "OpenAI Compatible", base_url: "", api_key: "", provider_id: "", model: "", model_type: "chat", dimensions: "", skill: "", instructions: "" });
   const [llmMessage, setLlmMessage] = useState<string | null>(null);
   const [llmMessageError, setLlmMessageError] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const { role } = useAuth();
   const isAdmin = role === "admin";
-  const [monitoringMinScore, setMonitoringMinScore] = useState<number | null>(null);
-  const [monitoringMinScoreInput, setMonitoringMinScoreInput] = useState<string>("50");
-  const [savingMonitoringMinScore, setSavingMonitoringMinScore] = useState(false);
   const [backfillDone, setBackfillDone] = useState(false);
   const [repairingMemory, setRepairingMemory] = useState(false);
   const [activity, setActivity] = useState<Record<string, any>>({});
@@ -102,14 +132,12 @@ function SettingsPageInner() {
   const [pushTestResult, setPushTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
-    const tab = new URLSearchParams(window.location.search).get("tab") as any;
-    if (tab && ["symbols", "radar", "app", "notifications", "strategies", "auto-paper", "macd", "llm", "chat"].includes(tab)) {
-      setActiveTab(tab);
-    }
-  }, []);
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    activateTab(SETTINGS_TABS.find((id) => id === tab) ?? "symbols");
+  }, [activateTab]);
 
-  const selectTab = (key: "symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd") => {
-    setActiveTab(key);
+  const selectTab = (key: SettingsTab) => {
+    activateTab(key);
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
       url.searchParams.set("tab", key);
@@ -125,6 +153,11 @@ function SettingsPageInner() {
       })
       .then((d) => { setCfg(d); setDraft(d); })
       .catch(() => setError(`Backend'e bağlanılamadı (${API_BASE})`));
+  }, []);
+
+  const symbolsVisited = visitedTabs.has("symbols");
+  useEffect(() => {
+    if (!symbolsVisited) return;
     apiRequest(`${API_BASE}/api/market-symbols`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -132,25 +165,12 @@ function SettingsPageInner() {
       })
       .then((d) => setMarketSymbols(d.symbols || []))
       .catch(() => setError("Binance TR sembolleri alınamadı"));
-    apiRequest(`${API_BASE}/api/llm/config`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then(setLlm)
-      .catch(() => setError("LLM yapılandırması alınamadı (HTTP hatası)"));
-    // `getJSON` 4xx/5xx'te Error fırlatır (4xx detayını `detail` alanından
-    // taşır). Önceki elle `r.ok` deseni de çalışıyordu ama 7 yükleyicinin
-    // tamamında tekrarlanıyordu ve hata mesajı backend detayını hep atıyordu.
-    getJSON<{ min_score?: number | null }>("/api/monitoring/settings")
-      .then((d) => {
-        const ms = d.min_score ?? 50;
-        setMonitoringMinScore(ms);
-        setMonitoringMinScoreInput(String(Math.round(ms)));
-      })
-      .catch(() => undefined);
-    loadMlStatus();
-  }, []);
+  }, [symbolsVisited]);
+
+  const llmVisited = visitedTabs.has("llm");
+  useEffect(() => {
+    if (llmVisited) void reloadLlm().catch(() => {});
+  }, [llmVisited, reloadLlm]);
 
   // Aşağıdaki 6 yükleyicinin tamamı `.then(r => r.json())` deseni kullanıyordu:
   // 401/500'de hata gövdesi `{}` olarak state'e yazılıyor ve kullanıcı
@@ -160,8 +180,8 @@ function SettingsPageInner() {
       .then((d) => setTopGainers(d))
       .catch(() => undefined);
   }, []);
-  useEffect(() => { loadTopGainers(); }, [loadTopGainers]);
-  useVisibleInterval(loadTopGainers, 60000);
+  useEffect(() => { if (activeTab === "symbols") loadTopGainers(); }, [activeTab, loadTopGainers]);
+  useVisibleInterval(loadTopGainers, activeTab === "symbols" ? 60_000 : null);
 
   const loadMtf = useCallback(() => {
     getJSON<Record<string, unknown>>("/api/historical-mtf-backfill/status")
@@ -200,8 +220,8 @@ function SettingsPageInner() {
       .then((d) => setActivity(d.statuses || {}))
       .catch(() => undefined);
   }, []);
-  useEffect(() => { loadActivity(); }, [loadActivity]);
-  useVisibleInterval(loadActivity, 60000);
+  useEffect(() => { if (activeTab === "symbols") loadActivity(); }, [activeTab, loadActivity]);
+  useVisibleInterval(loadActivity, activeTab === "symbols" ? 60_000 : null);
 
   // H-20: `symbol_activity` WS mesajı yalnızca manuel aktivasyon yenilemesinde
   // yayınlanır ve daha önce hiç tüketilmiyordu → başka bir sekmede yapılan
@@ -220,27 +240,6 @@ function SettingsPageInner() {
       setActivity(data.statuses || {});
     } catch (err) { setError(err instanceof Error ? err.message : "Aktivasyon kontrolü başarısız"); }
     finally { setRefreshingActivity(false); }
-  };
-
-  const saveMonitoringMinScore = async () => {
-    // Boş/whitespace girişi Number("") === 0 olarak kaydedilip TÜM adayları
-    // geçirmesin — denetim maddesi: boş girişte validasyon hatası göster.
-    if (monitoringMinScoreInput.trim() === "") { setError("Monitoring min skor boş olamaz (0-100 arası girin)"); return; }
-    const val = Number(monitoringMinScoreInput);
-    if (!Number.isFinite(val) || val < 0 || val > 100) { setError("Monitoring min skor 0-100 arası olmalı"); return; }
-    setSavingMonitoringMinScore(true);
-    try {
-      const res = await apiRequest(`${API_BASE}/api/monitoring/settings`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ min_score: val }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Kaydetme başarısız");
-      setMonitoringMinScore(data.min_score ?? val);
-      setMonitoringMinScoreInput(String(Math.round(data.min_score ?? val)));
-    } catch (err) { setError(err instanceof Error ? err.message : "Monitoring eşiği kaydedilemedi"); }
-    finally { setSavingMonitoringMinScore(false); }
   };
 
   // TEST BİLDİRİMİ (2026-09-16): Ayarlar > Uygulama Ayarları'ndaki buton.
@@ -493,7 +492,6 @@ function SettingsPageInner() {
     } catch (err) { setError(err instanceof Error ? err.message : "İşlem CSV'si indirilemedi"); }
   };
 
-  const reloadLlm = async () => setLlm(await (await apiRequest(`${API_BASE}/api/llm/config`, { cache: "no-store" })).json());
   // Başarıda true döner. Mesaj Provider kartında da görünür; hata KIRMIZI (önceden yalnız aşağıdaki
   // Model kartında ve yeşil renkte çıkıyordu, kullanıcı "kaydet hiçbir şey yapmıyor" sanıyordu).
   const llmRequest = async (url: string, options: RequestInit, success: string): Promise<boolean> => {
@@ -540,13 +538,16 @@ function SettingsPageInner() {
   const [mlDone, setMlDone] = useState(false);
   const [mlError, setMlError] = useState<string | null>(null);
 
-  const loadMlStatus = () => apiRequest(`${API_BASE}/api/ml/status`, { cache: "no-store" })
+  const loadMlStatus = useCallback(() => apiRequest(`${API_BASE}/api/ml/status`, { cache: "no-store" })
     .then((r) => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     })
     .then(setMlStatus)
-    .catch(() => setMlError("ML durumu alınamadı (HTTP hatası)"));
+    .catch(() => setMlError("ML durumu alınamadı (HTTP hatası)")), []);
+
+  const appVisited = visitedTabs.has("app");
+  useEffect(() => { if (appVisited) void loadMlStatus(); }, [appVisited, loadMlStatus]);
 
   const trainMlNow = async () => {
     setMlTraining(true);
@@ -659,25 +660,25 @@ function SettingsPageInner() {
 
       {cfg && (
         <>
-          <div className={`${activeTab !== "radar" ? "hidden" : ""}`}>
+          {visitedTabs.has("radar") && <div hidden={activeTab !== "radar"}>
             <div className="space-y-4">
               <CmcSettings />
               <RadarSettingsPanel />
               <RadarReplayPanel />
             </div>
-          </div>
-          <div className={`${activeTab !== "notifications" ? "hidden" : ""}`}>
+          </div>}
+          {visitedTabs.has("notifications") && <div hidden={activeTab !== "notifications"}>
             <NotificationSettingsPanel />
-          </div>
-          <div className={`${activeTab !== "chat" ? "hidden" : ""}`}>
+          </div>}
+          {visitedTabs.has("chat") && <div hidden={activeTab !== "chat"}>
             <ChatSettingsPanel />
-          </div>
-          <div className={`${activeTab !== "auto-paper" ? "hidden" : ""}`}>
+          </div>}
+          {visitedTabs.has("auto-paper") && <div hidden={activeTab !== "auto-paper"}>
             <AutoPaperSettingsPanel />
-          </div>
-          <div className={`${activeTab !== "macd" ? "hidden" : ""}`}>
+          </div>}
+          {visitedTabs.has("macd") && <div hidden={activeTab !== "macd"}>
             <MacdJumpSettingsPanel />
-          </div>
+          </div>}
           <div className={`card bg-bunker-950 ${activeTab !== "symbols" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
               <div>
@@ -778,18 +779,31 @@ function SettingsPageInner() {
               <p className="text-[11px] text-bunker-muted mt-2 font-mono">Önerilen: 1.000.000 TL · 0,3x · 5x</p>
             </div>
           </div>
-          <div className={`space-y-4 ${activeTab !== "llm" ? "hidden" : ""}`}>
-            <div className="card bg-bunker-950"><p className="eyebrow mb-3">LLM PROVIDER EKLE</p><p className="text-xs text-bunker-muted mb-3">Yalnızca teknik yorum üretir; emir veya pozisyon kararı vermez.</p><div className="grid md:grid-cols-2 gap-3"><input placeholder="Provider adı" value={llmForm.name} onChange={e => setLlmForm({...llmForm,name:e.target.value})} className="input" /><input placeholder="Base URL (https://.../v1)" value={llmForm.base_url} onChange={e => setLlmForm({...llmForm,base_url:e.target.value})} className="input" /><input type="password" placeholder="API key" value={llmForm.api_key} onChange={e => setLlmForm({...llmForm,api_key:e.target.value})} className="input" /><button onClick={saveLlmProvider} disabled={!llm.encryption_configured || !llmForm.name.trim() || !llmForm.base_url.trim() || !llmForm.api_key.trim()} className="px-3 py-2 border border-neon-green/40 text-neon-green rounded-lg font-mono text-xs disabled:opacity-40 disabled:cursor-not-allowed">PROVIDER KAYDET</button></div><p className={`text-xs mt-3 ${llm.encryption_configured ? "text-bunker-muted" : "text-yellow-300"}`}>Şifreleme anahtarı: {llm.encryption_configured ? "hazır" : "sunucuda LLM_ENCRYPTION_KEY eksik; Provider kaydı için backend ortamına eklenmeli"}</p>{llmMessage && <p role="status" className={`text-xs mt-3 ${llmMessageError ? "text-neon-red" : "text-neon-green"}`}>{llmMessage}</p>}</div>
-            <div className="card bg-bunker-950"><p className="eyebrow mb-3">MODEL / UZMANLIK</p><div className="grid md:grid-cols-2 gap-3"><select value={llmForm.provider_id} onChange={e => setLlmForm({...llmForm,provider_id:e.target.value})} className="input"><option value="">Provider seç</option>{(llm.providers ?? []).map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}</select><input placeholder="Model adı" value={llmForm.model} onChange={e => setLlmForm({...llmForm,model:e.target.value})} className="input" /><select value={llmForm.model_type} onChange={e => setLlmForm({...llmForm,model_type:e.target.value})} className="input"><option value="chat">Chat modeli</option><option value="embedding">Embedding modeli</option></select>{llmForm.model_type === "embedding" && <input type="number" min="1" placeholder="Embedding dimension" value={llmForm.dimensions} onChange={e => setLlmForm({...llmForm,dimensions:e.target.value})} className="input" />}<button onClick={() => llmRequest(`${API_BASE}/api/llm/models`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider_id:Number(llmForm.provider_id),name:llmForm.model,model_type:llmForm.model_type,dimensions:llmForm.dimensions ? Number(llmForm.dimensions) : undefined})}, "Model kaydedildi")} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded-lg font-mono text-xs">MODEL EKLE</button>{llmForm.model_type === "embedding" && <button onClick={async () => { const r=await apiRequest(`${API_BASE}/api/llm/embedding/test`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:"embedding bağlantı testi"})}); const b=await r.json(); const m=b.status === "ok" ? `Embedding başarılı · ${b.dimensions} dimension` : (b.error || "Embedding testi başarısız"); setLlmMessage(m); window.alert(m); }} className="px-3 py-2 border border-yellow-400/40 text-yellow-300 rounded-lg font-mono text-xs">EMBEDDING TEST ET</button>}<input placeholder="Uzmanlık adı" value={llmForm.skill} onChange={e => setLlmForm({...llmForm,skill:e.target.value})} className="input" /><textarea placeholder="Uzmanlık talimatları" value={llmForm.instructions} onChange={e => setLlmForm({...llmForm,instructions:e.target.value})} className="input min-h-24" /><button onClick={() => llmRequest(`${API_BASE}/api/llm/skills`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:llmForm.skill,instructions:llmForm.instructions})}, "Uzmanlık kaydedildi")} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded-lg font-mono text-xs">UZMANLIK EKLE</button></div>{llmMessage && <p className={`text-xs mt-3 ${llmMessageError ? "text-neon-red" : "text-neon-green"}`}>{llmMessage}</p>}</div>
-            <div className="card bg-bunker-950 flex flex-wrap gap-3"><select value={llm.active_model_id || ""} onChange={async e => { const id=Number(e.target.value); await llmRequest(`${API_BASE}/api/llm/active`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,model_id:id})}, "LLM aktif edildi"); }} className="input"><option value="">Aktif model seç</option>{(llm.models ?? []).map((m:any)=><option key={m.id} value={m.id}>{m.name}</option>)}</select><button onClick={() => llmRequest(`${API_BASE}/api/llm/active`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,model_id:llm.active_model_id})}, "LLM aktif edildi")} className="px-3 py-2 border border-neon-green/40 text-neon-green rounded-lg font-mono text-xs">LLM AKTİF</button><button onClick={async () => { setLlmMessage("TEST EDİLİYOR..."); try { const r=await apiRequest(`${API_BASE}/api/llm/test`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})}); const body=await r.json(); const message=body.status === "ok" ? "Bağlantı başarılı" : (body.error || body.status || "Test başarısız"); setLlmMessage(message); window.alert(message); } catch { setLlmMessage("LLM test bağlantısı kurulamadı"); window.alert("LLM test bağlantısı kurulamadı"); } }} className="px-3 py-2 border border-yellow-400/40 text-yellow-300 rounded-lg font-mono text-xs">TEST ET</button></div>
+          {llmVisited && <div hidden={activeTab !== "llm"} className="space-y-4">
+            {llmConfigState === "loading" && <p role="status" className="text-sm text-bunker-muted">LLM yapılandırması yükleniyor…</p>}
+            {llmConfigState === "error" && (
+              <div className="card flex flex-wrap items-center justify-between gap-2">
+                <p role="status" className="text-sm text-neon-red">LLM yapılandırması alınamadı.</p>
+                <button type="button" className="ui-button ui-button-secondary" onClick={() => {
+                  setLlmConfigState("loading");
+                  void reloadLlm().catch(() => {});
+                }}>YENİDEN DENE</button>
+              </div>
+            )}
+            <fieldset disabled={llmConfigState !== "ready"} className="min-w-0 space-y-4">
+              <legend className="sr-only">LLM yapılandırması</legend>
+            <div className="card bg-bunker-950"><p className="eyebrow mb-3">LLM PROVIDER EKLE</p><p className="text-xs text-bunker-muted mb-3">Yalnızca teknik yorum üretir; emir veya pozisyon kararı vermez.</p><div className="grid md:grid-cols-2 gap-3"><input aria-label="Sağlayıcı adı" placeholder="Provider adı" value={llmForm.name} onChange={e => setLlmForm({...llmForm,name:e.target.value})} className="input" /><input aria-label="Sağlayıcı API adresi" placeholder="Base URL (https://.../v1)" value={llmForm.base_url} onChange={e => setLlmForm({...llmForm,base_url:e.target.value})} className="input" /><input type="password" aria-label="Sağlayıcı API anahtarı" autoComplete="off" placeholder="API key" value={llmForm.api_key} onChange={e => setLlmForm({...llmForm,api_key:e.target.value})} className="input" /><button onClick={saveLlmProvider} disabled={!llm.encryption_configured || !llmForm.name.trim() || !llmForm.base_url.trim() || !llmForm.api_key.trim()} className="px-3 py-2 border border-neon-green/40 text-neon-green rounded-lg font-mono text-xs disabled:opacity-40 disabled:cursor-not-allowed">PROVIDER KAYDET</button></div><p className={`text-xs mt-3 ${llm.encryption_configured ? "text-bunker-muted" : "text-yellow-300"}`}>Şifreleme anahtarı: {llm.encryption_configured ? "hazır" : "sunucuda LLM_ENCRYPTION_KEY eksik; Provider kaydı için backend ortamına eklenmeli"}</p>{llmMessage && <p role="status" className={`text-xs mt-3 ${llmMessageError ? "text-neon-red" : "text-neon-green"}`}>{llmMessage}</p>}</div>
+            <div className="card bg-bunker-950"><p className="eyebrow mb-3">MODEL / UZMANLIK</p><div className="grid md:grid-cols-2 gap-3"><select aria-label="Model sağlayıcısı" value={llmForm.provider_id} onChange={e => setLlmForm({...llmForm,provider_id:e.target.value})} className="input"><option value="">Provider seç</option>{(llm.providers ?? []).map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}</select><input aria-label="Model adı" placeholder="Model adı" value={llmForm.model} onChange={e => setLlmForm({...llmForm,model:e.target.value})} className="input" /><select aria-label="Model türü" value={llmForm.model_type} onChange={e => setLlmForm({...llmForm,model_type:e.target.value})} className="input"><option value="chat">Chat modeli</option><option value="embedding">Embedding modeli</option></select>{llmForm.model_type === "embedding" && <input type="number" min="1" aria-label="Embedding boyutu" placeholder="Embedding dimension" value={llmForm.dimensions} onChange={e => setLlmForm({...llmForm,dimensions:e.target.value})} className="input" />}<button onClick={() => llmRequest(`${API_BASE}/api/llm/models`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider_id:Number(llmForm.provider_id),name:llmForm.model,model_type:llmForm.model_type,dimensions:llmForm.dimensions ? Number(llmForm.dimensions) : undefined})}, "Model kaydedildi")} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded-lg font-mono text-xs">MODEL EKLE</button>{llmForm.model_type === "embedding" && <button onClick={async () => { const r=await apiRequest(`${API_BASE}/api/llm/embedding/test`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:"embedding bağlantı testi"})}); const b=await r.json(); const m=b.status === "ok" ? `Embedding başarılı · ${b.dimensions} dimension` : (b.error || "Embedding testi başarısız"); setLlmMessage(m); window.alert(m); }} className="px-3 py-2 border border-yellow-400/40 text-yellow-300 rounded-lg font-mono text-xs">EMBEDDING TEST ET</button>}<input aria-label="Uzmanlık adı" placeholder="Uzmanlık adı" value={llmForm.skill} onChange={e => setLlmForm({...llmForm,skill:e.target.value})} className="input" /><textarea aria-label="Uzmanlık talimatları" placeholder="Uzmanlık talimatları" value={llmForm.instructions} onChange={e => setLlmForm({...llmForm,instructions:e.target.value})} className="input min-h-24" /><button onClick={() => llmRequest(`${API_BASE}/api/llm/skills`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:llmForm.skill,instructions:llmForm.instructions})}, "Uzmanlık kaydedildi")} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded-lg font-mono text-xs">UZMANLIK EKLE</button></div>{llmMessage && <p className={`text-xs mt-3 ${llmMessageError ? "text-neon-red" : "text-neon-green"}`}>{llmMessage}</p>}</div>
+            <div className="card bg-bunker-950 flex flex-wrap gap-3"><select aria-label="Aktif model" value={llm.active_model_id || ""} onChange={async e => { const id=Number(e.target.value); await llmRequest(`${API_BASE}/api/llm/active`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,model_id:id})}, "LLM aktif edildi"); }} className="input"><option value="">Aktif model seç</option>{(llm.models ?? []).map((m:any)=><option key={m.id} value={m.id}>{m.name}</option>)}</select><button onClick={() => llmRequest(`${API_BASE}/api/llm/active`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,model_id:llm.active_model_id})}, "LLM aktif edildi")} className="px-3 py-2 border border-neon-green/40 text-neon-green rounded-lg font-mono text-xs">LLM AKTİF</button><button onClick={async () => { setLlmMessage("TEST EDİLİYOR..."); try { const r=await apiRequest(`${API_BASE}/api/llm/test`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})}); const body=await r.json(); const message=body.status === "ok" ? "Bağlantı başarılı" : (body.error || body.status || "Test başarısız"); setLlmMessage(message); window.alert(message); } catch { setLlmMessage("LLM test bağlantısı kurulamadı"); window.alert("LLM test bağlantısı kurulamadı"); } }} className="px-3 py-2 border border-yellow-400/40 text-yellow-300 rounded-lg font-mono text-xs">TEST ET</button></div>
             <div className="card border-purple-400/30 bg-purple-400/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"><div><p className="eyebrow text-purple-300">MEVCUT KAYITLARI VECTORLEŞTİR</p><p className="text-xs text-bunker-muted mt-2">Kapanmış işlemler ve sinyaller aktif embedding modeliyle pgvector memory tablosuna aktarılır.</p></div><div className="flex flex-wrap gap-2"><button onClick={backfillEmbeddings} disabled={backfilling} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs ${backfillDone ? "border-neon-green/60 text-neon-green" : "border-purple-400/50 text-purple-300"}`}>{backfilling ? "KUYRUĞA ALINIYOR..." : backfillDone ? "✓ KUYRUĞA ALINDI" : "EMBEDDING BACKFILL BAŞLAT"}</button><button onClick={repairHistoricalMemory} disabled={repairingMemory} className="shrink-0 px-4 py-2 rounded-lg border border-yellow-400/50 text-yellow-300 font-mono text-xs">{repairingMemory ? "ONARILIYOR..." : "TARİHSEL SNAPSHOT ONAR"}</button></div></div>
-            <div className="card border-yellow-400/30 bg-yellow-400/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"><div><p className="eyebrow text-yellow-300">LLM PAPER İŞLEM YETKİSİ</p><p className="text-xs text-bunker-muted mt-2">Açıkken LLM yalnızca sanal portföyde kontrollü LONG pozisyonu açabilir. Gerçek emir API'si kullanılmaz.</p></div><div className="flex gap-2"><button onClick={async()=>{const enabled=!llm.paper_trade_enabled;await llmRequest(`${API_BASE}/api/llm/paper-trading`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled})},enabled?"Paper işlem yetkisi açıldı":"Paper işlem yetkisi kapatıldı");await reloadLlm()}} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs ${llm.paper_trade_enabled?"border-neon-green/60 text-neon-green":"border-bunker-700 text-bunker-muted"}`}>{llm.paper_trade_enabled?"AÇIK · KAPAT":"KAPALI · AÇ"}</button><button disabled={!llm.paper_trade_enabled} onClick={async()=>{const enabled=!llm.auto_paper_enabled;await llmRequest(`${API_BASE}/api/llm/auto-paper-trading`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled})},enabled?"Kapanış sonrası otomatik yenileme açıldı":"Otomatik yenileme kapatıldı");await reloadLlm()}} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs ${llm.auto_paper_enabled?"border-yellow-300/60 text-yellow-300":"border-bunker-700 text-bunker-muted"}`}>{llm.auto_paper_enabled?"KAPANIŞ SONRASI · KAPAT":"KAPANIŞ SONRASI · AÇ"}</button></div></div>
+            <div className="card border-yellow-400/30 bg-yellow-400/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"><div><p className="eyebrow text-yellow-300">LLM PAPER İŞLEM YETKİSİ</p><p className="text-xs text-bunker-muted mt-2">Açıkken LLM yalnızca sanal portföyde kontrollü LONG pozisyonu açabilir. Gerçek emir API'si kullanılmaz.</p></div><div className="flex gap-2"><button onClick={async()=>{const enabled=!llm.paper_trade_enabled;await llmRequest(`${API_BASE}/api/llm/paper-trading`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled})},enabled?"Paper işlem yetkisi açıldı":"Paper işlem yetkisi kapatıldı")}} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs ${llm.paper_trade_enabled?"border-neon-green/60 text-neon-green":"border-bunker-700 text-bunker-muted"}`}>{llm.paper_trade_enabled?"AÇIK · KAPAT":"KAPALI · AÇ"}</button><button disabled={!llm.paper_trade_enabled} onClick={async()=>{const enabled=!llm.auto_paper_enabled;await llmRequest(`${API_BASE}/api/llm/auto-paper-trading`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled})},enabled?"Kapanış sonrası otomatik yenileme açıldı":"Otomatik yenileme kapatıldı")}} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs ${llm.auto_paper_enabled?"border-yellow-300/60 text-yellow-300":"border-bunker-700 text-bunker-muted"}`}>{llm.auto_paper_enabled?"KAPANIŞ SONRASI · KAPAT":"KAPANIŞ SONRASI · AÇ"}</button></div></div>
             <LlmManagement llm={llm} reload={reloadLlm} />
-          </div>
+            </fieldset>
+          </div>}
 
-          <div className={`${activeTab !== "app" ? "hidden" : ""}`}>
+          {appVisited && <div hidden={activeTab !== "app"}>
             <DbStatsCard />
-          </div>
+          </div>}
           <div className={`card border-neon-cyan/40 bg-neon-cyan/5 ${activeTab !== "app" ? "hidden" : ""}`}>
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
               <div>

@@ -114,7 +114,7 @@ export default function DatabasePage() {
 
   return (
     <RequireAdmin>
-      <main className="page-shell">
+      <div className="page-shell">
         <div className="page-heading flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="eyebrow text-neon-green">ADMIN</p>
@@ -137,6 +137,7 @@ export default function DatabasePage() {
               {loadingTables && <span className="text-xs text-bunker-muted">yükleniyor…</span>}
             </div>
             <input
+              aria-label="Veritabanı tablolarında veya açıklamalarında ara"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Tablo veya açıklama ara…"
@@ -174,7 +175,7 @@ export default function DatabasePage() {
                     {selected.description && <p className="text-xs text-bunker-muted">{selected.description}</p>}
                   </div>
                   <div className="flex items-center gap-2">
-                    <select value={pageSize} onChange={(e) => changePageSize(Number(e.target.value))} className="input w-auto">
+                    <select aria-label="Sayfa başına satır sayısı" value={pageSize} onChange={(e) => changePageSize(Number(e.target.value))} className="input w-auto">
                       {[25, 50, 100, 200].map((n) => <option key={n} value={n}>{n} satır</option>)}
                     </select>
                     <button onClick={() => download("csv")} className="ui-button ui-button-secondary">⬇ CSV</button>
@@ -186,7 +187,7 @@ export default function DatabasePage() {
                   <p className="py-10 text-center text-sm text-bunker-muted">Veri yükleniyor…</p>
                 ) : data && data.columns.length ? (
                   <>
-                    <div className="mt-3 max-h-[65vh] overflow-auto rounded-lg border border-bunker-800">
+                    <div role="region" aria-label={`${selected.table} tablosu`} tabIndex={0} className="mt-3 max-h-[65vh] overflow-auto rounded-lg border border-bunker-800">
                       <table className="w-full text-left text-xs">
                         <thead className="sticky top-0 bg-bunker-900">
                           <tr>
@@ -221,7 +222,7 @@ export default function DatabasePage() {
             )}
           </section>
         </div>
-      </main>
+      </div>
     </RequireAdmin>
   );
 }

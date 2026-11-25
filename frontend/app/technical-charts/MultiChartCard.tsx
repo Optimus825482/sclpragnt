@@ -13,9 +13,9 @@ import {
     ColorType,
     LineStyle,
 } from "lightweight-charts";
-import { API_BASE, apiRequest } from "../lib/api";
 import { formatPrice, pricePrecision } from "../lib/format";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
+import { requestChartCandles } from "./chartCandles";
 
 import { istanbulLocalization, istanbulTickMarkFormatter } from "../lib/chartTime";
 export interface ChartIndicators {
@@ -481,11 +481,8 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
         if (!config.symbol) return;
         const reqId = ++klineReqIdRef.current;
         try {
-            const res = await apiRequest(`${API_BASE}/api/market-klines/${config.symbol}?interval=${config.interval}&limit=300`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const payload = await res.json();
+            const candlesRaw = await requestChartCandles(config.symbol, config.interval);
             if (reqId !== klineReqIdRef.current) return;
-            const candlesRaw = payload.candles || [];
             if (!candlesRaw.length || !candleSeriesRef.current || !chartRef.current) return;
             const bars: Bar[] = candlesRaw.map((k: number[]) => ({ time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5] }));
             const previous = lastBarsRef.current;
@@ -535,6 +532,7 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
             }
             setLoading(false);
         } catch (err) {
+            if (reqId !== klineReqIdRef.current) return;
             console.error(`MultiChartCard [${config.symbol}] error:`, err);
             setLoading(false);
         }
@@ -759,10 +757,11 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                                 <input
                                     autoFocus
                                     type="text"
+                                    aria-label={`Grafik ${config.id} için sembol ara`}
                                     value={searchFilter}
                                     onChange={e => setSearchFilter(e.target.value)}
                                     onKeyDown={e => {
-                                        if (e.key === "Enter") {
+                                        if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                                             e.preventDefault();
                                             if (filteredSymbols.length > 0) {
                                                 handleSelectSymbol(filteredSymbols[0]);
@@ -827,7 +826,7 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                 </div>
 
                 {/* Right: Indicator Picker + Controls */}
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
                     <CardCandleCountdown intervalMs={intervalMs} />
 
                     {/* Indicator dropdown */}
@@ -884,7 +883,7 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                         )}
                     </div>
 
-                    <ChartAiScoreHeader symbol={config.symbol} assetType="SPOT" compact className="flex items-center shrink-0" />
+                    <ChartAiScoreHeader symbol={config.symbol} compact className="order-last basis-full sm:order-none sm:basis-auto" />
 
                     {/* Yenile */}
                     <button

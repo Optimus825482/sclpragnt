@@ -7,6 +7,7 @@
  */
 import { formatPrice } from "./format";
 import { fmtTrTime, num } from "./maBuyUi";
+import { sortedCopy } from "./sortedCopy";
 
 export { fmtTrTime, num };
 
@@ -386,7 +387,7 @@ export function filterRows(
  */
 export function sortRows(rows: readonly RadarLogRow[]): RadarLogRow[] {
   const pr = (r: RadarLogRow) => STATUS_PRIORITY[r.status] ?? 3;
-  return [...rows].sort((a, b) => {
+  return sortedCopy(rows, (a, b) => {
     const d = pr(a) - pr(b);
     if (d !== 0) return d;
     if (a.panelScore !== b.panelScore) {

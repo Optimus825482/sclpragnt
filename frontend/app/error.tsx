@@ -16,7 +16,7 @@ export default function ErrorPage({
   useEffect(() => { reloadForChunkError(error); }, [error]);
   if (chunkError) {
     return (
-      <main className="page-shell">
+      <div className="page-shell">
         <div className="card mt-10 flex flex-col items-center gap-4 px-6 py-12 text-center">
           <p className="eyebrow">YENİ SÜRÜM</p>
           <h1 className="font-mono text-xl font-bold text-white">Uygulama güncellendi</h1>
@@ -25,11 +25,11 @@ export default function ErrorPage({
             SAYFAYI YENİLE
           </button>
         </div>
-      </main>
+      </div>
     );
   }
   return (
-    <main className="page-shell">
+    <div className="page-shell">
       <div className="card mt-10 flex flex-col items-center gap-4 border-neon-red/30 bg-neon-red/5 px-6 py-12 text-center">
         <p className="eyebrow">BEKLENMEYEN HATA</p>
         <h1 className="font-mono text-xl font-bold text-white">Bu bölüm yüklenirken bir hata oluştu</h1>
@@ -43,6 +43,6 @@ export default function ErrorPage({
           <Link href="/" className="ui-button touch-target flex items-center justify-center">ANA SAYFAYA DÖN</Link>
         </div>
       </div>
-    </main>
+    </div>
   );
 }

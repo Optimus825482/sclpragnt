@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { fmtDateTime } from "../lib/format";
 import RequireAdmin from "../components/RequireAdmin";
+import { useModalA11y } from "../lib/useModalA11y";
 
 type AuditLog = {
   id: number;
@@ -96,6 +97,10 @@ export default function AuditLogsPage() {
   const [confirmPurge, setConfirmPurge] = useState(false);
   const [purgeDays, setPurgeDays] = useState(30);
   const [purgeBusy, setPurgeBusy] = useState(false);
+  const closePurge = () => { if (!purgeBusy) setConfirmPurge(false); };
+  const { ref: purgeRef, onKeyDown: onPurgeKeyDown } = useModalA11y(confirmPurge, closePurge, "Eski kayıtları temizle", {
+    initialFocus: "[data-purge-cancel]",
+  });
   const timerRef = useRef<number | null>(null);
   // H-26: bildirim zamanlayıcısı ref'te tutulmuyor ve unmount'ta
   // temizlenmiyordu (sökülmüş bileşende `setNotice` çağrılıyordu).
@@ -190,7 +195,7 @@ export default function AuditLogsPage() {
 
   return (
     <RequireAdmin>
-      <main className="page-shell">
+      <div className="page-shell">
         <div className="page-heading flex flex-wrap items-end justify-between gap-3">
           <div>
             <p className="eyebrow">SİSTEM YÖNETİMİ</p>
@@ -212,14 +217,14 @@ export default function AuditLogsPage() {
 
         <div className="card mt-5">
           <div className="flex flex-wrap items-center gap-2 border-b border-bunker-800 p-3">
-            <select value={category} onChange={(e) => { setCategory(e.target.value); }} className="input !w-auto">
+            <select aria-label="Kategori" value={category} onChange={(e) => { setCategory(e.target.value); }} className="input !w-auto">
               {CATEGORY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
-            <select value={action} onChange={(e) => setAction(e.target.value)} className="input !w-auto">
+            <select aria-label="Eylem" value={action} onChange={(e) => setAction(e.target.value)} className="input !w-auto">
               {ACTION_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
-            <input value={actor} onChange={(e) => setActor(e.target.value)} className="input !w-40" placeholder="Kullanıcı adı" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} className="input min-w-40 flex-1" placeholder="Serbest arama (hedef, detay…)" />
+            <input aria-label="Kullanıcı adı" value={actor} onChange={(e) => setActor(e.target.value)} className="input !w-40" placeholder="Kullanıcı adı" />
+            <input aria-label="Kayıtlarda ara" value={q} onChange={(e) => setQ(e.target.value)} className="input min-w-40 flex-1" placeholder="Serbest arama (hedef, detay…)" />
             <button type="button" onClick={applyFilters} className="ui-button ui-button-primary">FİLTRELE</button>
             <button type="button" onClick={() => { setCategory(""); setAction(""); setActor(""); setQ(""); setOffset(0); setLoading(true); }} className="ui-button ui-button-secondary">SIFIRLA</button>
             <span className="ml-auto font-mono text-xs text-bunker-muted">{total.toLocaleString("tr-TR")} kayıt · 30 sn&apos;de bir yenilenir</span>
@@ -280,8 +285,8 @@ export default function AuditLogsPage() {
         </p>
 
         {confirmPurge && (
-          <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={() => setConfirmPurge(false)} role="dialog" aria-modal="true" aria-labelledby="purge-title">
-            <section className="w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={closePurge} role="dialog" aria-modal="true" aria-labelledby="purge-title" aria-busy={purgeBusy}>
+            <section ref={purgeRef} tabIndex={-1} onKeyDown={onPurgeKeyDown} className="w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
               <div className="p-5">
                 <h2 id="purge-title" className="font-mono text-lg font-bold text-white">Eski kayıtları temizle</h2>
                 <p className="mt-2 text-sm text-bunker-muted">
@@ -292,14 +297,14 @@ export default function AuditLogsPage() {
                 </label>
                 {notice?.kind === "err" && <p role="alert" className="mt-3 rounded-lg border border-neon-red/40 bg-neon-red/10 px-3 py-2 text-sm text-neon-red">{notice.text}</p>}
                 <div className="mt-5 flex justify-end gap-2">
-                  <button type="button" onClick={() => setConfirmPurge(false)} className="ui-button ui-button-secondary">VAZGEÇ</button>
+                  <button type="button" data-purge-cancel onClick={closePurge} disabled={purgeBusy} className="ui-button ui-button-secondary">VAZGEÇ</button>
                   <button type="button" onClick={runPurge} disabled={purgeBusy || !(purgeDays > 0)} className="ui-button ui-button-danger">{purgeBusy ? "SİLİNİYOR…" : "EVET, TEMİZLE"}</button>
                 </div>
               </div>
             </section>
           </div>
         )}
-      </main>
+      </div>
     </RequireAdmin>
   );
 }

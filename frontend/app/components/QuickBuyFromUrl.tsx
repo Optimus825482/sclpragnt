@@ -1,9 +1,12 @@
 "use client";
+import dynamic from "next/dynamic";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import BuyDialog from "./user/home/BuyDialog";
 import type { TradePlan } from "./user/home/tradePlan";
 import { API_BASE, apiRequest } from "../lib/api";
+import { createRequestDeadline } from "../lib/fetchTimeout";
+
+const BuyDialog = dynamic(() => import("./user/home/BuyDialog"));
 
 /** Plan çekimi bu süreyi aşarsa pencere plansız açılır. */
 export const PLAN_FETCH_TIMEOUT_MS = 5000;
@@ -21,27 +24,30 @@ export default function QuickBuyFromUrl() {
   const price = Number(params.get("buy_price"));
   const key = params.get("key");
   // Plan çekimi bitene (başarı ya da hata) kadar pencere AÇILMAZ; böylece plan sonradan gelip alanları ezmez.
-  const [loaded, setLoaded] = useState<{ key: string | null; plan: TradePlan | null } | null>(null);
+  const [loaded, setLoaded] = useState<{ symbol: string; key: string; plan: TradePlan | null } | null>(null);
 
   useEffect(() => {
-    if (!symbol) return;
-    if (!key) { setLoaded({ key: null, plan: null }); return; }
-    let cancelled = false;
+    if (!symbol || !key) return;
+    const request = new AbortController();
+    const deadline = createRequestDeadline(PLAN_FETCH_TIMEOUT_MS, request.signal);
     setLoaded(null);
     (async () => {
       let plan: TradePlan | null = null;
-      const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), PLAN_FETCH_TIMEOUT_MS);
       try {
-        const res = await apiRequest(`${API_BASE}/api/monitoring/trade-plan?key=${encodeURIComponent(key)}`, { cache: "no-store", signal: ctl.signal });
+        const res = await apiRequest(`${API_BASE}/api/monitoring/trade-plan?key=${encodeURIComponent(key)}`, {
+          signal: deadline.signal, timeoutMs: 0,
+        });
         if (res.ok) {
           const data = await res.json();
           plan = data?.plan && typeof data.plan === "object" ? (data.plan as TradePlan) : null;
         }
-      } catch { /* ağ/zaman aşımı/ayrıştırma hatası: plansız aç */ } finally { clearTimeout(timer); }
-      if (!cancelled) setLoaded({ key, plan });
+      } catch { /* ağ/zaman aşımı/ayrıştırma hatası: plansız aç */ } finally { deadline.dispose?.(); }
+      if (!request.signal.aborted) setLoaded({ symbol, key, plan });
     })();
-    return () => { cancelled = true; };
+    return () => {
+      request.abort();
+      deadline.dispose?.();
+    };
   }, [symbol, key]);
 
   const close = useCallback(() => {
@@ -53,14 +59,15 @@ export default function QuickBuyFromUrl() {
     router.replace(q ? `${pathname}?${q}` : pathname, { scroll: false });
   }, [params, pathname, router]);
 
-  if (!symbol || !loaded || loaded.key !== (key || null)) return null;
+  if (!symbol || (key && (loaded?.key !== key || loaded.symbol !== symbol))) return null;
+  const plan = key ? loaded?.plan ?? null : null;
   return (
     <BuyDialog
       open
       symbol={symbol}
       referencePrice={Number.isFinite(price) && price > 0 ? price : null}
-      tradePlan={loaded.plan}
-      planKey={loaded.plan ? key : null}
+      tradePlan={plan}
+      planKey={plan ? key : null}
       onClose={close}
     />
   );

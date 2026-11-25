@@ -289,7 +289,7 @@ function MacdAccessGate({ children }: { children: ReactNode }) {
   const { role, username } = useAuth();
   if (canViewMacdMonitor(role, username)) return <>{children}</>;
   return (
-    <main className="page-shell">
+    <div className="page-shell">
       <div className="card mt-10 flex flex-col items-center gap-4 border-neon-red/30 bg-neon-red/5 px-6 py-12 text-center">
         <p className="eyebrow">YETKİSİZ ERİŞİM</p>
         <h1 className="font-mono text-xl font-bold text-white">Bu sayfayı görüntüleme yetkiniz yok</h1>
@@ -298,7 +298,7 @@ function MacdAccessGate({ children }: { children: ReactNode }) {
         </p>
         <Link href="/" className="ui-button ui-button-primary touch-target flex items-center justify-center">ANA SAYFAYA DÖN</Link>
       </div>
-    </main>
+    </div>
   );
 }
 
@@ -534,7 +534,7 @@ export default function MacdMonitorPage() {
 
   return (
     <MacdAccessGate>
-      <main className="page-shell">
+      <div className="page-shell">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <p className="eyebrow">CANLI MACD MONİTÖR</p>
@@ -1085,7 +1085,7 @@ export default function MacdMonitorPage() {
             </div>
           )}
         </div>
-      </main>
+      </div>
     </MacdAccessGate>
   );
 }

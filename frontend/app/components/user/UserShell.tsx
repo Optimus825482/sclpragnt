@@ -27,7 +27,7 @@ export default function UserShell({ children }: { children: React.ReactNode }) {
         <UserNav hidden={hidden} />
         <div className="pband-lg hidden md:block"><PortfolioBand /></div>
       </div>
-      <div className="mx-auto max-w-5xl px-4 pb-24 pt-4 md:pb-8">{children}</div>
+      <main className="mx-auto max-w-5xl px-4 pb-24 pt-4 md:pb-8">{children}</main>
       <UserBottomNav hidden={hidden} />
       <RadarAlertModal />
       <AssistantFab />

@@ -110,7 +110,7 @@ export default function SymbolAnalysisPage() {
           <h1 className="font-mono text-2xl font-bold text-white">Sembol Analizi</h1>
           <p className="mt-1 text-xs text-bunker-muted"><SymbolLink symbol={symbol} className="text-white hover:text-neon-green font-bold" /> · {timeframe} · canlı public veriler</p>
         </div>
-        <select value={symbol} onChange={e => setSymbol(e.target.value)} className="input max-w-40">{symbols.map(s => <option key={s}>{s}</option>)}</select>
+        <select aria-label="Analiz edilecek sembol" value={symbol} onChange={e => setSymbol(e.target.value)} className="input max-w-40">{symbols.map(s => <option key={s}>{s}</option>)}</select>
       </div>
       <Tabs items={["1m", "5m", "15m", "30m", "1h", "4h", "1d"].map(tf => ({ id: tf, label: tf }))}
         active={timeframe} onChange={setTimeframe} className="w-fit" />

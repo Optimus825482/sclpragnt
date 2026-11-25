@@ -424,6 +424,7 @@ export default function MtfScannerPage() {
           {/* Kapsam & Arama */}
           <div className="flex items-center gap-2">
             <select
+              aria-label="MTF tarama kapsamı"
               value={scope}
               onChange={(e) => {
                 const newScope = e.target.value as "active" | "all";
@@ -438,6 +439,7 @@ export default function MtfScannerPage() {
 
             <input
               type="text"
+              aria-label="MTF sonuçlarında sembol ara"
               placeholder="Sembol ara (örn. BTC, ONE)…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -488,7 +490,7 @@ export default function MtfScannerPage() {
               </button>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto" role="region" aria-label="MTF tarama sonuçları tablosu" tabIndex={0}>
               <table className="w-full text-left border-collapse font-mono text-xs">
                 <thead>
                   <tr className="border-b border-bunker-800 text-bunker-muted text-[11px]">

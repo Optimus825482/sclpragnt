@@ -66,7 +66,7 @@ export default function UserRisk() {
   };
 
   return (
-    <main className="space-y-4">
+    <div className="space-y-4">
       <header>
         <h1 className="text-2xl font-bold text-white">Risk Merkezi</h1>
         <p className="mt-1 text-sm text-bunker-muted">Her alımda ne kadar risk alacağını burada sen belirlersin. Sistem bu sınırı aşan emri göndermez.</p>
@@ -154,6 +154,6 @@ export default function UserRisk() {
           <p className="text-xs text-bunker-muted">Bu ayarlar öneridir ve kâr garantisi vermez. Kaybetme riski her zaman vardır.</p>
         </>
       )}
-    </main>
+    </div>
   );
 }

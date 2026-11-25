@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { API_BASE, apiRequest } from "../../lib/api";
 import { formatPrice, toMs } from "../../lib/format";
@@ -42,6 +42,18 @@ const TABS: { id: TabId; label: string; empty: string }[] = [
   { id: "gainers", label: "Yükselenler", empty: "Şu an yükselen çift yok." },
   { id: "super", label: "Süper Tarama", empty: "Kalite kapılarını geçen aday yok." },
 ];
+
+function readRadarTab(): TabId {
+  try {
+    if (typeof window !== "undefined") {
+      const saved = window.localStorage.getItem(TAB_KEY);
+      return TABS.find((item) => item.id === saved)?.id ?? "watch";
+    }
+  } catch {
+    // Depolama kapalıysa ilk sekme açılır.
+  }
+  return "watch";
+}
 
 const DEFAULT_REASON = "Sistem bu coinde güçlü bir yükseliş sinyali buldu";
 const SCORE_LOG_REF = 25000;
@@ -243,25 +255,16 @@ function DetailModal({ item, onClose }: { item: RadarItem; onClose: () => void }
 }
 
 export default function UserRadar() {
-  const [tab, setTab] = useState<TabId>("watch");
+  const [tab, setTab] = useState<TabId>(readRadarTab);
+  const [focusedTab, setFocusedTab] = useState<TabId | null>(null);
+  const radarId = useId();
   const [watch, setWatch] = useState<RadarItem[] | null>(null);
   const [history, setHistory] = useState<RadarItem[] | null>(null);
-  const [error, setError] = useState(false);
+  const [errorTab, setErrorTab] = useState<TabId | null>(null);
   const [selected, setSelected] = useState<RadarItem | null>(null);
-  const mounted = useRef(true);
-
-  useEffect(() => {
-    mounted.current = true;
-    try {
-      const saved = window.localStorage.getItem(TAB_KEY);
-      if (saved === "watch" || saved === "history" || saved === "gainers" || saved === "super") setTab(saved);
-    } catch {
-      /* localStorage yok */
-    }
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
+  const requestRef = useRef<AbortController | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const listTab = tab === "watch" || tab === "history" ? tab : null;
 
   const selectTab = (id: TabId) => {
     setTab(id);
@@ -273,50 +276,45 @@ export default function UserRadar() {
   };
 
   const load = useCallback(async () => {
+    if (!listTab || document.hidden || requestRef.current) return;
+    const request = new AbortController();
+    requestRef.current = request;
+    const path = listTab === "watch" ? "state" : "notifications";
     try {
-      const [sRes, hRes] = await Promise.all([
-        apiRequest(`${API_BASE}/api/monitoring/state`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/monitoring/notifications`, { cache: "no-store" }),
-      ]);
-      if (!mounted.current) return;
-      if (sRes.ok) {
-        const s = await sRes.json();
-        if (!mounted.current) return;
-        setWatch(mapItems(s?.watchlist, "watch"));
-      }
-      if (hRes.ok) {
-        const h = await hRes.json();
-        if (!mounted.current) return;
-        setHistory(mapHistory(h?.history, Date.now()));
-      }
-      // 2026-10-18 (denetim #9): sekmelerden biri bile alınamadıysa hata; aksi halde boş sekme sonsuz "Yükleniyor…" kalıyordu.
-      setError(!sRes.ok || !hRes.ok);
+      const response = await apiRequest(`${API_BASE}/api/monitoring/${path}`, { signal: request.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (request.signal.aborted) return;
+      if (listTab === "watch") setWatch(mapItems(data?.watchlist, "watch"));
+      else setHistory(mapHistory(data?.history, Date.now()));
+      setErrorTab((previous) => previous === listTab ? null : previous);
     } catch {
-      if (mounted.current) setError(true);
+      if (!request.signal.aborted) setErrorTab(listTab);
+    } finally {
+      if (requestRef.current === request) requestRef.current = null;
     }
-  }, []);
+  }, [listTab]);
 
   useEffect(() => {
     void load();
-  }, [load]);
-  useVisibleInterval(() => void load(), 30_000);
-
-  const timerRef = useRef<number | null>(null);
-  useEffect(
-    () => () => {
+    return () => {
+      requestRef.current?.abort();
+      requestRef.current = null;
       if (timerRef.current != null) window.clearTimeout(timerRef.current);
-    },
-    [],
-  );
+      timerRef.current = null;
+    };
+  }, [load]);
+  useVisibleInterval(load, listTab ? 30_000 : null);
+
   const onLive = useCallback(
     (m: { type: string }) => {
-      if (m?.type !== "monitoring_alert" || timerRef.current != null) return;
+      if (!listTab || document.hidden || m?.type !== "monitoring_alert" || timerRef.current != null) return;
       timerRef.current = window.setTimeout(() => {
         timerRef.current = null;
         void load();
       }, 2500);
     },
-    [load],
+    [listTab, load],
   );
   useLiveMessages(onLive, ["monitoring_alert"]);
 
@@ -327,24 +325,45 @@ export default function UserRadar() {
   const current = TABS.find((t) => t.id === tab)!;
 
   return (
-    <main className="mx-auto w-full max-w-2xl px-4 py-4">
+    <section aria-labelledby={`${radarId}-title`} className="mx-auto w-full max-w-2xl px-4 py-4">
       <div className="flex items-center justify-between gap-2">
-        <h1 className="text-xl font-bold text-white">Radar</h1>
+        <h1 id={`${radarId}-title`} className="text-xl font-bold text-white">Radar</h1>
         <RadarScanLogButton />
       </div>
       {/* 2026-10-18: rejim bandı kaldırıldı — kalkan rozet modunda (RADAR_SHIELD_MODE=badge) bildirimler durmaz;
           durum bildirim kartındaki "BTC rejim" rozetiyle gösterilir. */}
-      <div role="tablist" aria-label="Radar bölümleri" className="mt-3 flex gap-2 overflow-x-auto pb-1">
-        {TABS.map((t) => (
+      <div
+        role="tablist"
+        aria-label="Radar bölümleri"
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setFocusedTab(null);
+        }}
+        className="mt-3 flex gap-2 overflow-x-auto pb-1"
+      >
+        {TABS.map((t, index) => (
           <button
             key={t.id}
             type="button"
             role="tab"
-            id={`radar-tab-${t.id}`}
+            id={`${radarId}-tab-${t.id}`}
             aria-selected={tab === t.id}
-            aria-controls="radar-panel"
+            aria-controls={`${radarId}-panel-${t.id}`}
+            tabIndex={(focusedTab ?? tab) === t.id ? 0 : -1}
+            onFocus={() => setFocusedTab(t.id)}
             onClick={() => selectTab(t.id)}
-            className={`min-h-[44px] shrink-0 rounded-full border px-4 text-sm font-semibold ${
+            onKeyDown={(event) => {
+              let next: number;
+              switch (event.key) {
+                case "ArrowLeft": next = (index + TABS.length - 1) % TABS.length; break;
+                case "ArrowRight": next = (index + 1) % TABS.length; break;
+                case "Home": next = 0; break;
+                case "End": next = TABS.length - 1; break;
+                default: return;
+              }
+              event.preventDefault();
+              document.getElementById(`${radarId}-tab-${TABS[next].id}`)?.focus();
+            }}
+            className={`min-h-[44px] shrink-0 rounded-full border px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-sky-600 ${
               tab === t.id ? "border-neon-green bg-neon-green text-white" : "border-bunker-700 bg-white text-bunker-muted"
             }`}
           >
@@ -352,14 +371,17 @@ export default function UserRadar() {
           </button>
         ))}
       </div>
-      <div role="tabpanel" id="radar-panel" aria-labelledby={`radar-tab-${tab}`} className="mt-3">
+      {TABS.filter((t) => t.id !== tab).map((t) => (
+        <div key={t.id} role="tabpanel" id={`${radarId}-panel-${t.id}`} aria-labelledby={`${radarId}-tab-${t.id}`} hidden />
+      ))}
+      <div role="tabpanel" id={`${radarId}-panel-${tab}`} aria-labelledby={`${radarId}-tab-${tab}`} tabIndex={0} className="mt-3">
         {tab === "super" ? (
           <SuperScanList />
         ) : tab === "gainers" ? (
           <TopGainersList />
         ) : items == null ? (
           <p className="py-8 text-center text-sm text-bunker-muted">
-            {error ? "Veriler şu an alınamıyor. Biraz sonra tekrar denenecek." : "Yükleniyor…"}
+            {errorTab === tab ? "Veriler şu an alınamıyor. Biraz sonra tekrar denenecek." : "Yükleniyor…"}
           </p>
         ) : items.length === 0 ? (
           <p className="rounded-2xl border border-dashed border-bunker-700 bg-white py-8 text-center text-sm text-bunker-muted">
@@ -374,6 +396,6 @@ export default function UserRadar() {
         )}
       </div>
       {selected && <DetailModal item={selected} onClose={() => setSelected(null)} />}
-    </main>
+    </section>
   );
 }

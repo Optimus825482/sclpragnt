@@ -1,14 +1,15 @@
 "use client";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useState } from "react";
 import { useVisibleInterval } from "../../lib/useVisibleInterval";
 import type { WatchPrefs } from "../../lib/useWatchPrefs";
-import BuyDialog from "./home/BuyDialog";
 import type { TradePlan } from "./home/tradePlan";
 import NotificationCard, { type CardActions, type RecentRow } from "./home/NotificationCard";
 
 export type { RecentRow } from "./home/NotificationCard";
 
+const BuyDialog = dynamic(() => import("./home/BuyDialog"));
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
 export default function RecentNotifications({

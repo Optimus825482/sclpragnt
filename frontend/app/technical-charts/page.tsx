@@ -379,13 +379,14 @@ export default function TechnicalChartsPage() {
                             <div className="flex items-center bg-bunker-950 rounded-lg border border-bunker-700 overflow-hidden focus-within:border-neon-green/50">
                                 <input
                                     type="text"
+                                    aria-label="Tüm grafikler için sembol ara"
                                     value={globalSymbolInput}
                                     onChange={(e) => {
                                         setGlobalSymbolInput(e.target.value.toUpperCase());
                                         setGlobalSearchOpen(true);
                                     }}
                                     onKeyDown={(e) => {
-                                        if (e.key === "Enter") {
+                                        if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                                             e.preventDefault();
                                             applyGlobalSymbolToAll(globalSymbolInput);
                                         }
@@ -559,7 +560,7 @@ export default function TechnicalChartsPage() {
                     </div>
 
                     {/* Sağ: Layout + Yenile */}
-                    <div className="flex items-center gap-2">
+                    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
                         {/* Layout Seçici */}
                         <div className="flex items-center bg-bunker-950 p-0.5 rounded-lg border border-bunker-700">
                             {(["grid4", "split2_h", "split2_v", "single"] as LayoutType[]).map((l) => {
@@ -587,7 +588,7 @@ export default function TechnicalChartsPage() {
                             })}
                         </div>
 
-                        <ChartAiScoreHeader symbol={globalSymbol} assetType="SPOT" className="flex items-center shrink-0 mr-2" />
+                        <ChartAiScoreHeader symbol={globalSymbol} className="order-last basis-full sm:order-none sm:basis-auto" />
                         {/* Yenile */}
                         <button
                             type="button"

@@ -150,6 +150,7 @@ describe("parseMoneyInput", () => {
 
 describe("postJsonGuarded", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
@@ -182,6 +183,11 @@ describe("postJsonGuarded", () => {
 
   it("zaman aşımı → belirsiz ve timedOut=true", async () => {
     vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("timeout", "TimeoutError")), ms);
+      return controller.signal;
+    });
     vi.stubGlobal("fetch", vi.fn((_u: unknown, init: RequestInit) => new Promise((_res, rej) => {
       init.signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
     })));
@@ -190,5 +196,23 @@ describe("postJsonGuarded", () => {
     const err = await p;
     expect(err).toBeInstanceOf(UncertainOrderError);
     expect(err.timedOut).toBe(true);
+  });
+
+  it("yanıt gövdesinin zaman aşımını belirsiz emir olarak korur", async () => {
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+    const fetchOrder = vi.fn(async (_url: unknown, init: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: () => new Promise<never>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        deadline.abort(new DOMException("timeout", "TimeoutError"));
+      }),
+    }) as unknown as Response);
+    vi.stubGlobal("fetch", fetchOrder);
+    const result = postJsonGuarded("/x", {}, 100);
+    expect(timeout).toHaveBeenCalledWith(100);
+    await expect(result).rejects.toMatchObject({ timedOut: true });
+    expect(fetchOrder).toHaveBeenCalledTimes(1);
   });
 });

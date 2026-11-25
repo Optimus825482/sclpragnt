@@ -17,35 +17,40 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // Audit: /api/auth/status AĞ hatası (TypeError "Failed to fetch") ile
-  // başarısız olursa sayfadan çıkış yolu yoktu → YENİDEN DENE butonu eklenir.
-  const [statusNetworkError, setStatusNetworkError] = useState(false);
+  const [statusCheckError, setStatusCheckError] = useState("");
 
-  const refresh = useCallback(async () => {
-    const response = await apiRequest(`${API_BASE}/api/auth/status`, { cache: "no-store" });
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    const response = await apiRequest(`${API_BASE}/api/auth/status`, { cache: "no-store", signal });
     if (!response.ok) throw new Error(`Kimlik doğrulama durumu alınamadı (${response.status})`);
-    const next = await response.json() as AuthStatus;
-    setStatus(next);
+    const next: AuthStatus | null = await response.json();
+    if (typeof next?.configured !== "boolean" || typeof next.authenticated !== "boolean") {
+      throw new Error("Kimlik doğrulama yanıtı eksik veya geçersiz.");
+    }
+    if (!signal?.aborted) setStatus(next);
     return next;
   }, []);
 
+  const checkStatus = useCallback((signal?: AbortSignal) => refresh(signal).then(
+    () => { if (!signal?.aborted) setStatusCheckError(""); },
+    (reason: unknown) => {
+      if (!signal?.aborted) {
+        setStatusCheckError(reason instanceof Error ? reason.message : "Backend bağlantısı kurulamadı");
+      }
+    },
+  ), [refresh]);
+
   useEffect(() => {
+    const controller = new AbortController();
     const expired = () => { setStatus((current) => current ? { ...current, authenticated: false } : current); setError("Oturum süresi doldu. Yeniden giriş yapın."); };
     window.addEventListener("scalper:auth-expired", expired);
-    refresh().catch((reason) => {
-      setStatusNetworkError(reason instanceof TypeError);
-      setError(reason instanceof Error ? reason.message : "Backend bağlantısı kurulamadı");
+    queueMicrotask(() => {
+      if (!controller.signal.aborted) void checkStatus(controller.signal);
     });
-    return () => window.removeEventListener("scalper:auth-expired", expired);
-  }, [refresh]);
-
-  const retryStatusCheck = () => {
-    setError("");
-    refresh().catch((reason) => {
-      setStatusNetworkError(reason instanceof TypeError);
-      setError(reason instanceof Error ? reason.message : "Backend bağlantısı kurulamadı");
-    });
-  };
+    return () => {
+      controller.abort();
+      window.removeEventListener("scalper:auth-expired", expired);
+    };
+  }, [checkStatus]);
 
   const login = async (event: FormEvent) => {
     event.preventDefault();
@@ -61,21 +66,20 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     finally { setBusy(false); }
   };
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     setBusy(true);
     try {
       await apiRequest(`${API_BASE}/api/auth/logout`, { method: "POST" });
     } finally {
       // Logout sonrası sunucudan gerçek durumu al — ağ hatasında eski durumu korumak için
       try {
-        const next = await refresh();
-        setStatus(next);
+        await refresh();
       } catch {
         setStatus((current) => current ? { ...current, authenticated: false } : current);
       }
       setBusy(false);
     }
-  };
+  }, [refresh]);
 
   const authValue = useMemo(
     () => ({ username: status?.username ?? null, role: status?.role ?? null, logout }),
@@ -86,7 +90,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     <section className="w-full max-w-md rounded-xl border border-bunker-700 bg-bunker-900 p-6 shadow-2xl">
       <p className="eyebrow">SCALPERAGENT · PAPER ONLY</p>
       <h1 className="mt-2 font-mono text-2xl font-bold text-white">Oturum açın</h1>
-      {!status && !error && (
+      {!status && !statusCheckError && (
         <div className="mt-4">
           <AppLoader variant="default" label="OTURUM DOĞRULANIYOR…" sublabel="Scalper Agent v4 güvenlik bağlantısı kontrol ediliyor" minHeight="min-h-[160px]" />
         </div>
@@ -97,8 +101,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         <label className="block"><span className="eyebrow">PAROLA</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required className="input mt-2 w-full" /></label>
         <button disabled={busy} className="ui-button ui-button-primary w-full">{busy ? "DOĞRULANIYOR…" : "OTURUM AÇ"}</button>
       </form>}
-      {error && <p role="alert" className="mt-4 text-sm text-neon-red">{error}</p>}
-      {statusNetworkError && <button type="button" onClick={retryStatusCheck} className="mt-2 ui-button ui-button-secondary">YENİDEN DENE</button>}
+      {(statusCheckError || error) && <p role="alert" className="mt-4 text-sm text-neon-red">{statusCheckError || error}</p>}
+      {statusCheckError && <button type="button" onClick={() => {
+        setStatusCheckError("");
+        void checkStatus();
+      }} className="mt-2 ui-button ui-button-secondary">YENİDEN DENE</button>}
     </section>
   </main>;
 

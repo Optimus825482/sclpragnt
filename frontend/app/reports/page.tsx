@@ -1,15 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useIsUserView } from "../lib/adminView";
+import { sortedCopy } from "../lib/sortedCopy";
 import UserSignalReport from "../components/user/UserSignalReport";
 import SymbolLink from "../components/SymbolLink";
-import MacdMtfTab from "./MacdMtfTab";
-import DailyFirstNotificationTab from "./DailyFirstNotificationTab";
-import LlmVsRulesTab from "./LlmVsRulesTab";
-import CombinedRisingTab from "./CombinedRisingTab";
 import {
   formatSignedTL,
   formatTL,
@@ -20,6 +17,11 @@ import {
   localDateInput,
   toMs,
 } from "../lib/format";
+
+const MacdMtfTab = lazy(() => import("./MacdMtfTab"));
+const DailyFirstNotificationTab = lazy(() => import("./DailyFirstNotificationTab"));
+const LlmVsRulesTab = lazy(() => import("./LlmVsRulesTab"));
+const CombinedRisingTab = lazy(() => import("./CombinedRisingTab"));
 
 // NOT (denetim #48): `num` / `pct` / `fmtDt` artık `lib/format.ts`'ten geliyor.
 // Bu sayfa kendi kopyalarını taşıyordu ve `fmtDt`, `format.ts`'teki
@@ -438,7 +440,7 @@ function OverviewTab({ day, includeArchived = false }: { day?: string; includeAr
           {symbols.length === 0 ? (
             <p className="py-6 text-center text-sm text-bunker-muted font-mono">Henüz işlem geçmişi yok.</p>
           ) : (
-            <div className="table-scroll max-h-[360px]">
+            <div className="table-scroll max-h-[360px]" role="region" aria-label="Sembol bazlı işlem özeti tablosu" tabIndex={0}>
               <table className="data-table table-compact">
                 <thead>
                   <tr>
@@ -475,7 +477,7 @@ function OverviewTab({ day, includeArchived = false }: { day?: string; includeAr
           {notifications.length === 0 ? (
             <p className="py-6 text-center text-sm text-bunker-muted font-mono">Henüz bildirim kaydı yok.</p>
           ) : (
-            <div className="table-scroll max-h-[360px]">
+            <div className="table-scroll max-h-[360px]" role="region" aria-label="Son bildirimler tablosu" tabIndex={0}>
               <table className="data-table table-compact">
                 <thead>
                   <tr>
@@ -603,7 +605,7 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
   const [sourceFilter, setSourceFilter] = useState<"all" | "velocity" | "jump" | "early" | "rising">("all");
   const [scoreFilter, setScoreFilter] = useState<"system" | "high" | "all">("system");
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "tp1" | "partial" | "failed" | "pending">("all");
-  const [sortKey, setSortKey] = useState<string>("detected_at");
+  const [sortKey, setSortKey] = useState("time");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 50;
@@ -699,19 +701,13 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
       );
     }
     const dir = sortDir === "asc" ? 1 : -1;
-    const sorted = [...rows].sort((a: any, b: any) => {
-      let av: any = a[sortKey];
-      let bv: any = b[sortKey];
-      if (sortKey === "time") {
-        av = a.detected_at;
-        bv = b.detected_at;
-      }
-      if (av == null) av = "";
-      if (bv == null) bv = "";
+    const field = sortKey === "time" ? "detected_at" : sortKey;
+    return sortedCopy(rows, (a, b) => {
+      const av = a[field] ?? "";
+      const bv = b[field] ?? "";
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
       return String(av).localeCompare(String(bv), "tr-TR") * dir;
     });
-    return sorted;
   }, [notifications, search, confluenceFilter, sourceFilter, statusFilter, sortKey, sortDir]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -780,16 +776,16 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
     URL.revokeObjectURL(url);
   }, [filtered, day]);
 
-  const SortHeader = ({ label, field }: { label: string; field: string }) => (
-    <th className="cursor-pointer select-none" onClick={() => toggleSort(field)} title="Sıralama için tıklayın">
-      <span className="inline-flex items-center gap-1">
+  const renderSortHeader = (label: string, field: string) => (
+    <th scope="col" aria-sort={sortKey === field ? (sortDir === "asc" ? "ascending" : "descending") : undefined}>
+      <button type="button" className="inline-flex items-center gap-1 rounded select-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-neon-green" onClick={() => toggleSort(field)}>
         {label}
         {sortKey === field ? (
-          <span className="text-neon-green">{sortDir === "asc" ? "▲" : "▼"}</span>
+          <span aria-hidden="true" className="text-neon-green">{sortDir === "asc" ? "▲" : "▼"}</span>
         ) : (
-          <span className="text-bunker-600">⇅</span>
+          <span aria-hidden="true" className="text-bunker-600">⇅</span>
         )}
-      </span>
+      </button>
     </th>
   );
 
@@ -870,13 +866,14 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
 
             <div className="relative">
               <input
+                aria-label="Radar raporunda sembol veya mod ara"
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(0); }}
                 placeholder="Sembol, mod ara…"
                 className="w-48 sm:w-60 bg-bunker-900 border border-bunker-700 rounded-xl px-3 py-1.5 font-mono text-xs text-white placeholder-bunker-muted focus:border-neon-green/50 outline-none"
               />
               {search && (
-                <button type="button" onClick={() => setSearch("")} className="absolute right-2 top-1.5 text-bunker-muted hover:text-white text-xs">✕</button>
+                <button type="button" aria-label="Radar raporu aramasını temizle" onClick={() => setSearch("")} className="absolute right-2 top-1.5 text-bunker-muted hover:text-white text-xs">✕</button>
               )}
             </div>
           </div>
@@ -1010,17 +1007,17 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay, includeArc
           </div>
         ) : (
           <>
-            <div className="table-scroll">
+            <div className="table-scroll" role="region" aria-label="Radar tespitleri tablosu" tabIndex={0}>
               <table className="data-table table-compact">
                 <thead>
                   <tr>
-                    <SortHeader label="Zaman" field="time" />
-                    <SortHeader label="Sembol" field="symbol" />
+                    {renderSortHeader("Zaman", "time")}
+                    {renderSortHeader("Sembol", "symbol")}
                     <th>Teyit</th>
-                    <SortHeader label="Giriş Fiyatı" field="price" />
-                    <SortHeader label="Skor" field="score" />
-                    <SortHeader label="Hedef (TP)" field="target_pct" />
-                    <SortHeader label="Maksimum (MFE)" field="mfe_pct" />
+                    {renderSortHeader("Giriş Fiyatı", "price")}
+                    {renderSortHeader("Skor", "score")}
+                    {renderSortHeader("Hedef (TP)", "target_pct")}
+                    {renderSortHeader("Maksimum (MFE)", "mfe_pct")}
                     <th>Otonom İşlem</th>
                     <th>Sonuç</th>
                   </tr>
@@ -1179,7 +1176,7 @@ function UserPositionsTab({ day, includeArchived: initialArchived = false }:
         {positions.length === 0 ? (
           <p className="py-6 text-center text-sm text-bunker-muted font-mono">Şu an açıkta otonom işlem bulunmuyor.</p>
         ) : (
-          <div className="table-scroll">
+          <div className="table-scroll" role="region" aria-label="Açık otonom işlemler tablosu" tabIndex={0}>
             <table className="data-table table-compact">
               <thead>
                 <tr>
@@ -1242,7 +1239,7 @@ function UserPositionsTab({ day, includeArchived: initialArchived = false }:
             {includeArchived ? "Kayıtlı otonom işlem bulunmuyor." : "Bu sıfırlamadan sonra henüz tamamlanan otonom işlem yok."}
           </p>
         ) : (
-          <div className="table-scroll">
+          <div className="table-scroll" role="region" aria-label="Kapanan otonom işlemler tablosu" tabIndex={0}>
             <table className="data-table table-compact">
               <thead>
                 <tr>
@@ -1358,6 +1355,7 @@ function SymbolsTab({ day, includeArchived = false }: { day?: string; includeArc
           <p className="mt-0.5 text-xs text-bunker-muted">Kapanmış işlem kâr/zararı ve hız avcısı hedef dokunuş başarıları.</p>
         </div>
         <input
+          aria-label="İşlem raporunda sembol ara"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Sembol ara (örn: BTC)…"
@@ -1365,7 +1363,7 @@ function SymbolsTab({ day, includeArchived = false }: { day?: string; includeArc
         />
       </div>
 
-      <div className="table-scroll">
+      <div className="table-scroll" role="region" aria-label="Sembol performansı tablosu" tabIndex={0}>
         <table className="data-table table-compact">
           <thead>
             <tr>
@@ -1470,7 +1468,7 @@ function VelocityTab() {
 
       <section className="card p-4 rounded-xl border border-bunker-800">
         <p className="eyebrow text-neon-green mb-3">SON TESPİTLER VE DOKUNUŞLAR</p>
-        <div className="table-scroll max-h-[300px]">
+        <div className="table-scroll max-h-[300px]" role="region" aria-label="Son tespitler ve hedef dokunuşları tablosu" tabIndex={0}>
           <table className="data-table table-compact">
             <thead>
               <tr><th>Zaman</th><th>Sembol</th><th>Hedef</th><th>MFE</th><th>Dokundu</th></tr>
@@ -1527,7 +1525,7 @@ function AutonomousTab({ includeArchived = false }: { includeArchived?: boolean 
   return (
     <section className="card p-4 rounded-xl border border-bunker-800">
       <p className="eyebrow text-neon-green mb-3">OTONOM KARAR AKIŞI</p>
-      <div className="table-scroll max-h-[350px]">
+      <div className="table-scroll max-h-[350px]" role="region" aria-label="Otonom karar akışı tablosu" tabIndex={0}>
         <table className="data-table table-compact">
           <thead>
             <tr><th>Zaman</th><th>Sembol</th><th>Eylem</th><th>Fiyat</th><th>Neden</th></tr>
@@ -1659,7 +1657,7 @@ function AdminReportsPage() {
   const MAIN_TABS = isAdmin ? ALL_TABS : ALL_TABS.filter((t) => t.id === "overview" || t.id === "radar");
 
   return (
-    <main className="page-shell space-y-6">
+    <div className="page-shell space-y-6">
       {/* Başlık Bölümü */}
       <div className="page-heading flex flex-wrap items-start justify-between gap-4 border-b border-bunker-800 pb-5">
         <div>
@@ -1728,8 +1726,9 @@ function AdminReportsPage() {
             <span>Arşivi göster</span>
           </label>
           <div className="flex items-center gap-2">
-            <span className="text-xs font-mono text-bunker-muted">📅 Tarih Seç:</span>
+            <label htmlFor="reports-date" className="text-xs font-mono text-bunker-muted">📅 Tarih Seç:</label>
             <input
+              id="reports-date"
               type="date"
               value={selectedDay === "all" ? "" : selectedDay}
               onChange={(e) => {
@@ -1784,11 +1783,13 @@ function AdminReportsPage() {
       {tab === "overview" && <OverviewTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "radar" && <UserRadarTab day={selectedDay} setDay={setSelectedDay} includeArchived={includeArchived} />}
       {tab === "positions" && <UserPositionsTab day={selectedDay} includeArchived={includeArchived} />}
-      {tab === "llm_compare" && <LlmVsRulesTab day={selectedDay} includeArchived={includeArchived} />}
       {tab === "symbols" && <SymbolsTab day={selectedDay} includeArchived={includeArchived} />}
-      {tab === "mtf" && <MacdMtfTab includeArchived={includeArchived} />}
-      {tab === "daily_first" && <DailyFirstNotificationTab />}
-      {tab === "daily_rising" && <CombinedRisingTab includeArchived={includeArchived} />}
+      <Suspense fallback={<p role="status" className="py-8 text-center text-sm text-bunker-muted">Rapor yükleniyor…</p>}>
+        {tab === "llm_compare" && <LlmVsRulesTab day={selectedDay} includeArchived={includeArchived} />}
+        {tab === "mtf" && <MacdMtfTab includeArchived={includeArchived} />}
+        {tab === "daily_first" && <DailyFirstNotificationTab />}
+        {tab === "daily_rising" && <CombinedRisingTab includeArchived={includeArchived} />}
+      </Suspense>
       {tab === "advanced" && isAdmin && (
         <div className="space-y-4">
           <AdvancedAdminTabs subTab={advancedSubTab} setSubTab={setAdvancedSubTab} />
@@ -1798,7 +1799,7 @@ function AdminReportsPage() {
           {advancedSubTab === "learning" && <SelfLearningTab />}
         </div>
       )}
-    </main>
+    </div>
   );
 }
 

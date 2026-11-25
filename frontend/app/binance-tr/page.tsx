@@ -1,5 +1,6 @@
 "use client";
 
+import { sortedCopy } from "../lib/sortedCopy";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { API_BASE, apiRequest, getJSON } from "../lib/api";
@@ -170,7 +171,7 @@ function AdvancedBinanceTrPage() {
   const { username } = useAuth();
   if (!username) {
     return (
-      <main className="page-shell">
+      <div className="page-shell">
         <div className="card mt-10 flex flex-col items-center gap-4 border-cyan-500/30 bg-cyan-500/5 px-6 py-12 text-center">
           <p className="eyebrow">OTURUM GEREKLİ</p>
           <h1 className="font-mono text-xl font-bold text-white">Binance TR Terminali için giriş yapın</h1>
@@ -179,7 +180,7 @@ function AdvancedBinanceTrPage() {
           </p>
           <Link href="/" className="ui-button ui-button-primary">ANA SAYFAYA DÖN</Link>
         </div>
-      </main>
+      </div>
     );
   }
   return <BinanceTrPageInner />;
@@ -666,7 +667,7 @@ function BinanceTrPageInner() {
       }
     };
     const dir = tradesSort.dir === "asc" ? 1 : -1;
-    return [...symbolSummary].sort((a, b) => {
+    return sortedCopy(symbolSummary, (a, b) => {
       const va = val(a);
       const vb = val(b);
       if (typeof va === "string" || typeof vb === "string") {
@@ -1197,7 +1198,7 @@ function BinanceTrPageInner() {
   };
 
   return (
-    <main className="page-shell">
+    <div className="page-shell">
       {/* Toast Bildirimi */}
       {toast && (
         <div
@@ -1444,7 +1445,7 @@ function BinanceTrPageInner() {
                 <div className="flex flex-wrap items-center gap-2">
                   <input
                     type="text"
-                    placeholder="Sembol ara (örn: BTC, AVAX)..."
+                    aria-label="İşlem sembolü ara" placeholder="Sembol ara (örn: BTC, AVAX)..."
                     value={searchFilter}
                     onChange={(e) => setSearchFilter(e.target.value)}
                     className="input w-48 font-mono text-xs !py-1.5"
@@ -2703,7 +2704,7 @@ function BinanceTrPageInner() {
           )}
         </>
       )}
-    </main>
+    </div>
   );
 }
 

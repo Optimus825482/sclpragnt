@@ -448,7 +448,7 @@ export default function PortfolioPage() {
   const apEnabled = apSettings?.settings?.enabled;
 
   return (
-    <main className="page-shell">
+    <div className="page-shell">
       <div className="page-heading flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="eyebrow text-neon-green">CANLI PORTFÖY TAKİBİ</p>
@@ -824,6 +824,6 @@ export default function PortfolioPage() {
       <p className="mt-4 text-center font-mono text-[10px] text-bunker-muted/60">
         Paper trading · gerçek para kullanılmaz · veriler canlı WS ve 10 sn'de bir yenilenir
       </p>
-    </main>
+    </div>
   );
 }

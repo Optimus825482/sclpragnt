@@ -2,54 +2,66 @@
 
 /**
  * Sorumluluk Reddi (Risk Bildirimi) — admin HARİÇ tüm kullanıcılara girişte
- * bir kez gösterilir. Kullanıcı "Okudum, Anladım" checkbox'ını işaretleyip
- * "TAMAM" demeden panel kullanılamaz. "BİR DAHA GÖSTERME" ile kalıcı kapatılır.
+ * bir kez gösterilir. Her iki kabul düğmesi de onay kutusunu gerektirir.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../lib/auth";
 
-const STORAGE_KEY = "scalper:disclaimer-accepted";
+// Eski anahtar onay kutusu işaretlenmeden de yazılabildiği için yeniden onay iste.
+const STORAGE_KEY = "scalper:disclaimer-accepted-v2";
 
 export default function DisclaimerModal() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
   const [visible, setVisible] = useState(false);
   const [checked, setChecked] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
     if (isAdmin) return; // admin hariç
     try {
       if (localStorage.getItem(STORAGE_KEY)) return; // "BİR DAHA GÖSTERME" seçildiyse
       if (sessionStorage.getItem("scalper:disclaimer-ok")) return; // bu oturumda kabul edildiyse
     } catch { /* yoksay */ }
-    const timer = window.setTimeout(() => setVisible(true), 600);
+    const timer = window.setTimeout(() => setVisible(true), 0);
     return () => window.clearTimeout(timer);
   }, [isAdmin]);
 
-  const accept = () => {
-    // Kabulü yalnız oturum boyunca hatırla — her yeni girişte tekrar gösterilir.
+  const showDisclaimer = visible && !isAdmin;
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!showDisclaimer || !dialog) return;
+    dialog.setAttribute("closedby", "none");
+    dialog.showModal();
+    headingRef.current?.focus();
+    return () => dialog.close();
+  }, [showDisclaimer]);
+
+  const accept = (remember: boolean) => {
+    if (!checked) return;
     try { sessionStorage.setItem("scalper:disclaimer-ok", "1"); } catch { /* yoksay */ }
+    if (remember) {
+      try { localStorage.setItem(STORAGE_KEY, "1"); } catch { /* yoksay */ }
+    }
+    dialogRef.current?.close();
     setVisible(false);
   };
 
-  const dismissForever = () => {
-    try { localStorage.setItem(STORAGE_KEY, "1"); } catch { /* yoksay */ }
-    setDismissed(true);
-    setVisible(false);
-  };
-
-  if (!visible || dismissed) return null;
+  if (!showDisclaimer) return null;
 
   return (
-    <div className="fixed inset-0 z-[200] grid place-items-center bg-black/80 p-4" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title">
-      <section className="w-full max-w-2xl overflow-hidden rounded-xl border border-yellow-300/30 bg-bunker-950 shadow-2xl">
+    <dialog
+      ref={dialogRef}
+      onCancel={(event) => event.preventDefault()}
+      aria-labelledby="disclaimer-title"
+      className="fixed inset-0 m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-xl border border-yellow-300/30 bg-bunker-950 p-0 text-white shadow-2xl backdrop:bg-black/80"
+    >
         <div className="flex items-center gap-2 border-b border-bunker-800 bg-yellow-300/5 px-5 py-4">
           <span className="text-xl">⚠️</span>
           <div>
             <p className="eyebrow text-yellow-300">SORUMLULUK REDDİ</p>
-            <h2 id="disclaimer-title" className="font-mono text-lg font-bold text-white">Kullanmadan önce okuyun</h2>
+            <h2 id="disclaimer-title" ref={headingRef} tabIndex={-1} className="font-mono text-lg font-bold text-white">Kullanmadan önce okuyun</h2>
           </div>
         </div>
 
@@ -97,14 +109,15 @@ export default function DisclaimerModal() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <button
               type="button"
-              onClick={dismissForever}
-              className="font-mono text-[11px] text-bunker-muted/70 underline-offset-2 hover:text-bunker-muted hover:underline"
+              onClick={() => accept(true)}
+              disabled={!checked}
+              className="font-mono text-[11px] text-bunker-muted/70 underline-offset-2 enabled:hover:text-bunker-muted enabled:hover:underline disabled:cursor-not-allowed disabled:opacity-40"
             >
               BİR DAHA GÖSTERME
             </button>
             <button
               type="button"
-              onClick={accept}
+              onClick={() => accept(false)}
               disabled={!checked}
               className="ui-button ui-button-primary disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -112,7 +125,6 @@ export default function DisclaimerModal() {
             </button>
           </div>
         </div>
-      </section>
-    </div>
+    </dialog>
   );
 }

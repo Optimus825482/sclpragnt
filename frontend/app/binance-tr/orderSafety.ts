@@ -6,6 +6,7 @@
  * (tek istisna `postJsonGuarded`: zaman aşımlı POST, ağ/zaman aşımı hatasında `UncertainOrderError` fırlatır).
  */
 import { API_BASE, apiRequest } from "../lib/api";
+import { createRequestDeadline } from "../lib/fetchTimeout";
 import { validateSlTpPrices } from "../lib/tradeUi";
 
 /** Emir isteği için üst süre. Backend kendi zaman aşımlarıyla bundan önce döner; bu yalnız asılı kalan bağlantıyı keser. */
@@ -108,8 +109,7 @@ export async function postJsonGuarded<T = Record<string, unknown>>(
   payload: unknown,
   timeoutMs: number = ORDER_TIMEOUT_MS,
 ): Promise<GuardedResponse<T>> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const deadline = createRequestDeadline(timeoutMs);
   try {
     let response: Response;
     try {
@@ -117,21 +117,21 @@ export async function postJsonGuarded<T = Record<string, unknown>>(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-        signal: ctrl.signal,
+        signal: deadline.signal,
       });
     } catch {
-      throw new UncertainOrderError(ctrl.signal.aborted);
+      throw new UncertainOrderError(deadline.signal.aborted);
     }
     let body: unknown;
     try {
       body = await response.json();
     } catch {
-      if (response.ok) throw new UncertainOrderError(ctrl.signal.aborted);
+      if (response.ok) throw new UncertainOrderError(deadline.signal.aborted);
       body = {};
     }
     return { status: response.status, ok: response.ok, body: (body ?? {}) as T };
   } finally {
-    clearTimeout(timer);
+    deadline.dispose?.();
   }
 }
 

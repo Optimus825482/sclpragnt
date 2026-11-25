@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { fmtDateTime } from "../lib/format";
 import RequireAdmin from "../components/RequireAdmin";
 import { useAuth } from "../lib/auth";
+import { useModalA11y } from "../lib/useModalA11y";
 
 type ManagedUser = {
   id: number;
@@ -31,6 +32,9 @@ function UserModal({ mode, initial, onClose, onSaved }: {
   const [isActive, setIsActive] = useState(initial?.is_active ?? true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const title = mode === "create" ? "Kullanıcı Ekle" : "Kullanıcı Düzenle";
+  const close = () => { if (!busy) onClose(); };
+  const { ref, onKeyDown } = useModalA11y(true, close, title, { initialFocus: "[data-username]" });
 
   const submit = async () => {
     setBusy(true); setError("");
@@ -54,15 +58,15 @@ function UserModal({ mode, initial, onClose, onSaved }: {
   };
 
   return (
-    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
-      <section className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={close} role="dialog" aria-modal="true" aria-labelledby="user-modal-title" aria-busy={busy}>
+      <section ref={ref} tabIndex={-1} onKeyDown={onKeyDown} className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-bunker-800 px-5 py-4">
-          <h2 id="user-modal-title" className="font-mono text-lg font-bold text-white">{mode === "create" ? "Kullanıcı Ekle" : "Kullanıcı Düzenle"}</h2>
-          <button type="button" onClick={onClose} className="text-bunker-muted hover:text-white" aria-label="Kapat">✕</button>
+          <h2 id="user-modal-title" className="font-mono text-lg font-bold text-white">{title}</h2>
+          <button type="button" onClick={close} disabled={busy} className="text-bunker-muted hover:text-white" aria-label="Kapat">✕</button>
         </div>
         <div className="space-y-4 p-5">
           <label className="block"><span className="eyebrow">KULLANICI ADI</span>
-            <input value={username} onChange={(e) => setUsername(e.target.value)} className="input mt-2 w-full" placeholder="kullanici_adi" autoFocus />
+            <input data-username value={username} onChange={(e) => setUsername(e.target.value)} className="input mt-2 w-full" placeholder="kullanici_adi" />
           </label>
           <label className="block"><span className="eyebrow">{mode === "create" ? "ŞİFRE" : "YENİ ŞİFRE (opsiyonel)"}</span>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="input mt-2 w-full" placeholder={mode === "create" ? "En az 6 karakter" : "Değiştirmek istemiyorsanız boş bırakın"} autoComplete="new-password" />
@@ -80,7 +84,7 @@ function UserModal({ mode, initial, onClose, onSaved }: {
           </label>
           {error && <p role="alert" className="rounded-lg border border-neon-red/40 bg-neon-red/10 px-3 py-2 text-sm text-neon-red">{error}</p>}
           <div className="flex justify-end gap-2 pt-1">
-            <button type="button" onClick={onClose} className="ui-button ui-button-secondary">VAZGEÇ</button>
+            <button type="button" onClick={close} disabled={busy} className="ui-button ui-button-secondary">VAZGEÇ</button>
             <button type="button" onClick={submit} disabled={busy || !username.trim()} className="ui-button ui-button-primary">{busy ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
           </div>
         </div>
@@ -89,22 +93,24 @@ function UserModal({ mode, initial, onClose, onSaved }: {
   );
 }
 
-function ConfirmModal({ username, onClose, onConfirm }: { username: string; onClose: () => void; onConfirm: () => void }) {
+function ConfirmModal({ username, onClose, onConfirm }: { username: string; onClose: () => void; onConfirm: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const close = () => { if (!busy) onClose(); };
+  const { ref, onKeyDown } = useModalA11y(true, close, "Kullanıcıyı sil", { initialFocus: "[data-delete-cancel]" });
   const confirm = async () => {
     setBusy(true); setError("");
     try { await onConfirm(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Silme başarısız"); setBusy(false); }
   };
   return (
-    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="confirm-title">
-      <section className="w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={close} role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-busy={busy}>
+      <section ref={ref} tabIndex={-1} onKeyDown={onKeyDown} className="w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="p-5">
           <h2 id="confirm-title" className="font-mono text-lg font-bold text-white">Kullanıcıyı sil</h2>
           <p className="mt-2 text-sm text-bunker-muted"><strong className="text-white">{username}</strong> kullanıcısını silmek istediğinize emin misiniz? Bu işlem geri alınamaz.</p>
           {error && <p role="alert" className="mt-3 rounded-lg border border-neon-red/40 bg-neon-red/10 px-3 py-2 text-sm text-neon-red">{error}</p>}
           <div className="mt-5 flex justify-end gap-2">
-            <button type="button" onClick={onClose} className="ui-button ui-button-secondary">VAZGEÇ</button>
+            <button type="button" data-delete-cancel onClick={close} disabled={busy} className="ui-button ui-button-secondary">VAZGEÇ</button>
             <button type="button" onClick={confirm} disabled={busy} className="ui-button ui-button-danger">{busy ? "SİLİNİYOR…" : "EVET, SİL"}</button>
           </div>
         </div>
@@ -120,6 +126,14 @@ export default function UsersPage() {
   const [notice, setNotice] = useState<Notice>(null);
   const [modal, setModal] = useState<{ mode: "create" | "edit"; user?: ManagedUser | null } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ManagedUser | null>(null);
+  const addUserRef = useRef<HTMLButtonElement>(null);
+  const restoreAfterDelete = useRef(false);
+
+  useEffect(() => {
+    if (confirmDelete || !restoreAfterDelete.current) return;
+    restoreAfterDelete.current = false;
+    addUserRef.current?.focus();
+  }, [confirmDelete]);
 
   const load = useCallback(async () => {
     try {
@@ -152,6 +166,8 @@ export default function UsersPage() {
     const response = await apiRequest(`${API_BASE}/api/admin/users/${confirmDelete.id}`, { method: "DELETE" });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || "Silme başarısız");
+    restoreAfterDelete.current = true;
+    setUsers((current) => current.filter((user) => user.id !== confirmDelete.id));
     setConfirmDelete(null);
     await load();
     notify("ok", "Kullanıcı silindi.");
@@ -159,14 +175,14 @@ export default function UsersPage() {
 
   return (
     <RequireAdmin>
-      <main className="page-shell">
+      <div className="page-shell">
         <div className="page-heading flex flex-wrap items-end justify-between gap-3">
           <div>
             <p className="eyebrow">SİSTEM YÖNETİMİ</p>
             <h1 className="font-mono text-2xl font-bold text-white">Kullanıcı Yönetimi</h1>
             <p className="mt-1 text-sm text-bunker-muted">Kullanıcı adı ve şifre ile giriş yapan hesapları yönetin.</p>
           </div>
-          <button type="button" onClick={() => setModal({ mode: "create" })} className="ui-button ui-button-primary">+ KULLANICI EKLE</button>
+          <button type="button" ref={addUserRef} onClick={() => setModal({ mode: "create" })} className="ui-button ui-button-primary">+ KULLANICI EKLE</button>
         </div>
 
         {notice && (
@@ -209,7 +225,7 @@ export default function UsersPage() {
 
         {modal && <UserModal mode={modal.mode} initial={modal.user} onClose={() => setModal(null)} onSaved={handleSaved} />}
         {confirmDelete && <ConfirmModal username={confirmDelete.username} onClose={() => setConfirmDelete(null)} onConfirm={handleDelete} />}
-      </main>
+      </div>
     </RequireAdmin>
   );
 }

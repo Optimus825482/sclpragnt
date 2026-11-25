@@ -982,7 +982,7 @@ function AdminMonitoringPage() {
 
   if (!stateLoaded && !stateError) {
     return (
-      <main className="page-shell space-y-6">
+      <div className="page-shell space-y-6">
         <div className="page-heading flex flex-wrap items-start justify-between gap-4 border-b border-bunker-800 pb-5">
           <div>
             <div className="flex items-center gap-2">
@@ -1002,12 +1002,12 @@ function AdminMonitoringPage() {
           sublabel="Tüm Binance TR işlem çiftleri derinlik, hacim, ATR ve momentum filtrelerinden geçiriliyor"
           minHeight="min-h-[55vh]"
         />
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className="page-shell space-y-6">
+    <div className="page-shell space-y-6">
       {/* 1. ÜST BAŞLIK VE HIZLI EYLEMLER */}
       <div className="page-heading flex flex-wrap items-start justify-between gap-4 border-b border-bunker-800 pb-5">
         <div>
@@ -1313,17 +1313,19 @@ function AdminMonitoringPage() {
               <div className="relative">
                 <input
                   type="text"
+                  aria-label="Radar adaylarında sembol ara"
                   value={filterSymbol}
                   onChange={(e) => setFilterSymbol(e.target.value)}
                   placeholder="Sembol ara (örn: BTC)"
                   className="w-32 sm:w-36 bg-bunker-900 border border-bunker-700 rounded-xl px-3 py-1.5 font-mono text-xs text-white placeholder-bunker-muted focus:border-neon-green/50 outline-none transition-all"
                 />
                 {filterSymbol && (
-                  <button type="button" onClick={() => setFilterSymbol("")} className="absolute right-2 top-1.5 text-bunker-muted hover:text-white text-xs">✕</button>
+                  <button type="button" aria-label="Radar sembol aramasını temizle" onClick={() => setFilterSymbol("")} className="absolute right-2 top-1.5 text-bunker-muted hover:text-white text-xs">✕</button>
                 )}
               </div>
 
               <select
+                aria-label="Radar tarama modu"
                 value={filterMode}
                 onChange={(e) => setFilterMode(e.target.value as typeof filterMode)}
                 className="bg-bunker-900 border border-bunker-700 rounded-xl px-3 py-1.5 font-mono text-xs text-white focus:border-neon-green/50 outline-none"
@@ -1335,6 +1337,7 @@ function AdminMonitoringPage() {
               </select>
 
               <select
+                aria-label="Radar adaylarını sırala"
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
                 className="bg-bunker-900 border border-bunker-700 rounded-xl px-3 py-1.5 font-mono text-xs text-white focus:border-neon-green/50 outline-none"
@@ -1916,11 +1919,12 @@ function AdminMonitoringPage() {
             </p>
 
             <div className="space-y-2">
-              <label className="block text-xs font-mono text-white font-bold">
+              <label htmlFor="radar-minimum-score" className="block text-xs font-mono text-white font-bold">
                 MİNİMUM SKOR (0 - 100 Panel Puanı):
               </label>
               <div className="flex items-center gap-3">
                 <input
+                  id="radar-minimum-score"
                   type="number"
                   min={0}
                   max={100}
@@ -1969,7 +1973,7 @@ function AdminMonitoringPage() {
           </div>
         </div>
       )}
-    </main>
+    </div>
   );
 }
 
