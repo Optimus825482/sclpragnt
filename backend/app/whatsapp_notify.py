@@ -28,7 +28,16 @@ def _cfg() -> tuple[str, str, str]:
 
 
 def whatsapp_enabled() -> bool:
-    """Gönderim yapılandırılmış ve açık mı?"""
+    """WhatsApp gönderimi KALDIRILDI (2026-11-25, kullanıcı isteği).
+
+    Arayüzdeki WhatsApp panelleri silindi; arka planda da HİÇBİR mesaj
+    gönderilmez. Kod silinmedi (geri açmak için bu fonksiyonu eski haline
+    getirip `WHATSAPP_NOTIFY_ENABLED=true` tanımla).
+    """
+    return False
+
+def _legacy_whatsapp_enabled() -> bool:
+    """Eski davranış (referans): env anahtarına bağlıydı."""
     from app.config import config
     if not bool(getattr(config, "WHATSAPP_NOTIFY_ENABLED", False)):
         return False

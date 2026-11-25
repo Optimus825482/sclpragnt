@@ -1148,32 +1148,8 @@ def _notif_whatsapp_text(notif: dict) -> str:
 
 
 async def _broadcast_user_whatsapp(notif: dict) -> None:
-    """WhatsApp bildirimi AÇIK olan her kullanıcıya bildirimi gönder.
-
-    Kullanıcı tercihleri `user_prefs` router'ında saklanır; her kullanıcı kendi
-    numarasını girer. Hata fırlatmaz (bildirim akışını asla bozmaz).
-    """
-    try:
-        from app.routers import user_prefs
-        if not user_prefs.whatsapp_notify.whatsapp_enabled():
-            return
-        users = await database.list_users()
-        text = _notif_whatsapp_text(notif)
-        for u in users:
-            name = str(u.get("username") or "").strip()
-            if not name:
-                continue
-            prefs = await user_prefs.get_prefs_for(name)
-            if not prefs.get("whatsapp_enabled"):
-                continue
-            number = user_prefs.normalize_phone(prefs.get("phone", ""))
-            if not number:
-                continue
-            await user_prefs.whatsapp_notify.send_whatsapp_to_number(text, number)
-    except Exception as exc:
-        logger.debug("kullanıcı WhatsApp fan-out atlandı: %s", exc)
-
-
+    """WhatsApp gönderimi KALDIRILDI (2026-11-25) — hiçbir mesaj gönderilmez."""
+    return
 def _deferred_is_stale(notif: dict, now: float) -> bool:
     """TTL kontrolü: hedef ufku (+2 dk tolerans) geçtiyse bayat push gönderilmez."""
     try:

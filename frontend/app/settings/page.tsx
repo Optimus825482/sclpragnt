@@ -1345,60 +1345,8 @@ function RadarSettingsPanel() {
             </div>
           </div>
 
-          {/* KOMBİNE YÜKSELİŞ (2026-10-11) — TEK WhatsApp kanalı */}
-          <div className="border-t border-bunker-800 pt-4">
-            <p className="eyebrow text-amber-300">🌅 KOMBİNE YÜKSELİŞ · WHATSAPP GRUP GÖNDERİMİ</p>
-            <p className="text-xs text-bunker-muted mt-1">
-              Radar döngülerindeki TÜM stratejiler (hız · günlük momentum · short-squeeze · MACD
-              sıçrama/erken · yükseliş eğilimi · Master Surge · mikro yapı) TEK taramada birleşir.
-              En yüksek birleşik puanlı <span className="text-white font-mono">TOP-N</span> aday gruba gider;
-              arada <span className="text-white font-mono">durum periyodu</span> dakikada bu adayların bildirim anına
-              göre değişim farkı + ortalaması gönderilir. Aşağıdaki değerler <span className="text-white">anında</span> etkilidir (env gerekmez).
-            </p>
-            <div className="mt-3 flex flex-wrap items-end gap-3">
-              <div>
-                <p className="eyebrow text-bunker-muted">KOMBİNE DÖNGÜ</p>
-                {toggle("combined_rising_enabled", settings.combined_rising_enabled, "Kombine döngü açıldı", "Kombine döngü kapatıldı")}
-              </div>
-              <div>
-                <p className="eyebrow text-bunker-muted">LİSTE ADEDİ (TOP N)</p>
-                <input type="number" min={1} max={10} step={1} value={combinedTopN}
-                  onChange={(e) => setCombinedTopN(e.target.value)} placeholder="2" className={numInputCls} />
-                <p className="text-[11px] text-bunker-muted mt-1">1-10 (varsayılan 3)</p>
-              </div>
-              <div>
-                <p className="eyebrow text-bunker-muted">MIN TARAMA PUANI</p>
-                <input type="number" min={0} max={100} step={1} value={combinedMinScore}
-                  onChange={(e) => setCombinedMinScore(e.target.value)} placeholder="10" className={numInputCls} />
-                <p className="text-[11px] text-bunker-muted mt-1">En iyi aday bile altındaysa gönderilmez</p>
-              </div>
-              <div>
-                <p className="eyebrow text-bunker-muted">LİSTE PERİYODU (DK)</p>
-                <input type="number" min={5} max={120} step={5} value={combinedListMin}
-                  onChange={(e) => setCombinedListMin(e.target.value)} placeholder="15" className={numInputCls} />
-                <p className="text-[11px] text-bunker-muted mt-1">Kaç dk'da bir yeni liste (son listeden itibaren)</p>
-              </div>
-              <div>
-                <p className="eyebrow text-bunker-muted">DURUM PERİYODU (DK)</p>
-                <input type="number" min={1} max={60} step={1} value={combinedTrackMin}
-                  onChange={(e) => setCombinedTrackMin(e.target.value)} placeholder="5" className={numInputCls} />
-                <p className="text-[11px] text-bunker-muted mt-1">Arada kaç dk'da bir fark (son durumdan itibaren)</p>
-              </div>
-              <div>
-                <p className="eyebrow text-bunker-muted">SAAT ARALIĞI (TR)</p>
-                <div className="mt-1 flex items-center gap-1.5">
-                  <input type="number" min={0} max={23} value={combinedStart}
-                    onChange={(e) => setCombinedStart(e.target.value)} placeholder="0" className={timeInputCls} />
-                  <span className="font-mono text-xs text-bunker-muted">→</span>
-                  <input type="number" min={0} max={23} value={combinedEnd}
-                    onChange={(e) => setCombinedEnd(e.target.value)} placeholder="23" className={timeInputCls} />
-                </div>
-                <p className="text-[11px] text-bunker-muted mt-1">0→23 = 24 saat (gece dahil). Gece yarısını sarmak için başlangıç &gt; bitiş (ör. 22→6).</p>
-              </div>
-              <button type="button" onClick={saveCombined} disabled={saving}
-                className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
-            </div>
-          </div>
+          {/* 2026-11-25 (kullanıcı): WhatsApp gönderimi kaldırıldı —
+              "KOMBİNE YÜKSELİŞ · WhatsApp" ayar bloğu silindi. */}
         </div>
       )}
     </div>
