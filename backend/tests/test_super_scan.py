@@ -78,3 +78,26 @@ def test_shallow_liquidity_is_excluded():
     symbols = [x["symbol"] for x in out["items"]]
     assert symbols == ["BIG_TRY"], "sığ hacimli sembol elenmeli"
     assert out["items"][0]["volume_24h_try"] == 90_000_000.0
+
+
+def test_super_scan_returns_pending_on_slow_scan(monkeypatch):
+    """Soğuk tarama 20 sn'yi aşarsa istek zaman aşımına düşmemeli (pending)."""
+    import asyncio as _asyncio
+
+    async def slow_rows():
+        await _asyncio.sleep(5)
+        return []
+
+    monkeypatch.setattr(monitoring, "_combined_scan_rows", slow_rows)
+    monitoring._SUPER_SCAN_CACHE.update({"generated_at": 0.0, "payload": None})
+    # wait_for süresini test için kısalt
+    orig_wait_for = _asyncio.wait_for
+
+    async def fake_wait_for(coro, timeout):
+        return await orig_wait_for(coro, timeout=0.05)
+
+    monkeypatch.setattr(monitoring.asyncio, "wait_for", fake_wait_for)
+    out = _asyncio.run(monitoring.radar_super_scan(limit=5, force=True))
+    assert out.get("pending") is True
+    assert out["items"] == []
+    assert "hazırlanıyor" in (out.get("message") or "").lower()

@@ -7781,7 +7781,25 @@ async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
             and (_time.time() - float(cached.get("generated_at") or 0)) < ttl):
         payload = cached["payload"]
     else:
-        rows = await _combined_scan_rows()
+        # 2026-11-25 (kullanıcı: "İstek zaman aşımına uğradı (45 sn)"): tarama
+        # tüm tarayıcıları çalıştırdığı için soğuk durumda uzun sürebiliyor.
+        # Yanıt 20 sn ile sınırlanır; aşılırsa `pending` döner ve arka planda
+        # ısıtma başlar (sonraki YENİLE hızlı gelir).
+        try:
+            rows = await asyncio.wait_for(_combined_scan_rows(), timeout=20.0)
+        except asyncio.TimeoutError:
+            async def _warm():
+                try:
+                    await _combined_scan_rows()
+                except Exception:
+                    pass
+            try:
+                asyncio.create_task(_warm())
+            except Exception:
+                pass
+            return {"generated_at": _time.time(), "source": "unified_scan", "pending": True,
+                    "scanned": 0, "eligible": 0, "items": [],
+                    "message": "Tarama hazırlanıyor; birkaç saniye sonra YENİLE."}
         # 2026-11-25 (kullanıcı): SIĞ/sığ likidite listede görünmesin. 24s TL hacmi
         # eşiğin altındaki semboller elenir (otonom paper'da ayrıca derinlik kapısı
         # çalışır; burada LİSTEDEN de çıkarılır). Ticker 5 sn önbellekli.

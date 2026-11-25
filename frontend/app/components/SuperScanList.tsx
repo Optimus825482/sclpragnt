@@ -15,6 +15,8 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import SymbolLink from "./SymbolLink";
 
+type SuperScanPayload = { items?: SuperRow[]; scanned?: number; eligible?: number; generated_at?: number; pending?: boolean; message?: string };
+
 type SuperRow = {
   symbol: string;
   price: number | null;
@@ -43,17 +45,21 @@ export default function SuperScanList() {
   const [rows, setRows] = useState<SuperRow[] | null>(null);
   const [meta, setMeta] = useState<{ scanned?: number; eligible?: number; generated_at?: number }>({});
   const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
 
   const load = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      const r = await apiRequest(`${API_BASE}/api/radar/super-scan?limit=12`, { cache: "no-store" });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : "Tarama alınamadı");
+      // 2026-11-25: tarama soğukken uzun sürebiliyor → 60 sn tanınır; backend
+      // 20 sn'de yanıt veremezse `pending` döner ve arka planda ısıtır.
+      const r = await apiRequest(`${API_BASE}/api/radar/super-scan?limit=12`, { cache: "no-store", timeoutMs: 60_000 });
+      const d: SuperScanPayload = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof (d as any)?.detail === "string" ? (d as any).detail : "Tarama alınamadı");
       setRows(Array.isArray(d?.items) ? d.items : []);
       setMeta({ scanned: d?.scanned, eligible: d?.eligible, generated_at: d?.generated_at });
+      setPending(Boolean(d?.pending));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Tarama alınamadı");
@@ -66,6 +72,13 @@ export default function SuperScanList() {
     load();
   }, [load]);
   useVisibleInterval(load, REFRESH_MS);
+
+  // Tarama hazırlanıyorsa 15 sn sonra bir kez daha dene.
+  useEffect(() => {
+    if (!pending) return;
+    const t = setTimeout(() => load(), 15_000);
+    return () => clearTimeout(t);
+  }, [pending, load]);
 
   return (
     <div className="space-y-3">
@@ -97,7 +110,12 @@ export default function SuperScanList() {
       </details>
 
       {error && <p className="rounded-lg bg-neon-red/10 p-3 text-sm text-neon-red">{error}</p>}
-      {rows == null && !error && <p className="py-6 text-center text-sm text-bunker-muted">Taranıyor…</p>}
+      {pending && !error && (
+        <p className="py-6 text-center text-sm text-amber-300">
+          Tarama hazırlanıyor… 15 saniye içinde otomatik yenilenecek (YENİLE ile hemen deneyebilirsin).
+        </p>
+      )}
+      {rows == null && !pending && !error && <p className="py-6 text-center text-sm text-bunker-muted">Taranıyor…</p>}
       {rows && rows.length === 0 && !error && (
         <p className="py-6 text-center text-sm text-bunker-muted">Şu an kalite kapılarını geçen aday yok.</p>
       )}
