@@ -98,6 +98,8 @@ async def run_once() -> dict:
     min_score = float(getattr(config, "SUPER_SCAN_PUSH_MIN_SCORE", 65))
     top_n = int(getattr(config, "SUPER_SCAN_PUSH_TOP_N", 2))
     cooldown = float(getattr(config, "SUPER_SCAN_PUSH_COOLDOWN_MIN", 30))
+    # 2026-11-25 (kullanıcı): PUSH kapalı olabilir; işlem açılışı devam eder.
+    push_enabled = bool(getattr(config, "SUPER_SCAN_PUSH_ENABLED", False))
 
     pushed = opened = 0
     for item in (payload.get("items") or []):
@@ -109,15 +111,23 @@ async def run_once() -> dict:
         if await _recently_pushed(symbol, cooldown):
             continue
         notif = _envelope(item)
-        ok = False
-        try:
-            ok = bool(await monitoring._send_push(notif))
-        except Exception as exc:
-            logger.debug("süper tarama push hatası (%s): %s", symbol, exc)
-        if not ok:
-            continue
-        pushed += 1
-        await _mark_pushed(symbol)
+        if push_enabled:
+            ok = False
+            try:
+                ok = bool(await monitoring._send_push(notif))
+            except Exception as exc:
+                logger.debug("süper tarama push hatası (%s): %s", symbol, exc)
+            if not ok:
+                # Push açıkken teslim başarısızsa işlem AÇILMAZ (eski davranış).
+                continue
+            pushed += 1
+            notif["sent_via_push"] = True
+        else:
+            # Push kapalı: zarf "push gönderilmedi" olarak işaretlenir; otonom
+            # paper yine de denenir (AUTO_PAPER_ONLY_ON_PUSH varsayılan kapalı).
+            notif["sent_via_push"] = False
+            notif["push_skipped_reason"] = "super_scan_push_disabled"
+        await _mark_pushed(symbol)  # sembol cooldown'u (push/işlem ortak)
         try:
             result = await auto_paper.try_open_from_notification(notif)
             if isinstance(result, dict) and result.get("status") == "opened":
@@ -127,7 +137,8 @@ async def run_once() -> dict:
     items_all = payload.get("items") or []
     top_score = float(items_all[0].get("super_score") or 0) if items_all else 0.0
     return {"scanned": payload.get("scanned") or 0, "eligible": payload.get("eligible") or 0,
-            "pushed": pushed, "opened": opened, "top_score": round(top_score, 1)}
+            "pushed": pushed, "opened": opened, "top_score": round(top_score, 1),
+            "push_enabled": push_enabled}
 
 
 async def super_scan_loop() -> None:

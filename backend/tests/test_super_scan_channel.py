@@ -79,9 +79,46 @@ def test_run_once_pushes_top_n_and_opens_paper():
          patch.object(config, "SUPER_SCAN_PUSH_TOP_N", 2):
         stats = asyncio.run(super_scan_notify.run_once())
 
-    assert pushed == ["AAA_TRY", "BBB_TRY"], "eşiği geçen ilk N aday"
-    assert opened == pushed
-    assert stats["pushed"] == 2 and stats["opened"] == 2
+    # 2026-11-25 (kullanıcı): varsayılan PUSH KAPALI → bildirim yok, işlem VAR.
+    assert pushed == [], "push kapalıyken bildirim gitmemeli"
+    assert opened == ["AAA_TRY", "BBB_TRY"], "eşiği geçen ilk N aday işlem açmalı"
+    assert stats["pushed"] == 0 and stats["opened"] == 2
+    assert stats["push_enabled"] is False
+
+
+def test_push_mode_still_works_when_enabled():
+    """SUPER_SCAN_PUSH_ENABLED=1 → önce push, sonra işlem."""
+    items = [{"symbol": "AAA_TRY", "super_score": 90.0, "score": 80, "price": 10.0,
+              "target_pct": 3.0, "horizon_minutes": 15, "sources": ["velocity"]}]
+    pushed, opened = [], []
+
+    async def fake_scan(limit=12, **kw):
+        return {"scanned": 1, "eligible": 1, "items": items}
+
+    async def fake_push(notif):
+        pushed.append(notif["symbol"])
+        return True
+
+    async def fake_open(notif):
+        opened.append(notif["symbol"])
+        return {"status": "opened"}
+
+    async def fake_recent(symbol, cooldown):
+        return False
+
+    async def fake_mark(symbol):
+        return None
+
+    with patch.object(monitoring, "radar_super_scan", fake_scan), \
+         patch.object(monitoring, "_send_push", fake_push), \
+         patch.object(auto_paper, "try_open_from_notification", fake_open), \
+         patch.object(super_scan_notify, "_recently_pushed", fake_recent), \
+         patch.object(super_scan_notify, "_mark_pushed", fake_mark), \
+         patch.object(config, "SUPER_SCAN_PUSH_ENABLED", True):
+        stats = asyncio.run(super_scan_notify.run_once())
+
+    assert pushed == ["AAA_TRY"] and opened == ["AAA_TRY"]
+    assert stats["push_enabled"] is True
 
 
 def test_notify_filter_blocks_non_super_when_enforced(monkeypatch):
@@ -142,4 +179,6 @@ def test_run_once_reports_top_score():
         stats = asyncio.run(super_scan_notify.run_once())
 
     assert stats["top_score"] == 72.5
-    assert stats["pushed"] == 1
+    # 2026-11-25: varsayılan push KAPALI → pushed 0, işlem yine açılır
+    assert stats["pushed"] == 0
+    assert stats["opened"] == 1

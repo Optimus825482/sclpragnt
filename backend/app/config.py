@@ -1006,6 +1006,9 @@ class Config:
     SUPER_SCAN_PUSH_TOP_N = max(1, min(10, int(os.getenv("SUPER_SCAN_PUSH_TOP_N", "2"))))
     SUPER_SCAN_PUSH_MIN_SCORE = float(os.getenv("SUPER_SCAN_PUSH_MIN_SCORE", "65"))
     SUPER_SCAN_PUSH_COOLDOWN_MIN = float(os.getenv("SUPER_SCAN_PUSH_COOLDOWN_MIN", "30"))
+    # 2026-11-25 (kullanıcı): süper tarama PUSH GÖNDERMESİN ama otonom işlem
+    # açsın. Push'u geri açmak için SUPER_SCAN_PUSH_ENABLED=1.
+    SUPER_SCAN_PUSH_ENABLED = os.getenv("SUPER_SCAN_PUSH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
     # 2026-11-25 (kullanıcı): Sinyal İzleme artık YALNIZ süper tarama
     # işlemlerini raporlar (notification_key LIKE 'super:%'). Kapatmak için 0.
     SIGNAL_INSIGHTS_SUPER_ONLY = os.getenv("SIGNAL_INSIGHTS_SUPER_ONLY", "1").strip().lower() not in {"0", "false", "no", "off"}
