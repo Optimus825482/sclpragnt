@@ -7758,7 +7758,8 @@ NOTIFY_SOURCES_UNRESTRICTED = False
 
 @router.get("/api/radar/super-scan")
 async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
-                           min_atr_pct: float = 0.0, force: bool = False):
+                           min_atr_pct: float = 0.0, min_volume_try: float = 0.0,
+                           force: bool = False):
     """Tüm tarayıcıları birleştirip TEK sıralı liste döndürür (salt okunur).
 
     KAYNAKLAR: hız avcısı (5/15 dk), günlük momentum, short-squeeze, snapback,
@@ -7781,9 +7782,28 @@ async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
         payload = cached["payload"]
     else:
         rows = await _combined_scan_rows()
+        # 2026-11-25 (kullanıcı): SIĞ/sığ likidite listede görünmesin. 24s TL hacmi
+        # eşiğin altındaki semboller elenir (otonom paper'da ayrıca derinlik kapısı
+        # çalışır; burada LİSTEDEN de çıkarılır). Ticker 5 sn önbellekli.
+        vol_map: dict[str, float] = {}
+        try:
+            from app.binance_tr_public import ticker_24h as _ticker_24h
+            vol_threshold = float(min_volume_try or getattr(config, "MIN_24H_QUOTE_VOLUME_TRY", 0) or 0)
+            for t in (await _ticker_24h()) or []:
+                try:
+                    vol_map[str(t.get("symbol") or "").replace("_", "").upper()] = float(t.get("quoteVolume") or 0)
+                except (TypeError, ValueError):
+                    continue
+        except Exception as exc:
+            vol_threshold = 0.0
+            logger.debug("süper tarama hacim haritası alınamadı: %s", exc)
         scored = []
         for row in rows or []:
             if row.get("blocked_by"):
+                continue
+            sym_key = str(row.get("symbol") or "").replace("_", "").upper()
+            row_vol = vol_map.get(sym_key)
+            if vol_threshold > 0 and row_vol is not None and row_vol < vol_threshold:
                 continue
             score = float(row.get("unified_score") or row.get("scan_score") or 0.0)
             if score < float(min_score):
@@ -7824,6 +7844,7 @@ async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
                 "peak_distance_pct": cmc.get("peak_distance_pct") or cmc.get("ath_distance_pct"),
                 "tags": (cmc.get("tags") or [])[:4],
                 "blocked_by": None,
+                "volume_24h_try": row_vol,
             })
         scored.sort(key=lambda r: r["super_score"], reverse=True)
         payload = {"generated_at": _time.time(), "source": "unified_scan",

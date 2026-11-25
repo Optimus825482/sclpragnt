@@ -53,3 +53,28 @@ def test_super_scan_uses_cache():
         asyncio.run(monitoring.radar_super_scan(limit=5))  # önbellek
 
     assert calls["n"] == 1, "30 sn içinde ikinci tarama yapılmamalı"
+
+
+def test_shallow_liquidity_is_excluded():
+    """24s TL hacmi eşiğin altındaki semboller listeden ELENİR."""
+    rows = [
+        {"symbol": "BIG_TRY", "price": 10.0, "unified_score": 70.0, "unified_sources": ["velocity"]},
+        {"symbol": "THIN_TRY", "price": 1.0, "unified_score": 90.0, "unified_sources": ["velocity"]},
+    ]
+
+    async def fake_ticker(symbols=None):
+        return [
+            {"symbol": "BIG_TRY", "quoteVolume": "90000000", "priceChangePercent": "5"},
+            {"symbol": "THIN_TRY", "quoteVolume": "120000", "priceChangePercent": "40"},
+        ]
+
+    from app import binance_tr_public
+    with patch.object(monitoring, "_combined_scan_rows", AsyncMock(return_value=rows)), \
+         patch.object(binance_tr_public, "ticker_24h", fake_ticker):
+        monitoring._SUPER_SCAN_CACHE.update({"generated_at": 0.0, "payload": None})
+        out = asyncio.run(monitoring.radar_super_scan(limit=12, min_score=10.0,
+                                                      min_volume_try=5_000_000, force=True))
+
+    symbols = [x["symbol"] for x in out["items"]]
+    assert symbols == ["BIG_TRY"], "sığ hacimli sembol elenmeli"
+    assert out["items"][0]["volume_24h_try"] == 90_000_000.0
