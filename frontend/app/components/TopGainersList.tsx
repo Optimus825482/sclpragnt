@@ -4,7 +4,7 @@
  * Radar > "Yükselenler" sekmesi (2026-11-25, kullanıcı isteği).
  *
  * Son 24 saatte en çok yükselen TRY çiftleri — Binance TR 24s ticker'ından,
- * ilk 20. Sekme açıkken 15 saniyede bir, sekme görünür değilken durur.
+ * ilk 20. Sekme açıkken 180 saniyede bir, sekme görünür değilken durur.
  *
  * NEDEN TR kaynağı: işlem evrenimiz TRY çiftleri; global (USD) sıralamalar
  * alakasız semboller getiriyordu ve CMC kotası harcıyordu.
@@ -24,7 +24,8 @@ type GainerRow = {
   low_24h?: number | null;
 };
 
-const REFRESH_MS = 15_000;
+// 2026-11-25 (kullanıcı): 180 sn (borsa ağırlığını korumak için).
+const REFRESH_MS = 180_000;
 
 function fmtPrice(value: number): string {
   if (!Number.isFinite(value)) return "—";

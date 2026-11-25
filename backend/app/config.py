@@ -999,7 +999,8 @@ class Config:
     # otonom paper YALNIZ süper taramadan beslenir; diğer radar yolları bildirim
     # göndermez, işlem açmaz. Kapatmak için SUPER_SCAN_ONLY=0.
     SUPER_SCAN_ONLY = os.getenv("SUPER_SCAN_ONLY", "1").strip().lower() not in {"0", "false", "no", "off"}
-    SUPER_SCAN_INTERVAL_SEC = max(20, int(os.getenv("SUPER_SCAN_INTERVAL_SEC", "60")))
+    # 2026-11-25 (kullanıcı): 60 → 90 sn (Binance TR ağırlık baskısını azaltır).
+    SUPER_SCAN_INTERVAL_SEC = max(20, int(os.getenv("SUPER_SCAN_INTERVAL_SEC", "90")))
     SUPER_SCAN_PUSH_TOP_N = max(1, min(10, int(os.getenv("SUPER_SCAN_PUSH_TOP_N", "2"))))
     SUPER_SCAN_PUSH_MIN_SCORE = float(os.getenv("SUPER_SCAN_PUSH_MIN_SCORE", "65"))
     SUPER_SCAN_PUSH_COOLDOWN_MIN = float(os.getenv("SUPER_SCAN_PUSH_COOLDOWN_MIN", "30"))
@@ -1153,7 +1154,8 @@ class Config:
     GAINER_RADAR_MTF_PRIORITY_MAX_BONUS = max(0.0, float(os.getenv("GAINER_RADAR_MTF_PRIORITY_MAX_BONUS", "6")))
     GAINER_RADAR_INTERVAL_SEC = max(15, int(os.getenv("GAINER_RADAR_INTERVAL_SEC", "60")))
     TOP_GAINERS_LIMIT = max(1, min(50, int(os.getenv("TOP_GAINERS_LIMIT", "10"))))
-    TOP_GAINERS_REFRESH_SEC = max(60, int(os.getenv("TOP_GAINERS_REFRESH_SEC", str(10 * 60))))
+    # 2026-11-25 (kullanıcı): 10 dk → 180 sn.
+    TOP_GAINERS_REFRESH_SEC = max(60, int(os.getenv("TOP_GAINERS_REFRESH_SEC", "180")))
     TOP_GAINERS_AUTO_ACTIVATE = os.getenv("TOP_GAINERS_AUTO_ACTIVATE", "true").lower() == "true"
     LLM_REENTRY_COOLDOWN_SEC = max(60, int(os.getenv("LLM_REENTRY_COOLDOWN_SEC", str(30 * 60))))
     LLM_PROFIT_REENTRY_COOLDOWN_SEC = max(60, int(os.getenv("LLM_PROFIT_REENTRY_COOLDOWN_SEC", str(5 * 60))))
