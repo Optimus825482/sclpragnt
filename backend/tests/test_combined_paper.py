@@ -20,7 +20,8 @@ from app import combined_paper  # noqa: E402
 
 def test_combined_paper_config_defaults():
     c = config.config
-    assert c.COMBINED_PAPER_ENABLED is True
+    # 2026-11-25 (kullanıcı): Kombine Paper TAMAMEN kaldırıldı → varsayılan KAPALI.
+    assert c.COMBINED_PAPER_ENABLED is False
     assert c.COMBINED_PAPER_INITIAL_BALANCE_TRY == 5000.0
     assert c.COMBINED_PAPER_POSITION_PCT == 10.0
     assert c.COMBINED_PAPER_MAX_OPEN == 5

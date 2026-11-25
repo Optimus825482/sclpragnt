@@ -4396,7 +4396,10 @@ async def _send_combined_list(*, cfg: dict | None = None, force: bool = False) -
     if sent:
         try:
             from app import combined_paper
-            await combined_paper.on_combined_list_sent(built, report_id=row_id)
+            # 2026-11-25 (kullanıcı): Kombine Paper kaldırıldı → liste gönderimi
+            # artık kombine paper işlemi AÇMAZ (varsayılan kapalı).
+            if getattr(config, "COMBINED_PAPER_ENABLED", False):
+                await combined_paper.on_combined_list_sent(built, report_id=row_id)
         except Exception as exc:
             logger.debug("kombine paper otonom açılış: %s", exc)
     logger.info("kombine liste gönderildi: %d aday (en iyi puan %.1f)",

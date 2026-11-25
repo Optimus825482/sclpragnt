@@ -9,7 +9,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
-import CombinedPaperPanel from "../components/CombinedPaperPanel";
 import { Button } from "../components/ui";
 import { formatSignedTL, formatTL, toMs } from "../lib/format";
 import { closedPnlTry, netOpenPnlPct, netOpenPnlTry } from "../lib/pnl";
@@ -186,7 +185,6 @@ export default function PortfolioPage() {
   const [decisions, setDecisions] = useState<any[]>([]);
   const [decisionsExpanded, setDecisionsExpanded] = useState(false);
   // Sayfa sekmeleri: ana portföy + kombine paper (ayrı 5.000 TL).
-  const [pageTab, setPageTab] = useState<"main" | "combined">("main");
 
   const loadMain = useCallback(() => {
     apiRequest(`${API_BASE}/api/positions`, { cache: "no-store" })
@@ -467,25 +465,8 @@ export default function PortfolioPage() {
         </div>
       </div>
 
-      {/* Sayfa sekmeleri: Ana Portföy + Kombine Paper (ayrı 5.000 TL) */}
-      <div className="mt-3 grid grid-cols-2 gap-2 rounded-2xl border border-bunker-800/80 bg-bunker-950/70 p-1.5">
-        <button type="button" onClick={() => setPageTab("main")}
-          className={`rounded-xl px-3 py-2.5 font-mono text-xs font-bold transition-all ${
-            pageTab === "main" ? "bg-neon-green/20 text-neon-green border border-neon-green/50" : "bg-bunker-900/60 text-bunker-muted hover:text-white border border-bunker-800/50"}`}>
-          📊 Ana Portföy &amp; Otonom Paper
-        </button>
-        <button type="button" onClick={() => setPageTab("combined")}
-          className={`rounded-xl px-3 py-2.5 font-mono text-xs font-bold transition-all ${
-            pageTab === "combined" ? "bg-neon-green/20 text-neon-green border border-neon-green/50" : "bg-bunker-900/60 text-bunker-muted hover:text-white border border-bunker-800/50"}`}>
-          💠 Kombine Paper (5.000 ₺)
-        </button>
-      </div>
-
-      {pageTab === "combined" ? (
-        <div className="mt-4">
-          <CombinedPaperPanel />
-        </div>
-      ) : (
+      {/* 2026-11-25 (kullanıcı): "Kombine Paper" sekmesi ve paneli TAMAMEN
+          kaldırıldı; portföy izleme yalnız ana portföyü gösterir. */}
       <>
       {lastEvent && (
         <div className="mb-4 rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 font-mono text-xs text-neon-green">
@@ -839,7 +820,6 @@ export default function PortfolioPage() {
         )}
       </section>
       </>
-      )}
 
       <p className="mt-4 text-center font-mono text-[10px] text-bunker-muted/60">
         Paper trading · gerçek para kullanılmaz · veriler canlı WS ve 10 sn'de bir yenilenir

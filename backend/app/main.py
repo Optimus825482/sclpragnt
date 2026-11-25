@@ -1364,7 +1364,10 @@ async def startup_services():
     await asyncio.sleep(_yield)
     # KOMBİNE PAPER YÖNETİM (2026-10-11): kombine liste adaylarının açıldığı AYRI
     # 5.000 TL sanal portföyün açık pozisyonlarını yönetir (TP/trailing/süre).
-    _start_background(combined_paper_management_loop, "combined-paper")
+    # 2026-11-25 (kullanıcı): Kombine Paper kaldırıldı → yönetim döngüsü
+    # yalnız COMBINED_PAPER_ENABLED=1 ise başlar (varsayılan kapalı).
+    if getattr(config, "COMBINED_PAPER_ENABLED", False):
+        _start_background(combined_paper_management_loop, "combined-paper")
     await asyncio.sleep(_yield)
     _start_background(auto_paper_start_loop, "auto-paper-start")
     await asyncio.sleep(_yield)

@@ -722,6 +722,10 @@ class Config:
     # iken stop girişin altına düşüp kârı zarara çevirebiliyordu. Kural: trigger
     # gap'ten BÜYÜK olmalı → trigger %2.0, gap %1.0 (aktifleşince stop en kötü
     # girişin +%1 üstünde kalır → kâr kilitli).
+    # 2026-11-25 (kullanıcı: "Kombine Paper'ı tamamen kaldır"): arka plan
+    # izleyicisi ve liste-gönderim kancası KAPALI. Paneller silindi; bu anahtar
+    # kapalıyken yeni kombine paper işlemi AÇILMAZ ve yönetim döngüsü başlamaz.
+    COMBINED_PAPER_ENABLED = (os.getenv("COMBINED_PAPER_ENABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
     COMBINED_PAPER_TRAIL_TRIGGER_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_TRIGGER_PCT", "2.0"))
     COMBINED_PAPER_TRAIL_GAP_PCT = float(os.getenv("COMBINED_PAPER_TRAIL_GAP_PCT", "1.0"))
     # Trailing aktifken SABİT TP KALDIRILIR (kullanıcı kararı 2026-10-12): aksi

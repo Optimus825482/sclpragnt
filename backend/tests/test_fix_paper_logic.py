@@ -236,7 +236,10 @@ class AtrStopCapTests(unittest.TestCase):
         # 2026-11-10 refactor: ATR mantığı `_exit_volatility_sl`'e taşındı.
         src = inspect.getsource(auto_paper._exit_volatility_sl)
         self.assertNotIn("min(sl_pct, 1.2 * atr_pct)", src)
-        self.assertIn("_effective_sl_pct(sl_pct, atr_pct)", src)
+        # 2026-11-25: ATR artık 5m + 15m birleşimi (`_atr_pct_for`) ve ham ATR
+        # eşdeğeri `_effective_sl_pct`'e verilir (çift çarpan düzeltildi).
+        self.assertIn("_effective_sl_pct(sl_pct", src)
+        self.assertIn("_atr_pct_for", src)
 
 
 # ---------------------------------------------------------------------------
