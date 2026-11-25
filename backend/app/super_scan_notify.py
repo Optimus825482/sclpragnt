@@ -124,8 +124,10 @@ async def run_once() -> dict:
                 opened += 1
         except Exception as exc:
             logger.debug("süper tarama paper açılışı hatası (%s): %s", symbol, exc)
+    items_all = payload.get("items") or []
+    top_score = float(items_all[0].get("super_score") or 0) if items_all else 0.0
     return {"scanned": payload.get("scanned") or 0, "eligible": payload.get("eligible") or 0,
-            "pushed": pushed, "opened": opened}
+            "pushed": pushed, "opened": opened, "top_score": round(top_score, 1)}
 
 
 async def super_scan_loop() -> None:
@@ -135,11 +137,19 @@ async def super_scan_loop() -> None:
         return
     await asyncio.sleep(45)  # açılış patlaması bitsin
     interval = int(getattr(config, "SUPER_SCAN_INTERVAL_SEC", 60))
+    rounds = 0
     while True:
         try:
             stats = await run_once()
+            rounds += 1
+            # 2026-11-25: yalnız push olunca log atmak "sistem çalışıyor mu?"
+            # sorusunu bırakıyordu. Her tur DEBUG, 10 turda bir (≈15 dk) INFO.
             if stats.get("pushed") or stats.get("opened"):
                 logger.info("süper tarama: %s", stats)
+            elif rounds % 10 == 0:
+                logger.info("süper tarama nabız: %s", stats)
+            else:
+                logger.debug("süper tarama turu: %s", stats)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001

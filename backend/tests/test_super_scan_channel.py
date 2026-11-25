@@ -114,3 +114,32 @@ def test_envelope_target_formatting():
     notif = super_scan_notify._envelope({"symbol": "AAA_TRY", "super_score": 70.0,
                                          "target_pct": 3.0})
     assert "hedef %3.0" in notif["message"]
+
+
+def test_run_once_reports_top_score():
+    async def fake_scan(limit=12, **kw):
+        return {"scanned": 10, "eligible": 2,
+                "items": [{"symbol": "AAA_TRY", "super_score": 72.5, "score": 60,
+                           "price": 1.0, "sources": ["velocity"]}]}
+
+    async def fake_push(notif):
+        return True
+
+    async def fake_open(notif):
+        return {"status": "opened"}
+
+    async def fake_recent(symbol, cooldown):
+        return False
+
+    async def fake_mark(symbol):
+        return None
+
+    with patch.object(monitoring, "radar_super_scan", fake_scan), \
+         patch.object(monitoring, "_send_push", fake_push), \
+         patch.object(auto_paper, "try_open_from_notification", fake_open), \
+         patch.object(super_scan_notify, "_recently_pushed", fake_recent), \
+         patch.object(super_scan_notify, "_mark_pushed", fake_mark):
+        stats = asyncio.run(super_scan_notify.run_once())
+
+    assert stats["top_score"] == 72.5
+    assert stats["pushed"] == 1
