@@ -2824,8 +2824,14 @@ async def get_auto_paper_status_tool(args: dict):
             "recent_closed": recent}
 
 async def get_dashboard_summary_tool():
-    """Dashboard özeti — database.get_dashboard_summary() sarmalayıcısı."""
-    return {"paper_only": True, **await database.get_dashboard_summary()}
+    """Dashboard özeti — database özeti + canlı (mark-to-market) portföy katmanı."""
+    summary = await database.get_dashboard_summary()
+    try:
+        from app.routers import runtime as _runtime
+        summary = _runtime.dashboard_live_overlay(summary)
+    except Exception:
+        pass
+    return {"paper_only": True, **summary}
 
 async def get_monitoring_status_tool():
     """Monitoring radar durumu — salt okunur anlık durum."""

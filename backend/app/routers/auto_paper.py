@@ -1241,7 +1241,11 @@ def _exit_apply_volume_breakout(symbol: str, current_price: float, target_pct: f
 
 
 def _atr_pct_for(symbol: str, price: float, timeframe: str) -> float | None:
-    """Verilen zaman diliminde ATR yüzdesi (yoksa None)."""
+    """Verilen zaman diliminde ATR/fiyat oranı (KESİR: %2 için 0.02; yoksa None).
+
+    Ölçek sözleşmesi: `_effective_sl_pct` ve çağıranları KESİR kullanır;
+    trailing tarafı yüzde beklediği için `_atr_pct_15m_cached` ×100 yapar.
+    """
     try:
         from app.technical_analysis import _atr
         kline = market.get_ut_kline(symbol, timeframe)
@@ -1258,6 +1262,55 @@ def _atr_pct_for(symbol: str, price: float, timeframe: str) -> float | None:
         return float(atr_val) / float(price)
     except Exception:
         return None
+
+
+# 2026-11-25 (kullanıcı): dinamik trailing ATR M15'e göre ölçeklenir. ATR
+# okuması bellekteki mumlardan yapılır; yine de 5 sn'lik yönetim döngüsünde
+# her işlem için tekrar hesaplamamak adına 60 sn TTL önbelleği tutulur.
+_ATR15_TRAIL_CACHE: dict[str, tuple[float, float]] = {}
+_ATR15_TRAIL_TTL_SEC = 60.0
+
+
+def _atr_pct_15m_cached(symbol: str, price: float) -> float | None:
+    """ATR M15 **yüzde** olarak (KESİR → ×100), 60 sn önbellekli."""
+    now = time.time()
+    cached = _ATR15_TRAIL_CACHE.get(symbol)
+    if cached and (now - cached[0]) < _ATR15_TRAIL_TTL_SEC:
+        return cached[1]
+    atr = _atr_pct_for(symbol, price, "15m")
+    if atr and atr > 0:
+        pct = atr * 100.0
+        _ATR15_TRAIL_CACHE[symbol] = (now, pct)
+        return pct
+    return None
+
+
+def _atr_trailing_levels(symbol: str, price: float) -> tuple[float, float] | None:
+    """ATR M15'ten (tetik %, mesafe %) üretir; veri yoksa/kapalıysa None.
+
+    tetik = k_trig × ATR15  (vars. 1,0 → ATR %1,7 ise %1,7 kârda aktifleşir)
+    mesafe = k_gap × ATR15  (vars. 0,5 → ATR %1,7 ise tepeden %0,85 tolerans)
+    Sınırlar: tetik [1,0–3,0], mesafe [0,4–1,5]. mesafe < tetik garantisi:
+    aktifleştiği anda stop girişin ALTINA düşüp kârlı işlemi zarara çeviremez.
+    """
+    if not getattr(config, "AUTO_PAPER_TRAIL_ATR_ENABLED", True):
+        return None
+    atr = _atr_pct_15m_cached(symbol, price)
+    if not atr:
+        return None
+    trig_min = float(getattr(config, "AUTO_PAPER_TRAIL_TRIGGER_MIN_PCT", 1.0))
+    trig_max = float(getattr(config, "AUTO_PAPER_TRAIL_TRIGGER_MAX_PCT", 3.0))
+    gap_min = float(getattr(config, "AUTO_PAPER_TRAIL_GAP_MIN_PCT", 0.4))
+    gap_max = float(getattr(config, "AUTO_PAPER_TRAIL_GAP_MAX_PCT", 1.5))
+    trigger = atr * float(getattr(config, "AUTO_PAPER_TRAIL_ATR_TRIGGER_MULT", 1.0))
+    gap = atr * float(getattr(config, "AUTO_PAPER_TRAIL_ATR_GAP_MULT", 0.5))
+    trigger = max(trig_min, min(trig_max, trigger))
+    gap = max(gap_min, min(gap_max, gap))
+    if gap >= trigger:
+        gap = max(gap_min, trigger * 0.6)
+    if gap >= trigger:  # aşırı dar sınırlarda bile güvenli taban
+        trigger = gap + 0.1
+    return round(trigger, 3), round(gap, 3)
 
 
 def _exit_volatility_sl(symbol: str, current_price: float, sl_pct: float,
@@ -2171,7 +2224,8 @@ async def _apply_breakeven(trade: dict, symbol: str, trade_id: int, now: float, 
     return False, breakeven_enabled, BREAKEVEN_TRAIL_GAP_PCT
 
 
-def _trailing_params(_profile_manage, settings: dict | None, tp_gain_pct,
+def _trailing_params(symbol: str, current_price: float,
+                     _profile_manage, settings: dict | None, tp_gain_pct,
                      gross_pnl_pct: float, breakeven_enabled: bool,
                      breakeven_trail_gap_pct: float) -> tuple[float, float] | None:
     """Trailing tetik/mesafe yüzdelerini çözer. Döner: (trigger, gap) ya da `None` (kapalı).
@@ -2179,6 +2233,13 @@ def _trailing_params(_profile_manage, settings: dict | None, tp_gain_pct,
     2026-10-21 19:46: profilli işlemde (MA BUY H4) iz süren stop ayarlardan BAĞIMSIZ — profil açık
     diyorsa açık, tetik/mesafe profilden, dinamik tetik/mesafe ve breakeven kısıtı uygulanmaz
     (replay simülasyonuyla birebir).
+
+    2026-11-25 (kullanıcı): profil dışı otonom işlemlerde tetik ve mesafe **ATR M15**
+    ile ölçeklenir (`_atr_trailing_levels`): tetik ≈ 1,0×ATR15, mesafe ≈ 0,5×ATR15.
+    ATR okunamazsa ayarlardaki sabit yüzdelere düşülür. ATR dalında breakeven
+    gap tavanı UYGULANMAZ — mesafe zaten volatiliteye bağlı; sabit tavan onu
+    daraltıp yüksek volatilitede erken stop üretirdi. Breakeven stop'un kendi
+    izlemesi (daha sıkı olan) değişmeden korunur.
     """
     _exit_def = _exit_defaults()
     if _profile_manage is not None:
@@ -2188,6 +2249,10 @@ def _trailing_params(_profile_manage, settings: dict | None, tp_gain_pct,
     # 2026-10-16 (maliyet/çıkış): varsayılanlar çıkış profilinden (DB ayarı önce).
     trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", _exit_def["trailing_trigger_pct"]))
     trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", _exit_def["trailing_gap_pct"]))
+    atr_levels = _atr_trailing_levels(symbol, current_price)
+    atr_based = atr_levels is not None
+    if atr_based:
+        trailing_trigger_pct, trailing_gap_pct = atr_levels
     # B2: Dynamic trailing trigger tied to TP target (Tavan korumalı)
     dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False)))
     if tp_gain_pct is not None and dynamic_trailing_enabled:
@@ -2196,9 +2261,13 @@ def _trailing_params(_profile_manage, settings: dict | None, tp_gain_pct,
     if tp_gain_pct is not None and gross_pnl_pct >= tp_gain_pct * 0.9:
         trailing_gap_pct = max(0.2, trailing_gap_pct * 0.5)
     # Breakeven açıksa trailing gap'i kısıtla; breakeven kapalıysa kullanıcının
-    # belirlediği geniş trailing mesafesine izin ver.
-    if breakeven_enabled:
+    # belirlediği geniş trailing mesafesine izin ver. ATR tabanlı mesafe bu
+    # sabit tavana takılmaz (gerekçe: docstring).
+    if breakeven_enabled and not atr_based:
         trailing_gap_pct = min(trailing_gap_pct, breakeven_trail_gap_pct)
+    # Güvenlik: gap her zaman tetikten küçük kalmalı.
+    if trailing_gap_pct >= trailing_trigger_pct:
+        trailing_gap_pct = max(0.2, trailing_trigger_pct * 0.6)
     return trailing_trigger_pct, trailing_gap_pct
 
 
@@ -2293,7 +2362,7 @@ async def _apply_trailing(trade: dict, symbol: str, trade_id: int, now: float, c
     if not trailing_enabled:
         return False
     trailing_trigger_pct, trailing_gap_pct = _trailing_params(
-        _profile_manage, settings, tp_gain_pct, gross_pnl_pct,
+        symbol, current_price, _profile_manage, settings, tp_gain_pct, gross_pnl_pct,
         breakeven_enabled, breakeven_trail_gap_pct)
     trailing_activated = bool(trade.get("trailing_activated", False))
     current_trailing_stop = float(trade.get("trailing_stop") or 0)

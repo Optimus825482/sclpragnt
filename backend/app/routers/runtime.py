@@ -319,6 +319,54 @@ async def ws_broadcast_loop():
         except Exception as exc:
             logger.warning("ws_broadcast_loop hatasi (atlanıyor): %s", exc, exc_info=True)
         await asyncio.sleep(1.0)
+def live_portfolio_snapshot(max_age_sec: float = 30.0) -> dict | None:
+    """Canlı (mark-to-market) portföy anlık görüntüsü; bayatsa None.
+
+    Kaynak `ws_broadcast_loop`'un 1-3 sn'de bir tazelediği önbellektir: serbest
+    TL + AÇIK pozisyonların güncel fiyatla değeri (ana + otonom paper). Dashboard
+    özeti bunu kullanınca "toplam değer" giriş (entry) fiyatına değil, anlık
+    piyasaya göre hareket eder. İstemci yoksa/bayatsa None → çağıran entry-basis
+    hesabına düşer (sıfır uydurulmaz).
+    """
+    snap = _ws_snapshot_cache.get("portfolio")
+    generated = float(_ws_snapshot_cache.get("generated_at") or 0)
+    if not isinstance(snap, dict) or not snap:
+        return None
+    if (time.time() - generated) > float(max_age_sec):
+        return None
+    return snap
+
+
+def dashboard_live_overlay(summary: dict) -> dict:
+    """Dashboard `portfolio` bloğunu canlı değerlerle tazeler (varsa).
+
+    `total_value` = serbest TL + açık pozisyonların anlık değeri; `open_positions`
+    ana + otonom paper açık işlemlerin toplamıdır. Canlı görüntü yoksa dokunmaz.
+    """
+    live = live_portfolio_snapshot()
+    if not live:
+        return summary
+    try:
+        positions = [p for p in (live.get("positions") or []) if isinstance(p, dict)]
+        auto_positions = [p for p in (live.get("auto_paper_positions") or []) if isinstance(p, dict)]
+        portfolio = dict(summary.get("portfolio") or {})
+        unrealized = live.get("unrealized_pnl")
+        portfolio.update({
+            "balance": round(float(live.get("try") or 0.0), 2),
+            "open_positions": len(positions) + len(auto_positions),
+            "positions_value": round(sum(float(p.get("value") or 0.0) for p in positions), 2),
+            "auto_paper_value": round(sum(float(p.get("value") or 0.0) for p in auto_positions), 2),
+            "auto_paper_open": len(auto_positions),
+            "total_value": round(float(live.get("total_value") or 0.0), 2),
+            "unrealized_pnl": round(float(unrealized), 2) if isinstance(unrealized, (int, float)) else None,
+            "basis": "mark_to_market",
+        })
+        summary["portfolio"] = portfolio
+    except Exception as exc:  # noqa: BLE001 — canlı katman özeti bozmaz
+        logger.warning("dashboard canlı katmanı uygulanamadı: %s", exc)
+    return summary
+
+
 async def alert_loop():
     await asyncio.sleep(8)
     while True:

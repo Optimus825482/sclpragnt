@@ -27,6 +27,74 @@ def test_defaults_enabled_single_channel():
     assert config.SUPER_SCAN_PUSH_MIN_SCORE > 0
 
 
+def test_default_threshold_is_eighty_and_single_best():
+    """2026-11-25 (kullanıcı): en iyi 2 aday değil, 80 üzerindeki EN İYİ aday."""
+    assert config.SUPER_SCAN_PUSH_MIN_SCORE == 80.0
+    assert config.SUPER_SCAN_PUSH_TOP_N == 1
+
+
+def test_only_best_above_eighty_opens_paper():
+    """Varsayılanlarla: 85 açar, 82/79 açmaz (tek aday)."""
+    items = [
+        {"symbol": "AAA_TRY", "super_score": 85.0, "score": 80.0, "price": 10.0,
+         "target_pct": 3.0, "horizon_minutes": 15, "sources": ["velocity"]},
+        {"symbol": "BBB_TRY", "super_score": 82.0, "score": 78.0, "price": 5.0,
+         "target_pct": 3.0, "horizon_minutes": 15, "sources": ["snapback"]},
+        {"symbol": "CCC_TRY", "super_score": 79.0, "score": 79.0, "price": 2.0,
+         "target_pct": 3.0, "horizon_minutes": 15, "sources": ["rising"]},
+    ]
+    opened = []
+
+    async def fake_scan(limit=50, **kw):
+        return {"scanned": 3, "eligible": 3, "items": items}
+
+    async def fake_open(notif):
+        opened.append(notif["symbol"])
+        return {"status": "opened"}
+
+    with patch.object(monitoring, "super_scan_for_paper", fake_scan), \
+         patch.object(auto_paper, "try_open_from_notification", fake_open), \
+         patch.object(super_scan_notify, "_recently_pushed", AsyncMock(return_value=False)), \
+         patch.object(super_scan_notify, "_mark_pushed", AsyncMock()):
+        stats = asyncio.run(super_scan_notify.run_once())
+
+    assert opened == ["AAA_TRY"], "yalnız 80 üzerindeki EN İYİ aday açılmalı"
+    assert stats["opened"] == 1
+
+
+def test_next_above_eighty_opens_when_best_is_holding():
+    """En iyi aday açık pozisyondaysa 80 üzerindeki bir sonraki aday denenir."""
+    items = [
+        {"symbol": "AAA_TRY", "super_score": 90.0, "score": 85.0, "price": 10.0,
+         "target_pct": 3.0, "horizon_minutes": 15, "sources": ["velocity"]},
+        {"symbol": "BBB_TRY", "super_score": 84.0, "score": 80.0, "price": 5.0,
+         "target_pct": 3.0, "horizon_minutes": 15, "sources": ["snapback"]},
+        {"symbol": "CCC_TRY", "super_score": 70.0, "score": 70.0, "price": 2.0,
+         "target_pct": 3.0, "horizon_minutes": 15, "sources": ["rising"]},
+    ]
+    opened = []
+
+    async def fake_scan(limit=50, **kw):
+        return {"scanned": 3, "eligible": 3, "items": items}
+
+    async def fake_open(notif):
+        opened.append(notif["symbol"])
+        return {"status": "opened"}
+
+    async def fake_open_trade(symbol):
+        return {"symbol": symbol} if symbol == "AAA_TRY" else None
+
+    with patch.object(monitoring, "super_scan_for_paper", fake_scan), \
+         patch.object(auto_paper, "try_open_from_notification", fake_open), \
+         patch.object(super_scan_notify.database, "get_open_auto_paper_trade", fake_open_trade), \
+         patch.object(super_scan_notify, "_recently_pushed", AsyncMock(return_value=False)), \
+         patch.object(super_scan_notify, "_mark_pushed", AsyncMock()):
+        stats = asyncio.run(super_scan_notify.run_once())
+
+    assert opened == ["BBB_TRY"]
+    assert stats["blocked"]["already_open"] == 1
+
+
 def test_auto_paper_blocks_non_super_scan():
     src = inspect.getsource(auto_paper._entry_context)
     assert 'not_super_scan' in src
@@ -83,10 +151,12 @@ def test_run_once_pushes_top_n_and_opens_paper():
          patch.object(auto_paper, "try_open_from_notification", fake_open), \
          patch.object(super_scan_notify, "_recently_pushed", fake_recent), \
          patch.object(super_scan_notify, "_mark_pushed", fake_mark), \
-         patch.object(config, "SUPER_SCAN_PUSH_TOP_N", 2):
+         patch.object(config, "SUPER_SCAN_PUSH_TOP_N", 2), \
+         patch.object(config, "SUPER_SCAN_PUSH_MIN_SCORE", 65.0):
         stats = asyncio.run(super_scan_notify.run_once())
 
     # 2026-11-25 (kullanıcı): varsayılan PUSH KAPALI → bildirim yok, işlem VAR.
+    # (TOP_N=2 / eşik 65 bu testin sınadığı davranış; üretim varsayılanı 1/80.)
     assert pushed == [], "push kapalıyken bildirim gitmemeli"
     assert opened == ["AAA_TRY", "BBB_TRY"], "eşiği geçen ilk N aday işlem açmalı"
     assert stats["pushed"] == 0 and stats["opened"] == 2
@@ -190,7 +260,8 @@ def test_run_once_reports_top_score():
          patch.object(monitoring, "_send_push", fake_push), \
          patch.object(auto_paper, "try_open_from_notification", fake_open), \
          patch.object(super_scan_notify, "_recently_pushed", fake_recent), \
-         patch.object(super_scan_notify, "_mark_pushed", fake_mark):
+         patch.object(super_scan_notify, "_mark_pushed", fake_mark), \
+         patch.object(config, "SUPER_SCAN_PUSH_MIN_SCORE", 70.0):
         stats = asyncio.run(super_scan_notify.run_once())
 
     assert stats["top_score"] == 72.5
@@ -231,9 +302,9 @@ def test_open_position_candidates_do_not_starve_lower_ones():
     items = [
         {"symbol": "AAA_TRY", "super_score": 90.0, "score": 80.0, "price": 10.0,
          "target_pct": 3.0, "horizon_minutes": 15, "sources": ["velocity"]},
-        {"symbol": "BBB_TRY", "super_score": 80.0, "score": 75.0, "price": 5.0,
+        {"symbol": "BBB_TRY", "super_score": 85.0, "score": 75.0, "price": 5.0,
          "target_pct": 3.0, "horizon_minutes": 15, "sources": ["snapback"]},
-        {"symbol": "CCC_TRY", "super_score": 70.0, "score": 70.0, "price": 2.0,
+        {"symbol": "CCC_TRY", "super_score": 82.0, "score": 70.0, "price": 2.0,
          "target_pct": 3.0, "horizon_minutes": 15, "sources": ["rising"]},
     ]
     tried = []
@@ -274,8 +345,8 @@ def test_paper_uses_base_score_and_bounds_attempts_after_skipping_conflicting_tr
         {"symbol": "DECLINETRY", "score": 99, "super_score": 110, "paper_block_reason": "trend_conflict"},
         {"symbol": "HIGHBONUSTRY", "score": 60, "super_score": 97},
         {"symbol": "ELIGIBLETRY", "score": 80, "super_score": 87, "oi_change_pct": 4.5},
-        {"symbol": "NEXTTRY", "score": 75, "super_score": 75},
-        {"symbol": "OVERLIMITTRY", "score": 74, "super_score": 74},
+        {"symbol": "NEXTTRY", "score": 75, "super_score": 82},
+        {"symbol": "OVERLIMITTRY", "score": 74, "super_score": 81},
     ]
     open_position = AsyncMock(return_value={"status": "opened"})
     mark = AsyncMock()

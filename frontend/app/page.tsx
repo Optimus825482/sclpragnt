@@ -130,6 +130,25 @@ function AdminHome() {
       // veriyordu; yalnızca tazeleme tetikle, mevcut liste kalsın.
       load();
     }
+    // 2026-11-25 (kullanıcı): portföy değeri CANLI olsun — açık işlemler güncel
+    // fiyatla toplam değere dahil. WS `portfolio` anlık görüntüsü mark-to-market
+    // (serbest TL + ana + otonom açık pozisyonlar), 15 sn'lik poll'u beklemez.
+    if (msg.type === "portfolio" && msg.data && typeof msg.data === "object") {
+      const d = msg.data as {
+        try?: number; total_value?: number; unrealized_pnl?: number;
+        positions?: unknown[]; auto_paper_positions?: unknown[];
+      };
+      const total = Number(d.total_value);
+      const free = Number(d.try);
+      if (Number.isFinite(total) && Number.isFinite(free)) {
+        const openCount = (Array.isArray(d.positions) ? d.positions.length : 0)
+          + (Array.isArray(d.auto_paper_positions) ? d.auto_paper_positions.length : 0);
+        setSummary((prev) => ({
+          ...(prev ?? {}),
+          portfolio: { balance: free, total_value: total, open_positions: openCount },
+        }));
+      }
+    }
     // H-20: backend `portfolio_reconciled` / `llm_position_management` / `reset`
     // yayınlıyor ama ana sayfada tüketici yoktu → mutabakat veya LLM pozisyon
     // açılışı sonrası özet 15 sn'ye kadar bayat kalıyordu.

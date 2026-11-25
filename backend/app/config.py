@@ -1003,8 +1003,11 @@ class Config:
     SUPER_SCAN_ONLY = os.getenv("SUPER_SCAN_ONLY", "1").strip().lower() not in {"0", "false", "no", "off"}
     # 2026-11-25 (kullanıcı): 60 → 90 sn (Binance TR ağırlık baskısını azaltır).
     SUPER_SCAN_INTERVAL_SEC = max(20, int(os.getenv("SUPER_SCAN_INTERVAL_SEC", "90")))
-    SUPER_SCAN_PUSH_TOP_N = max(1, min(10, int(os.getenv("SUPER_SCAN_PUSH_TOP_N", "2"))))
-    SUPER_SCAN_PUSH_MIN_SCORE = float(os.getenv("SUPER_SCAN_PUSH_MIN_SCORE", "65"))
+    # 2026-11-25 (kullanıcı): tur başına EN İYİ TEK aday işleme alınır; eşik
+    # listede görünen "Süper skor" (sıralama puanı) üzerinden 80'dir.
+    # TOP_N aynı zamanda paper deneme tavanıdır (push açıkken bildirim sayısı).
+    SUPER_SCAN_PUSH_TOP_N = max(1, min(10, int(os.getenv("SUPER_SCAN_PUSH_TOP_N", "1"))))
+    SUPER_SCAN_PUSH_MIN_SCORE = float(os.getenv("SUPER_SCAN_PUSH_MIN_SCORE", "80"))
     SUPER_SCAN_PUSH_COOLDOWN_MIN = float(os.getenv("SUPER_SCAN_PUSH_COOLDOWN_MIN", "30"))
     # 2026-11-25 (kullanıcı): süper tarama PUSH GÖNDERMESİN ama otonom işlem
     # açsın. Push'u geri açmak için SUPER_SCAN_PUSH_ENABLED=1.
@@ -1294,7 +1297,9 @@ class Config:
     # PANEL skoruyla karşılaştırır. Eski panel 50 = ham 1000 (lineer, cap 2000);
     # log haritada aynı ham nokta panel 68.2 → DEĞER KORUNARAK yeniden ankrajlandı.
     AUTO_PAPER_MIN_SCORE_DEFAULT = float(os.getenv("AUTO_PAPER_MIN_SCORE", "68.2"))
-    AUTO_PAPER_BALANCE_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_BALANCE_PCT", "35"))
+    # 2026-11-25 (kullanıcı): her otonom giriş SERBEST bakiyenin %20'si ile
+    # açılır (açık pozisyonlara kilitli para serbest bakiyede sayılmaz).
+    AUTO_PAPER_BALANCE_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_BALANCE_PCT", "20"))
     # 2026-10-07 OPTIMIZASYON: 1.5 -> 5.0. KANIT (30 gun, 256 sembol, gercek
     # Binance TR 5dk mumlari, 3214 bildirim, mum-ici replay, maliyet %0.325):
     # sig stop sinyalin 5 dk'lik gurultusu icinde islemlerin yarisini kesiyordu.
@@ -1472,6 +1477,22 @@ class Config:
     # 0.30 denenir ve CANLI sonuç 2 hafta ölçülür. 5s granüler replay ile doğrulanmadan
     # varsayılan değiştirilmemeli.
     AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "1.0"))
+    # 2026-11-25 (kullanıcı): DİNAMİK TRAILING → ATR M15'e göre ölçeklenir.
+    # tetik = k_trig × ATR15, mesafe = k_gap × ATR15 (ikisi de sınırlar içinde
+    # kırpılır, gap < tetik garantisi korunur). ATR okunamazsa yukarıdaki sabit
+    # ayarlara düşülür (fail-open, davranış bozulmaz).
+    # NOT: 2026-11-10 ölçümü ATR ile ölçeklenen gap'i "kazanmadı" bulmuştu;
+    # o deney ATR≥1.0 ile önceden daraltılmış evrende ve 1m bar replay'inde
+    # yapıldı (bar içi ticker gürültüsü yok). Kullanıcı kararı: canlıda ATR M15
+    # tabanlı yönetim. Kapatmak için AUTO_PAPER_TRAIL_ATR_ENABLED=0.
+    AUTO_PAPER_TRAIL_ATR_ENABLED = os.getenv(
+        "AUTO_PAPER_TRAIL_ATR_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+    AUTO_PAPER_TRAIL_ATR_TRIGGER_MULT = float(os.getenv("AUTO_PAPER_TRAIL_ATR_TRIGGER_MULT", "1.0"))
+    AUTO_PAPER_TRAIL_ATR_GAP_MULT = float(os.getenv("AUTO_PAPER_TRAIL_ATR_GAP_MULT", "0.5"))
+    AUTO_PAPER_TRAIL_TRIGGER_MIN_PCT = float(os.getenv("AUTO_PAPER_TRAIL_TRIGGER_MIN_PCT", "1.0"))
+    AUTO_PAPER_TRAIL_TRIGGER_MAX_PCT = float(os.getenv("AUTO_PAPER_TRAIL_TRIGGER_MAX_PCT", "3.0"))
+    AUTO_PAPER_TRAIL_GAP_MIN_PCT = float(os.getenv("AUTO_PAPER_TRAIL_GAP_MIN_PCT", "0.4"))
+    AUTO_PAPER_TRAIL_GAP_MAX_PCT = float(os.getenv("AUTO_PAPER_TRAIL_GAP_MAX_PCT", "1.5"))
     # Trailing/breakeven kapanışı sonrası aynı bildirimle yeniden açılış
     # (fiyat bildirim fiyatının üzerinde + ufuk süresi dolmadı + yükselme
     # eğilimi varsa). 2026-09-29 kârlılık analizi: koruma kapanışı sonrası

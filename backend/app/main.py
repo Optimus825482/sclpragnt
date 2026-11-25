@@ -455,8 +455,19 @@ async def profile_update_password(payload: dict, request: Request):
 
 @app.get("/api/dashboard/summary")
 async def dashboard_summary():
-    """Ana sayfa dashboard özeti (salt okunur): bugünün sinyalleri, otonom işlem durumu, portföy."""
-    return {"paper_only": True, **await database.get_dashboard_summary()}
+    """Ana sayfa dashboard özeti (salt okunur): bugünün sinyalleri, otonom işlem durumu, portföy.
+
+    2026-11-25 (kullanıcı): portföy bloğu canlı (mark-to-market) değerlerle
+    tazelenir — toplam değer açık pozisyonları GÜNCEL fiyatla kapsar. Canlı
+    anlık görüntü yoksa DB'nin entry-basis hesabı döner.
+    """
+    summary = await database.get_dashboard_summary()
+    try:
+        from app.routers import runtime as _runtime
+        summary = _runtime.dashboard_live_overlay(summary)
+    except Exception as exc:  # noqa: BLE001 — canlı katman özeti düşürmez
+        print(f"[Dashboard] canlı portföy katmanı atlandı: {exc}", flush=True)
+    return {"paper_only": True, **summary}
 
 
 @app.post("/api/auth/login")
@@ -1115,6 +1126,28 @@ async def startup_market_warmup():
 #: Deploy sonrası TEK SEFERLİK temiz başlangıç işareti.
 #: Dolu ise bir daha sıfırlama YAPILMAZ (restart/deploy pozisyonları bozmaz).
 _AUTO_BASELINE_KEY = "auto_portfolio_baseline_v1"
+#: 2026-11-25 (kullanıcı): "serbest bakiyenin %20'si ile işlem aç" kuralı.
+#: Kayıtlı ayarlarda eski bir balance_pct varsa (örn. 50) varsayılan yetmez —
+#: BİR KEZ 20'ye çekilir. Kullanıcı sonradan panelden değiştirirse dokunulmaz.
+_AUTO_BALANCE20_KEY = "auto_paper_balance20_v1"
+_AUTO_BALANCE_PCT_TARGET = 20.0
+
+
+async def _auto_paper_balance_pct_once() -> None:
+    """Kayıtlı otonom paper ayarındaki `balance_pct` değerini BİR KEZ %20 yapar."""
+    if await database.get_llm_setting(_AUTO_BALANCE20_KEY):
+        return
+    raw = await database.get_llm_setting("auto_paper_settings", "{}")
+    try:
+        settings = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        settings = {}
+    old = settings.get("balance_pct")
+    if isinstance(settings, dict) and old != _AUTO_BALANCE_PCT_TARGET:
+        settings["balance_pct"] = _AUTO_BALANCE_PCT_TARGET
+        await database.set_llm_setting("auto_paper_settings", json.dumps(settings, ensure_ascii=False))
+        print(f"[AutoPaper] balance_pct {old} → {_AUTO_BALANCE_PCT_TARGET} (serbest bakiyenin %20'si)", flush=True)
+    await database.set_llm_setting(_AUTO_BALANCE20_KEY, str(int(time.time())))
 
 
 async def _auto_portfolio_baseline_once() -> None:
@@ -1156,6 +1189,10 @@ async def startup_services():
         await _auto_portfolio_baseline_once()
     except Exception as exc:
         print(f"[Portfolio] otomatik başlangıç atlandı: {exc}", flush=True)
+    try:
+        await _auto_paper_balance_pct_once()
+    except Exception as exc:
+        print(f"[AutoPaper] %20 bakiye kuralı uygulanamadı: {exc}", flush=True)
     try:
         security.load_user_session_versions(await database.list_users())
     except Exception as exc:
