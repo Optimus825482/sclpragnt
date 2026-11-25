@@ -199,6 +199,74 @@ def test_run_once_reports_top_score():
     assert stats["opened"] == 1
 
 
+def test_super_scan_bypasses_radar_mode_whitelist():
+    """`allowed_modes=["trend_devam"]` süper taramayı BLOKLAMAMALI.
+
+    Varsayılan AUTO_PAPER_ALLOWED_MODES=trend_devam; zarf mode="super_scan"
+    taşıdığı için mod kapısı tek kanal otonom işlemi tümden kilitliyordu
+    (2026-11-25 canlı denetimi).
+    """
+    notif = super_scan_notify._envelope(
+        {"symbol": "AAA_TRY", "super_score": 90.0, "score": 80.0, "price": 10.0,
+         "target_pct": 3.0, "horizon_minutes": 15, "sources": ["velocity"]})
+
+    settings = {"enabled": True, "min_score": 60.0, "allowed_modes": ["trend_devam"]}
+
+    async def run():
+        with patch.object(auto_paper, "get_auto_paper_settings", AsyncMock(return_value=settings)):
+            return await auto_paper._entry_context(notif)
+
+    _, rejection, symbol, _ = asyncio.run(run())
+    assert symbol == "AAA_TRY"
+    assert not rejection, f"süper tarama mod kapısına takılmamalı: {rejection}"
+
+
+def test_open_position_candidates_do_not_starve_lower_ones():
+    """Açık pozisyonu olan TOP_N aday deneme hakkını tüketmemeli.
+
+    `attempted >= TOP_N` tavanı varken açık pozisyonlu ilk iki sembol her
+    turda denenip tavanı dolduruyor, daha düşük skorlu fırsatlar hiç
+    denenmiyordu (2026-11-25 denetimi).
+    """
+    items = [
+        {"symbol": "AAA_TRY", "super_score": 90.0, "score": 80.0, "price": 10.0,
+         "target_pct": 3.0, "horizon_minutes": 15, "sources": ["velocity"]},
+        {"symbol": "BBB_TRY", "super_score": 80.0, "score": 75.0, "price": 5.0,
+         "target_pct": 3.0, "horizon_minutes": 15, "sources": ["snapback"]},
+        {"symbol": "CCC_TRY", "super_score": 70.0, "score": 70.0, "price": 2.0,
+         "target_pct": 3.0, "horizon_minutes": 15, "sources": ["rising"]},
+    ]
+    tried = []
+
+    async def fake_scan(limit=50, **kw):
+        return {"scanned": 3, "eligible": 3, "items": items}
+
+    async def fake_open(notif):
+        tried.append(notif["symbol"])
+        return {"status": "opened"}
+
+    async def fake_recent(symbol, cooldown):
+        return False
+
+    async def fake_entry_context(notif):
+        return {"enabled": True}, None, notif["symbol"], False
+
+    async def fake_open_trade(symbol):
+        return {"symbol": symbol} if symbol in ("AAA_TRY", "BBB_TRY") else None
+
+    with patch.object(monitoring, "super_scan_for_paper", fake_scan), \
+         patch.object(auto_paper, "_entry_context", fake_entry_context), \
+         patch.object(auto_paper, "try_open_from_notification", fake_open), \
+         patch.object(super_scan_notify.database, "get_open_auto_paper_trade", fake_open_trade), \
+         patch.object(super_scan_notify, "_recently_pushed", fake_recent), \
+         patch.object(super_scan_notify, "_mark_pushed", AsyncMock()):
+        stats = asyncio.run(super_scan_notify.run_once())
+
+    assert tried == ["CCC_TRY"]
+    assert stats["opened"] == 1
+    assert stats["blocked"]["already_open"] == 2
+
+
 def test_paper_uses_base_score_and_bounds_attempts_after_skipping_conflicting_trend(monkeypatch):
     from unittest.mock import AsyncMock
 

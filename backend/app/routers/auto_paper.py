@@ -664,7 +664,13 @@ async def _entry_context(notification: dict) -> tuple[dict | None, dict | None, 
                                   score=round(score, 1), min_score=min_score), symbol, rule_signal
 
     allowed_modes = settings.get("allowed_modes") or []
-    if allowed_modes and not rule_signal:
+    # 2026-11-25: `allowed_modes` radar modları için tasarlandı (trend_devam
+    # vb.). Süper tarama zarfı mode="super_scan" taşır ve bu listede yok;
+    # kapı olduğu gibi bırakılırsa TEK KANAL otonom işlem sessizce tümden
+    # bloke olur (varsayılan AUTO_PAPER_ALLOWED_MODES=trend_devam). Süper
+    # tarama kendi skor/ATR/hacim kapılarını zaten uyguladığı için mod
+    # kapısından muaf tutulur; min_score kapısı YİNE uygulanır (yukarıda).
+    if allowed_modes and not rule_signal and _source != "super_scan":
         notif_mode = str(notification.get("mode") or "").strip()
         if notif_mode not in allowed_modes:
             return settings, _blocked(symbol, "mode_not_allowed", mode=notif_mode,

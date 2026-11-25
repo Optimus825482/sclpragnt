@@ -130,6 +130,15 @@ async def run_once() -> dict:
         notif = _envelope(item)
         notif["sent_via_push"] = False
         if not push_enabled:
+            # Açık pozisyonu olan sembol deneme hakkını tüketmesin; aksi halde
+            # ilk TOP_N aday her turda takılıp alt sıradaki fırsatlar hiç
+            # denenmez (2026-11-25 denetimi).
+            try:
+                if await database.get_open_auto_paper_trade(symbol):
+                    blocked["already_open"] += 1
+                    continue
+            except Exception:
+                pass  # okunamazsa normal yola bırak; gerçek kapı tekrar bakar
             # Ucuz ayar/skor/mod kapısı kota tüketmeden eler. İşlem motoru
             # açmadan önce güncel ayarları ve tüm giriş kurallarını tekrar okur.
             _, rejection, _, _ = await auto_paper._entry_context(notif)

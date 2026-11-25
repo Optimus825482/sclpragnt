@@ -4212,7 +4212,11 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         if name == "get_obv_cmf_inflow": return await execute_obv_cmf_inflow(args)
         if name == "get_volume_breakout": return await execute_volume_breakout(args)
         if name == "get_open_interest_lead": return await execute_open_interest_lead(args)
-        if name == "get_cmc_coin_profile": return await execute_cmc_coin_profile({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_cmc_coin_profile":
+            # Tek sembol sorusunda `requested` tanımlı; args boşsa ona düş.
+            # (Önceki hâlde tanımsız `symbol` adı NameError üretiyordu.)
+            fallback = requested_symbols[0].replace("_", "") if requested_symbols else ""
+            return await execute_cmc_coin_profile({**args, "symbol": args.get("symbol") or fallback})
         if name == "get_cmc_market_context": return await execute_cmc_market_context(args)
         if name == "get_master_surge_prediction": return await _get_master_surge_tool(args)
         if name == "get_ml_price_forecast": return await _get_ml_forecast_tool(args)

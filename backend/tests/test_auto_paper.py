@@ -947,10 +947,18 @@ class AutoPaperModeFilterTests(unittest.TestCase):
         return asyncio.run(scenario())
 
     def test_mode_outside_allowlist_blocked(self):
-        """İzin listesinde olmayan mod engellenmeli (mode_not_allowed)."""
+        """İzin listesinde olmayan mod engellenmeli (mode_not_allowed).
+
+        Süper tarama bu kapıdan muaftır (kendi skor/ATR/hacim kapıları var);
+        bu yüzden mod kapısını süper olmayan bir kaynakla sınıyoruz.
+        """
         n = _make_notification(score=90.0, notif_id=9001)
+        n["source"] = "radar"
         n["mode"] = "global_lead_lag"
-        res = self._run(n, {"allowed_modes": ["trend_devam"]})
+        # Tek kanal kapısı (SUPER_SCAN_ONLY) bu testte devre dışı: sınanan
+        # şey mod filtresi, kaynak filtresi değil.
+        with patch.object(auto_paper.config, "SUPER_SCAN_ONLY", False):
+            res = self._run(n, {"allowed_modes": ["trend_devam"]})
         self.assertIsNotNone(res)
         self.assertEqual(res.get("reason"), "mode_not_allowed")
         self.assertEqual(res.get("mode"), "global_lead_lag")
