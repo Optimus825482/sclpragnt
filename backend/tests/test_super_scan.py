@@ -101,3 +101,51 @@ def test_super_scan_returns_pending_on_slow_scan(monkeypatch):
     assert out.get("pending") is True
     assert out["items"] == []
     assert "hazırlanıyor" in (out.get("message") or "").lower()
+
+
+def test_pending_then_warm_cache_serves_next_request(monkeypatch):
+    """İlk istek pending dönerse ARKA PLANDAKİ tarama önbelleği doldurmalı.
+
+    2026-11-25 canlı şikayet: "sürekli tarama hazırlanıyor" — ısıtma görevi
+    önbelleğe yazmadığı için her istek yeniden zaman aşımına düşüyordu.
+
+    NOT: arka plan görevi aynı event loop'ta yaşamalı; bu yüzden iki istek TEK
+    `asyncio.run` içinde yapılır (`asyncio.run` çıkışta bekleyen görevleri iptal eder).
+    """
+    import asyncio as _aio
+
+    rows = [{"symbol": "AAA_TRY", "price": 10.0, "unified_score": 70.0,
+             "unified_sources": ["velocity"]}]
+    calls = {"n": 0}
+
+    async def slow_rows():
+        calls["n"] += 1
+        await _aio.sleep(0.15)
+        return rows
+
+    monkeypatch.setattr(monitoring, "_combined_scan_rows", slow_rows)
+    monitoring._SUPER_SCAN_CACHE.update({"generated_at": 0.0, "payload": None})
+    monitoring._SUPER_SCAN_TASK["task"] = None
+
+    orig_wait_for = _aio.wait_for
+
+    async def scenario():
+        async def short_wait_for(coro, timeout):
+            return await orig_wait_for(coro, timeout=0.02)
+
+        monitoring.asyncio.wait_for = short_wait_for
+        first = await monitoring.radar_super_scan(limit=5, force=True)
+        assert first.get("pending") is True
+
+        monitoring.asyncio.wait_for = orig_wait_for
+        await _aio.sleep(0.35)  # arka plan taraması bitsin
+        return await monitoring.radar_super_scan(limit=5)
+
+    try:
+        second = _aio.run(scenario())
+    finally:
+        monitoring.asyncio.wait_for = orig_wait_for
+
+    assert second.get("pending") is not True
+    assert [x["symbol"] for x in second["items"]] == ["AAA_TRY"]
+    assert calls["n"] == 1, "ikinci istek yeni tarama başlatmamalı (önbellek)"

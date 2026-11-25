@@ -7756,6 +7756,105 @@ _SUPER_SCAN_CACHE: dict = {"generated_at": 0.0, "payload": None}
 NOTIFY_SOURCES_UNRESTRICTED = False
 
 
+#: Süper tarama tek-uçuş görevi: istek 20 sn'de yanıt veremezse ARKA PLANDA
+#: devam eder ve önbelleği doldurur; sonraki istek anında döner (2026-11-25:
+#: "sürekli 'tarama hazırlanıyor' gösteriyordu" — ısıtma görevi önbelleğe
+#: yazmadığı için her istek yeniden zaman aşımına düşüyordu).
+_SUPER_SCAN_TASK: dict = {"task": None}
+
+
+async def _super_scan_build(limit: int, min_score: float, min_atr_pct: float,
+                            min_volume_try: float) -> dict:
+    """Taramayı çalıştırır, skorlar ve ÖNBELLEĞE yazar (tek gerçek üretici)."""
+    import time as _time
+
+    _t0 = _time.perf_counter()
+    rows = await _combined_scan_rows()
+    # 2026-11-25 (kullanıcı): SIĞ/sığ likidite listede görünmesin. 24s TL hacmi
+    # eşiğin altındaki semboller elenir (otonom paper'da ayrıca derinlik kapısı
+    # çalışır; burada LİSTEDEN de çıkarılır). Ticker 5 sn önbellekli.
+    vol_map: dict[str, float] = {}
+    try:
+        from app.binance_tr_public import ticker_24h as _ticker_24h
+        vol_threshold = float(min_volume_try or getattr(config, "MIN_24H_QUOTE_VOLUME_TRY", 0) or 0)
+        for t in (await _ticker_24h()) or []:
+            try:
+                vol_map[str(t.get("symbol") or "").replace("_", "").upper()] = float(t.get("quoteVolume") or 0)
+            except (TypeError, ValueError):
+                continue
+    except Exception as exc:
+        vol_threshold = 0.0
+        logger.debug("süper tarama hacim haritası alınamadı: %s", exc)
+    scored = []
+    diag = {"rows": len(rows or []), "blocked": 0, "below_score": 0,
+            "below_atr": 0, "thin_volume": 0, "by_source": {}}
+    for row in rows or []:
+        for src in (row.get("unified_sources") or []) + (row.get("signal_sources") or []):
+            diag["by_source"][str(src)] = diag["by_source"].get(str(src), 0) + 1
+        if row.get("blocked_by"):
+            diag["blocked"] += 1
+            continue
+        sym_key = str(row.get("symbol") or "").replace("_", "").upper()
+        row_vol = vol_map.get(sym_key)
+        if vol_threshold > 0 and row_vol is not None and row_vol < vol_threshold:
+            diag["thin_volume"] += 1
+            continue
+        score = float(row.get("unified_score") or row.get("scan_score") or 0.0)
+        if score < float(min_score):
+            diag["below_score"] += 1
+            continue
+        atr = row.get("atr_pct_15m")
+        if float(min_atr_pct or 0) > 0 and atr is not None:
+            try:
+                if float(atr) < float(min_atr_pct):
+                    diag["below_atr"] += 1
+                    continue
+            except (TypeError, ValueError):
+                pass
+        sources = list(dict.fromkeys(
+            [*(row.get("unified_sources") or []), *(row.get("signal_sources") or [])]))
+        cmc = row.get("cmc") or {}
+        flags = row.get("cmc_flags") or []
+        bonus = 0.0
+        if "HACIM_PATLAMASI" in flags:
+            bonus += 5.0
+        if "ATH_YAKIN" in flags:
+            bonus += 3.0
+        if "7G_ASIRI_ISINMA" in flags:
+            bonus -= 5.0
+        total = round(score + 6.0 * max(0, len(sources) - 1) + bonus, 2)
+        scored.append({
+            "symbol": row.get("symbol"),
+            "price": row.get("price"),
+            "score": round(score, 1),
+            "super_score": total,
+            "sources": sources,
+            "source_count": len(sources),
+            "confluence": bool(row.get("confluence_4way")),
+            "atr_pct_15m": atr,
+            "target_pct": row.get("target_pct"),
+            "horizon_minutes": row.get("horizon_minutes"),
+            "cmc_flags": flags,
+            "cmc_rank": cmc.get("rank"),
+            "market_cap_usd": cmc.get("market_cap_usd"),
+            "peak_distance_pct": cmc.get("peak_distance_pct") or cmc.get("ath_distance_pct"),
+            "tags": (cmc.get("tags") or [])[:4],
+            "blocked_by": None,
+            "volume_24h_try": row_vol,
+        })
+    scored.sort(key=lambda r: r["super_score"], reverse=True)
+    diag["elapsed_ms"] = int((_time.perf_counter() - _t0) * 1000)
+    payload = {"generated_at": _time.time(), "source": "unified_scan",
+               "scanned": len(rows or []), "eligible": len(scored),
+               "diagnostics": diag,
+               "items": scored[:max(1, min(50, int(limit)))]}
+    _SUPER_SCAN_CACHE.update({"generated_at": _time.time(), "payload": payload})
+    return payload
+
+
+
+
+
 @router.get("/api/radar/super-scan")
 async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
                            min_atr_pct: float = 0.0, min_volume_try: float = 0.0,
@@ -7764,14 +7863,16 @@ async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
 
     KAYNAKLAR: hız avcısı (5/15 dk), günlük momentum, short-squeeze, snapback,
     erken keşif, yükseliş eğilimi, MACD MTF — `unified_scan.combined_scan_rows`
-    hepsini zaten birleştiriyor; bu uç onu KALİTE KAPILARINDAN geçirip
-    tek skorla sıralar:
+    hepsini zaten birleştiriyor; bu uç onu KALİTE KAPILARINDAN geçirip tek
+    skorla sıralar:
 
       skor = unified_score + 6×(teyit eden kaynak sayısı)
              + CMC bonusu (hacim patlaması +5, zirveye yakın +3, 7g aşırı ısınma −5)
-      eleme: blocked_by dolu · skor < min_score · ATR < min_atr_pct (veri varsa)
+      eleme: blocked_by dolu · skor < min_score · ATR < min_atr_pct · sığ hacim
 
-    30 sn önbellek (kuvvetli tarama pahalı); `force=1` ile atlanır.
+    30 sn önbellek. Önbellek soğuksa tarama ARKA PLANDA başlatılır ve istek
+    en fazla 20 sn bekler; süre dolarsa `pending` döner ama tarama devam eder
+    (sonraki istekte sonuç hazırdır). `force=1` yeni tarama zorlar.
     """
     import time as _time
 
@@ -7779,108 +7880,20 @@ async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
     cached = _SUPER_SCAN_CACHE
     if (not force and cached.get("payload") is not None
             and (_time.time() - float(cached.get("generated_at") or 0)) < ttl):
-        payload = cached["payload"]
-    else:
-        # 2026-11-25 (kullanıcı: "İstek zaman aşımına uğradı (45 sn)"): tarama
-        # tüm tarayıcıları çalıştırdığı için soğuk durumda uzun sürebiliyor.
-        # Yanıt 20 sn ile sınırlanır; aşılırsa `pending` döner ve arka planda
-        # ısıtma başlar (sonraki YENİLE hızlı gelir).
-        try:
-            _t0 = _time.perf_counter()
-            rows = await asyncio.wait_for(_combined_scan_rows(), timeout=20.0)
-        except asyncio.TimeoutError:
-            async def _warm():
-                try:
-                    await _combined_scan_rows()
-                except Exception:
-                    pass
-            try:
-                asyncio.create_task(_warm())
-            except Exception:
-                pass
-            return {"generated_at": _time.time(), "source": "unified_scan", "pending": True,
-                    "scanned": 0, "eligible": 0, "items": [],
-                    "message": "Tarama hazırlanıyor; birkaç saniye sonra YENİLE."}
-        # 2026-11-25 (kullanıcı): SIĞ/sığ likidite listede görünmesin. 24s TL hacmi
-        # eşiğin altındaki semboller elenir (otonom paper'da ayrıca derinlik kapısı
-        # çalışır; burada LİSTEDEN de çıkarılır). Ticker 5 sn önbellekli.
-        vol_map: dict[str, float] = {}
-        try:
-            from app.binance_tr_public import ticker_24h as _ticker_24h
-            vol_threshold = float(min_volume_try or getattr(config, "MIN_24H_QUOTE_VOLUME_TRY", 0) or 0)
-            for t in (await _ticker_24h()) or []:
-                try:
-                    vol_map[str(t.get("symbol") or "").replace("_", "").upper()] = float(t.get("quoteVolume") or 0)
-                except (TypeError, ValueError):
-                    continue
-        except Exception as exc:
-            vol_threshold = 0.0
-            logger.debug("süper tarama hacim haritası alınamadı: %s", exc)
-        scored = []
-        diag = {"rows": len(rows or []), "blocked": 0, "below_score": 0,
-                "below_atr": 0, "thin_volume": 0, "by_source": {}}
-        for row in rows or []:
-            for src in (row.get("unified_sources") or []) + (row.get("signal_sources") or []):
-                diag["by_source"][str(src)] = diag["by_source"].get(str(src), 0) + 1
-            if row.get("blocked_by"):
-                diag["blocked"] += 1
-                continue
-            sym_key = str(row.get("symbol") or "").replace("_", "").upper()
-            row_vol = vol_map.get(sym_key)
-            if vol_threshold > 0 and row_vol is not None and row_vol < vol_threshold:
-                diag["thin_volume"] += 1
-                continue
-            score = float(row.get("unified_score") or row.get("scan_score") or 0.0)
-            if score < float(min_score):
-                diag["below_score"] += 1
-                continue
-            atr = row.get("atr_pct_15m")
-            if float(min_atr_pct or 0) > 0 and atr is not None:
-                try:
-                    if float(atr) < float(min_atr_pct):
-                        diag["below_atr"] += 1
-                        continue
-                except (TypeError, ValueError):
-                    pass
-            sources = list(dict.fromkeys(
-                [*(row.get("unified_sources") or []), *(row.get("signal_sources") or [])]))
-            cmc = row.get("cmc") or {}
-            flags = row.get("cmc_flags") or []
-            bonus = 0.0
-            if "HACIM_PATLAMASI" in flags:
-                bonus += 5.0
-            if "ATH_YAKIN" in flags:
-                bonus += 3.0
-            if "7G_ASIRI_ISINMA" in flags:
-                bonus -= 5.0
-            total = round(score + 6.0 * max(0, len(sources) - 1) + bonus, 2)
-            scored.append({
-                "symbol": row.get("symbol"),
-                "price": row.get("price"),
-                "score": round(score, 1),
-                "super_score": total,
-                "sources": sources,
-                "source_count": len(sources),
-                "confluence": bool(row.get("confluence_4way")),
-                "atr_pct_15m": atr,
-                "target_pct": row.get("target_pct"),
-                "horizon_minutes": row.get("horizon_minutes"),
-                "cmc_flags": flags,
-                "cmc_rank": cmc.get("rank"),
-                "market_cap_usd": cmc.get("market_cap_usd"),
-                "peak_distance_pct": cmc.get("peak_distance_pct") or cmc.get("ath_distance_pct"),
-                "tags": (cmc.get("tags") or [])[:4],
-                "blocked_by": None,
-                "volume_24h_try": row_vol,
-            })
-        scored.sort(key=lambda r: r["super_score"], reverse=True)
-        diag["elapsed_ms"] = int((_time.perf_counter() - _t0) * 1000)
-        payload = {"generated_at": _time.time(), "source": "unified_scan",
-                   "scanned": len(rows or []), "eligible": len(scored),
-                   "diagnostics": diag,
-                   "items": scored[:max(1, min(50, int(limit)))]}
-        _SUPER_SCAN_CACHE.update({"generated_at": _time.time(), "payload": payload})
-    return payload
+        return cached["payload"]
+
+    task = _SUPER_SCAN_TASK.get("task")
+    if force or task is None or task.done():
+        task = asyncio.create_task(_super_scan_build(limit, min_score, min_atr_pct, min_volume_try))
+        _SUPER_SCAN_TASK["task"] = task
+
+    try:
+        # shield: zaman aşımı GÖREVİ iptal etmesin; arka planda bitip önbelleği doldursun.
+        return await asyncio.wait_for(asyncio.shield(task), timeout=20.0)
+    except asyncio.TimeoutError:
+        return {"generated_at": _time.time(), "source": "unified_scan", "pending": True,
+                "scanned": 0, "eligible": 0, "items": [], "retry_after_sec": 15,
+                "message": "Tarama hazırlanıyor; birkaç saniye sonra YENİLE."}
 
 
 @router.get("/api/radar/top-gainers")
