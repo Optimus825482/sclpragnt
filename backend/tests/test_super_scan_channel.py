@@ -14,6 +14,13 @@ from app import super_scan_notify
 from app.routers import auto_paper, monitoring
 
 
+@pytest.fixture(autouse=True)
+def paper_settings(monkeypatch):
+    monkeypatch.setattr(auto_paper, "get_auto_paper_settings", AsyncMock(return_value={
+        "enabled": True, "min_score": 50,
+    }))
+
+
 def test_defaults_enabled_single_channel():
     assert config.SUPER_SCAN_ONLY is True
     assert config.SUPER_SCAN_PUSH_TOP_N >= 1
@@ -71,7 +78,7 @@ def test_run_once_pushes_top_n_and_opens_paper():
     async def fake_mark(symbol):
         return None
 
-    with patch.object(monitoring, "radar_super_scan", fake_scan), \
+    with patch.object(monitoring, "super_scan_for_paper", fake_scan), \
          patch.object(monitoring, "_send_push", fake_push), \
          patch.object(auto_paper, "try_open_from_notification", fake_open), \
          patch.object(super_scan_notify, "_recently_pushed", fake_recent), \
@@ -109,7 +116,7 @@ def test_push_mode_still_works_when_enabled():
     async def fake_mark(symbol):
         return None
 
-    with patch.object(monitoring, "radar_super_scan", fake_scan), \
+    with patch.object(monitoring, "super_scan_for_paper", fake_scan), \
          patch.object(monitoring, "_send_push", fake_push), \
          patch.object(auto_paper, "try_open_from_notification", fake_open), \
          patch.object(super_scan_notify, "_recently_pushed", fake_recent), \
@@ -153,6 +160,14 @@ def test_envelope_target_formatting():
     assert "hedef %3.0" in notif["message"]
 
 
+def test_signal_key_deduplicates_one_window_and_allows_next():
+    first = super_scan_notify._envelope({"symbol": "AAA_TRY", "detected_at": 600})
+    repeat = super_scan_notify._envelope({"symbol": "AAATRY", "detected_at": 899})
+    later = super_scan_notify._envelope({"symbol": "AAATRY", "detected_at": 900})
+    assert first["notification_key"] == repeat["notification_key"] == "super:AAATRY:2"
+    assert later["notification_key"] == "super:AAATRY:3"
+
+
 def test_run_once_reports_top_score():
     async def fake_scan(limit=12, **kw):
         return {"scanned": 10, "eligible": 2,
@@ -171,7 +186,7 @@ def test_run_once_reports_top_score():
     async def fake_mark(symbol):
         return None
 
-    with patch.object(monitoring, "radar_super_scan", fake_scan), \
+    with patch.object(monitoring, "super_scan_for_paper", fake_scan), \
          patch.object(monitoring, "_send_push", fake_push), \
          patch.object(auto_paper, "try_open_from_notification", fake_open), \
          patch.object(super_scan_notify, "_recently_pushed", fake_recent), \
@@ -182,3 +197,41 @@ def test_run_once_reports_top_score():
     # 2026-11-25: varsayılan push KAPALI → pushed 0, işlem yine açılır
     assert stats["pushed"] == 0
     assert stats["opened"] == 1
+
+
+def test_paper_uses_base_score_and_bounds_attempts_after_skipping_conflicting_trend(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    rows = [
+        {"symbol": "DECLINETRY", "score": 99, "super_score": 110, "paper_block_reason": "trend_conflict"},
+        {"symbol": "HIGHBONUSTRY", "score": 60, "super_score": 97},
+        {"symbol": "ELIGIBLETRY", "score": 80, "super_score": 87, "oi_change_pct": 4.5},
+        {"symbol": "NEXTTRY", "score": 75, "super_score": 75},
+        {"symbol": "OVERLIMITTRY", "score": 74, "super_score": 74},
+    ]
+    open_position = AsyncMock(return_value={"status": "opened"})
+    mark = AsyncMock()
+    monkeypatch.setattr(config, "SUPER_SCAN_PUSH_TOP_N", 2)
+    monkeypatch.setattr(config, "SUPER_SCAN_PUSH_ENABLED", False)
+    monkeypatch.setattr(config, "AUTO_PAPER_ONLY_ON_PUSH", False)
+    monkeypatch.setattr(config, "SUPER_SCAN_ONLY", True)
+    monkeypatch.setattr(monitoring, "super_scan_for_paper", AsyncMock(return_value={"items": rows}))
+    monkeypatch.setattr(super_scan_notify, "_recently_pushed", AsyncMock(return_value=False))
+    monkeypatch.setattr(super_scan_notify, "_mark_pushed", mark)
+    monkeypatch.setattr(auto_paper, "get_auto_paper_settings", AsyncMock(return_value={
+        "enabled": True, "min_score": 70, "min_oi_change_pct": 3,
+    }))
+
+    async def open_after_gate(notification):
+        _, rejection, _, _ = await auto_paper._entry_context(notification)
+        return rejection or await open_position(notification)
+
+    monkeypatch.setattr(auto_paper, "_try_open_impl", open_after_gate)
+    stats = asyncio.run(super_scan_notify.run_once())
+    assert stats["attempted"] == 2
+    assert stats["opened"] == 2
+    assert stats["blocked"] == {"trend_conflict": 1, "score_below_min": 1}
+    opened = open_position.await_args_list[0].args[0]
+    assert opened["symbol"] == "ELIGIBLETRY"
+    assert opened["score"] == 80 and opened["oi_change_pct"] == 4.5
+    assert [call.args[0] for call in mark.await_args_list] == ["ELIGIBLETRY", "NEXTTRY"]

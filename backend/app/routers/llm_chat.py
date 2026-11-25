@@ -154,7 +154,7 @@ LLM_SURGE_BIAS_TOOL = {"type":"function","function":{"name":"get_surge_learning_
 # Çok Boyutlu Piyasa İstihbarat Araçları (2026-09-22): Türev, Makro, Tahta Baskısı, İşlem Hafızası ve Haberler
 LLM_DERIVATIVES_TOOL = {"type":"function","function":{"name":"get_derivatives_intel","description":"Sembolün vadeli (futures) Açık Pozisyon (Open Interest), Fonlama Oranı (Funding Rate), piyasa kaldıracı ve long/short tasfiye riskini getirir: Aşırı şişkin long tuzağı mı yoksa short squeeze potansiyeli mi olduğunu gösterir. Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
 LLM_MACRO_SENTIMENT_TOOL = {"type":"function","function":{"name":"get_macro_market_sentiment","description":"Kripto piyasası genel duygu durumunu (Korku ve Açgözlülük İndeksi - Fear & Greed) ve Bitcoin'in anlık 5m/15m yönü ile piyasa stres seviyesini (BTC Pusulası) getirir. Salt okunur.","parameters":{"type":"object","properties":{}}}}
-LLM_ORDERBOOK_PRESSURE_TOOL = {"type":"function","function":{"name":"get_orderbook_pressure","description":"Sembolün tahta ilk %1-%2 derinlikteki alış/satış dengesini (bid-ask imbalance), alıcı ve satıcı duvarlarını, anlık spread durumunu getirir. Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
+LLM_ORDERBOOK_PRESSURE_TOOL = {"type":"function","function":{"name":"get_orderbook_pressure","description":"Binance TR tahta ilk 5 seviyenin alış/satış tutarlarını, en iyi fiyatları ve anlık fiyat makasını getirir. Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
 LLM_RECENT_OUTCOMES_TOOL = {"type":"function","function":{"name":"get_symbol_recent_outcomes","description":"Sembolün sistemde son 48 saatte açılan işlemlerindeki gerçek sonuçlarını ve deneyim hafızasını getirir (kâr/zarar nedenleri, stop veya TP alma geçmişi). Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
 LLM_CRYPTO_NEWS_TOOL = {"type":"function","function":{"name":"get_crypto_news_catalysts","description":"Kripto piyasası veya ilgili sembole dair son haber başlıklarını, duyuruları ve katalizör olayları getirir. Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}}}}}
 
@@ -3108,26 +3108,24 @@ async def _get_macro_sentiment_tool(args: dict = None) -> dict:
 
 
 async def _get_orderbook_pressure_tool(args: dict) -> dict:
-    """Tahta ilk %1-%2 derinlik baskısını ve alıcı duvarlarını LLM aracına sağlar."""
+    """Binance TR'nin ilk beş alış/satış seviyesini gerçek tutarlarla özetler."""
     sym = str(args.get("symbol") or "").replace("_", "").upper()
     if not sym:
         return {"ok": False, "error": "symbol parametresi gerekli"}
     try:
-        flow = market.get_orderflow(sym) or {}
-        bid_px = float(flow.get("bid_price") or 0.0)
-        ask_px = float(flow.get("ask_price") or 0.0)
-        bid_qty = float(flow.get("bid_qty") or 0.0)
-        ask_qty = float(flow.get("ask_qty") or 0.0)
-        spread_pct = float(flow.get("spread_pct") or 0.0)
-        if spread_pct == 0.0 and bid_px > 0 and ask_px > 0:
-            spread_pct = round((ask_px - bid_px) / bid_px * 100.0, 3)
-
-        imbalance_ratio = round(bid_qty / ask_qty, 2) if ask_qty > 0 else (2.0 if bid_qty > 0 else 1.0)
-        wall_summary = "Dengeli tahta"
-        if imbalance_ratio >= 1.4:
-            wall_summary = f"Güçlü alıcı duvarı (%{imbalance_ratio:.2f} alış baskısı)"
-        elif imbalance_ratio <= 0.6:
-            wall_summary = f"Ağır satıcı duvarı (%{imbalance_ratio:.2f} satış baskısı)"
+        book = await asyncio.wait_for(orderbook(sym, limit=5), timeout=2.0)
+        bids = [(float(p), float(q)) for p, q, *_ in (book.get("bids") or [])[:5]]
+        asks = [(float(p), float(q)) for p, q, *_ in (book.get("asks") or [])[:5]]
+        if not bids or not asks or any(not math.isfinite(v) or v <= 0 for row in bids + asks for v in row):
+            return {"ok": False, "symbol": sym, "error": "Geçerli çift taraflı tahta verisi yok"}
+        bid_px, bid_qty = max(bids)
+        ask_px, ask_qty = min(asks)
+        if bid_px >= ask_px:
+            return {"ok": False, "symbol": sym, "error": "Tutarsız tahta verisi"}
+        spread_pct = (ask_px - bid_px) / ((bid_px + ask_px) / 2) * 100
+        bid_value = sum(p * q for p, q in bids)
+        ask_value = sum(p * q for p, q in asks)
+        ratio = bid_value / ask_value
 
         return {
             "ok": True,
@@ -3136,10 +3134,14 @@ async def _get_orderbook_pressure_tool(args: dict) -> dict:
             "ask_price": ask_px,
             "bid_qty": bid_qty,
             "ask_qty": ask_qty,
-            "spread_pct": spread_pct,
-            "bid_ask_ratio": imbalance_ratio,
-            "wall_status": wall_summary,
-            "buyer_dominant": imbalance_ratio > 1.15,
+            "spread_pct": round(spread_pct, 3),
+            "bid_ask_ratio": round(ratio, 2),
+            "bid_quote_value": round(bid_value, 2),
+            "ask_quote_value": round(ask_value, 2),
+            "depth_levels": min(len(bids), len(asks)),
+            "received_at": book.get("received_at") or time.time(),
+            "source": "binance_tr_public_rest",
+            "buyer_dominant": ratio > 1.15,
         }
     except Exception as exc:
         return {"ok": False, "symbol": sym, "error": f"Tahta baskısı ölçülemedi: {exc}"}
@@ -3580,6 +3582,63 @@ _QUICK_LANE_DEPTH_RE = re.compile(
 )
 _QUICK_LANE_MAX_WORDS = 12
 _QUICK_LANE_MACD_TFS = ("1m", "5m", "15m", "30m", "1h")
+_QUICK_PRICE_MAX_AGE_SEC = 60
+
+
+def _quick_price_age(ticker: dict) -> float | None:
+    try:
+        stamp_ms = float(ticker["timestamp"])
+        age = time.time() - stamp_ms / 1000
+        if stamp_ms > 0 and math.isfinite(age) and age >= -5:
+            return round(max(0.0, age), 1)
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
+async def _quick_price_levels(symbol: str, reference: float | None) -> dict:
+    """Kapanmış 5 dakikalık mumlardan gözlenen en yakın seviyeleri hesaplar."""
+    try:
+        raw = await asyncio.wait_for(fetch_klines(symbol, "5m", limit=37), timeout=2.0)
+        now_ms = time.time() * 1000
+        candles = {}
+        for row in raw or []:
+            try:
+                start, close_at = int(row[0]), int(row[6])
+                high, low, close, volume = map(float, (row[2], row[3], row[4], row[5]))
+            except (IndexError, TypeError, ValueError):
+                continue
+            if (start < close_at < now_ms and all(math.isfinite(v) for v in (high, low, close, volume))
+                    and 0 < low <= close <= high and volume >= 0):
+                candles[start] = (high, low, close, close_at, volume)
+        rows = sorted(candles.items())[-36:]
+        if (len(rows) < 12 or now_ms - rows[-1][1][3] > 900_000
+                or any(right[0] - left[0] != 300_000 for left, right in zip(rows, rows[1:]))):
+            return {"status": "unavailable"}
+        highs, lows, closes, close_times, volumes = zip(*(row for _, row in rows))
+        ref = reference if reference else closes[-1]
+        lows_below = [value for value in lows if value < ref]
+        highs_above = [value for value in highs if value > ref]
+        swing_low = [lows[i] for i in range(1, len(lows) - 1)
+                     if lows[i] < ref and lows[i] <= min(lows[i - 1], lows[i + 1])]
+        swing_high = [highs[i] for i in range(1, len(highs) - 1)
+                      if highs[i] > ref and highs[i] >= max(highs[i - 1], highs[i + 1])]
+        support = max(swing_low or lows_below, default=None)
+        resistance = min(swing_high or highs_above, default=None)
+        change = (closes[-1] / closes[-12] - 1) * 100
+        previous_volumes = volumes[-13:-1]
+        average_volume = sum(previous_volumes) / len(previous_volumes)
+        return {
+            "status": "ok", "source": "binance_tr_closed_5m", "last_closed_at": close_times[-1] / 1000,
+            "reference_price": ref, "reference_source": "fresh_ticker" if reference else "last_5m_close",
+            "recent_change_pct": round(change, 2), "recent_change_minutes": 55,
+            "last_5m_volume_ratio": round(volumes[-1] / average_volume, 2) if average_volume > 0 else None,
+            "support": support, "resistance": resistance,
+            "support_distance_pct": round((support / ref - 1) * 100, 2) if support is not None else None,
+            "resistance_distance_pct": round((resistance / ref - 1) * 100, 2) if resistance is not None else None,
+        }
+    except Exception:
+        return {"status": "unavailable"}
 
 
 def _merge_body_symbols(requested_symbols, body):
@@ -3649,11 +3708,13 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
     # Hızlı şerit yalnızca bellekten okuduğunda pasif sembollerde fiyat
     # eski veya hiç olmayabiliyor; public ticker REST ile güncelle.
     try:
-        if not ticker.get("last_price"):
-            fresh = await ticker_price([sym])
-            row = next((r for r in fresh if str(r.get("symbol") or "").upper() == sym), None)
-            if row:
-                ticker = {"last_price": float(row.get("price") or 0), "timestamp": time.time() * 1000,
+        age = _quick_price_age(ticker)
+        if not ticker.get("last_price") or age is None or age > _QUICK_PRICE_MAX_AGE_SEC:
+            fresh = await asyncio.wait_for(ticker_price([sym]), timeout=2.0)
+            row = next((r for r in fresh if str(r.get("symbol") or "").replace("_", "").upper() == sym), None)
+            price = float(row.get("price") or 0) if row else 0.0
+            if math.isfinite(price) and price > 0:
+                ticker = {"last_price": price, "timestamp": time.time() * 1000,
                           "source": "binance_tr_public_rest_ticker_price"}
     except Exception:
         pass
@@ -3666,7 +3727,14 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
             live_snapshot = await deep_analyze_symbol({"symbol": sym, "timeframe": "5m"})
         except Exception:
             pass
-    if not ticker.get("last_price") and not macd_row and not candidate and not (live_snapshot and live_snapshot.get("data_ready")):
+    age = _quick_price_age(ticker)
+    price = ticker.get("last_price")
+    reference = float(price) if isinstance(price, (int, float)) and math.isfinite(price) and price > 0 and age is not None and age <= _QUICK_PRICE_MAX_AGE_SEC else None
+    levels, book = await asyncio.gather(
+        _quick_price_levels(sym, reference),
+        _get_orderbook_pressure_tool({"symbol": sym}),
+    )
+    if not price and not macd_row and not candidate and levels["status"] != "ok" and not book["ok"] and not (live_snapshot and live_snapshot.get("data_ready")):
         return None
     
     # Rol yalnız doğrulanmış token'dan gelir (çağıran `_persona_role` ile verir);
@@ -3675,19 +3743,12 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
     is_admin_user = user_role == "admin"
     is_plain = not is_admin_user
     contract = (
-        "TEKNİK ANALİZ FORMATI (admin): teknik terimleri ve gerçek gösterge değerlerini kullan; uydurma, veri yoksa 'bilinmiyor' de. "
-        "Sırayla: (1) Anlık durum (fiyat, değişim, hacim, spread); (2) kısa zaman dilimi bazlı gösterge tablosu; "
-        "(3) fiyat - para akışı uyumsuzluğu; (4) kaynaklı destek/direnç; (5) olasılıklı senaryolar ve geçersizlik seviyesi; (6) somut riskler."
-        if is_admin_user else
-        "ZORUNLU KURAL (SIFIR TEKNİK TERİM DÖKÜMÜ): "
-        "KULLANICIYA YANIT VERİRKEN KESİNLİKLE HİÇBİR TEKNİK TERİM, İNDİKATÖR KODU VEYA KISALTMA KULLANMA! "
-        "RSI, MACD, EMA, SMA, ADX, DI, Supertrend, Aroon, Vortex, CCI, Bollinger, BB, ATR, CVD, MFE, MAE, Keltner, Stokastik, bear_quiet, bull_quiet, trade imbalance, depth imbalance gibi terimler KESİNLİKLE YASAKTIR. "
-        "Asla gösterge listesi ve ham sayı sıralama! Tamamen günlük, yalın ve profesyonel trader diliyle konuş: "
-        "(1) Şu Anki Durum: Fiyat ne yapıyor, nereden nereye geldi? "
-        "(2) Alıcı & Satıcı Dengesi: Büyük cüzdanlar ve tahtadaki güç dengesi ne durumda? "
-        "(3) Yükselme İsteği: Yükseliş potansiyeli var mı, hangi fiyat seviyesi geçilmeli, risk nerede? "
-        "(4) Net Karar: Şu an girmek uygun mu, beklenmeli mi? "
-        "Kısa, net ve kullanıcının doğrudan anlayıp karar vermesini sağlayacak şekilde yaz."
+        "Tek sembol sorusunu dört satırda yanıtla. "
+        "Durum: taze fiyat, gözlenen yön ve ana kanıt. "
+        "Yukarı: sonraki direnç ve varsa ayrı model hedefi. "
+        "Aşağı: destek ve altında senaryonun nasıl değişeceği. "
+        "Sonuç: veri kalitesi ve varsa karşıt kanıtla birlikte kısa değerlendirme. "
+        "Gösterge dökümü veya kesinlik ifadesi kullanma."
     )
 
     quick = {
@@ -3695,15 +3756,22 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
         "symbol": sym,
         "generated_at": time.time(),
         "plain_turkish": is_plain,
-        "data_policy": "Yalnız public OHLCV/ticker/mikro yapı. Eksik alan 'bilinmiyor'dur; uydurma yok.",
+        "data_policy": (
+            "Yukarı ve Aşağı satırlarında price_levels.resistance ve support kullan. "
+            "Yoksa seviye doğrulanamadı de; ATR veya tahmin yüzdesinden seviye türetme. "
+            "price_status fresh dışında ticker fiyatını anlık diye sunma. "
+            "Tahta verisi yoksa taraf baskısı söyleme; top 5 seviye anlık görünüm. "
+            "Hedef ve model olasılığını gözlenen seviyelerden ayrı anlat."
+        ),
         "answer_contract": contract,
+        "price_levels": levels,
+        "orderbook_pressure": book if book["ok"] else {"ok": False},
+        "price_status": "fresh" if reference else ("stale_or_unverified" if price else "unavailable"),
     }
-    price = ticker.get("last_price")
     if price:
         quick["price"] = price
-        ts = ticker.get("timestamp")
-        if ts:
-            quick["price_age_sec"] = round(max(0.0, time.time() - float(ts) / 1000.0), 1)
+    if age is not None:
+        quick["price_age_sec"] = age
     if live_snapshot:
         # Token optimizasyonu: Ham klines/derinlik dizilerini çıkarıp yalnız özet göstergeleri bağlama dahil et
         quick["symbol_data"] = {
@@ -3816,7 +3884,7 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
     # LLM "piyasa risk iştahı"nı görmeden yorum yapmasın.
     try:
         from app import cmc_client
-        brief = await cmc_client.brief()
+        brief = await asyncio.wait_for(cmc_client.brief(), timeout=2.0)
         fng = brief.get("fear_greed") or {}
         glob = brief.get("global") or {}
         trending = brief.get("trending") or []
@@ -3868,6 +3936,8 @@ def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str
                 if name == "get_macro_market_sentiment":
                     return await _get_macro_sentiment_tool(args)
                 if name == "get_orderbook_pressure":
+                    if sym.replace("_", "").upper() == quick.get("symbol") and "orderbook_pressure" in quick:
+                        return quick["orderbook_pressure"]
                     return await _get_orderbook_pressure_tool({**args, "symbol": sym})
                 if name == "get_symbol_recent_outcomes":
                     return await _get_recent_outcomes_tool({**args, "symbol": sym})

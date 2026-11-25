@@ -16,6 +16,7 @@ Salt okunur tarama + mevcut bildirim/işlem yollarının yeniden kullanımı.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import logging
 import time
 
@@ -50,8 +51,15 @@ async def _mark_pushed(symbol: str) -> None:
 def _envelope(item: dict) -> dict:
     """Süper tarama satırını bildirim/işlem zarfına çevirir."""
     symbol = str(item.get("symbol") or "").upper()
-    score = float(item.get("super_score") or item.get("score") or 0)
+    rank_score = float(item.get("super_score") or 0)
+    score = float(item.get("score") if item.get("score") is not None else rank_score)
     target = item.get("target_pct")
+    detected_at = item.get("detected_at")
+    notification_key = f"super:{symbol}"
+    if detected_at:
+        # Aynı beş dakikalık sinyal yeniden işlenmez. Yeni sinyal, önceki
+        # pozisyonun kalıcı DB anahtarına takılmadan normal kapılara ulaşır.
+        notification_key = f"super:{symbol.replace('_', '')}:{int(detected_at // 300)}"
     horizon = item.get("horizon_minutes") or 15
     sources = ", ".join(item.get("sources") or []) or "süper tarama"
     tags = ", ".join(item.get("tags") or []) or ""
@@ -61,7 +69,7 @@ def _envelope(item: dict) -> dict:
         target_txt = f"%{float(target):.1f}" if target is not None else "—"
     except (TypeError, ValueError):
         target_txt = "—"
-    head = f"Skor {score:.1f} · hedef {target_txt} · {horizon} dk"
+    head = f"Sıralama {rank_score:.1f} · taban {score:.1f} · hedef {target_txt} · {horizon} dk"
     message = head + "\n" + f"Kaynaklar: {sources}" + (("\n" + extra) if extra else "")
     return {
         "symbol": symbol,
@@ -72,15 +80,17 @@ def _envelope(item: dict) -> dict:
         # tüm bildirim düşüyordu (canlı log 2026-11-25).
         "url": f"/symbol-analysis?symbol={symbol}",
         "score": score,
+        "super_score": rank_score,
         "target_pct": target,
         "horizon_minutes": horizon,
         "price": item.get("price"),
         "source": "super_scan",
         # Sinyal İzleme yalnız süper tarama işlemlerini sayar (LIKE 'super:%').
-        "notification_key": f"super:{symbol}",
+        "notification_key": notification_key,
         "sent_via_push": True,
         "super_scan": True,
         "atr_pct": item.get("atr_pct_15m"),
+        "oi_change_pct": item.get("oi_change_pct"),
         "mode": "super_scan",
     }
 
@@ -90,7 +100,7 @@ async def run_once() -> dict:
     from app.routers import monitoring, auto_paper
 
     try:
-        payload = await monitoring.radar_super_scan(limit=max(5, config.SUPER_SCAN_PUSH_TOP_N * 3))
+        payload = await monitoring.super_scan_for_paper(limit=50)
     except Exception as exc:
         logger.warning("süper tarama çalıştırılamadı: %s", exc)
         return {"scanned": 0, "pushed": 0, "opened": 0, "error": str(exc)}
@@ -101,16 +111,33 @@ async def run_once() -> dict:
     # 2026-11-25 (kullanıcı): PUSH kapalı olabilir; işlem açılışı devam eder.
     push_enabled = bool(getattr(config, "SUPER_SCAN_PUSH_ENABLED", False))
 
-    pushed = opened = 0
-    for item in (payload.get("items") or []):
-        if pushed >= top_n:
+    items_all = payload.get("items") or []
+    candidates = sorted((item.get("paper_candidate") or item for item in items_all),
+                        key=lambda item: float(item.get("super_score") or 0), reverse=True)
+    pushed = opened = attempted = 0
+    blocked = Counter()
+    for item in candidates:
+        if attempted >= top_n:
             break
         if float(item.get("super_score") or 0) < min_score:
+            continue
+        if item.get("paper_block_reason"):
+            blocked[item["paper_block_reason"]] += 1
             continue
         symbol = str(item.get("symbol") or "")
         if await _recently_pushed(symbol, cooldown):
             continue
         notif = _envelope(item)
+        notif["sent_via_push"] = False
+        if not push_enabled:
+            # Ucuz ayar/skor/mod kapısı kota tüketmeden eler. İşlem motoru
+            # açmadan önce güncel ayarları ve tüm giriş kurallarını tekrar okur.
+            _, rejection, _, _ = await auto_paper._entry_context(notif)
+            if rejection:
+                blocked[rejection["reason"]] += 1
+                if rejection["reason"] == "auto_paper_disabled":
+                    break
+                continue
         if push_enabled:
             ok = False
             try:
@@ -127,17 +154,24 @@ async def run_once() -> dict:
             # paper yine de denenir (AUTO_PAPER_ONLY_ON_PUSH varsayılan kapalı).
             notif["sent_via_push"] = False
             notif["push_skipped_reason"] = "super_scan_push_disabled"
-        await _mark_pushed(symbol)  # sembol cooldown'u (push/işlem ortak)
+        attempted += 1
+        if push_enabled:
+            await _mark_pushed(symbol)
         try:
             result = await auto_paper.try_open_from_notification(notif)
             if isinstance(result, dict) and result.get("status") == "opened":
                 opened += 1
+                if not push_enabled:
+                    await _mark_pushed(symbol)
+            else:
+                blocked[(result or {}).get("reason") or "paper_not_opened"] += 1
         except Exception as exc:
+            blocked["paper_error"] += 1
             logger.debug("süper tarama paper açılışı hatası (%s): %s", symbol, exc)
-    items_all = payload.get("items") or []
     top_score = float(items_all[0].get("super_score") or 0) if items_all else 0.0
     return {"scanned": payload.get("scanned") or 0, "eligible": payload.get("eligible") or 0,
-            "pushed": pushed, "opened": opened, "top_score": round(top_score, 1),
+            "pushed": pushed, "attempted": attempted, "opened": opened, "blocked": dict(blocked),
+            "top_score": round(top_score, 1),
             "push_enabled": push_enabled}
 
 

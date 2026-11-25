@@ -30,7 +30,7 @@ def _answer(text, finish):
     return json.dumps({"choices": [{"message": {"content": text}, "finish_reason": finish}]}).encode()
 
 
-def _run(monkeypatch, responses):
+def _run(monkeypatch, responses, snapshot=None):
     calls = {"n": 0}
 
     async def fake_open(req, timeout=45):
@@ -50,7 +50,7 @@ def _run(monkeypatch, responses):
     monkeypatch.setattr(llm_analysis, "decrypt_key", lambda *a, **k: "k")
     monkeypatch.setenv("LLM_CONTINUE_MAX_ROUNDS", "2")
 
-    result = asyncio.run(llm_analysis.chat({}, [{"role": "user", "content": "sor"}], None, None, max_tokens=1200))
+    result = asyncio.run(llm_analysis.chat(snapshot or {}, [{"role": "user", "content": "sor"}], None, None, max_tokens=1200))
     return result, calls["n"]
 
 
@@ -83,3 +83,19 @@ def test_normal_answer_has_no_extra_calls(monkeypatch):
     assert result["text"] == "Kısa yanıt."
     assert result["truncated"] is False
     assert calls == 1
+
+
+def test_symbol_question_empty_content_returns_levels_without_reasoning(monkeypatch):
+    reasoning_only = json.dumps({"choices": [{"message": {
+        "content": "", "reasoning_content": "Daha fazla veri mi çekmeliyim? Kullanıcı yalnızca sembol yazdı.",
+    }, "finish_reason": "length"}]}).encode()
+    result, calls = _run(monkeypatch, [reasoning_only], {
+        "quick_lane": True, "symbol": "MANTRATRY", "price": 0.0993, "price_status": "stale_or_unverified",
+        "price_levels": {"support": 0.098, "resistance": 0.101},
+    })
+    assert result["status"] == "ok"
+    assert len(result["text"].splitlines()) == 4
+    assert all(s in result["text"] for s in ("0,098", "0,101", "anlık fiyatı doğrulanamadı"))
+    assert "0,0993" not in result["text"]
+    assert "çekmeliyim" not in result["text"]
+    assert calls == 2

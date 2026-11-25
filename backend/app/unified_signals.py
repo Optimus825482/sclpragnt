@@ -130,7 +130,7 @@ def enabled() -> bool:
 # ---------------------------------------------------------------------------
 # SAF füzyon (replay ile ORTAK — imzayı değiştirirsen replay'i de güncelle)
 # ---------------------------------------------------------------------------
-def fusion_score(components: dict[str, float | None]) -> tuple[float, list[str]]:
+def fusion_score(components: dict[str, float | None], *, primary_source: str | None = None) -> tuple[float, list[str]]:
     """Kaynak skorlarını TEK 0-100 füzyon skoruna indirger.
 
     components: {kaynak: 0-100 skor veya None}. None/<=0 bileşen yok sayılır;
@@ -158,7 +158,8 @@ def fusion_score(components: dict[str, float | None]) -> tuple[float, list[str]]
             continue
         if v <= 0:
             continue
-        active.append((str(source), min(100.0, v), weights.get(str(source), 0.0)))
+        weight = weights.get(str(source), weights[SOURCE_VELOCITY] if source == primary_source else 0.0)
+        active.append((str(source), min(100.0, v), weight))
     if not active:
         return 0.0, []
     total_weight = sum(w for _, _, w in active)
@@ -269,6 +270,8 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
     """
     min_fusion = float(min_fusion_score if min_fusion_score is not None
                        else getattr(config, "UNIFIED_FUSION_MIN_SCORE", 60))
+    snapshot = _macd._SNAPSHOT or {}
+    macd_fresh = 0 <= time.time() - float(snapshot.get("generated_at") or 0) <= 180
     seen: set[str] = set()
     for candidate in candidates:
         sym = str(candidate.get("symbol") or "").upper()
@@ -283,8 +286,25 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
             from app.unified_scan import normalize_score as _normalize_score
             panel = _normalize_score(candidate.get("velocity_score"))
         components, context = macd_components(sym)
-        components.setdefault(SOURCE_VELOCITY, float(panel) if panel is not None else None)
-        score, sources = fusion_score(components)
+        # Birleşik taramada panel puanı satırı üreten kaynağa aittir.
+        sources_in_row = candidate.get("signal_sources") or []
+        origin = candidate.get("primary_signal_source", sources_in_row[0] if sources_in_row else None)
+        if origin:
+            components[origin] = max(float(components.get(origin) or 0), float(panel or 0))
+        elif "primary_signal_source" not in candidate:
+            components.setdefault(SOURCE_VELOCITY, float(panel) if panel is not None else None)
+        score, sources = fusion_score(components, primary_source=origin)
+        # Süper Tarama kendi aile bonusunu uygular. Aynı MACD anlık
+        # görüntüsünden gelen bileşenler taban skoru yeniden yükseltmesin.
+        if origin or "primary_signal_source" in candidate:
+            candidate["super_macd_sources"] = [
+                name for name in (SOURCE_JUMP, SOURCE_EARLY, SOURCE_RISING)
+                if macd_fresh and float(components.get(name) or 0) >= min_fusion
+            ]
+            candidate["super_base_score"] = panel if origin else max(
+                (float(components[name]) for name in candidate["super_macd_sources"]), default=0.0
+            )
+            candidate["super_macd_fresh"] = macd_fresh
         candidate["unified_score"] = score
         candidate["unified_sources"] = sources
         candidate["macd_context"] = context
@@ -337,7 +357,6 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
     fusion_only: list[dict] = []
     if not enabled():
         return fusion_only
-    snapshot = _macd._SNAPSHOT or {}
     symbols = snapshot.get("symbols") or {}
     universe = snapshot.get("universe") or list(symbols)
     for sym in universe:
@@ -351,7 +370,7 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
         if not components:
             continue
         score, sources = fusion_score(components)
-        if score < min_fusion:
+        if not sources or score < min_fusion:
             continue
         price = row.get("last")
         try:
@@ -365,6 +384,9 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
             "velocity_score": 0.0,
             "unified_score": score,
             "unified_sources": sources,
+            "super_base_score": max(float(components[name]) for name in sources),
+            "super_signal_sources": [name for name in sources if macd_fresh and float(components[name]) >= min_fusion],
+            "super_macd_fresh": macd_fresh,
             "unified_pass": True,     # _notify: ham skor kapısını atlar
             "source": "fusion",
             "macd_context": context,

@@ -5,8 +5,43 @@ skoru yükseltir, CMC bayrakları bonus/ceza verir. Önbellek 30 sn.
 """
 import asyncio
 from unittest.mock import AsyncMock, patch
+import pytest
 
 from app.routers import monitoring
+from app import binance_tr_public, master_surge, unified_signals
+
+
+@pytest.fixture(autouse=True)
+def market_volumes(monkeypatch):
+    symbols = ["AAA", "BBB", "CCC", "DDD", *(f"COIN{i}" for i in range(12))]
+    tickers = [{"symbol": f"{symbol}_TRY", "quoteVolume": "10000000"} for symbol in symbols]
+    monkeypatch.setattr(binance_tr_public, "ticker_24h", AsyncMock(return_value=tickers))
+
+
+def test_single_pulse_is_not_labeled_velocity(monkeypatch):
+    monkeypatch.setattr(unified_signals, "macd_components", lambda _: ({}, {}))
+    monkeypatch.setattr(unified_signals, "enabled", lambda: False)
+    monkeypatch.setattr(master_surge, "evaluate_master_surge", lambda *args, **kwargs: {})
+    candidate = {"symbol": "SAHARATRY", "panel_score": 91, "signal_sources": ["pulse"]}
+    unified_signals.enrich_candidates([candidate])
+    assert candidate["unified_sources"] == ["pulse"]
+
+
+def test_super_scan_filters_unknown_volume_and_counts_distinct_families():
+    rows = [
+        {"symbol": "AAA_TRY", "unified_score": 91,
+         "unified_sources": ["velocity", "jump", "early", "rising", "macd_mtf"]},
+        {"symbol": "AAATRY", "unified_score": 75, "unified_sources": ["velocity"]},
+        {"symbol": "BB_TRY", "unified_score": 99, "unified_sources": ["velocity"]},
+    ]
+    snapshot = {"rows": rows, "volumes": {"AAATRY": 10_000_000}, "elapsed_ms": 0, "generated_at": 0}
+    result = monitoring._super_scan_response(snapshot, 12, 50, 0, 1_000_000)
+    assert [item["symbol"] for item in result["items"]] == ["AAA_TRY"]
+    item = result["items"][0]
+    assert item["super_score"] == 97
+    assert item["source_bonus"] == 6
+    assert item["family_count"] == 2
+    assert result["diagnostics"]["missing_volume"] == 1
 
 
 def _rows():
@@ -57,14 +92,11 @@ def test_super_scan_uses_cache():
 
 
 def test_super_scan_applies_request_options_to_shared_scan(monkeypatch):
-    from app import binance_tr_public
-
     scan = AsyncMock(return_value=[
         {"symbol": f"COIN{i}_TRY", "price": 10.0, "unified_score": 75.0 - i}
         for i in range(12)
     ])
     monkeypatch.setattr(monitoring, "_combined_scan_rows", scan)
-    monkeypatch.setattr(binance_tr_public, "ticker_24h", AsyncMock(return_value=[]))
     monkeypatch.setitem(monitoring._SUPER_SCAN_CACHE, "payload", None)
     monkeypatch.setitem(monitoring._SUPER_SCAN_TASK, "task", None)
 
@@ -178,3 +210,34 @@ def test_pending_then_warm_cache_serves_next_request(monkeypatch):
     assert second.get("pending") is not True
     assert [x["symbol"] for x in second["items"]] == ["AAA_TRY"]
     assert calls["n"] == 1, "ikinci istek yeni tarama başlatmamalı (önbellek)"
+
+
+def test_paper_waits_for_same_scan_after_http_deadline(monkeypatch):
+    monkeypatch.setitem(monitoring._SUPER_SCAN_CACHE, "payload", None)
+    monkeypatch.setitem(monitoring._SUPER_SCAN_TASK, "task", None)
+    original_wait_for = asyncio.wait_for
+
+    async def quick_wait(awaitable, timeout):
+        return await original_wait_for(awaitable, timeout=0.01 if timeout == 20 else timeout)
+
+    monkeypatch.setattr(monitoring.asyncio, "wait_for", quick_wait)
+
+    async def scenario():
+        release = asyncio.Event()
+
+        async def scan():
+            await release.wait()
+            return _rows()
+
+        scan_mock = AsyncMock(side_effect=scan)
+        monkeypatch.setattr(monitoring, "_combined_scan_rows", scan_mock)
+        paper = asyncio.create_task(monitoring.super_scan_for_paper(limit=2))
+        api_result = await monitoring.radar_super_scan()
+        assert api_result["pending"] is True
+        assert not paper.done()
+        release.set()
+        result = await paper
+        assert [item["symbol"] for item in result["items"]] == ["AAA_TRY", "BBB_TRY"]
+        scan_mock.assert_awaited_once()
+
+    asyncio.run(scenario())

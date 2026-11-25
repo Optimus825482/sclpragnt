@@ -109,6 +109,12 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         self.deep_patch = patch.object(llm_chat, "deep_analyze_symbol", new=AsyncMock(return_value={"data_ready": False}))
         self.deep_patch.start()
         self.addCleanup(self.deep_patch.stop)
+        self.candles = AsyncMock(return_value=[])
+        self.book = AsyncMock(return_value={})
+        for name, mock in (("fetch_klines", self.candles), ("orderbook", self.book)):
+            patcher = patch.object(llm_chat, name, mock)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     async def test_returns_none_without_live_sources(self):
         llm_chat.market = _FakeMarket({})
@@ -162,6 +168,26 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("radar_candidate", quick)
         self.assertNotIn("learned_target", quick)
         self.assertNotIn("active_notification", quick)
+
+    async def test_prefetches_closed_market_levels_and_actual_book(self):
+        llm_chat.market = _FakeMarket({"last_price": 0.0993, "timestamp": 6_000_100})
+        self.candles.return_value = [
+            [(i + 1) * 300_000, "0.0993", "0.101", "0.098", "0.0993", "300", (i + 2) * 300_000 - 1]
+            for i in range(19)
+        ] + [[6_000_000, "0.1", "9", "0.001", "0.1", "300", 6_299_999]]
+        self.book.return_value = {"bids": [["0.099", "1000"]], "asks": [["0.100", "600"]]}
+        with patch.object(llm_chat.time, "time", return_value=6000.1), \
+             patch.object(llm_chat.database, "get_symbol_target_state", AsyncMock(return_value=None)), \
+             patch.object(llm_chat.database, "get_pending_monitoring_notification", AsyncMock(return_value=None)):
+            quick = await llm_chat._symbol_quick_context("EGLDTRY")
+        assert quick["price_levels"]["support"] == 0.098
+        assert quick["price_levels"]["resistance"] == 0.101
+        assert quick["orderbook_pressure"]["spread_pct"] == 1.005
+
+    async def test_missing_orderbook_does_not_claim_balanced_book(self):
+        result = await llm_chat._get_orderbook_pressure_tool({"symbol": "EGLDTRY"})
+        assert result["ok"] is False
+        assert "bid_ask_ratio" not in result
 
     async def test_db_failure_does_not_break_context(self):
         """Öğrenilmiş hedef okunamazsa bağlam yine kurulur (hızlı şerit düşmesin)."""

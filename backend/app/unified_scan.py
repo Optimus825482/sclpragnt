@@ -360,8 +360,8 @@ async def combined_scan_rows() -> list[dict]:
 
     pool: list[dict] = []
     for src in [scan5, scan15, *extra_scans.values()]:
-        pool.extend(src.get("candidates") or [])
-        pool.extend(src.get("watchlist") or [])
+        pool.extend({**row, "super_origin": "velocity"} for row in src.get("candidates") or [])
+        pool.extend({**row, "super_origin": None} for row in src.get("watchlist") or [])
     pool.extend(mom)
     pool.extend(squeeze)
     pool.extend(rising_rows)
@@ -382,12 +382,17 @@ async def combined_scan_rows() -> list[dict]:
         except (TypeError, ValueError):
             horizon = 0
         key = (symbol, horizon)
+        origin_sources = _source_ids(candidate)
+        primary = candidate.get("super_origin", origin_sources[0] if origin_sources else None)
+        candidate["primary_signal_source"] = primary
+        candidate["super_signal_sources"] = ([primary] if primary else []) if "super_origin" in candidate else origin_sources
         current = by_key.get(key)
         if current is None:
             candidate["signal_sources"] = _source_ids(candidate)
             by_key[key] = candidate
             continue
         merged_sources = list(dict.fromkeys(_source_ids(current) + _source_ids(candidate)))
+        super_sources = list(dict.fromkeys(current["super_signal_sources"] + candidate["super_signal_sources"]))
 
         def _rank(item: dict) -> float:
             # 2026-10-15 (radar düzeltmesi): YALNIZ panel — ham velocity_score
@@ -399,6 +404,7 @@ async def combined_scan_rows() -> list[dict]:
 
         chosen = candidate if _rank(candidate) > _rank(current) else current
         chosen["signal_sources"] = merged_sources
+        chosen["super_signal_sources"] = super_sources
         if len(merged_sources) > 1:
             chosen["strategy"] = "both"
         by_key[key] = chosen
@@ -510,6 +516,8 @@ async def combined_scan_rows() -> list[dict]:
             [str(source) for source in (c.get("signal_sources") or []) if source]
             + [str(source) for source in (c.get("unified_sources") or []) if source]
         ))
+        surge = c.get("master_surge") or {}
+        mtf_trend = (surge.get("layers") or {}).get("l4_mtf_trend") or {}
         row = {
             "symbol": sym, "price": price,
             "change_pct": (c.get("source_evidence") or {}).get("return_1m_pct"),
@@ -540,6 +548,13 @@ async def combined_scan_rows() -> list[dict]:
             "stop_loss": c.get("stop_loss"),
             "stop_loss_pct": c.get("stop_loss_pct"),
             "unified_score": c.get("unified_score"),
+            "super_base_score": c.get("super_base_score"),
+            "super_sources": list(dict.fromkeys(
+                c.get("super_signal_sources", _source_ids(c)) + (c.get("super_macd_sources") or [])
+                + (["macd_mtf"] if mtf and mtf.get("verdict") == "GÜÇLÜ" else [])
+            )),
+            "mtf_direction": mtf_trend.get("direction") if c.get("super_macd_fresh") else None,
+            "oi_change_pct": c.get("oi_change_pct"),
             "unified_sources": c.get("unified_sources"),
             "strategy": c.get("strategy") or "combined",
             "velocity_score": c.get("velocity_score"),

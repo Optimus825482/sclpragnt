@@ -1,4 +1,4 @@
-import asyncio, ast, json, logging, os, re, time
+import asyncio, ast, json, logging, math, os, re, time
 from urllib.error import HTTPError
 from urllib.request import Request
 from cryptography.fernet import Fernet
@@ -120,9 +120,9 @@ TRADE_MANAGER_RULES = """SCALPER TRADE MANAGER ZORUNLU KURALLARI:
 """
 OUTPUT_RULES = """ÇIKTI BİÇİMİ KURALLARI:
 - KISA YANIT BÜTÇESİ (TÜM ROLLER, EN ÖNCE GELİR): Yanıt **en fazla 6 satır / ~90 kelime**. Sorulmayan konuyu yazma; ek bölüm, ek tablo, ek uyarı, "istersen şunu da" cümlesi YOK. Kullanıcı "kısaca" dediyse 4 satırı geçme.
-- SEMBOL SORUSU ŞABLONU (kullanıcı "çıkar mı / ne kadar çıkar / durum ne" derse) TAM OLARAK bu 4 satır:
+- SEMBOL SORUSU ŞABLONU (kullanıcı yalnız sembolü yazarsa veya "çıkar mı / ne kadar çıkar / durum ne" derse) TAM OLARAK bu 4 satır:
   1) **Durum:** tek cümle (yön + fiyat + tek gerekçe).
-  2) **Yukarı:** tetik seviyesi → hedef (yüzde). Hedef yoksa "hedef yok, tetik yok" yaz.
+  2) **Yukarı:** Doğrulanmış tetik seviyesini, varsa model hedefini ayrı yaz. Tetik veya hedef eksikse yalnız eksik olanı belirt.
   3) **Aşağı:** bozulma seviyesi ve altında ne olur (tek cümle).
   4) **Sonuç:** tek cümle — "çıkabilir / çıkmaz / bekle" ve neden.
   Bu şablonda tablo, madde listesi, gösterge adı, geçmiş anlatımı YOK.
@@ -784,6 +784,36 @@ def _build_plain_turkish_instruction():
         "- Kullanıcıya doğrudan karar aldıracak netlikte; yön, alıcı gücü, tahmin motorlarının genel beklentisi ve risk durumunu sade Türkçe ile özetle.\n"
     )
 
+def _quick_symbol_fallback(snapshot: dict) -> str:
+    """Sağlayıcı yanıtı boş kaldığında yalnız doğrulanmış bilgileri göster."""
+    levels = snapshot.get("price_levels") or {}
+
+    def price_text(value):
+        if isinstance(value, (int, float)) and math.isfinite(value) and value > 0:
+            return f"{value:.8f}".rstrip("0").rstrip(".").replace(".", ",")
+        return None
+
+    symbol = snapshot.get("symbol") or "Sembol"
+    price = price_text(snapshot.get("price")) if snapshot.get("price_status") == "fresh" else None
+    close = price_text(levels.get("reference_price")) if levels.get("reference_source") == "last_5m_close" else None
+    observed = "anlık fiyatı doğrulanamadı"
+    if price:
+        observed = f"güncel fiyatı {price}"
+    elif close:
+        observed = f"son 5 dk kapanışı {close}"
+    resistance = price_text(levels.get("resistance"))
+    support = price_text(levels.get("support"))
+    up = f"İzlenen direnç {resistance}." if resistance else "Direnç seviyesi doğrulanamadı."
+    down = f"{support} altındaki kapanış desteği zayıflatır." if support else "Destek seviyesi doğrulanamadı."
+    evidence = "Seviyeler kapanmış mumlardan hesaplandı." if support or resistance else "Seviye verisi yetersiz."
+    return (
+        f"**Durum:** {symbol} {observed}.\n"
+        f"**Yukarı:** {up}\n"
+        f"**Aşağı:** {down}\n"
+        f"**Sonuç:** Model yorumu alınamadı. {evidence}"
+    )
+
+
 async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills=None, *, json_mode=False, max_tokens=None):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
@@ -974,7 +1004,10 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
                 result = await call_with_retry()
         if not text:
             reasoning_text = str((choices[0].get("message") or {}).get("reasoning_content") or "").strip() if choices else ""
-            if reasoning_text and not _looks_english(reasoning_text):
+            if isinstance(snapshot, dict) and snapshot.get("quick_lane"):
+                text = _quick_symbol_fallback(snapshot)
+                finish_rule = None
+            elif reasoning_text and not _looks_english(reasoning_text):
                 text = reasoning_text
                 logger.warning("son çare: reasoning akışı yanıt olarak iletildi (%d karakter)", len(reasoning_text))
             elif reasoning_text:
@@ -1262,7 +1295,10 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         await reader
         if not emitted:
             reasoning_text = "".join(reasoning_parts).strip()
-            if reasoning_text and not _looks_english(reasoning_text):
+            if isinstance(snapshot, dict) and snapshot.get("quick_lane"):
+                yield {"event": "delta", "data": {"text": _quick_symbol_fallback(snapshot)}}
+                emitted = True
+            elif reasoning_text and not _looks_english(reasoning_text):
                 # SON ÇARE (akış): sağlayıcı metni reasoning_content'te
                 # sıkıştırdı — Türkçe metin var; sessiz boş yerine yanıt
                 # olarak ilet (kural: düşünce gösterme, ama boş yanıt daha kötü).

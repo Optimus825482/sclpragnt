@@ -7770,11 +7770,18 @@ async def _super_scan_build() -> dict:
     vol_map: dict[str, float] = {}
     try:
         from app.binance_tr_public import ticker_24h as _ticker_24h
-        for t in (await _ticker_24h()) or []:
-            try:
-                vol_map[str(t.get("symbol") or "").replace("_", "").upper()] = float(t.get("quoteVolume") or 0)
-            except (TypeError, ValueError):
-                continue
+        tickers = {
+            str(t.get("symbol") or "").replace("_", "").upper(): t
+            for t in await _ticker_24h() or [] if isinstance(t, dict)
+        }
+        usdt_try = _num(tickers.get("USDTTRY", {}).get("lastPrice"), 0.0) or 0.0
+        for symbol, ticker in tickers.items():
+            volume = _num(ticker.get("quoteVolume"))
+            if volume is not None and math.isfinite(volume) and volume >= 0:
+                if symbol.endswith("TRY"):
+                    vol_map[symbol] = volume
+                elif symbol.endswith("USDT") and math.isfinite(usdt_try) and usdt_try > 0:
+                    vol_map[symbol] = volume * usdt_try
     except Exception as exc:
         vol_map.clear()
         logger.debug("süper tarama hacim haritası alınamadı: %s", exc)
@@ -7790,39 +7797,61 @@ async def _super_scan_build() -> dict:
     return snapshot
 
 
+_SUPER_SCAN_SOURCE_FAMILIES = {
+    "velocity": "momentum", "daily_momentum": "momentum", "pulse": "momentum",
+    "jump": "macd", "early": "macd", "rising": "macd", "macd_mtf": "macd",
+    "short_squeeze": "short_squeeze", "snapback": "snapback",
+    "early_discovery": "early_discovery",
+}
+
+
 def _super_scan_response(snapshot: dict, limit: int, min_score: float,
                          min_atr_pct: float, min_volume_try: float) -> dict:
     rows = snapshot["rows"]
     vol_threshold = float(min_volume_try or getattr(config, "MIN_24H_QUOTE_VOLUME_TRY", 0) or 0)
     scored = []
     diag = {"rows": len(rows), "blocked": 0, "below_score": 0,
-            "below_atr": 0, "thin_volume": 0, "by_source": {},
+            "below_atr": 0, "thin_volume": 0, "missing_volume": 0,
+            "duplicate_symbol": 0, "by_source": {},
             "elapsed_ms": snapshot["elapsed_ms"]}
     for row in rows:
-        sources = list(dict.fromkeys(
-            [*(row.get("unified_sources") or []), *(row.get("signal_sources") or [])]))
+        raw_sources = row.get("super_sources")
+        if raw_sources is None:
+            raw_sources = [*(row.get("unified_sources") or []), *(row.get("signal_sources") or [])]
+        sources = list(dict.fromkeys(str(src).strip().lower() for src in raw_sources if src))
+        families = list(dict.fromkeys(
+            _SUPER_SCAN_SOURCE_FAMILIES[src] for src in sources if src in _SUPER_SCAN_SOURCE_FAMILIES
+        ))
         for src in sources:
             diag["by_source"][str(src)] = diag["by_source"].get(str(src), 0) + 1
-        if row.get("blocked_by"):
+        if row.get("blocked_by") or (row.get("super_sources") is not None and not families):
             diag["blocked"] += 1
             continue
         sym_key = str(row.get("symbol") or "").replace("_", "").upper()
-        row_vol = snapshot["volumes"].get(sym_key)
-        if vol_threshold > 0 and row_vol is not None and row_vol < vol_threshold:
+        if not sym_key:
+            diag["blocked"] += 1
+            continue
+        row_vol = _num(snapshot["volumes"].get(sym_key))
+        if vol_threshold > 0 and (row_vol is None or not math.isfinite(row_vol)):
+            diag["missing_volume"] += 1
+            continue
+        if vol_threshold > 0 and row_vol < vol_threshold:
             diag["thin_volume"] += 1
             continue
-        score = float(row.get("unified_score") or row.get("scan_score") or 0.0)
+        score = _num(row.get("super_base_score"))
+        if score is None:
+            score = _num(row.get("unified_score"), _num(row.get("scan_score"), 0.0))
+        if not math.isfinite(score):
+            diag["below_score"] += 1
+            continue
+        score = round(max(0.0, min(100.0, score)), 1)
         if score < float(min_score):
             diag["below_score"] += 1
             continue
-        atr = row.get("atr_pct_15m")
-        if float(min_atr_pct or 0) > 0 and atr is not None:
-            try:
-                if float(atr) < float(min_atr_pct):
-                    diag["below_atr"] += 1
-                    continue
-            except (TypeError, ValueError):
-                pass
+        atr = _num(row.get("atr_pct_15m"))
+        if min_atr_pct > 0 and (atr is None or atr < min_atr_pct):
+            diag["below_atr"] += 1
+            continue
         cmc = row.get("cmc") or {}
         flags = row.get("cmc_flags") or []
         bonus = 0.0
@@ -7832,18 +7861,32 @@ def _super_scan_response(snapshot: dict, limit: int, min_score: float,
             bonus += 3.0
         if "7G_ASIRI_ISINMA" in flags:
             bonus -= 5.0
-        total = round(score + 6.0 * max(0, len(sources) - 1) + bonus, 2)
+        source_bonus = 6 * max(0, len(families) - 1)
+        total = round(score + source_bonus + bonus, 2)
+        # Kısa vadeli tepkiyi Radar'da göster; ölçülmüş ters yönlü trendde
+        # sanal LONG girişini ayrı işaretle ve arka plan döngüsünde atla.
+        high_tf_down = (
+            (_num(row.get("ret_8h_pct"), 0) < 0 and _num(row.get("slope_15m"), 0) < 0)
+            or row.get("mtf_direction") == -1
+        )
         scored.append({
             "symbol": row.get("symbol"),
             "price": row.get("price"),
             "score": round(score, 1),
             "super_score": total,
+            "source_bonus": source_bonus,
+            "cmc_bonus": bonus,
             "sources": sources,
             "source_count": len(sources),
+            "source_families": families,
+            "family_count": len(families),
+            "paper_block_reason": "trend_conflict" if high_tf_down else None,
+            "oi_change_pct": _num(row.get("oi_change_pct")),
             "confluence": bool(row.get("confluence_4way")),
             "atr_pct_15m": atr,
             "target_pct": row.get("target_pct"),
             "horizon_minutes": row.get("horizon_minutes"),
+            "detected_at": _num(row.get("detected_at")) or snapshot["generated_at"],
             "cmc_flags": flags,
             "cmc_rank": cmc.get("rank"),
             "market_cap_usd": cmc.get("market_cap_usd"),
@@ -7852,10 +7895,40 @@ def _super_scan_response(snapshot: dict, limit: int, min_score: float,
             "blocked_by": None,
             "volume_24h_try": row_vol,
         })
-    scored.sort(key=lambda r: r["super_score"], reverse=True)
+    scored.sort(key=lambda r: (r["super_score"], r["score"]), reverse=True)
+    unique = {}
+    for item in scored:
+        key = str(item["symbol"]).replace("_", "").upper()
+        if key in unique:
+            diag["duplicate_symbol"] += 1
+            # Radar en yüksek sıralı ufku gösterir; aynı sembolün paper
+            # uyumu başka bir ufukta varsa onu kaybetme.
+            if not item["paper_block_reason"] and unique[key]["paper_block_reason"]:
+                unique[key].setdefault("paper_candidate", item)
+            continue
+        unique[key] = item
     return {"generated_at": snapshot["generated_at"], "source": "unified_scan",
-            "scanned": len(rows), "eligible": len(scored), "diagnostics": diag,
-            "items": scored[:max(1, min(50, int(limit)))]}
+            "scanned": len(rows), "eligible": len(unique), "diagnostics": diag,
+            "items": list(unique.values())[:max(1, min(50, int(limit)))]}
+
+
+async def _super_scan_snapshot(force: bool = False) -> dict:
+    cached = _SUPER_SCAN_CACHE
+    if (not force and cached.get("payload") is not None
+            and (time.time() - float(cached.get("generated_at") or 0)) < 30):
+        return cached["payload"]
+
+    task = _SUPER_SCAN_TASK.get("task")
+    if task is None or task.done():
+        task = asyncio.create_task(_super_scan_build())
+        _SUPER_SCAN_TASK["task"] = task
+    return await asyncio.shield(task)
+
+
+async def super_scan_for_paper(limit: int) -> dict:
+    """Otonom döngü HTTP bekleme sınırından bağımsız biten taramayı alır."""
+    snapshot = await _super_scan_snapshot()
+    return _super_scan_response(snapshot, limit, 50.0, 0.0, 0.0)
 
 @router.get("/api/radar/super-scan")
 async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
@@ -7868,7 +7941,7 @@ async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
     hepsini zaten birleştiriyor; bu uç onu KALİTE KAPILARINDAN geçirip tek
     skorla sıralar:
 
-      skor = unified_score + 6×(teyit eden kaynak sayısı)
+      skor = taban + 6×max(0, teyit eden aile sayısı - 1)
              + CMC bonusu (hacim patlaması +5, zirveye yakın +3, 7g aşırı ısınma −5)
       eleme: blocked_by dolu · skor < min_score · ATR < min_atr_pct · sığ hacim
 
@@ -7876,20 +7949,8 @@ async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
     en fazla 20 sn bekler; süre dolarsa `pending` döner ama tarama devam eder
     (sonraki istekte sonuç hazırdır). `force=1` önbelleği atlar.
     """
-    ttl = 30.0
-    cached = _SUPER_SCAN_CACHE
-    if (not force and cached.get("payload") is not None
-            and (time.time() - float(cached.get("generated_at") or 0)) < ttl):
-        return _super_scan_response(cached["payload"], limit, min_score, min_atr_pct, min_volume_try)
-
-    task = _SUPER_SCAN_TASK.get("task")
-    if task is None or task.done():
-        task = asyncio.create_task(_super_scan_build())
-        _SUPER_SCAN_TASK["task"] = task
-
     try:
-        # shield: zaman aşımı GÖREVİ iptal etmesin; arka planda bitip önbelleği doldursun.
-        snapshot = await asyncio.wait_for(asyncio.shield(task), timeout=20.0)
+        snapshot = await asyncio.wait_for(_super_scan_snapshot(force), timeout=20.0)
     except asyncio.TimeoutError:
         return {"generated_at": time.time(), "source": "unified_scan", "pending": True,
                 "scanned": 0, "eligible": 0, "items": [], "retry_after_sec": 15,
