@@ -1003,6 +1003,9 @@ class Config:
     SUPER_SCAN_PUSH_TOP_N = max(1, min(10, int(os.getenv("SUPER_SCAN_PUSH_TOP_N", "2"))))
     SUPER_SCAN_PUSH_MIN_SCORE = float(os.getenv("SUPER_SCAN_PUSH_MIN_SCORE", "65"))
     SUPER_SCAN_PUSH_COOLDOWN_MIN = float(os.getenv("SUPER_SCAN_PUSH_COOLDOWN_MIN", "30"))
+    # 2026-11-25 (kullanıcı): Sinyal İzleme artık YALNIZ süper tarama
+    # işlemlerini raporlar (notification_key LIKE 'super:%'). Kapatmak için 0.
+    SIGNAL_INSIGHTS_SUPER_ONLY = os.getenv("SIGNAL_INSIGHTS_SUPER_ONLY", "1").strip().lower() not in {"0", "false", "no", "off"}
     AUTO_PAPER_BLOCK_ON_REGIME_BADGE = os.getenv("AUTO_PAPER_BLOCK_ON_REGIME_BADGE", "0").strip().lower() in {"1", "true", "yes", "on"}
     # 2026-10-17 (aynı ölçüm, tablo 2/2b): kalkan kapalıyken MFI≥90/RSI≥80 ile elenen trend_devam
     # adayları geçenlerle aynı isabette (hit60 %19,0 vs %19,8, MAE daha küçük) → "penalty": eleme

@@ -69,6 +69,8 @@ def _envelope(item: dict) -> dict:
         "horizon_minutes": horizon,
         "price": item.get("price"),
         "source": "super_scan",
+        # Sinyal İzleme yalnız süper tarama işlemlerini sayar (LIKE 'super:%').
+        "notification_key": f"super:{symbol}",
         "sent_via_push": True,
         "super_scan": True,
         "atr_pct": item.get("atr_pct_15m"),

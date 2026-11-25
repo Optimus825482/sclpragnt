@@ -13,6 +13,7 @@ import { scoreToneClass, scoreToneText } from "../lib/scoreTone";
 import AppLoader from "../components/AppLoader";
 import UserRadar from "../components/user/UserRadar";
 import { RadarScanLogButton } from "../components/admin/RadarScanLogModal";
+import SuperScanList from "../components/SuperScanList";
 import N7ScanPanel from "../components/N7ScanPanel";
 import { useIsUserView } from "../lib/adminView";
 
@@ -660,8 +661,8 @@ function AdminMonitoringPage() {
   }, []);
   const savedTab = savedUi.activeTab;
   // 2026-11-25 (kullanıcı isteği): MA kesişim gösterimleri kaldırıldı.
-  const [activeTab, setActiveTab] = useState<"candidates" | "watchlist" | "notifications" | "overview">(
-    savedTab === "watchlist" || savedTab === "notifications" || savedTab === "overview" ? savedTab : "candidates");
+  const [activeTab, setActiveTab] = useState<"candidates" | "watchlist" | "notifications" | "overview" | "super">(
+    savedTab === "watchlist" || savedTab === "notifications" || savedTab === "overview" || savedTab === "super" ? savedTab : "candidates");
 
   // Filtreleme / sıralama
   const savedMode = savedUi.filterMode;
@@ -1222,6 +1223,18 @@ function AdminMonitoringPage() {
 
           <button
             type="button"
+            onClick={() => setActiveTab("super")}
+            className={`rounded-xl px-4 py-2 font-mono text-xs sm:text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap ${
+              activeTab === "super"
+                ? "bg-neon-green/15 text-neon-green border border-neon-green/40 shadow-sm"
+                : "text-bunker-muted hover:text-white hover:bg-bunker-900"
+            }`}
+          >
+            <span>⚡</span> Süper Tarama
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("overview")}
             className={`rounded-xl px-4 py-2 font-mono text-xs sm:text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap ${
               activeTab === "overview"
@@ -1263,6 +1276,21 @@ function AdminMonitoringPage() {
       </div>
 
       {/* 5. ANA İÇERİK BÖLÜMLERİ */}
+
+      {/* BÖLÜM 0: ⚡ SÜPER TARAMA (2026-11-25) — tüm tarayıcılar tek sıralı liste */}
+      {(activeTab === "super" || activeTab === "overview") && (
+        <section className="card p-5 rounded-2xl border border-bunker-800 bg-bunker-950/60 shadow-xl space-y-4">
+          <div className="border-b border-bunker-800/80 pb-3">
+            <h2 className="font-mono text-lg font-black text-neon-green flex items-center gap-2">
+              <span>⚡</span> SÜPER TARAMA
+            </h2>
+            <p className="text-xs text-bunker-muted mt-1">
+              Tüm tarayıcılar (hız avcısı · günlük momentum · short-squeeze · snapback · erken keşif · yükseliş · MACD MTF) tek skorlu listede. Bildirim ve otonom paper yalnız bu listeden beslenir.
+            </p>
+          </div>
+          <SuperScanList />
+        </section>
+      )}
 
       {/* BÖLÜM 1: 🎯 YÜKSELME ADAYLARI */}
       {(activeTab === "candidates" || activeTab === "overview") && (

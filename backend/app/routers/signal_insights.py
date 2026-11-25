@@ -257,6 +257,18 @@ async def evidence(request: Request):
 # 3) Canlı işlem sonuçları
 # ---------------------------------------------------------------------------
 
+def _super_clause(prefix: str = " and ") -> str:
+    """Sinyal İzleme yalnız süper tarama işlemlerini saysın (2026-11-25).
+
+    `notification_key` süper tarama zarfında "super:SYMBOL" olarak yazılır.
+    Bayrak kapalıysa (SIGNAL_INSIGHTS_SUPER_ONLY=0) filtre uygulanmaz.
+    """
+    from app.config import config as _cfg
+    if not getattr(_cfg, "SIGNAL_INSIGHTS_SUPER_ONLY", True):
+        return ""
+    return f"{prefix}notification_key like 'super:%'"
+
+
 @router.get("/outcomes")
 async def outcomes(request: Request, days: int = 7):
     """Son N günün paper işlem sonuçları + çıkış nedeni dağılımı."""
@@ -273,7 +285,7 @@ async def outcomes(request: Request, days: int = 7):
                       avg(case when pnl_pct > 0 then pnl_pct end) avg_win,
                       avg(case when pnl_pct <= 0 then pnl_pct end) avg_loss
                  from auto_paper_trades
-                where entry_time >= ? and status <> 'open'""",
+                where entry_time >= ? and status <> 'open'{_SUPER}""".replace("{_SUPER}", _super_clause()),
             (since,),
         )
         row = cur.fetchone()
@@ -283,15 +295,15 @@ async def outcomes(request: Request, days: int = 7):
         cur = conn.execute(
             """select coalesce(exit_reason,'(yok)') reason, count(*) c, avg(pnl_pct) m
                  from auto_paper_trades
-                where entry_time >= ? and status <> 'open'
-                group by 1 order by 2 desc limit 12""",
+                where entry_time >= ? and status <> 'open'{_SUPER}
+                group by 1 order by 2 desc limit 12""".replace("{_SUPER}", _super_clause()),
             (since,),
         )
         return [dict(r) for r in cur.fetchall()]
 
     def _latest_op(conn):
         cur = conn.execute(
-            "select max(entry_time) m, max(exit_time) x from auto_paper_trades")
+            f"select max(entry_time) m, max(exit_time) x from auto_paper_trades where 1=1{_super_clause(' and ')}")
         row = cur.fetchone()
         return dict(row) if row else None
 
