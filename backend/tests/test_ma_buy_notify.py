@@ -47,98 +47,34 @@ class BuildNotificationTests(unittest.TestCase):
         self.assertFalse(ma_buy_notify.is_fresh(_row(age_ms=10 * 60_000, now_ms=now), now))
 
 
-class DeliverTests(unittest.TestCase):
-    def setUp(self):
-        ma_buy_notify._last_push.clear()
-        self.claimed = iter(range(1, 100))
-        self.pushes = []
-        self.opened = []
-        self.marks = []
+class DisabledTests(unittest.TestCase):
+    """2026-11-25 (kullanıcı isteği): MA kesişim bildirimi KAPATILDI.
 
-    def _run(self, rows, *, push_ok=True, settings=None, quiet=False, claim=None, opened=None):
+    Bildirim yolu kapalı olduğu için `deliver()` hiçbir push üretmez ve otonom
+    paper açılmaz (paper push'a bağlıdır). Sinyal kaydı ve ölçüm döngüsü ayrı
+    konulardır; burada yalnız bildirim sözleşmesi doğrulanır.
+    """
+
+    def test_notifications_are_disabled(self):
+        self.assertFalse(ma_buy_notify.enabled())
+
+    def test_deliver_is_noop_while_disabled(self):
+        pushed = []
+        opened = []
+
         async def send(n):
-            self.pushes.append(n)
-            return push_ok
+            pushed.append(n)
 
-        async def try_open(n):
-            self.opened.append(n)
-            return opened if opened is not None else {"trade_id": 55}
+        async def paper(notification):
+            opened.append(notification)
+            return {"status": "opened"}
 
-        async def mark(sid, **kw):
-            self.marks.append((sid, kw))
+        with patch.object(monitoring, "_send_push", AsyncMock(side_effect=send)),              patch.object(auto_paper, "try_open_from_notification", AsyncMock(side_effect=paper)):
+            sent = asyncio.run(ma_buy_notify.deliver([_row()], ("1m", "5m", "15m", "1h", "4h")))
 
-        claim_mock = claim or AsyncMock(side_effect=lambda *a: next(self.claimed))
-        with patch.object(monitoring, "get_user_notification_settings", AsyncMock(return_value=settings or {"enabled": True})), \
-                patch.object(monitoring, "_in_quiet_hours", return_value=quiet), \
-                patch.object(monitoring, "_vapid_configured", return_value=True), \
-                patch.object(monitoring, "_send_push", side_effect=send), \
-                patch.object(monitoring.ws_manager, "broadcast", AsyncMock()), \
-                patch.object(ma_buy_notify.database, "claim_ma_buy_notify", claim_mock), \
-                patch.object(ma_buy_notify.database, "mark_ma_buy_delivery", side_effect=mark), \
-                patch.object(auto_paper, "try_open_from_notification", side_effect=try_open):
-            return asyncio.run(ma_buy_notify.deliver(rows, PER))
-
-    def test_m1_and_m15_push_and_open_paper(self):
-        # M1 varsayilan listede degil (2026-10-20); mekanizma acik listeyle sinanir. M5 push'u kaldirildi (2026-10-26).
-        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,15m", create=True):
-            n = self._run([_row("AAATRY", "1m"), _row("BBBTRY", "15m", age_ms=20_000)])
-        self.assertEqual(n, 2)
-        self.assertEqual({p["title"] for p in self.pushes}, {"📈 AAATRY · MA BUY (M1)", "📈 BBBTRY · MA BUY (M15)"})
-        self.assertTrue(all(o["sent_via_push"] for o in self.opened))
-        self.assertIn((1, {"paper_status": "acildi", "paper_trade_id": 55}), self.marks)
-
-    def test_same_symbol_both_timeframes_single_push_bigger_tf_first(self):
-        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,15m", create=True):
-            self._run([_row("AAATRY", "1m"), _row("AAATRY", "15m", age_ms=20_000)])
-        self.assertEqual([p["timeframe"] for p in self.pushes], ["15m"])
-
-    def test_disabled_5m_row_is_not_pushed_even_if_config_lists_it(self):
-        # 2026-10-26: M5 push'u kaldirildi; kayitli ayar "5m" icerse bile push ve paper acilmaz.
-        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,5m,15m", create=True):
-            n = self._run([_row("AAATRY", "5m", age_ms=20_000)])
-        self.assertEqual(n, 0)
-        self.assertEqual(self.pushes, [])
-        self.assertEqual(self.opened, [])
-
-    def test_stale_or_untracked_timeframe_not_pushed(self):
-        # Bayat satir: TF listede (15m) ama mum 30 dk once kapanmis -> is_fresh reddetmeli.
-        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,15m", create=True):
-            stale = _row(age_ms=30 * 60_000)
-            self.assertFalse(ma_buy_notify.is_fresh(stale, int(time.time() * 1000)))
-            self._run([stale])
-        self.assertEqual(self.pushes, [])
-        # Izlenmeyen TF: taze satir ama TF listede yok (1m listede degil) -> push yok.
-        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "15m", create=True):
-            self._run([_row(tf="1m", age_ms=5_000)])
-        self.assertEqual(self.pushes, [])
-        # Kontrol: ayni taze satir listede olunca push edilir (yukaridaki sonuclarin vacuous olmadigi).
-        with patch.object(ma_buy_notify.config, "MA_BUY_NOTIFY_TIMEFRAMES", "1m,15m", create=True):
-            self._run([_row(age_ms=5_000)])
-        self.assertEqual(len(self.pushes), 1)
-
-    def test_already_notified_bar_is_skipped(self):
-        self._run([_row()], claim=AsyncMock(return_value=None))
-        self.assertEqual(self.pushes, [])
-
-    def test_failed_push_records_and_does_not_open_paper(self):
-        self._run([_row()], push_ok=False)
-        self.assertEqual(len(self.pushes), 1)
-        self.assertEqual(self.opened, [])
-        self.assertIn((1, {"push_ok": False}), self.marks)
-
-    def test_disabled_notifications_or_quiet_hours_send_nothing(self):
-        self._run([_row()], settings={"enabled": False})
-        self._run([_row()], quiet=True)
-        self.assertEqual(self.pushes, [])
-
-    def test_cooldown_blocks_second_push_same_symbol(self):
-        self._run([_row()])
-        self._run([_row()])
-        self.assertEqual(len(self.pushes), 1)
-
-    def test_blocked_paper_reason_is_recorded(self):
-        self._run([_row()], opened={"status": "blocked", "reason": "symbol_dedup"})
-        self.assertIn((1, {"paper_status": "symbol_dedup", "paper_trade_id": None}), self.marks)
+        self.assertEqual(sent, 0)
+        self.assertEqual(pushed, [], "bildirim kapalıyken push gitmemeli")
+        self.assertEqual(opened, [], "bildirim kapalıyken otonom paper açılmamalı")
 
 
 class RuleSignalGateTests(unittest.TestCase):

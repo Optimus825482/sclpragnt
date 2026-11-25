@@ -32,7 +32,15 @@ PUSH_DISABLED_TFS = frozenset({"5m", "30m"})
 
 
 def enabled() -> bool:
-    return bool(getattr(config, "MA_BUY_NOTIFY_ENABLED", True))
+    """MA kesişim (MA BUY) bildirimi KAPATILDI (2026-11-25, kullanıcı isteği).
+
+    Kullanıcı bu sinyali uygulamadan kaldırdı: push/WS bildirimi üretilmez,
+    dolayısıyla MA sinyalinden otonom paper da açılmaz (paper push'a bağlıdır).
+    Sinyal KAYDI (ma_buy_signals) ve ölçüm döngüsü bilerek durdurulmadı; yalnız
+    bildirim yolu kapatıldı. Geri açmak için bu fonksiyonu eski haline getir:
+        return bool(getattr(config, "MA_BUY_NOTIFY_ENABLED", True))
+    """
+    return False
 
 
 def notify_timeframes() -> set[str]:

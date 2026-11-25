@@ -40,9 +40,9 @@ import { useAuth } from "../lib/auth";
 
 import UserSettings from "../components/user/UserSettings";
 import { useIsUserView } from "../lib/adminView";
-import MaBuyLink from "../components/admin/MaBuyLink";
-import MaBuySettingsCard, { type MaBuySettings } from "../components/admin/MaBuySettingsCard";
+import type { MaBuySettings } from "../components/admin/MaBuySettingsCard";
 import CmcSettings from "../components/CmcSettings";
+import DbStatsCard from "../components/DbStatsCard";
 
 function AdminSettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
@@ -53,7 +53,7 @@ export default function SettingsPage() {
   return userView ? <UserSettings /> : <AdminSettingsPage />;
 }
 function SettingsPageInner() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd" | "ma-buy">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -104,12 +104,12 @@ function SettingsPageInner() {
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab") as any;
-    if (tab && ["symbols", "radar", "app", "strategies", "auto-paper", "macd", "ma-buy", "llm", "chat"].includes(tab)) {
+    if (tab && ["symbols", "radar", "app", "strategies", "auto-paper", "macd", "llm", "chat"].includes(tab)) {
       setActiveTab(tab);
     }
   }, []);
 
-  const selectTab = (key: "symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd" | "ma-buy") => {
+  const selectTab = (key: "symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd") => {
     setActiveTab(key);
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
@@ -613,7 +613,6 @@ function SettingsPageInner() {
           <p className="eyebrow mt-1">Strateji parametreleri - anında uygulanır</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-        {isAdmin && <MaBuyLink />}
         {cfg && (
           <button
             onClick={save}
@@ -649,7 +648,6 @@ function SettingsPageInner() {
             ["strategies", "Strateji Ayarları", "📈"],
             ["auto-paper", "Otonom Paper", "🤖"],
             ["macd", "MACD / Sıçrama", "🚀"],
-            ["ma-buy", "MA BUY Sinyali", "📈"],
             ["llm", "LLM / Provider", "🤖"],
             ["chat", "Chat Ayarları", "✦"],
           ] as const).map(([key, label, icon]) => (
@@ -680,9 +678,6 @@ function SettingsPageInner() {
           </div>
           <div className={`${activeTab !== "macd" ? "hidden" : ""}`}>
             <MacdJumpSettingsPanel />
-          </div>
-          <div className={`${activeTab !== "ma-buy" ? "hidden" : ""}`}>
-            <MaBuySettingsCard draft={draft} onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))} />
           </div>
           <div className={`card bg-bunker-950 ${activeTab !== "symbols" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
@@ -803,6 +798,9 @@ function SettingsPageInner() {
             <LlmManagement llm={llm} reload={reloadLlm} />
           </div>
 
+          <div className={`${activeTab !== "app" ? "hidden" : ""}`}>
+            <DbStatsCard />
+          </div>
           <div className={`card border-neon-cyan/40 bg-neon-cyan/5 ${activeTab !== "app" ? "hidden" : ""}`}>
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
               <div>

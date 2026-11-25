@@ -183,6 +183,59 @@ async def system_health():
     real_sell_enabled = os.getenv("ENABLE_REAL_BINANCE_SELL", "0").strip().lower() in {"1", "true", "yes", "on"}
     return {"status": "degraded" if overall_degraded else "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "fresh_symbols": fresh_count, "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes, "rest_last_event_at": market.rest_last_event_at, "rest_error": market.rest_last_error, "ws_last_event_at": market.ws_last_event_at, "ws_error": market.ws_last_error, "ws_generation": market.connection_generation}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": max_open_json, "pending_paper_orders": len(analyzer.pending_orders)}, "database": {"backend": "postgres", "status": db_status, "postgres_configured": bool(os.getenv("DATABASE_URL", "").strip()), "vector_extension": vector_status}, "embedding": embedding_worker.snapshot(), "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": llm_active, "error": llm_error}, "safety": {"paper_only": not real_sell_enabled, "paper_trading_core": True, "real_sell_enabled": real_sell_enabled, "memory_content_untrusted": True, "tool_audit_enabled": True}}
 
+@router.get("/api/system/db-stats")
+async def system_db_stats(request: Request = None):
+    """Veritabanı boyutu + en büyük tablolar (yönetici, salt okunur).
+
+    NEDEN: disk şişmesi ancak log'a bakınca fark ediliyordu. Bu uç, Ayarlar
+    ekranındaki "Veritabanı" kartını besler; hiçbir şey silmez.
+    """
+    from app.api_common import require_admin as _require_admin
+    from app import db_stats
+    _require_admin(request)
+    return {"ok": True, **(await db_stats.snapshot(limit_tables=12))}
+
+
+@router.post("/api/system/db-limit")
+async def system_db_limit(request: Request = None):
+    """DB boyut sınırını ayarlar (MB). 0 = koruma kapalı.
+
+    NEDEN BURADA: sınır ortam değişkeni değil, ayar olarak tutulur; panelden
+    değiştirilebilsin. Koruma yalnız sınır > 0 iken çalışır.
+    """
+    from app.api_common import require_admin as _require_admin
+    from app import db_stats
+    _require_admin(request)
+    body = await request.json()
+    try:
+        limit = await db_stats.set_limit_mb((body or {}).get("limit_mb"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="limit_mb sayı olmalı (0 = kapalı)")
+    return {"ok": True, "limit_mb": limit, "enabled": limit > 0}
+
+
+@router.post("/api/system/db-prune")
+async def system_db_prune(request: Request = None):
+    """Elle budama: retention penceresini uygular ve boyut korumasını çalıştırır."""
+    from app.api_common import require_admin as _require_admin
+    from app import db_stats, database
+    from app.config import config as _cfg
+    _require_admin(request)
+    if not _main_pg_pool():
+        raise HTTPException(status_code=503, detail="PostgreSQL yapılandırılmadı")
+    deleted = await database.prune_retention(
+        days=_cfg.RETENTION_DAYS,
+        microstructure_days=_cfg.MICROSTRUCTURE_RETENTION_DAYS,
+        memory_days=_cfg.MEMORY_RETENTION_DAYS,
+        history_days=_cfg.HISTORY_RETENTION_DAYS,
+        embedding_jobs_days=_cfg.EMBEDDING_JOBS_RETENTION_DAYS,
+        decision_logs_days=_cfg.DECISION_LOGS_RETENTION_DAYS,
+    )
+    guard = await db_stats.size_guard(prune=database.prune_retention)
+    return {"ok": True, "deleted": deleted, "guard": guard,
+            **(await db_stats.snapshot(limit_tables=12))}
+
+
 @router.get("/api/memory/status")
 async def memory_status():
     persistent = {"documents": 0, "embedded": 0}

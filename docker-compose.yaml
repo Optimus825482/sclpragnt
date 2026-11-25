@@ -376,56 +376,15 @@ services:
       - "traefik.http.services.gateway.loadbalancer.healthcheck.interval=10s"
       - "traefik.http.services.gateway.loadbalancer.healthcheck.timeout=3s"
     logging: *default-logging
-  # 2026-10-07: Otomatik `db-backup` servisi kaldırılmıştı (ürün sahibi
-  # kararı). 2026-10-15 (denetim düzeltmesi, §5 P1): GERİ GETİRİLDİ —
-  # `scalper_postgres_data` tek kopyaydı (işlem geçmişi, öğrenme, kalibrasyon);
-  # volume bozulursa/yanlışlıkla silinirse geri dönüş yoktu. Sade sürüm:
-  # postgres ile AYNI imaj (pg_dump sürümü sunucuyla birebir eşleşir),
-  # günde bir `pg_dump -Fc` → `scalper_pg_backups` volume'u, son 14 dosya
-  # tutulur (scripts/pg_backup.sh). Off-box kopya için host cron'u ile
-  # volume dizinini (docker volume inspect scalper_pg_backups) rsync edin.
-  # Geri yükleme: README "Production deployment" bölümündeki pg_restore satırı.
-  db-backup:
-    image: pgvector/pgvector:pg17-bookworm
-    restart: unless-stopped
-    stop_grace_period: 30s
-    mem_limit: 256m
-    cpus: 0.25
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: "0.25"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGDATABASE: ${POSTGRES_DB:-scalper}
-      PGUSER: ${POSTGRES_USER:-scalper}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
-      BACKUP_DIR: /backups
-      BACKUP_KEEP: ${BACKUP_KEEP:-14}
-      TZ: ${TZ:-Europe/Istanbul}
-    # Script repo'dan salt-okunur bind-mount edilir (Coolify göreli yolu
-    # kendi checkout dizinine çevirir). Konteyner root çalışır: /backups
-    # volume'u boş oluşturulur ve root sahipliğindedir; non-root için
-    # `user: postgres` + volume chown gerekir (ayrı adım).
-    volumes:
-      - ./scripts/pg_backup.sh:/scripts/pg_backup.sh:ro
-      - scalper_pg_backups:/backups
-    command: ["sh", "-c", "while true; do sh /scripts/pg_backup.sh; sleep 86400; done"]
-    exclude_from_hc: true
-    labels:
-      - "traefik.enable=false"
-    logging: *default-logging
+  # 2026-11-25 (ürün sahibi kararı): `db-backup` servisi KALDIRILDI.
+  # Gerekçe: günlük pg_dump volume'u disk şişiriyordu ve otomatik yedek
+  # istenmiyor. Yedek almak isterseniz elle: `docker compose exec postgres
+  # pg_dump -Fc -U $POSTGRES_USER -d $POSTGRES_DB > yedek.dump` ve dosyayı
+  # sunucu dışına kopyalayın. Kalıcı veri `scalper_postgres_data` volume'unda.
 
 volumes:
   scalper_data:
   scalper_postgres_data:
-  # 2026-10-15 (denetim düzeltmesi): günlük pg_dump çıktıları (db-backup).
-  scalper_pg_backups:
 
 # Coolify proxy (Traefik) ağı — compose dışında tanımlı external ağ.
 networks:

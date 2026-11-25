@@ -122,3 +122,44 @@ def test_chat_tool_market_context_shape(store, monkeypatch):
     assert out["global"]["btc_dominance"] == 57.0
     assert out["trending"] is None  # plan yetmediğinde uydurulmaz
     assert "errors" in out
+
+
+def test_query_is_logged_without_secret(store, monkeypatch, capsys):
+    """Her CMC isteği tek satır olarak loglanmalı; anahtar asla loglanmaz."""
+    key = "test-key-1234567890"
+
+    def fake_http(path, params=None, k="", timeout=6.0):
+        return {"ok": True, "status": 200, "error": None, "data": {}}
+
+    monkeypatch.setattr(cmc_client, "_http_get", fake_http)
+    asyncio.run(cmc_client._call("/v3/fear-and-greed/latest", credits=1))
+
+    out = capsys.readouterr().out
+    assert "[CMC]" in out
+    assert "/v3/fear-and-greed/latest" in out
+    assert "kredi=1" in out
+    assert "anahtar" in out
+    assert key not in out, "API anahtarı loglanmamalı"
+
+
+def test_failed_query_logs_error_line(store, monkeypatch, capsys):
+    monkeypatch.setattr(cmc_client, "_http_get",
+                        lambda *a, **k: {"ok": False, "status": 429, "error": "HTTP 429", "data": None})
+    asyncio.run(cmc_client._call("/v3/fear-and-greed/latest", credits=1))
+    out = capsys.readouterr().out
+    assert "HATA" in out and "429" in out
+
+
+def test_missing_key_is_logged_once(store, monkeypatch, capsys):
+    async def _no_key():
+        return None
+
+    monkeypatch.setenv("LLM_ENCRYPTION_KEY", "")
+    monkeypatch.delenv("CMC_API_KEY", raising=False)
+    monkeypatch.setattr(cmc_client, "get_api_key", _no_key)
+    cmc_client._THROTTLE.clear()
+
+    for _ in range(3):
+        asyncio.run(cmc_client._call("/v3/fear-and-greed/latest", public_ok=False))
+    out = capsys.readouterr().out
+    assert out.count("anahtar yok") == 1, "aynı uyarı tekrar tekrar basılmamalı"

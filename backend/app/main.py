@@ -968,6 +968,13 @@ async def retention_loop():
                                                      decision_logs_days=config.DECISION_LOGS_RETENTION_DAYS)
             if any(deleted.values()):
                 print(f"[Retention] {deleted}", flush=True)
+            # 2026-11-25 (kullanıcı isteği: "DB şişmesin"): zaman budaması tek
+            # başına yetmiyor — tablo büyümesi dönemsel patlıyor. Boyut
+            # `DB_MAX_SIZE_MB` sınırını aşarsa pencereler kademeli kısalır.
+            from app import db_stats
+            guard = await db_stats.size_guard(prune=database.prune_retention)
+            if guard.get("pruned"):
+                print(f"[Retention] boyut koruması: {guard}", flush=True)
         except Exception as exc:
             print(f"[Retention] sweep hatası: {exc}")
         await asyncio.sleep(6 * 3600)

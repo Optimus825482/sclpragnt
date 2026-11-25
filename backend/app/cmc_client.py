@@ -157,6 +157,43 @@ async def _ledger_add(credits: int, error: str | None = None) -> None:
 # --------------------------------------------------------------------------- #
 # HTTP
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Sorgu günlüğü
+# --------------------------------------------------------------------------- #
+# NEDEN print(): bu repoda motor/otel döngüleri (`[Retention]`, `[ML]`,
+# `[Calibration]`) print ile yazılıyor ve konteyner loglarında görünüyor;
+# `logging` yapılandırması yalnız uvicorn logger'larına kurulu olduğu için
+# modül logger'ları INFO seviyesinde görünmüyor. CMC sorguları da aynı biçimde
+# (`[CMC] ...`) basılır. Kapatmak için `CMC_LOG_QUERIES=0`.
+_THROTTLE: dict[str, float] = {}
+
+
+def _log_enabled() -> bool:
+    return (os.getenv("CMC_LOG_QUERIES", "1") or "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _throttled(key: str, every_sec: float = 300.0) -> bool:
+    """Aynı mesajı en fazla `every_sec` saniyede bir bastır."""
+    now = time.time()
+    last = _THROTTLE.get(key) or 0.0
+    if now - last < every_sec:
+        return False
+    _THROTTLE[key] = now
+    return True
+
+
+def _fmt_params(params: dict | None) -> str:
+    if not params:
+        return ""
+    parts = []
+    for key, value in params.items():
+        text = str(value)
+        if len(text) > 60:
+            text = text[:57] + "..."
+        parts.append(f"{key}={text}")
+    return " ".join(parts)
+
+
 def _scrub(text: str, key: str) -> str:
     """Hata metninden anahtarı temizler.
 
@@ -234,14 +271,32 @@ async def _call(path: str, params: dict | None = None, credits: int = 1,
     key = await get_api_key()
     if not key:
         if not (public_ok and _keyless_allowed()):
+            if _log_enabled() and _throttled("cmc:no_key", 600):
+                print(f"[CMC] atlandı: anahtar yok ({path}) — Ayarlar > Radar > CMC", flush=True)
             return {"ok": False, "data": None, "status": 0,
                     "error": "CMC API anahtarı tanımlı değil"}
     if not await _budget_ok(credits):
+        if _log_enabled() and _throttled("cmc:budget", 300):
+            print(f"[CMC] atlandı: günlük kredi bütçesi doldu ({path}) — "
+                  f"CMC_DAILY_CREDIT_BUDGET={_daily_budget()}", flush=True)
         return {"ok": False, "data": None, "status": 0,
                 "error": "günlük CMC kredi bütçesi doldu (CMC_DAILY_CREDIT_BUDGET)"}
     url_path = path if key else f"/public-api{path}"
+    started = time.perf_counter()
     result = await asyncio.to_thread(_http_get, url_path, params, key)
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
     await _ledger_add(credits, None if result["ok"] else result["error"])
+    if _log_enabled():
+        source = "anahtar" if key else "anahtarsiz"
+        line = f"[CMC] GET {path}"
+        extra = _fmt_params(params)
+        if extra:
+            line += f" {extra}"
+        line += f" | {source} kredi={credits} {elapsed_ms}ms"
+        if result["ok"]:
+            print(f"{line} -> ok", flush=True)
+        else:
+            print(f"{line} -> HATA ({result.get('status') or 0}) {result.get('error')}", flush=True)
     if not result["ok"]:
         logger.info("CMC %s başarısız: %s", path, result["error"])
     return result

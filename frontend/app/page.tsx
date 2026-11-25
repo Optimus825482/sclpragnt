@@ -17,7 +17,6 @@ import { formatPrice, formatSignedTL, formatTL, toMs } from "./lib/format";
 import { netOpenPnlPct, netOpenPnlTry } from "./lib/pnl";
 import { useIsUserView } from "./lib/adminView";
 import UserHome from "./components/user/UserHome";
-import MaBuyRecent from "./components/MaBuyRecent";
 
 /* ============== TİPLER ============== */
 type DashboardSummary = {
@@ -159,9 +158,6 @@ function AdminHome() {
           </button>
         </div>
       )}
-
-      {/* 2026-10-18: gönderilen MA kesişim BUY bildirimleri (M1/M5) + Alım yap */}
-      <MaBuyRecent />
 
       {/* 4 kart: 2 sütun mobil, 4 sütun masaüstü */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
