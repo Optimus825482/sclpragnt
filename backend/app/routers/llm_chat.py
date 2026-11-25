@@ -44,6 +44,10 @@ from app.ai_trading_suite.chat_tools import (
     execute_obv_cmf_inflow,
     execute_volume_breakout,
     execute_open_interest_lead,
+    execute_cmc_coin_profile,
+    execute_cmc_market_context,
+    LLM_CMC_COIN_PROFILE_TOOL,
+    LLM_CMC_MARKET_CONTEXT_TOOL,
 )
 from app.routers.llm_position_tools import (LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL,
                             LLM_CLOSE_POSITION_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
@@ -331,11 +335,39 @@ LLM_ADMIN_ONLY_TOOLS = frozenset({
 })
 
 
+def _dedupe_tools(tools: list[dict]) -> list[dict]:
+    """Aynı `function.name` yalnız bir kez geçsin (sıra korunur).
+
+    NEDEN: araç listesi birden çok `extend` ile kuruluyor ve AI suite listesi
+    aynı çağrıda iki kez eklenmişti. Sağlayıcıların bir kısmı tekrarlı fonksiyon
+    adında 400 ("duplicate function name") döner → sohbet ARALIKLI hata verir;
+    toleranslı sağlayıcılarda da şema iki kez gönderilip token yakar.
+    İlk tanım korunur, sonrakiler atlanır; adı okunamayan öğeler olduğu gibi kalır.
+    """
+    seen: set[str] = set()
+    out: list[dict] = []
+    for tool in tools or []:
+        try:
+            name = str(tool["function"]["name"])
+        except (KeyError, TypeError):
+            out.append(tool)
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(tool)
+    return out
+
+
 def _filter_tools_for_role(tools: list[dict], auth_user: dict | None) -> list[dict]:
-    """Yönetici değilse araç listesini `LLM_NON_ADMIN_TOOL_ALLOWLIST` ile sınırlar."""
+    """Yönetici değilse araç listesini `LLM_NON_ADMIN_TOOL_ALLOWLIST` ile sınırlar.
+
+    Tekrarlı araçlar her rolde elenir (bkz. `_dedupe_tools`).
+    """
     if str((auth_user or {}).get("role") or "").strip().lower() == "admin":
-        return tools
-    return [tool for tool in tools if tool.get("function", {}).get("name") in LLM_NON_ADMIN_TOOL_ALLOWLIST]
+        return _dedupe_tools(tools)
+    return _dedupe_tools([tool for tool in tools
+                          if tool.get("function", {}).get("name") in LLM_NON_ADMIN_TOOL_ALLOWLIST])
 
 
 def _admin_only_denied(name: str, auth_user: dict | None) -> dict | None:
@@ -461,6 +493,21 @@ def _chat_memory_document(messages, *, layer="session", symbol=None, strategy=No
 
 
 
+
+#: Sohbet yollarındaki sözlük önbellekleri için üst sınır. Sınırsız büyüme
+#: uzun ömürlü süreçte bellek şişmesine yol açıyordu (2026-11-25).
+CACHE_MAX_ENTRIES = max(50, int(__import__("os").getenv("LLM_CACHE_MAX_ENTRIES", "400")))
+
+
+def _bounded_put(cache: dict, key, value, limit: int | None = None) -> None:
+    """Sözlük önbelleğine FIFO sınırıyla yaz (en eski giriş düşer)."""
+    cap = int(limit or CACHE_MAX_ENTRIES)
+    if key not in cache and len(cache) >= cap:
+        try:
+            cache.pop(next(iter(cache)))
+        except (StopIteration, KeyError):
+            pass
+    cache[key] = value
 
 _llm_market_scan_cache = {}
 
@@ -892,12 +939,30 @@ async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
         # that would create a circular JSON reference.
         selected = dict(selected)
         selected["llm_context"] = {
-            "selected_timeframe": preferred,
-            "available_timeframes": list(snapshots.keys()),
+            "selected_timeframe": preferred,            "available_timeframes": list(snapshots.keys()),
             "data_policy": "Use only supplied public OHLCV, ticker, order-flow and calculated indicators. Missing values remain unknown.",
             "available_calculations": ["trend", "trend_indicators", "oscillators", "moving_averages", "candlestick_patterns", "channels", "volatility", "volatility_indicators", "volume", "flow_indicators", "momentum_indicators", "pivots", "liquidity", "mfi_14", "obv", "fisher_9", "fisher_11", "wavetrend_7_1_crosses", "alma_20", "dema_20", "tema_20", "hma_16", "aroon_25", "supertrend_10_3", "ichimoku_9_26_52", "vortex_14", "trix_15", "tsi_25_13", "adl", "cmf_20", "pvt", "volume_oscillator_5_20", "choppiness_14", "historical_volatility_20"],
             "timeframes": snapshots,
         }
+        # CMC kimliği (2026-11-25): aynı teknik görünüm küçük ve büyük piyasa
+        # değerinde farklı sonuç verir. Profil önbellekli (120 sn); veri yoksa
+        # alan hiç eklenmez, LLM uydurmaz.
+        try:
+            from app import cmc_client
+            base = cmc_client.base_asset(symbol)
+            profile = (await cmc_client.quotes_map([symbol])).get(base)
+            if profile:
+                ath = (await cmc_client.performance_map([symbol])).get(base) or {}
+                merged = dict(profile)
+                merged.update({k: v for k, v in ath.items() if v is not None})
+                selected["llm_context"]["cmc"] = {
+                    "profile": merged,
+                    "flags": cmc_client._flags(merged, ath),
+                    "note": ("ath_distance_pct negatifse fiyat ATH altında; "
+                             "HACIM_PATLAMASI/7G_ASIRI_ISINMA bayrakları riski işaretler."),
+                }
+        except Exception:
+            pass
     return selected
 
 async def _learned_symbol_context(symbol: str, *, lesson_limit: int = 8, memory_query: str | None = None) -> dict:
@@ -1805,7 +1870,8 @@ async def scan_market_snapshots(args: dict | None = None):
             "scan_mode": "fast_hot_cache",
             "strategy_constrained": False,
             "cache": {"hit": False, "ttl_sec": config.LLM_MARKET_SCAN_CACHE_SEC}}
-    _llm_market_scan_cache[cache_key] = {"generated_at": result["generated_at"], "result": result}
+    _bounded_put(_llm_market_scan_cache, cache_key,
+                 {"generated_at": result["generated_at"], "result": result})
     return result
 
 # Journal dokunuş oranlarının TTL'li önbelleği (2026-11-10, brief v2).
@@ -3094,8 +3160,11 @@ def _enforce_chat_rate_limit(auth_user: dict | None, request):
     username = str((auth_user or {}).get("username") or "").strip().lower()
     key = username or (security.trusted_client_ip(request) if request else None) or "anon"
     if not rate_limit(f"llm_chat:{key}", rate_per_sec=LLM_CHAT_RATE_PER_SEC, burst=LLM_CHAT_BURST):
+        # 2026-11-25: istemci bekleme süresini bilsin (tek biçim: 429 + Retry-After).
+        wait = max(1, int(round(1.0 / max(0.01, LLM_CHAT_RATE_PER_SEC))))
         raise HTTPException(status_code=429,
-                            detail="Çok sık sohbet isteği; birkaç saniye sonra tekrar deneyin")
+                            detail="Çok sık sohbet isteği; birkaç saniye sonra tekrar deneyin",
+                            headers={"Retry-After": str(wait), "X-Error-Code": "rate_limited"})
 
 
 @router.post("/api/symbol-analysis/{symbol}/llm/chat")
@@ -3205,7 +3274,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
                   LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
                   LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL, *AI_TRADING_SUITE_TOOLS,
                   LLM_DERIVATIVES_TOOL, LLM_MACRO_SENTIMENT_TOOL, LLM_ORDERBOOK_PRESSURE_TOOL,
-                  LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL, *AI_TRADING_SUITE_TOOLS])
+                  LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL])
 
     async def execute_tool(name, args):
         denied = _admin_only_denied(name, auth_user)
@@ -3215,6 +3284,14 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
         if name == "get_orderbook_pressure": return await _get_orderbook_pressure_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_symbol_recent_outcomes": return await _get_recent_outcomes_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_crypto_news_catalysts": return await _get_crypto_news_tool({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_cmc_coin_profile": return await execute_cmc_coin_profile({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_cmc_market_context": return await execute_cmc_market_context(args)
+        if name == "get_open_interest_lead": return await execute_open_interest_lead({**args, "symbol": args.get("symbol") or symbol})
+        if name == "detect_15m_upside_candidates": return await detect_15m_upside_candidates(args)
+        if name == "detect_5m_upside_candidates": return await detect_5m_upside_candidates(args)
+        if name == "get_auto_paper_status": return await get_auto_paper_status_tool(args)
+        if name == "get_dashboard_summary": return await get_dashboard_summary_tool()
+        if name == "get_monitoring_status": return await get_monitoring_status_tool()
         if name == "run_ai_trading_suite_evaluation": return await execute_ai_trading_suite_evaluation({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_hedge_fund_council_deliberation": return await execute_hedge_fund_council({**args, "symbol": args.get("symbol") or symbol})
         if name == "check_risk_chief_veto": return await execute_risk_chief_veto({**args, "symbol": args.get("symbol") or symbol})
@@ -3319,12 +3396,28 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
             try:
                 async for event in llm_analysis.stream_chat(snapshot, body.get("messages", []), tools, execute_tool, max_tokens=effective_max):
                     yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-                await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
+                try:
+                    await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
+                except Exception as mem_exc:  # bellek yazımı başarılı yanıtı 500'e çevirmemeli
+                    logger.warning("chat memory yazılamadı: %s", mem_exc)
             except Exception as exc:
                 yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
     result = await llm_analysis.chat(snapshot, body.get("messages", []), tools, execute_tool, max_tokens=effective_max)
-    await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
+    try:
+        await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(),
+                                   session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
+    except Exception as mem_exc:  # bellek yazımı yanıtı düşürmemeli
+        logger.warning("chat memory yazılamadı: %s", mem_exc)
+    # 2026-11-25 (SSE tekilleştirme): streaming yol `event:error` + `status` +
+    # `error_code` yolluyor; streaming'siz yol da AYNI anahtarları taşısın ki
+    # istemci tek davranışla yakalayabilsin. HTTP durumu geriye uyum için 200.
+    if isinstance(result, dict) and result.get("status") in ("error", "disabled"):
+        result = {
+            **result,
+            "ok": False,
+            "error_code": "provider_error" if result.get("status") == "error" else "llm_disabled",
+        }
     return result
 
 def _tool_activity_summary(name: str, args: dict) -> str:
@@ -3653,6 +3746,29 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
     except Exception:
         pass
 
+    # CMC piyasa bağlamı (2026-11-25): F&G + dominans + trending + yükselenler.
+    # Önbellekli `brief()` (5 dk TTL); anahtar yoksa sessizce atlanır. Amaç:
+    # LLM "piyasa risk iştahı"nı görmeden yorum yapmasın.
+    try:
+        from app import cmc_client
+        brief = await cmc_client.brief()
+        fng = brief.get("fear_greed") or {}
+        glob = brief.get("global") or {}
+        trending = brief.get("trending") or []
+        gainers = brief.get("gainers") or []
+        if fng or glob or trending:
+            quick["cmc_market"] = {
+                "fear_greed": fng.get("value"),
+                "fear_greed_label": fng.get("classification"),
+                "total_market_cap_usd": glob.get("market_cap_usd"),
+                "btc_dominance": glob.get("btc_dominance"),
+                "volume_24h_usd": glob.get("volume_24h_usd"),
+                "trending_symbols": [t.get("symbol") for t in trending[:8] if t.get("symbol")],
+                "top_gainers_symbols": [g.get("symbol") for g in gainers[:5] if g.get("symbol")],
+            }
+    except Exception:
+        pass
+
     return quick
 
 
@@ -3669,7 +3785,9 @@ def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str
                 LLM_REALTIME_FLOW_TOOL,
                 LLM_DERIVATIVES_TOOL, LLM_MACRO_SENTIMENT_TOOL, LLM_ORDERBOOK_PRESSURE_TOOL,
                 LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL,
+                LLM_CMC_COIN_PROFILE_TOOL, LLM_CMC_MARKET_CONTEXT_TOOL,
             ]
+            quick_tools = _dedupe_tools(quick_tools)
             async def quick_executor(name, args):
                 sym = str(args.get("symbol") or quick.get("symbol") or "")
                 if name == "get_master_surge_prediction":
@@ -3690,6 +3808,10 @@ def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str
                     return await _get_recent_outcomes_tool({**args, "symbol": sym})
                 if name == "get_crypto_news_catalysts":
                     return await _get_crypto_news_tool({**args, "symbol": sym})
+                if name == "get_cmc_coin_profile":
+                    return await execute_cmc_coin_profile({**args, "symbol": sym})
+                if name == "get_cmc_market_context":
+                    return await execute_cmc_market_context(args)
                 if name == "deep_analyze_symbol":
                     return await deep_analyze_symbol(args)
                 if name == "get_microstructure_snapshot":
@@ -3951,6 +4073,8 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         if name == "get_obv_cmf_inflow": return await execute_obv_cmf_inflow(args)
         if name == "get_volume_breakout": return await execute_volume_breakout(args)
         if name == "get_open_interest_lead": return await execute_open_interest_lead(args)
+        if name == "get_cmc_coin_profile": return await execute_cmc_coin_profile({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_cmc_market_context": return await execute_cmc_market_context(args)
         if name == "get_master_surge_prediction": return await _get_master_surge_tool(args)
         if name == "get_ml_price_forecast": return await _get_ml_forecast_tool(args)
         if name == "get_surge_learning_bias": return await _get_surge_bias_tool(args)
@@ -4220,7 +4344,9 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
     # gerçek mesajı taşı.
     if result.get("status") == "error":
         await finish_trace(_main_pg_pool(), trace_id, "error")
-        raise HTTPException(status_code=502, detail=result.get("error") or "LLM yanıtı üretilemedi (sağlayıcı mesajı yok)")
+        raise HTTPException(status_code=502,
+                            detail=result.get("error") or "LLM yanıtı üretilemedi (sağlayıcı mesajı yok)",
+                            headers={"X-Error-Code": "provider_error"})
     evaluation = evaluate_output(result.get("text"), intent=last_text, tool_errors=tool_error_count)
     await save_evaluation(_main_pg_pool(), trace_id, evaluation)
     if evaluation.get("passed"):

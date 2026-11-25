@@ -438,6 +438,70 @@ def _compact_json_dumps(data) -> str:
     return json.dumps(pruned or {}, ensure_ascii=False, separators=(',', ':'), default=str)
 
 
+def _repair_tool_pairing(messages: list[dict]) -> list[dict]:
+    """Kırpma sonrası `tool_calls` ↔ `tool` eşleşmesini onarır.
+
+    NEDEN: pencere kırpması mesajları yeniden eskiye seçtiği için, assistant'ın
+    `tool_calls` mesajı bütçe dışında kalırken `role:"tool"` sonucu kalabiliyordu.
+    OpenAI uyumlu sağlayıcılar bu durumda 400 döner. Kural:
+      - Karşılığı olan `tool_calls` kimliği bulunmayan `tool` mesajı atılır.
+      - Sonucu düşmüş çağrılar assistant mesajının `tool_calls` listesinden
+        çıkarılır; liste boşalırsa alan tamamen kaldırılır.
+    Sıra korunur, içerik uydurulmaz.
+    """
+    declared: set[str] = set()
+    for item in messages:
+        for call in (item.get("tool_calls") or []):
+            call_id = (call or {}).get("id")
+            if call_id:
+                declared.add(str(call_id))
+
+    kept: list[dict] = []
+    paired_results: set[str] = set()
+    for item in messages:
+        if str(item.get("role") or "") == "tool":
+            call_id = str(item.get("tool_call_id") or "")
+            if not call_id or call_id not in declared:
+                continue  # sahipsiz sonuç gönderilmez
+            paired_results.add(call_id)
+        kept.append(item)
+
+    repaired: list[dict] = []
+    for item in kept:
+        calls = item.get("tool_calls")
+        if calls and str(item.get("role") or "") == "assistant":
+            kept_calls = [c for c in calls if str((c or {}).get("id") or "") in paired_results]
+            if len(kept_calls) != len(calls):
+                item = dict(item)
+                if kept_calls:
+                    item["tool_calls"] = kept_calls
+                else:
+                    item.pop("tool_calls", None)
+                    if not str(item.get("content") or "").strip():
+                        continue  # içi boş kaldıysa hiç gönderme
+        repaired.append(item)
+    return repaired
+
+
+def _retryable_provider_status(code: int) -> bool:
+    """Sağlayıcının GEÇİCİ hataları: 429 ve 5xx.
+
+    400/401/402/403 gibi istek/plan/anahtar hataları yeniden denenmez; tekrar
+    denemek kullanıcıyı bekletir ve hatayı gizler.
+    """
+    return code in (429, 500, 502, 503, 504)
+
+
+def _retry_delay_seconds(exc: Exception) -> float:
+    """`Retry-After` varsa ona saygı duy, yoksa 0,5 sn; üst sınır 2 sn."""
+    wait = 0.0
+    try:
+        wait = float(getattr(exc, "headers", {}).get("Retry-After") or 0)  # type: ignore[union-attr]
+    except (TypeError, ValueError, AttributeError):
+        wait = 0.0
+    return min(max(wait, 0.5), 2.0)
+
+
 def _context_window_messages(messages, token_budget=24_000, max_messages=12):
     """Keep the newest conversation messages inside bounded token and message limits.
 
@@ -445,6 +509,10 @@ def _context_window_messages(messages, token_budget=24_000, max_messages=12):
     newest messages up to a conservative budget (max 12 messages) so system/context
     instructions and the model response still have ample headroom without quadratic
     token growth in long chats.
+
+    2026-11-25 (chat hata düzeltmesi): kırpma sonrası `tool_calls`/`tool`
+    eşleşmesi onarılır; aksi halde sağlayıcı 400 döndürüp sohbet aralıklı
+    hata veriyordu.
     """
     selected = []
     used = 0
@@ -456,7 +524,7 @@ def _context_window_messages(messages, token_budget=24_000, max_messages=12):
             break
         selected.append(item)
         used += estimated
-    return list(reversed(selected)), used
+    return _repair_tool_pairing(list(reversed(selected))), used
 
 
 # Tool-loop cost guardrails: each round resends the whole conversation, so an
@@ -471,6 +539,12 @@ CHAT_MAX_TOKENS = max(0, int(os.getenv("LLM_CHAT_MAX_TOKENS", "4096")))
 # Araç döngüsü round başına 45 sn × 2 deneme × 25 round ile teorik
 # olarak saatlerce sürebilir; toplam süreye mutlak sınır konur.
 TOOL_LOOP_TOTAL_TIMEOUT = max(30, int(os.getenv("LLM_TOOL_TOTAL_TIMEOUT", "300")))
+#: Araç başına süre sınırı. Toplam tur süresi sınırı (üstte) tur başında
+#: kontrol edildiği için tek bir yavaş araç (ör. uzun tarama) tüm turu
+#: bekletiyordu; 2026-11-25'te araç çağrısı ayrıca sınırlandırıldı.
+TOOL_CALL_TIMEOUT = max(5, int(os.getenv("LLM_TOOL_CALL_TIMEOUT", "25")))
+#: SSE sırasında ilk bayt gecikirse bağlantıyı canlı tutan sinyal aralığı.
+STREAM_HEARTBEAT_SEC = max(3, int(os.getenv("LLM_STREAM_HEARTBEAT_SEC", "10")))
 # LLM-01: SSE akışı için de toplam süre sınırı gerekir — aksi halde
 # hiç bitmeyen bir provider akışı bağlantıyı sonsuza kadar tutar.
 STREAM_TOTAL_TIMEOUT = max(30, int(os.getenv("LLM_STREAM_TOTAL_TIMEOUT", "600")))
@@ -550,7 +624,7 @@ async def analyze(snapshot, max_tokens=None):
         if max_tokens: payload["max_tokens"] = int(max_tokens)
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
         response = await safe_provider_open(req, timeout=90)
-        return _decode_provider_response(response.read())
+        return _decode_provider_response(await asyncio.get_running_loop().run_in_executor(_LLM_EXECUTOR, response.read))
     def _unwrap(result):
         # Some compatible gateways wrap the upstream response in {success, data}.
         payload_result = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), (dict, list, str)) else result
@@ -636,7 +710,7 @@ async def embedding(text, model_id=None):
     async def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
         response = await safe_provider_open(req, timeout=30)
-        return _decode_provider_response(response.read())
+        return _decode_provider_response(await asyncio.get_running_loop().run_in_executor(_LLM_EXECUTOR, response.read))
     try:
         result = await call(); data = result.get("data", result) if isinstance(result, dict) else result
         vector = data[0].get("embedding") if isinstance(data, list) and data else None
@@ -712,16 +786,21 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
     async def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
         response = await safe_provider_open(req, timeout=45)
-        return _decode_provider_response(response.read())
+        return _decode_provider_response(await asyncio.get_running_loop().run_in_executor(_LLM_EXECUTOR, response.read))
     async def call_with_retry():
         last_error = None
         for attempt in range(2):
             try:
                 return await call()
-            except HTTPError:
-                # Provider-level rejections (4xx/5xx) are surfaced to the
-                # caller, not retried as transport noise: the fallback path
-                # above decides whether to drop response_format.
+            except HTTPError as exc:
+                # 2026-11-25 (chat hata düzeltmesi): 429/5xx GEÇİCİ sağlayıcı
+                # arızasıdır; tek denemeyle kullanıcıya "hata" olarak dönüyordu.
+                # Yalnız bu kodlarda bir kez yeniden denenir (Retry-After'a saygı,
+                # en fazla 2 sn). 400/401/402/403 (plan, anahtar, şema) ASLA
+                # yeniden denenmez — fallback yolu response_format'ı düşürür.
+                if attempt == 0 and _retryable_provider_status(exc.code):
+                    await asyncio.sleep(_retry_delay_seconds(exc))
+                    continue
                 raise
             except (TimeoutError, OSError) as exc:
                 last_error = exc
@@ -810,7 +889,14 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
                 try:
                     arguments = _decode_json_value(fn.get("arguments", "{}"), f"{name} araç argümanları")
                     if not isinstance(arguments, dict): raise ValueError("Araç argümanları nesne olmalı")
-                    tool_result = await tool_executor(name, arguments)
+                    # 2026-11-25: araç başına süre sınırı. Tek yavaş araç tüm
+                    # turu (ve SSE bağlantısını) kilitlemesin; aşımda modele
+                    # "zaman aşımı" sonucu döner, sohbet devam eder.
+                    tool_result = await asyncio.wait_for(
+                        tool_executor(name, arguments), timeout=TOOL_CALL_TIMEOUT)
+                except asyncio.TimeoutError:
+                    tool_result = {"error": f"araç zaman aşımı ({TOOL_CALL_TIMEOUT} sn)", "tool": name,
+                                   "retryable": True}
                 except Exception as tool_error:
                     tool_result = {"error": str(tool_error), "tool": name, "retryable": False}
                 conversation.append({"role": "tool", "tool_call_id": call_item.get("id", name), "name": name,
@@ -822,8 +908,13 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
             result = await call_with_retry()
             tool_stats["rounds"] = tool_round
         else:
-            # Loop break olmadan bütünce round'ı doldurdu — provider hatası
-            raise RuntimeError(f"LLM araç döngüsü {TOOL_LOOP_MAX_ROUNDS} round'da kesildi (olası provider hatası)")
+            # 2026-11-25 düzeltmesi (off-by-one): son izin verilen turda araç
+            # çağrıldıysa döngü buraya düşüyor ve o turun ÜRETTİĞİ METİN
+            # atılıp "round'da kesildi" hatası veriliyordu. Artık `result`
+            # aynen aşağıdaki metin çıkarımına bırakılır; gerçekten metin
+            # yoksa aşağıdaki boş-içerik koruması net hata üretir.
+            logger.warning("araç döngüsü %s round'a ulaştı; son yanıt metni değerlendiriliyor",
+                           TOOL_LOOP_MAX_ROUNDS)
         # BOŞ İÇERİK DÜZELTMESİ (2026-09-18, kullanıcı raporu: "AI ▶ Provider
         # chat yanıtında metin bulunamadı" aralıklı geliyordu): GLM tipi
         # reasoning modeller ara zamanlarda asistan mesajını content="" ile
@@ -881,7 +972,8 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
                                             "Authorization": "Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])},
                                    method="POST")
                 cont_response = await safe_provider_open(cont_req, timeout=45)
-                cont_data = response_data(_decode_provider_response(cont_response.read()))
+                cont_raw = await asyncio.get_running_loop().run_in_executor(_LLM_EXECUTOR, cont_response.read)
+                cont_data = response_data(_decode_provider_response(cont_raw))
                 cont_choices = cont_data.get("choices", []) if isinstance(cont_data, dict) else []
                 cont_text = _message_text(cont_choices[0].get("message") if cont_choices else None) or (cont_data.get("output_text") if isinstance(cont_data, dict) else None)
                 if cont_text:
@@ -907,7 +999,28 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
     maliyettir (2026-09-17).
     """
     if tools and tool_executor:
-        result = await chat(snapshot, messages, tools, tool_executor, active_skills, max_tokens=max_tokens)
+        # 2026-11-25 (heartbeat): araç döngüsü uzun sürdüğünde SSE bağlantısı
+        # ilk bayta kadar sessiz kalıyor, ters proxy/browser idle-timeout ile
+        # kopuyordu (kullanıcıya "hata" olarak yansıyordu). Döngü arka planda
+        # çalışırken periyodik `heartbeat` gönderilir.
+        task = asyncio.create_task(
+            chat(snapshot, messages, tools, tool_executor, active_skills, max_tokens=max_tokens))
+        started = time.monotonic()
+        while not task.done():
+            await asyncio.wait({task}, timeout=STREAM_HEARTBEAT_SEC)
+            if task.done():
+                break
+            yield {"event": "heartbeat",
+                   "data": {"elapsed_sec": round(time.monotonic() - started, 1)}}
+        try:
+            result = task.result()
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        except Exception as exc:
+            yield {"event": "error",
+                   "data": {"status": "error", "error": str(exc), "error_code": "provider_error"}}
+            return
         # GÖRÜNÜRLÜK (2026-09-18, sohbet sayfası teşhisi): `chat()` hataları
         # YUTAR — {"status": "error", "text": None} veya {"status": "disabled"}.
         # Eskiden delta hiç gönderilmiyor, sadece `done` taşıyordu → istemci
@@ -917,11 +1030,11 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         # döner ve sohbet sayfası bomboş kalır. Her iki durumu da SSE hatası
         # olarak ilet — istemci UI'da gerçek mesajı görüntüler.
         if result.get("status") == "error":
-            yield {"event": "error", "data": {"status": "error",
+            yield {"event": "error", "data": {"status": "error", "error_code": "provider_error",
                    "error": result.get("error") or "LLM yanıtı üretilemedi (sağlayıcı mesajı yok)"}}
             return
         if result.get("status") == "disabled" or not result.get("text"):
-            yield {"event": "error", "data": {"status": "disabled",
+            yield {"event": "error", "data": {"status": "disabled", "error_code": "llm_disabled",
                    "error": "Aktif LLM yapılandırması yok — Ayarlar > LLM/Provider sekmesinden LLM'i etkinleştirin ve aktif sohbet modelini seçin"}}
             return
         yield {"event": "delta", "data": {"text": result["text"]}}

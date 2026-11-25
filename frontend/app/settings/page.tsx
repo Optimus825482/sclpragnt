@@ -42,6 +42,7 @@ import UserSettings from "../components/user/UserSettings";
 import { useIsUserView } from "../lib/adminView";
 import MaBuyLink from "../components/admin/MaBuyLink";
 import MaBuySettingsCard, { type MaBuySettings } from "../components/admin/MaBuySettingsCard";
+import CmcSettings from "../components/CmcSettings";
 
 function AdminSettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
@@ -663,6 +664,7 @@ function SettingsPageInner() {
         <>
           <div className={`${activeTab !== "radar" ? "hidden" : ""}`}>
             <div className="space-y-4">
+              <CmcSettings />
               <RadarSettingsPanel />
               <RadarReplayPanel />
             </div>

@@ -495,6 +495,43 @@ LLM_OPEN_INTEREST_LEAD_TOOL = {
     }
 }
 
+LLM_CMC_COIN_PROFILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_cmc_coin_profile",
+        "description": (
+            "CoinMarketCap'ten sembolün piyasa kimliğini döndürür: CMC sıralaması, piyasa değeri, "
+            "24s hacim ve hacim değişimi, 1s/24s/7g/30g yüzde değişim, ATH ve ATH'a uzaklık, "
+            "dominans, son haber başlıkları. Binance fiyat verisinin söylemediği bağlamı verir "
+            "(ör. aynı %20 hareket 5M$ mı 5B$ mı piyasa değerinde). Salt okunur; işlem açmaz."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Binance sembolü (ör. OPGTRY, BTCUSDT, PEPEUSDT)"
+                }
+            },
+            "required": ["symbol"]
+        }
+    }
+}
+
+LLM_CMC_MARKET_CONTEXT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_cmc_market_context",
+        "description": (
+            "Piyasa geneli bağlamı döndürür: Korku ve Açgözlülük endeksi, toplam piyasa değeri, "
+            "BTC/ETH dominansı, 24s hacim, trending semboller ve en çok yükselenler. "
+            "Alım/satım kararının arka planını (risk iştahı) değerlendirmek için kullanılır. "
+            "Salt okunur; 5 dakika önbellekli."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []}
+    }
+}
+
 AI_TRADING_SUITE_TOOLS = [
     LLM_AI_TRADING_SUITE_EVALUATE_TOOL,    LLM_HEDGE_FUND_COUNCIL_TOOL,
     LLM_RISK_CHIEF_VETO_TOOL,
@@ -517,6 +554,8 @@ AI_TRADING_SUITE_TOOLS = [
     LLM_OBV_CMF_INFLOW_TOOL,
     LLM_VOLUME_BREAKOUT_TOOL,
     LLM_OPEN_INTEREST_LEAD_TOOL,
+    LLM_CMC_COIN_PROFILE_TOOL,
+    LLM_CMC_MARKET_CONTEXT_TOOL,
 ]
 
 
@@ -902,3 +941,68 @@ async def execute_open_interest_lead(args: dict) -> dict:
         return {"ok": True, "symbol": raw, "oi_change_1h_pct": None,
                 "verdict": "unknown", "error": str(exc),
                 "note": "OI okunamadı — veri eksik de, tahmin etme."}
+
+
+# --------------------------------------------------------------------------- #
+# CoinMarketCap araçları (2026-11-25)
+# --------------------------------------------------------------------------- #
+async def execute_cmc_coin_profile(args: dict) -> dict:
+    """Sembolün CMC piyasa kimliği: sıralama, piyasa değeri, çoklu periyot, ATH.
+
+    NEDEN: LLM yalnız Binance fiyatını görünce "ucuz/pahalı" yargısını sembolün
+    büyüklüğünden bağımsız kuruyordu. CMC sıralaması + piyasa değeri + hacim
+    değişimi + ATH mesafesi bu bağlamı verir.
+    Fail-open: veri yoksa `ok=True` + `available=False` döner; LLM uydurmaz.
+    """
+    raw = str(args.get("symbol") or "").replace("_", "").upper()
+    if not raw:
+        return {"ok": False, "error": "symbol gerekli"}
+    try:
+        from app import cmc_client
+
+        base = cmc_client.base_asset(raw)
+        profiles = await cmc_client.quotes_map([raw])
+        profile = profiles.get(base)
+        if not profile:
+            return {"ok": True, "symbol": raw, "available": False,
+                    "note": ("CMC verisi yok (anahtar tanımlı değil veya sembol CMC'de "
+                             "bulunamadı) — piyasa değeri/sıralama tahmin etme.")}
+        perf = await cmc_client.performance_map([raw])
+        ath = perf.get(base) or {}
+        merged = dict(profile)
+        merged.update({k: v for k, v in ath.items() if v is not None})
+        return {
+            "ok": True,
+            "symbol": raw,
+            "base": base,
+            "available": True,
+            "profile": merged,
+            "flags": cmc_client._flags(merged, ath),
+            "news": await cmc_client.news(raw, 3),
+            "note": ("ath_distance_pct negatifse fiyat ATH'ın altındadır; "
+                     "7G_ASIRI_ISINMA bayrağı 7 günlük aşırı yükselişi işaretler."),
+        }
+    except Exception as exc:  # noqa: BLE001 — LLM aracı asla patlamamalı
+        return {"ok": True, "symbol": raw, "available": False,
+                "error": type(exc).__name__,
+                "note": "CMC profili okunamadı — veri eksik de, tahmin etme."}
+
+
+async def execute_cmc_market_context(args: dict) -> dict:
+    """Piyasa geneli bağlam: Korku & Açgözlülük, dominans, trending, yükselenler."""
+    try:
+        from app import cmc_client
+
+        data = await cmc_client.brief()
+        return {
+            "ok": True,
+            **data,
+            "note": ("fear_greed.value 0-100: <25 aşırı korku, >75 aşırı açgözlülük. "
+                     "Aşırı açgözlülükte yeni alım için ek teyit iste; aşırı korkuda "
+                     "stop mesafesini genişletme."),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "fear_greed": None, "global": None,
+                "trending": None, "gainers": None,
+                "error": type(exc).__name__,
+                "note": "Piyasa bağlamı okunamadı — veri eksik de, tahmin etme."}

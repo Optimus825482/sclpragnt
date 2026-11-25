@@ -26,7 +26,7 @@ main.py (app kurulumu + lifecycle + WS) ──► WebSocket /ws üzerinden front
 
 ### Modüler API yapısı
 
-Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **23** modül dosyası vardır; bunların **20**'si `APIRouter` tanımlar ve `main.py` içinde **21** adet `include_router` kaydı yapılır (`ai_trading_suite_routes.py` iki router tanımlayıp iki kez kaydedilir; 2026-11-10 doğrulaması; aşağıdaki tablo eksiksizdir ve `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır). `runtime.py`, `global_radar.py` ve `llm_position_tools.py` `APIRouter` **kullanmaz**: `runtime.py` uzun-ömürlü döngüleri ve yardımcıları taşır (fonksiyonları `main.py` tarafından doğrudan import edilir), `global_radar.py` Binance Global arka plan tarama döngüsünü çalıştırır, `llm_position_tools.py` yalnız LLM araç (tool) şema tanımlarını sağlar.
+Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **24** modül dosyası vardır; bunların **21**'si `APIRouter` tanımlar ve `main.py` içinde **22** adet `include_router` kaydı yapılır (`ai_trading_suite_routes.py` iki router tanımlayıp iki kez kaydedilir; 2026-11-10 doğrulaması; aşağıdaki tablo eksiksizdir ve `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır). `runtime.py`, `global_radar.py` ve `llm_position_tools.py` `APIRouter` **kullanmaz**: `runtime.py` uzun-ömürlü döngüleri ve yardımcıları taşır (fonksiyonları `main.py` tarafından doğrudan import edilir), `global_radar.py` Binance Global arka plan tarama döngüsünü çalıştırır, `llm_position_tools.py` yalnız LLM araç (tool) şema tanımlarını sağlar.
 
 | Modül | Sorumluluk |
 |---|---|
@@ -55,6 +55,7 @@ Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. 
 | `app/routers/ma_buy.py` | Yönetici: MA şerit BUY sinyal kaydı (`GET /api/admin/ma-buy-signals`); sinyalleri `app/ma_buy_tracker.py` arka plan döngüsü yazar, 15 dk sonraki en yüksek yükseliş vb. ölçümlerle listeler (yalnız okuma) |
 | `app/routers/radar_log.py` | Yönetici: Radar tarama günlüğü (`GET /api/admin/radar-scan-log`); `app/radar_scan_log.py` bellek içi tamponundaki son turların tespit/eleme sonuçlarını nedenleriyle döndürür (yalnız okuma) |
 | `app/routers/n7_scan.py` | N7 tarama uçları: `POST /api/radar/n7-scan/run` (başlat) ve `GET /api/radar/n7-scan` (durum + son sonuç) |
+| `app/routers/cmc.py` | CoinMarketCap anahtar/kota (`GET/POST/DELETE /api/cmc/settings`, `GET /api/cmc/quota`) ve radar piyasa bağlamı (`GET /api/cmc/brief`); anahtar şifreli saklanır, yalnız okuma |
 | `app/routers/ai_trading_suite_routes.py` | AI Trading Suite uçları (`/api/v1/ai-trading-suite` ve `/api/ai-trading-suite` ön ekli iki router) |
 
 Frontend'de `frontend/app/charts/` altında grafik mantığı `chartShared.ts` (format/yerleşim sabitleri) ve `signals.ts` (gösterge/strateji sinyal matematiği) olarak ayrılmıştır.

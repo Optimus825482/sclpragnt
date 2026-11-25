@@ -100,6 +100,7 @@ from app.routers import (
 )
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
 from app.routers import global_radar as global_radar_routes
+from app.routers import cmc as cmc_routes
 from app.routers.global_radar import global_radar_loop
 from app.routers.maintenance import (  # noqa: F401
     backfill_symbol_history, backfill_missing_active_history, history_candle_loop, microstructure_snapshot_loop)
@@ -216,6 +217,7 @@ app.include_router(auto_paper_routes.router)
 app.include_router(macd_monitor_routes.router)
 app.include_router(snapback_routes.router)
 app.include_router(user_prefs_routes.router)
+app.include_router(cmc_routes.router)
 app.include_router(binance_trade_routes.router)
 app.include_router(journal_routes.router)
 from app.routers import portfolio_band as portfolio_band_routes

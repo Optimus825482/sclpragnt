@@ -564,6 +564,16 @@ async def combined_scan_rows() -> list[dict]:
         }
         out.append(row)
 
+    # CMC piyasa bağlamı (2026-11-25): aynı hareket, piyasa değeri 5M$ olan
+    # token'da ve 5B$ olan token'da farklı davranır. En yüksek skorlu satırlara
+    # `cmc` profili + `cmc_flags` eklenir. Anahtar yok/ağ hatası/yavaş yanıt →
+    # satırlar dokunulmadan döner (fail-open). Tarama CMC'ye bağımlı DEĞİLDİR.
+    try:
+        from app import cmc_client
+        await asyncio.wait_for(cmc_client.attach_market_context(out, top_n=15), timeout=4.0)
+    except Exception as exc:  # noqa: BLE001 - zenginleştirme taramayı düşürmemeli
+        logger.debug("CMC zenginleştirme atlandı: %s", type(exc).__name__)
+
     # Bloklu satırlar temiz satırların ARKASINA (2026-10-15 radar düzeltmesi).
     out.sort(key=lambda r: (not r.get("blocked_by"), float(r.get("scan_score") or 0), _is_both(r),
                             (r.get("radar") or {}).get("book_imbalance") or 0.0),
