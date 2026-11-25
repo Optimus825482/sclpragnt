@@ -971,6 +971,17 @@ async def execute_cmc_coin_profile(args: dict) -> dict:
         ath = perf.get(base) or {}
         merged = dict(profile)
         merged.update({k: v for k, v in ath.items() if v is not None})
+        # ATH ucu plan dışıysa (403) 180 günlük zirveden yaklaşık uzaklık.
+        if not merged.get("ath_distance_pct"):
+            peak = (await cmc_client.peak_180d([raw])).get(raw.replace("_", "").upper()) or {}
+            high = peak.get("peak_180d")
+            price = merged.get("price_usd")
+            if high and price:
+                try:
+                    merged["peak_180d"] = high
+                    merged["peak_distance_pct"] = round((float(price) / float(high) - 1) * 100, 2)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
         return {
             "ok": True,
             "symbol": raw,

@@ -25,6 +25,8 @@ type Status = {
   configured: boolean;
   masked: string;
   source: "env" | "settings" | null;
+  verified?: boolean | null;
+  saved_at?: number | null;
   quota?: Quota | null;
 };
 
@@ -71,7 +73,12 @@ export default function CmcSettings() {
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : "Kaydedilemedi");
-      setNote("Anahtar doğrulandı ve şifreli kaydedildi.");
+      if (d?.verified === false) {
+        setNote("Anahtar kaydedildi (şifreli, kalıcı) ama CMC'ye ulaşılamadı — doğrulama sonra yapılacak.");
+      } else {
+        setNote("Anahtar doğrulandı ve şifreli olarak veritabanına kaydedildi. Tekrar girmeniz gerekmez.");
+      }
+      if (typeof d?.warning === "string" && d.warning) setNote((prev) => `${prev} ${d.warning}`);
       setStatus((prev) => ({ ...(prev || { configured: true, masked: "", source: "settings" }), configured: true, masked: d.masked || prev?.masked || "", source: d.source || "settings" }));
       await load();
     } catch (err) {
@@ -138,7 +145,20 @@ export default function CmcSettings() {
               <span className="text-bunker-muted">TANIMSIZ</span>
             )}
             {status?.source === "env" && <span className="ml-2 text-[11px] text-bunker-muted">(ortam değişkeninden)</span>}
+            {status?.verified === false && (
+              <span className="ml-2 rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-300">
+                DOĞRULANAMADI (ağ)
+              </span>
+            )}
+            {status?.verified === true && (
+              <span className="ml-2 text-[10px] text-neon-green">DOĞRULANDI</span>
+            )}
           </p>
+          {status?.configured && status?.saved_at ? (
+            <p className="mt-1 text-[11px] text-bunker-muted">
+              Kalıcı kayıt: {new Date(status.saved_at * 1000).toLocaleString("tr-TR")} · şifreli saklanıyor
+            </p>
+          ) : null}
         </div>
       </div>
 

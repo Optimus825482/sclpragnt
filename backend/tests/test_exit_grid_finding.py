@@ -63,7 +63,7 @@ def test_candidate_win_rate_much_higher():
 
 
 def test_default_not_changed():
-    """KARAR: varsayılan DEĞİŞMEDİ — trigger 2.0, gap 1.0."""
+    """2026-11-25: deneme geri alındı — ÖLÇÜM trailing 2,0/1,0'ı KORUNDU işaretledi."""
     from app import config
     assert config.Config.AUTO_PAPER_TRAILING_TRIGGER_PCT == 2.0
     assert config.Config.AUTO_PAPER_TRAILING_GAP_PCT == 1.0

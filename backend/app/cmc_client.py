@@ -31,7 +31,9 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app import database
-from app.llm_analysis import decrypt_key, encrypt_key
+from cryptography.fernet import Fernet
+
+from app.llm_analysis import decrypt_key, encrypt_key  # noqa: F401 (geriye uyum)
 
 logger = logging.getLogger("scalper.cmc")
 
@@ -69,27 +71,104 @@ async def get_api_key() -> Optional[str]:
     if not stored:
         return None
     try:
-        return decrypt_key(stored, "LLM_ENCRYPTION_KEY", "BINANCE_ENCRYPTION_KEY")
+        return _decrypt_value(stored)
     except Exception as exc:  # anahtar değişmiş/bozulmuş olabilir
         logger.warning("CMC anahtarı çözülemedi: %s", type(exc).__name__)
         return None
 
 
-def _encrypt(value: str) -> str:
+def _keyfile_path() -> str:
+    """Yerel Fernet anahtar dosyası yolu (kalıcı volume içinde).
+
+    NEDEN: `LLM_ENCRYPTION_KEY` tanımlı değilse anahtar kaydetmek imkânsız
+    oluyordu (kullanıcı her seferinde anahtarı yeniden giriyordu). Sunucuda
+    `/data` kalıcı volume'u var; orada BİR KEZ üretilen anahtar dosyası hem
+    şifrelemeyi hem çözmeyi mümkün kılar.
+    """
+    custom = (os.getenv("CMC_KEYFILE") or "").strip()
+    if custom:
+        return custom
+    base = "/data" if os.path.isdir("/data") else os.path.join(os.getcwd(), "data")
+    return os.path.join(base, ".cmc_fernet_key")
+
+
+def _local_fernet(create: bool = True):
+    """Yerel anahtar dosyasından Fernet; yoksa (create) üretip 0600 yazar."""
+    path = _keyfile_path()
     try:
-        return encrypt_key(value, "LLM_ENCRYPTION_KEY", "BINANCE_ENCRYPTION_KEY")
-    except Exception as exc:
-        raise RuntimeError(
-            "Şifreleme anahtarı tanımlı değil (LLM_ENCRYPTION_KEY veya "
-            "BINANCE_ENCRYPTION_KEY). Anahtar düz metin saklanmaz."
-        ) from exc
+        with open(path, "rb") as fh:
+            raw = fh.read().strip()
+        if raw:
+            return Fernet(raw)
+    except FileNotFoundError:
+        pass
+    if not create:
+        raise RuntimeError("yerel şifreleme anahtarı yok")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    raw = Fernet.generate_key()
+    with open(path, "wb") as fh:
+        fh.write(raw)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    logger.info("CMC yerel şifreleme anahtarı üretildi: %s", path)
+    return Fernet(raw)
 
 
-async def save_api_key(raw_key: str) -> None:
+def _env_fernet(env_name: str):
+    value = (os.getenv(env_name) or "").strip()
+    if not value:
+        return None
+    try:
+        return Fernet(value.encode())
+    except Exception:
+        return None
+
+
+def _fernet_candidates(create: bool = False):
+    """Sıra: env (LLM) → env (BINANCE) → yerel anahtar dosyası."""
+    for name in ("LLM_ENCRYPTION_KEY", "BINANCE_ENCRYPTION_KEY"):
+        cand = _env_fernet(name)
+        if cand is not None:
+            yield cand
+    try:
+        yield _local_fernet(create=create)
+    except Exception:
+        return
+
+
+def _encrypt(value: str) -> str:
+    for fernet in _fernet_candidates(create=True):
+        try:
+            return fernet.encrypt(value.encode()).decode()
+        except Exception:
+            continue
+    raise RuntimeError("Şifreleme anahtarı oluşturulamadı (yerel anahtar dosyası yazılamıyor)")
+
+
+def _decrypt_value(token: str) -> str:
+    for fernet in _fernet_candidates(create=False):
+        try:
+            return fernet.decrypt(token.encode()).decode()
+        except Exception:
+            continue
+    raise RuntimeError("kayıtlı anahtar çözülemedi")
+
+
+async def save_api_key(raw_key: str, verified: bool = True) -> None:
+    """Anahtarı şifreli kaydeder (+ doğrulama durumu).
+
+    `verified=False`: anahtar CMC'ye doğrulanamadı ama kaydedildi (ör. konteyner
+    dışa çıkışı kapalı). Kullanıcı her seferinde yeniden girmesin; panelde
+    "kayıtlı · doğrulanamadı" görünür.
+    """
     key = str(raw_key or "").strip()
     if not key:
         raise ValueError("API anahtarı boş olamaz")
     await database.set_llm_setting(SETTINGS_KEY, _encrypt(key))
+    await database.set_llm_setting("cmc_key_verified", "1" if verified else "0")
+    await database.set_llm_setting("cmc_key_saved_at", str(int(time.time())))
     await _ledger_reset(key_changed=True)
 
 
@@ -101,10 +180,20 @@ async def delete_api_key() -> None:
 async def key_status() -> dict:
     env = (os.getenv("CMC_API_KEY") or "").strip()
     key = env or await get_api_key()
+    verified_raw = await database.get_llm_setting("cmc_key_verified")
+    saved_raw = await database.get_llm_setting("cmc_key_saved_at")
+    try:
+        saved_at = int(float(saved_raw)) if saved_raw else None
+    except (TypeError, ValueError):
+        saved_at = None
     return {
         "configured": bool(key),
         "masked": mask_key(key),
         "source": "env" if env else ("settings" if key else None),
+        # None → henüz doğrulanmadı/kayıt öncesi; True/False → son doğrulama sonucu
+        "verified": None if verified_raw in (None, "") else (str(verified_raw) == "1"),
+        "saved_at": saved_at,
+        "storage": "encrypted_settings",
     }
 
 
@@ -166,6 +255,33 @@ async def _ledger_add(credits: int, error: str | None = None) -> None:
 # modül logger'ları INFO seviyesinde görünmüyor. CMC sorguları da aynı biçimde
 # (`[CMC] ...`) basılır. Kapatmak için `CMC_LOG_QUERIES=0`.
 _THROTTLE: dict[str, float] = {}
+
+#: PLAN DIŞI UÇ NOKTALAR (2026-11-25): Basic abonelik `trending/*` ve
+#: `price-performance-stats` uçlarını DESTEKLEMİYOR (403 / 1006). Bunları her
+#: taramada tekrar denemek boşa istek + kredi + log gürültüsü üretiyordu.
+#: Path başına süre dolana kadar HTTP çağrısı YAPILMAZ.
+_PLAN_BLOCKED: dict[str, float] = {}
+
+
+def _plan_block_ttl() -> float:
+    try:
+        return max(60.0, float(os.getenv("CMC_PLAN_BLOCK_TTL", "86400")))
+    except ValueError:
+        return 86400.0
+
+
+def _is_plan_blocked(err_text: str, status: int) -> bool:
+    """403/1006 (plan yetmiyor) tespiti — CMC mesajı dile göre değişebilir."""
+    text = str(err_text or "").lower()
+    return status == 403 and ("1006" in text or "plan" in text or "subscription" in text)
+
+
+def plan_blocked_paths() -> list[dict]:
+    """Panel/teşhis için: hangi uç noktalar plan dışı ve ne zamana kadar."""
+    now = time.time()
+    return [{"path": path, "remaining_sec": int(until - now)}
+            for path, until in _PLAN_BLOCKED.items() if until > now]
+
 
 
 def _log_enabled() -> bool:
@@ -268,6 +384,10 @@ async def _call(path: str, params: dict | None = None, credits: int = 1,
     Anahtarsız yol (`/public-api`) IP bazlı ortak havuzdur ve yalnız temel
     uç noktaları destekler; trending/ATH/haber orada yoktur.
     """
+    blocked_until = _PLAN_BLOCKED.get(path, 0.0)
+    if blocked_until > time.time():
+        return {"ok": False, "data": None, "status": 403,
+                "error": "plan desteklemiyor (önbellekli; tekrar denenmedi)"}
     key = await get_api_key()
     if not key:
         if not (public_ok and _keyless_allowed()):
@@ -285,7 +405,16 @@ async def _call(path: str, params: dict | None = None, credits: int = 1,
     started = time.perf_counter()
     result = await asyncio.to_thread(_http_get, url_path, params, key)
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-    await _ledger_add(credits, None if result["ok"] else result["error"])
+    plan_blocked = (not result["ok"]) and _is_plan_blocked(result.get("error") or "",
+                                                          int(result.get("status") or 0))
+    if plan_blocked:
+        _PLAN_BLOCKED[path] = time.time() + _plan_block_ttl()
+        if _log_enabled():
+            print(f"[CMC] plan dışı: {path} — {int(_plan_block_ttl())} sn boyunca denenmeyecek "
+                  f"(abonelik bu ucu desteklemiyor)", flush=True)
+    # Plan dışı çağrı İŞE YARAMAZ; kredi sayacına yazılmaz (yanlış "harcadım" izlenimi).
+    if not plan_blocked:
+        await _ledger_add(credits, None if result["ok"] else result["error"])
     if _log_enabled():
         source = "anahtar" if key else "anahtarsiz"
         line = f"[CMC] GET {path}"
@@ -369,6 +498,7 @@ async def validate_key(candidate: str, timeout: float = 8.0) -> dict:
     result = await asyncio.to_thread(_http_get, "/v1/key/info", None, key, timeout)
     return {
         "ok": bool(result["ok"]),
+        "status": int(result.get("status") or 0),
         "error": None if result["ok"] else _scrub(result["error"] or "", key),
         "plan": _plan_from_info(result["data"]) if result["ok"] else {},
     }
@@ -546,6 +676,60 @@ def _compact_quote(row: dict) -> dict:
     }
 
 
+_PEAK_CACHE: dict[str, tuple[float, dict]] = {}
+PEAK_TTL = 21600.0          # 6 saat
+PEAK_DAYS = 180
+
+
+async def peak_180d(symbols: list[str]) -> dict:
+    """Binance günlük mumlarından YAKLAŞIK zirve (180 gün) ve uzaklığı.
+
+    NEDEN: CMC'nin `price-performance-stats` (ATH) ucu Basic planda 403 dönüyor
+    (log: "subscription plan doesn't support this endpoint"). Gerçek ATH yerine
+    180 günlük en yüksek kapanış/fiyat kullanılır — radar için yeterli, ATH
+    DEĞİLDİR ve alan adı da bunu söyler (`peak_180d`, `peak_distance_pct`).
+
+    Maliyet: Binance TR public klines (CMC kredisi harcamaz), 6 saat önbellek.
+    """
+    wanted = [str(s).replace("_", "").upper() for s in dict.fromkeys(symbols or []) if s]
+    if not wanted:
+        return {}
+    now = time.time()
+    out: dict[str, dict] = {}
+    todo: list[str] = []
+    for sym in wanted:
+        cached = _PEAK_CACHE.get(sym)
+        if cached and (now - cached[0]) < PEAK_TTL:
+            out[sym] = cached[1]
+        else:
+            todo.append(sym)
+    if todo:
+        from app import binance_tr_public
+
+        async def _one(sym: str):
+            try:
+                rows = await binance_tr_public.klines(sym, "1d", limit=PEAK_DAYS)
+                highs = []
+                for row in rows or []:
+                    try:
+                        highs.append(float(row[2]))  # [open,high,low,close,...] veya sözlük
+                    except (TypeError, IndexError, KeyError):
+                        try:
+                            highs.append(float(row.get("high")))
+                        except Exception:
+                            continue
+                return sym, (max(highs) if highs else None)
+            except Exception:
+                return sym, None
+
+        results = await asyncio.gather(*(_one(sym) for sym in todo))
+        for sym, high in results:
+            payload = {"peak_180d": high}
+            _PEAK_CACHE[sym] = (now, payload)
+            out[sym] = payload
+    return out
+
+
 async def quotes_map(symbols: list[str]) -> dict:
     """Taban varlık → kompakt CMC profili. Tek HTTP çağrısı, 120 sn önbellek.
 
@@ -648,7 +832,9 @@ def _flags(profile: dict, ath: dict | None) -> list[str]:
             flags.append("7G_ASIRI_ISINMA")
         if pct7 is not None and float(pct7) <= -25:
             flags.append("7G_SERT_DUSUS")
-        dist = (ath or {}).get("ath_distance_pct") or profile.get("ath_distance_pct")
+        dist = ((ath or {}).get("ath_distance_pct")
+                or profile.get("ath_distance_pct")
+                or profile.get("peak_distance_pct"))
         if dist is not None and float(dist) >= -3:
             flags.append("ATH_YAKIN")
         rank = profile.get("rank")
@@ -679,6 +865,10 @@ async def attach_market_context(rows: list[dict], top_n: int = 15) -> dict:
     if not profiles:
         return {"enriched": 0, "reason": "CMC verisi yok"}
     perf = await performance_map(symbols)
+    # ATH ucu plan dışıysa (403) 180 günlük zirveden YAKLAŞIK uzaklık hesaplanır.
+    need_peak = [str(r.get("symbol") or "") for r in ordered
+                 if not (perf.get(base_asset(str(r.get("symbol") or ""))) or {}).get("ath_distance_pct")]
+    peaks = await peak_180d(need_peak) if need_peak else {}
     enriched = 0
     for row in ordered:
         sym = base_asset(str(row.get("symbol") or ""))
@@ -689,10 +879,19 @@ async def attach_market_context(rows: list[dict], top_n: int = 15) -> dict:
         merged = dict(profile)
         if ath:
             merged.update({k: v for k, v in ath.items() if v is not None})
+        if not merged.get("ath_distance_pct"):
+            high = (peaks.get(str(row.get("symbol") or "").replace("_", "").upper()) or {}).get("peak_180d")
+            price = merged.get("price_usd")
+            if high and price:
+                try:
+                    merged["peak_180d"] = high
+                    merged["peak_distance_pct"] = round((float(price) / float(high) - 1) * 100, 2)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
         row["cmc"] = merged
         row["cmc_flags"] = _flags(merged, ath)
         enriched += 1
-    return {"enriched": enriched, "requested": len(ordered)}
+    return {"enriched": enriched, "requested": len(ordered), "peak_source": "binance_180d" if peaks else None}
 
 
 async def news(symbol: str | None = None, limit: int = 5) -> list[dict]:

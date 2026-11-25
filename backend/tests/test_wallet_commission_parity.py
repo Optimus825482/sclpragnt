@@ -44,6 +44,7 @@ CREATE TABLE auto_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEX
   entry_time REAL NOT NULL, exit_price REAL, exit_time REAL, pnl REAL, pnl_pct REAL,
   commission REAL, exit_reason TEXT, notification_score REAL, notification_target_pct REAL,
   notification_expected_price REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+  entry_volume_ratio REAL, max_adverse_pct REAL, max_favorable_pct REAL, oi_change_pct REAL,
   entry_commission_pct REAL, exit_commission_pct REAL, exit_profile TEXT, max_hold_minutes REAL,
   plan_context TEXT);
 CREATE TABLE signals (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, symbol TEXT,

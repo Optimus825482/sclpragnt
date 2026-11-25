@@ -214,6 +214,28 @@ async def system_db_limit(request: Request = None):
     return {"ok": True, "limit_mb": limit, "enabled": limit > 0}
 
 
+@router.post("/api/system/db-deep-clean")
+async def system_db_deep_clean(request: Request = None):
+    """Hafıza vektörleri için derin temizlik: budama + REINDEX CONCURRENTLY + VACUUM.
+
+    `VACUUM FULL` BİLİNÇLİ olarak çalıştırılmaz (tabloyu kilitler). Uzun sürebilir;
+    aynı anda tek çalışma kilitlenmiştir.
+    """
+    from app.api_common import require_admin as _require_admin
+    from app import db_stats, database
+    _require_admin(request)
+    if not _main_pg_pool():
+        raise HTTPException(status_code=503, detail="PostgreSQL yapılandırılmadı")
+    body = {}
+    try:
+        body = await request.json() or {}
+    except Exception:
+        body = {}
+    tables = body.get("tables") or ["memory_embeddings"]
+    tables = tuple(str(t) for t in tables if str(t).isalnum() or "_" in str(t))[:4] or ("memory_embeddings",)
+    return await db_stats.deep_clean(tables=tables, prune=database.prune_retention)
+
+
 @router.post("/api/system/db-prune")
 async def system_db_prune(request: Request = None):
     """Elle budama: retention penceresini uygular ve boyut korumasını çalıştırır."""

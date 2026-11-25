@@ -163,3 +163,95 @@ def test_missing_key_is_logged_once(store, monkeypatch, capsys):
         asyncio.run(cmc_client._call("/v3/fear-and-greed/latest", public_ok=False))
     out = capsys.readouterr().out
     assert out.count("anahtar yok") == 1, "aynı uyarı tekrar tekrar basılmamalı"
+
+
+def test_plan_unsupported_endpoint_is_blocked_after_first_403(store, monkeypatch, capsys):
+    """403/1006 → uç nokta 24 saat boyunca denenmez; kredi sayacı da artmaz."""
+    calls = []
+
+    def fake_http(path, params=None, key="", timeout=6.0):
+        calls.append(path)
+        return {"ok": False, "data": None, "status": 403,
+                "error": "HTTP 403 (1006): Your API Key subscription plan doesn't support this endpoint."}
+
+    monkeypatch.setattr(cmc_client, "_http_get", fake_http)
+    cmc_client._PLAN_BLOCKED.clear()
+    asyncio.run(cmc_client._ledger_reset())
+
+    first = asyncio.run(cmc_client._call("/v1/cryptocurrency/trending/latest", credits=2))
+    assert first["ok"] is False
+
+    second = asyncio.run(cmc_client._call("/v1/cryptocurrency/trending/latest", credits=2))
+    assert second["ok"] is False
+    assert len(calls) == 1, "plan dışı uç ikinci kez çağrılmamalı"
+
+    ledger = asyncio.run(cmc_client._ledger_load())
+    assert int(ledger.get("credits") or 0) == 0, "plan dışı çağrı kredi sayacına yazılmamalı"
+
+    blocked = cmc_client.plan_blocked_paths()
+    assert any(b["path"].endswith("trending/latest") for b in blocked)
+    out = capsys.readouterr().out
+    assert "plan dışı" in out
+
+
+def test_non_plan_error_still_counts_credits(store, monkeypatch):
+    """Plan dışı OLMAYAN hata (ör. 500) normal sayılır ve tekrar denenebilir."""
+    calls = []
+
+    def fake_http(path, params=None, key="", timeout=6.0):
+        calls.append(path)
+        return {"ok": False, "data": None, "status": 500, "error": "HTTP 500"}
+
+    monkeypatch.setattr(cmc_client, "_http_get", fake_http)
+    cmc_client._PLAN_BLOCKED.clear()
+    asyncio.run(cmc_client._ledger_reset())
+
+    asyncio.run(cmc_client._call("/v1/global-metrics/quotes/latest", credits=1))
+    asyncio.run(cmc_client._call("/v1/global-metrics/quotes/latest", credits=1))
+    assert len(calls) == 2, "500 hatası bloklamamalı"
+    assert not cmc_client.plan_blocked_paths()
+
+
+def test_peak_180d_used_when_ath_blocked(store, monkeypatch):
+    """ATH ucu plan dışıysa 180 günlük zirveden yaklaşık uzaklık hesaplanır."""
+    from app import binance_tr_public
+
+    async def fake_klines(symbol, interval, limit=500, **kw):
+        return [[0, "1.0", "2.00", "0.9", "1.5", "100", 0, "0", 1, "0", "0", "0"]]
+
+    async def fake_klines_api(*a, **k):
+        return await fake_klines(*a, **k)
+
+    monkeypatch.setattr(binance_tr_public, "klines", fake_klines_api)
+    cmc_client._PEAK_CACHE.clear()
+
+    out = asyncio.run(cmc_client.peak_180d(["OPGTRY"]))
+    assert out["OPGTRY"]["peak_180d"] == 2.0
+
+
+def test_attach_falls_back_to_peak_distance(store, monkeypatch):
+    from app import binance_tr_public
+
+    def fake_http(path, params=None, key="", timeout=6.0):
+        if "quotes/latest" in path:
+            return {"ok": True, "status": 200, "error": None, "data": {
+                "OPG": {"id": 1, "symbol": "OPG", "cmc_rank": 400,
+                        "quote": [{"symbol": "USD", "price": 1.5, "market_cap": 1e8,
+                                   "volume_24h": 1e6, "percent_change_7d": 5.0}]}}}
+        # performance (ATH) plan dışı
+        return {"ok": False, "status": 403, "data": None,
+                "error": "HTTP 403 (1006): plan doesn't support"}
+
+    async def fake_klines(*a, **k):
+        return [[0, "1.0", "3.00", "0.9", "2.0", "100", 0, "0", 1, "0", "0", "0"]]
+
+    monkeypatch.setattr(cmc_client, "_http_get", fake_http)
+    monkeypatch.setattr(binance_tr_public, "klines", fake_klines)
+    cmc_client._QUOTES_CACHE.clear(); cmc_client._PERF_CACHE.clear(); cmc_client._PEAK_CACHE.clear()
+
+    rows = [{"symbol": "OPGTRY", "unified_score": 90}]
+    asyncio.run(cmc_client.attach_market_context(rows, top_n=1))
+
+    profile = rows[0]["cmc"]
+    assert profile["peak_180d"] == 3.0
+    assert profile["peak_distance_pct"] == pytest.approx(-50.0, abs=0.01)

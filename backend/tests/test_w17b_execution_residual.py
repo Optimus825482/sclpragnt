@@ -313,10 +313,12 @@ class AutoPaperExitLadderTests(unittest.IsolatedAsyncioTestCase):
         be.assert_awaited()
 
     async def test_trailing_trigger_deferred_to_tp_fraction(self):
-        """Hedef %4 → trailing 2026-09-21 güncellemesi ile tavan korumalıdır (gecikmez)."""
+        """Trailing tetiği config'ten okunur (2026-11-25: 2,0 → 3,0) ve hedefin altında kalır."""
+        from app.config import config as _cfg
+        trigger = float(_cfg.AUTO_PAPER_TRAILING_TRIGGER_PCT)
+        price = 100.0 + trigger + 0.3  # gross tetiği geçer, TP'nin (%4) altında
         trade = self._trade()
-        _, _, trail = await self._manage(
-            trade, 102.5, {"trailing_enabled": True})  # gross +2.5 >= 2.0 (tavan korumalı)
+        _, _, trail = await self._manage(trade, price, {"trailing_enabled": True})
         trail.assert_awaited()
 
     # ---- B3: gap TP'ye yaklaşırken daralır --------------------------------
@@ -349,8 +351,11 @@ class AutoPaperExitLadderTests(unittest.IsolatedAsyncioTestCase):
         """
         from app.config import config as _cfg
         cap = float(_cfg.AUTO_PAPER_TRAILING_GAP_PCT)
-        loose = {"trailing_enabled": True, "trailing_trigger_pct": 2.0,
-                 "trailing_gap_pct": 1.5, "breakeven_enabled": True}
+        # Gevşek = tavanın ÜSTÜNDE olmalı ki kırpma sınansın (tavan 2026-11-25: 2,2).
+        loose_gap = cap * 2.0
+        trigger = cap + 1.0
+        loose = {"trailing_enabled": True, "trailing_trigger_pct": trigger,
+                 "trailing_gap_pct": loose_gap, "breakeven_enabled": True}
         trade = self._trade()
         _, _, trail = await self._manage(trade, 103.5, dict(loose))
         trail.assert_awaited()
@@ -358,7 +363,7 @@ class AutoPaperExitLadderTests(unittest.IsolatedAsyncioTestCase):
 
         # Tavandan KESİN sıkı bir ayar gerçekten etki eder (tepeye daha yakın kilitler).
         tight_gap = cap / 2.0
-        tight = {"trailing_enabled": True, "trailing_trigger_pct": 2.0,
+        tight = {"trailing_enabled": True, "trailing_trigger_pct": trigger,
                  "trailing_gap_pct": tight_gap, "breakeven_enabled": True}
         trade = self._trade()
         _, _, trail = await self._manage(trade, 103.5, dict(tight))

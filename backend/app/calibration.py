@@ -148,6 +148,47 @@ def _trade_volume_ratio(ctx: dict) -> float | None:
     return None
 
 
+def adapt_auto_paper_trades(rows: list[dict]) -> list[dict]:
+    """`auto_paper_trades` satırlarını `build_buckets` girdisine çevirir.
+
+    NEDEN: kalibrasyon veri kaynağı yalnız `trades` tablosuydu (≈20 satır) ve
+    kova tablosu hep boş kalıyordu; binlerce kapanmış otonom paper işlemi
+    öğrenmeye hiç girmiyordu.
+
+    Eşleme:
+      * `pnl`       → aynen
+      * `entry_time`→ aynen (epoch sn; kova saati UTC+3)
+      * `strategy`  → "AUTO_PAPER" (kaynak stratejisi kolonu yok; bildirim
+                       anahtarı sembol bazlı olduğu için kova boyutunu
+                       parçalayıp anlamsızlaştırırdı)
+      * `entry_context` → yok; hacim oranı bilinmiyor → "unknown" bandı
+        (fail-safe 0.85 çarpanı). Bu bilinçli: uydurma hacim bandı yazmıyoruz.
+    """
+    adapted: list[dict] = []
+    for row in rows or []:
+        try:
+            entry = float(row.get("entry_time") or 0)
+        except (TypeError, ValueError):
+            continue
+        if entry <= 0:
+            continue
+        # 2026-11-25 (031 migration): giriş hacim oranı artık kayıtlıysa
+        # `entry_context["volume_ratio"]` üzerinden GERÇEK hacim bandına düşer;
+        # yoksa kova "unknown" bandında kalır (uydurma yok).
+        try:
+            vr = float(row.get("entry_volume_ratio")) if row.get("entry_volume_ratio") is not None else None
+        except (TypeError, ValueError):
+            vr = None
+        adapted.append({
+            "pnl": row.get("pnl"),
+            "entry_time": entry,
+            "exit_time": row.get("exit_time"),
+            "strategy": "AUTO_PAPER",
+            "entry_context": {"volume_ratio": vr} if vr is not None else {},
+        })
+    return adapted
+
+
 def build_buckets(trades: list[dict]) -> dict[tuple, dict]:
     """Group closed trades into buckets with win-rate statistics."""
     grouped: dict[tuple, list[float]] = defaultdict(list)
@@ -195,6 +236,13 @@ def confidence_multiplier(buckets: dict[tuple, dict], *, strategy: str | None,
     """
     key = bucket_key(strategy=strategy, hour=hour, volume_ratio=volume_ratio)
     stats = buckets.get(key)
+    # 2026-11-25 (kalibrasyon kaynağı): geçmiş otonom paper işlemlerinde hacim
+    # oranı KAYITLI DEĞİL (kolon yok) → tarih kovaları "unknown" bandında.
+    # Canlı giriş ise gerçek hacim bandıyla geliyor; tam eşleşme bulunamayınca
+    # aynı strateji+saat bandının "unknown" kovasına düşülür. Aksi halde
+    # öğrenilmiş isabet oranı hiçbir zaman boyuta yansımıyordu.
+    if not stats and key[2] != "unknown":
+        stats = buckets.get((key[0], key[1], "unknown"))
     if not stats or stats["samples"] < MIN_BUCKET_SAMPLES:
         return UNKNOWN_VOLUME_MULTIPLIER if key[2] == "unknown" else MAX_MULTIPLIER
     wr = stats["win_rate"]

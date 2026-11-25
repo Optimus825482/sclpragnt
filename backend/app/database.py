@@ -507,6 +507,12 @@ async def init_db():
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS entry_commission_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS exit_commission_pct DOUBLE PRECISION")
         # 2026-10-21: kural sinyali çıkış profili (MA BUY H4): ad + işlem başına tutma süresi (dk). NULL = genel ayarlar.
+        # 2026-11-25 (kalibrasyon): giriş hacim oranı — kova hacim bandı için.
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS entry_volume_ratio DOUBLE PRECISION")
+        # 2026-11-25 (Sinyal İzleme kanıtı): MAE/MFE + giriş OI değişimi.
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS max_adverse_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS max_favorable_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS oi_change_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS exit_profile TEXT")
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS max_hold_minutes DOUBLE PRECISION")
         # 2026-10-27 (işlem planı): plan işleminin exit_at / grace_minutes / plan_key'i (JSON metin). NULL = plansız.
@@ -7667,8 +7673,9 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
                (symbol, side, status, notification_id, notification_key, entry_price, quantity, order_value_try,
                 stop_loss, take_profit, peak_price, entry_time,
                 notification_score, notification_target_pct, notification_expected_price,
-                created_at, updated_at, entry_commission_pct, exit_profile, max_hold_minutes, plan_context)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+                created_at, updated_at, entry_commission_pct, exit_profile, max_hold_minutes, plan_context,
+                entry_volume_ratio, oi_change_pct)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
             (symbol, trade.get("side", "LONG"), "open",
              notification_id, notification_key, trade["entry_price"], trade["quantity"], order_value,
              trade.get("stop_loss"), trade.get("take_profit"),
@@ -7676,7 +7683,8 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
              trade.get("notification_score"), trade.get("notification_target_pct"),
              trade.get("notification_expected_price"), trade["created_at"], trade["updated_at"],
              commission_pct, trade.get("exit_profile"), trade.get("max_hold_minutes"),
-             trade.get("plan_context"))
+             trade.get("plan_context"), trade.get("entry_volume_ratio"),
+             trade.get("oi_change_pct"))
         ).fetchone()
         if signal:
             trade_id_val = row["id"] if row else None
@@ -7796,6 +7804,77 @@ async def get_last_auto_paper_winning_trade_time(symbol: str) -> float | None:
             (sym,)
         ).fetchone()
         return float(row[0]) if (row and row[0] is not None) else None
+    return await _run_db(op)
+
+
+async def update_auto_paper_excursions(trade_id: int, adverse_pct: float,
+                                       favorable_pct: float) -> None:
+    """MAE/MFE (en kötü/en iyi gezinme) alanlarını YALNIZ iyileştikçe günceller.
+
+    NEDEN: stop -%4,2 ortalamayla kapanıyor ama SL ~-%1,7 olmalı. Farkın
+    "stop aşımı" mı "stop gürültüde" mi olduğunu ayırt etmek için işlem
+    boyunca en derin/en yüksek nokta saklanır. Yalnız ekstrem iyileşince
+    yazılır → 5 sn'lik yönetim döngüsünde gereksiz UPDATE üretmez.
+    """
+    def op(conn):
+        conn.execute(
+            """UPDATE auto_paper_trades
+                  SET max_adverse_pct = CASE
+                        WHEN max_adverse_pct IS NULL OR ? < max_adverse_pct THEN ? ELSE max_adverse_pct END,
+                      max_favorable_pct = CASE
+                        WHEN max_favorable_pct IS NULL OR ? > max_favorable_pct THEN ? ELSE max_favorable_pct END,
+                      updated_at = ?
+                WHERE id = ?""",
+            (adverse_pct, adverse_pct, favorable_pct, favorable_pct, time.time(), int(trade_id)))
+        conn.commit()
+    await _run_db(op)
+
+
+async def count_auto_paper_opened_since(since_ts: float) -> int:
+    """Belirtilen andan sonra AÇILMIŞ otonom paper işlem sayısı (küme freni).
+
+    NEDEN: gerçek veride aynı dakikada 3-4 sembol birden açılıyor, piyasa
+    dönünce hepsi birlikte stop oluyordu (korelasyonlu risk). Kapı, son N
+    dakikadaki açılış sayısını sayar.
+    """
+    def op(conn):
+        row = conn.execute(
+            "SELECT COUNT(*) FROM auto_paper_trades WHERE entry_time >= ?",
+            (float(since_ts),)).fetchone()
+        try:
+            return int((row[0] if row else 0) or 0)
+        except (TypeError, IndexError):
+            return 0
+    return await _run_db(op)
+
+
+async def get_closed_auto_paper_trades_for_calibration(limit: int = 3000) -> list[dict]:
+    """Kalibrasyon için KAPANMIŞ otonom paper işlemleri (ham alanlar).
+
+    NEDEN: kalibrasyon yalnız `trades` tablosunu okuyordu; orada 20-30 satır
+    varken asıl geçmiş `auto_paper_trades` içinde BİNLERCE kapanmış işlem
+    tutuyor. Bu yüzden kova tablosu boş kalıyor ve boyut çarpanı hiç
+    öğrenemiyordu (log: "[Calibration] 0 kova").
+
+    SALT OKUMA; portföy reset/rapor başlangıcı sınırları BİLİNÇLİ olarak
+    uygulanmaz — kalibrasyon geçmiş davranışı öğrenir, cüzdan görünümü değil.
+    """
+    def op(conn):
+        rows = conn.execute(
+            """SELECT pnl, pnl_pct, entry_time, exit_time, exit_profile, notification_key,
+                      entry_volume_ratio
+                 FROM auto_paper_trades
+                WHERE status='closed' AND pnl IS NOT NULL AND entry_time IS NOT NULL
+                ORDER BY exit_time DESC LIMIT ?""",
+            (max(1, min(20000, int(limit))),)).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row) if hasattr(row, "keys") else {
+                "pnl": row[0], "pnl_pct": row[1], "entry_time": row[2], "exit_time": row[3],
+                "exit_profile": row[4], "notification_key": row[5],
+                "entry_volume_ratio": row[6] if len(row) > 6 else None}
+            out.append(item)
+        return out
     return await _run_db(op)
 
 

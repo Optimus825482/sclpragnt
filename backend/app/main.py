@@ -1033,7 +1033,16 @@ async def calibration_refresh_loop():
         # karar-verebilir kova oluştuğunda haftalık kadansa geçilir.
         informative = 0
         try:
-            trades = await database.get_trades(limit=500)
+            # 2026-11-25: kaynak `trades` tek başına YETMİYOR (≈20 satır) —
+            # gerçek geçmiş `auto_paper_trades` içinde binlerce kapanmış işlem.
+            # İkisi birlikte beslenir; otonom satırlar "AUTO_PAPER" stratejisi ve
+            # "unknown" hacim bandıyla girer (fail-safe).
+            trades = list(await database.get_trades(limit=500) or [])
+            try:
+                auto_rows = await database.get_closed_auto_paper_trades_for_calibration(limit=3000)
+                trades += calibration_service.adapt_auto_paper_trades(auto_rows)
+            except Exception as auto_exc:
+                print(f"[Calibration] auto_paper verisi okunamadı: {auto_exc}", flush=True)
             buckets = calibration_service.build_buckets(trades)
             calibration_service.store_buckets(buckets)
             informative = sum(1 for s in buckets.values() if s["samples"] >= calibration_service.MIN_BUCKET_SAMPLES)
@@ -1103,6 +1112,37 @@ async def startup_market_warmup():
               f"grafik yalnızca HTTP yoklamasıyla güncellenecek", flush=True)
 
 
+#: Deploy sonrası TEK SEFERLİK temiz başlangıç işareti.
+#: Dolu ise bir daha sıfırlama YAPILMAZ (restart/deploy pozisyonları bozmaz).
+_AUTO_BASELINE_KEY = "auto_portfolio_baseline_v1"
+
+
+async def _auto_portfolio_baseline_once() -> None:
+    """İlk deploy'da cüzdanı 10.000 TL yapar ve raporları bu andan başlatır.
+
+    NEDEN: kullanıcı raporların eski (sıfırlama öncesi) kayıtları göstermesini
+    istemiyor; ölçüm "bu andan sonra" başlamalı ki strateji değişikliklerinin
+    etkisi temiz görünsün.
+
+    DAVRANIŞ:
+      * `reset_trading_data()` → açık paper işlemleri 'reset' ile kapatir,
+        pozisyonları temizler, cüzdanı `INITIAL_BALANCE_TRY` (10.000) yapar,
+        `portfolio_reset_at` damgası koyar.
+      * `reports_baseline_at` AYNI ana çekilir → raporlar/KPI'lar yalnız
+        sonraki veriyi sayar.
+      * `_AUTO_BASELINE_KEY` yazılır → sonraki deploy/restart'ta TEKRAR
+        sıfırlama yapılmaz (açık pozisyonlar korunur).
+    """
+    if await database.get_llm_setting(_AUTO_BASELINE_KEY):
+        return
+    result = await database.reset_trading_data()
+    stamp = float((result or {}).get("reset_at") or time.time())
+    await database.set_reports_baseline(stamp)
+    await database.set_llm_setting(_AUTO_BASELINE_KEY, str(int(stamp)))
+    print(f"[Portfolio] otomatik başlangıç: {(result or {}).get('wallet')} TL · "
+          f"raporlar {int(stamp)} anından itibaren", flush=True)
+
+
 async def startup_services():
     global _pg_pool
     # Geç bağlanan bağımlılıklar döngüler başlamadan ÖNCE doğrulanır. main.py
@@ -1110,6 +1150,12 @@ async def startup_services():
     # varsa süreç sessizce "ölü döngü" çalıştırmak yerine net hata verir.
     runtime_deps.assert_ready()
     await database.init_db()
+    # 2026-11-25 (kullanıcı isteği): deploy sonrası ilk açılışta temiz başlangıç
+    # (10.000 TL + rapor sınırı). Hata açılışı düşürmez.
+    try:
+        await _auto_portfolio_baseline_once()
+    except Exception as exc:
+        print(f"[Portfolio] otomatik başlangıç atlandı: {exc}", flush=True)
     try:
         security.load_user_session_versions(await database.list_users())
     except Exception as exc:

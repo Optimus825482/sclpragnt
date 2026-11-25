@@ -57,9 +57,24 @@ def test_delete_clears_key(store):
     assert asyncio.run(cmc_client.key_status())["configured"] is False
 
 
-def test_encryption_missing_refuses_plaintext(store, monkeypatch):
+def test_encryption_missing_uses_local_keyfile_not_plaintext(store, monkeypatch, tmp_path):
+    """Env anahtarı yoksa yerel dosya anahtarı kullanılır; düz metin YAZILMAZ."""
     monkeypatch.delenv("LLM_ENCRYPTION_KEY", raising=False)
     monkeypatch.delenv("BINANCE_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("CMC_KEYFILE", str(tmp_path / ".cmc_fernet_key"))
+    key = "0123456789abcdef"
+    asyncio.run(cmc_client.save_api_key(key))
+    assert key not in store[cmc_client.SETTINGS_KEY]
+    assert asyncio.run(cmc_client.get_api_key()) == key
+
+
+def test_unwritable_keyfile_refuses_plaintext(store, monkeypatch, tmp_path):
+    """Anahtar dosyası yazılamıyorsa düz metne DÜŞÜLMEZ; açık hata verilir."""
+    monkeypatch.delenv("LLM_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("BINANCE_ENCRYPTION_KEY", raising=False)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")  # dosya → altına dizin açılamaz
+    monkeypatch.setenv("CMC_KEYFILE", str(blocker / "sub" / ".cmc_fernet_key"))
     with pytest.raises(RuntimeError):
         asyncio.run(cmc_client.save_api_key("0123456789abcdef"))
     assert cmc_client.SETTINGS_KEY not in store
@@ -85,3 +100,26 @@ def test_ledger_counts_requests(store):
     ledger = json.loads(store[cmc_client.LEDGER_KEY])
     assert ledger["requests"] == 2
     assert ledger["credits"] == 3
+
+
+def test_save_works_without_env_encryption_key(store, monkeypatch, tmp_path):
+    """LLM_ENCRYPTION_KEY yokken de kayıt kalıcı olmalı (yerel anahtar dosyası)."""
+    monkeypatch.delenv("LLM_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("BINANCE_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("CMC_KEYFILE", str(tmp_path / ".cmc_fernet_key"))
+
+    key = "0123456789abcdef0123456789abcdef"
+    asyncio.run(cmc_client.save_api_key(key))
+
+    stored = store[cmc_client.SETTINGS_KEY]
+    assert key not in stored, "anahtar düz metin saklanmamalı"
+    assert asyncio.run(cmc_client.get_api_key()) == key, "kayıt yeniden okunabilmeli"
+    assert (tmp_path / ".cmc_fernet_key").exists()
+
+
+def test_unverified_save_is_flagged(store):
+    asyncio.run(cmc_client.save_api_key("abcdef1234567890", verified=False))
+    status = asyncio.run(cmc_client.key_status())
+    assert status["configured"] is True
+    assert status["verified"] is False
+    assert status["saved_at"]

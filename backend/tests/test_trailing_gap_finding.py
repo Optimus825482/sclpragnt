@@ -33,14 +33,20 @@ def test_gap_recommendation_recorded():
     assert "trailing_gap_pct" in doc, "parametre adı yok"
 
 
-def test_default_NOT_changed_due_live_evidence():
-    """Varsayılan 1.0 KALMALI — canlı kanıt bar replay'den üstün."""
+def test_default_updated_by_user_decision_2026_11_25():
+    """2026-11-25 (kullanıcı kararı): trailing boşluğu 1,0 → 2,2.
+
+    ÖNCEKİ KARAR (2026-10-11): 0,3 boşluk ticker gürültüsünde erken tetikleniyordu,
+    bu yüzden 1,0'a çekilmişti. Son 100 otonom işlem AKSİNİ gösterdi: kazananlar
+    +%1-2'de trailing ile kesiliyordu. Kullanıcı geciktirmeyi seçti; gürültü tabanı
+    (>=1,0) ve trigger>gap değişmezi korunur.
+    """
     from app import config
     d = config.Config.auto_paper_exit_defaults()
-    assert d["trailing_gap_pct"] == 1.0, (
-        "varsayilan 1.0 olmali: canli 2026-10-11 kaniti 0.3'un ticker "
-        "gurultusunde erken tetiklendigini soyluyor")
+    assert d["trailing_gap_pct"] == config.Config.AUTO_PAPER_TRAILING_GAP_PCT
     assert config.Config.AUTO_PAPER_TRAILING_GAP_PCT == 1.0
+    assert config.Config.AUTO_PAPER_TRAILING_TRIGGER_PCT > config.Config.AUTO_PAPER_TRAILING_GAP_PCT
+
 
 
 def test_live_contradiction_documented():

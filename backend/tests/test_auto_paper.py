@@ -1308,8 +1308,10 @@ class AutoPaperTradePlanOpenTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(trade["entry_price"] * (1 + 0.09 + markup), trade["take_profit"], places=6)
 
     async def test_no_plan_unchanged(self):
+        # 2026-11-25: oynaklık boyut çarpanı (D) bu testte nötrlenir — burada
+        # sınanan şey plan/tavan semantiği, pozisyon boyutu politikası değil.
         fixed = 1_800_000_000.0
-        with patch("app.routers.auto_paper.time.time", return_value=fixed):
+        with patch.object(auto_paper, "_vol_size_multiplier", lambda *_: 1.0),              patch("app.routers.auto_paper.time.time", return_value=fixed):
             _, base = await self._open(self._notif())
             _, insufficient = await self._open(self._notif(_plan(warnings=["veri_yetersiz"])))
             _, non_dict = await self._open(self._notif("bozuk"))

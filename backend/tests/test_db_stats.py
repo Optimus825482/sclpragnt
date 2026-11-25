@@ -94,3 +94,62 @@ def test_size_guard_disabled_when_limit_zero(monkeypatch):
     out = asyncio.run(db_stats.size_guard(prune=fake_prune))
     assert out["checked"] is False
     assert calls == []
+
+
+def test_deep_clean_runs_reindex_and_vacuum(monkeypatch):
+    """Derin temizlik: indeksleri CONCURRENTLY yeniden kurar, VACUUM FULL çağırmaz."""
+    monkeypatch.setenv("DB_MAX_SIZE_MB", "0")
+    executed: list[str] = []
+
+    class FakeConn:
+        async def fetch(self, sql, *args):
+            assert "pg_indexes" in sql
+            return [{"indexname": "idx_mem_hnsw"}]
+
+        async def fetchval(self, sql, *args):
+            return False
+
+        async def execute(self, sql, *args):
+            executed.append(sql)
+            return "OK"
+
+    class FakePool:
+        def acquire(self):
+            class Ctx:
+                async def __aenter__(self_inner):
+                    return FakeConn()
+
+                async def __aexit__(self_inner, *exc):
+                    return False
+            return Ctx()
+
+    async def fake_snapshot(limit_tables=12):
+        return {"available": True, "size_mb": 15000.0, "limit_mb": 0,
+                "over_limit": False, "tables": []}
+
+    async def fake_prune(**kwargs):
+        return {"memory_documents": 100}
+
+    monkeypatch.setattr(db_stats, "_main_pg_pool", lambda: FakePool())
+    monkeypatch.setattr(db_stats, "snapshot", fake_snapshot)
+
+    out = asyncio.run(db_stats.deep_clean(prune=fake_prune))
+
+    assert out["ok"] is True
+    assert any("REINDEX INDEX CONCURRENTLY" in sql for sql in executed)
+    assert any(sql.startswith("VACUUM (ANALYZE)") for sql in executed)
+    assert not any("VACUUM FULL" in sql for sql in executed), "VACUUM FULL otomatik çalışmamalı"
+    assert out["steps"]["memory_embeddings"]["idx_mem_hnsw"] == "yeniden kuruldu"
+
+
+def test_deep_clean_without_pool(monkeypatch):
+    async def fake_snapshot(limit_tables=12):
+        return {"available": False}
+
+    async def fake_prune(**kwargs):
+        return {}
+
+    monkeypatch.setattr(db_stats, "_main_pg_pool", lambda: None)
+    monkeypatch.setattr(db_stats, "snapshot", fake_snapshot)
+    out = asyncio.run(db_stats.deep_clean(prune=fake_prune))
+    assert out["ok"] is False

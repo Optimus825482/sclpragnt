@@ -172,3 +172,103 @@ async def size_guard(*, prune=None) -> dict:
     return {"checked": True, "pruned": True, "deleted": deleted,
             "size_mb": size_after, "limit_mb": limit,
             "still_over": bool(state.get("over_limit"))}
+
+
+# --------------------------------------------------------------------------- #
+# Derin temizlik (hafıza vektörleri)
+# --------------------------------------------------------------------------- #
+_DEEP_LOCK = None
+
+
+def _deep_lock():
+    """Aynı anda iki derin temizlik çalışmasın (REINDEX pahalı)."""
+    global _DEEP_LOCK
+    if _DEEP_LOCK is None:
+        import asyncio as _asyncio
+        _DEEP_LOCK = _asyncio.Lock()
+    return _DEEP_LOCK
+
+
+async def deep_clean(tables: tuple[str, ...] = ("memory_embeddings",),
+                     prune=None) -> dict:
+    """Budama + `REINDEX CONCURRENTLY` + `VACUUM (ANALYZE)`.
+
+    NEDEN: DELETE diski boşaltmaz; pgvector HNSW indeksi silinen satırlardan
+    küçülmez. Ölçümde 15,7 GB'lık `memory_embeddings` yalnız 88 MB veri
+    taşıyordu — geri kazanım için indeksin yeniden kurulması şart.
+
+    KURALLAR:
+      * `VACUUM FULL` BİLİNÇLİ olarak YOK: tabloyu kilitler, canlı sistemde
+        otomatik çalıştırılmaz. Gerçek küçülme için bakım penceresinde elle.
+      * `REINDEX CONCURRENTLY` / `VACUUM` transaction dışında çalışmalı;
+        asyncpg tek deyimi otomatik commit eder (BEGIN açılmaz).
+      * İndeks yoksa/izin yoksa o adım atlanır ve sonuçta bildirilir.
+    """
+    lock = _deep_lock()
+    if lock.locked():
+        return {"ok": False, "error": "derin temizlik zaten çalışıyor"}
+    async with lock:
+        started = time.time()
+        before = await snapshot(limit_tables=12)
+        result: dict = {"ok": True, "before_mb": before.get("size_mb"),
+                        "steps": {}, "errors": {}}
+
+        if prune is None:
+            from app import database as _db
+            prune = _db.prune_retention
+        from app.config import config as cfg
+        try:
+            result["deleted"] = await prune(
+                days=int(getattr(cfg, "RETENTION_DAYS", 30) or 30),
+                microstructure_days=int(getattr(cfg, "MICROSTRUCTURE_RETENTION_DAYS", 7) or 7),
+                memory_days=int(getattr(cfg, "MEMORY_RETENTION_DAYS", 180) or 180),
+                history_days=int(getattr(cfg, "HISTORY_RETENTION_DAYS", 21) or 21),
+                embedding_jobs_days=int(getattr(cfg, "EMBEDDING_JOBS_RETENTION_DAYS", 14) or 14),
+                decision_logs_days=int(getattr(cfg, "DECISION_LOGS_RETENTION_DAYS", 90) or 90),
+            )
+        except Exception as exc:
+            result["errors"]["prune"] = f"{type(exc).__name__}: {exc}"
+
+        pool = _main_pg_pool()
+        if not pool:
+            result.update({"ok": False, "error": "postgres yapılandırılmadı"})
+            return result
+
+        admin_ok = False
+        for table in tables:
+            step: dict = {}
+            try:
+                async with pool.acquire() as conn:
+                    # 1) tabloya bağlı indeksler (HNSW/IVFFlat dahil)
+                    rows = await conn.fetch(
+                        "SELECT indexname FROM pg_indexes WHERE tablename = $1", table)
+                    indexes = [r["indexname"] for r in rows]
+                    step["indexes"] = indexes
+                    # 2) süper kullanıcı yetkisi (REINDEX CONCURRENTLY için gerekmez ama VACUUM FULL için gerekir)
+                    admin_ok = bool(await conn.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname = current_user"))
+                    step["superuser"] = admin_ok
+                    for index in indexes:
+                        try:
+                            # Deyim transaction DIŞINDA olmalı: asyncpg autocommit.
+                            await conn.execute(f'REINDEX INDEX CONCURRENTLY "{index}"')
+                            step[index] = "yeniden kuruldu"
+                        except Exception as exc:
+                            step[index] = f"atlandı: {type(exc).__name__}: {exc}"
+                    try:
+                        await conn.execute(f'VACUUM (ANALYZE) "{table}"')
+                        step["vacuum"] = "tamam"
+                    except Exception as exc:
+                        step["vacuum"] = f"atlandı: {type(exc).__name__}: {exc}"
+            except Exception as exc:
+                result["errors"][table] = f"{type(exc).__name__}: {exc}"
+            result["steps"][table] = step
+
+        after = await snapshot(limit_tables=12)
+        result["after_mb"] = after.get("size_mb")
+        if before.get("size_mb") is not None and after.get("size_mb") is not None:
+            result["reclaimed_mb"] = round(float(before["size_mb"]) - float(after["size_mb"]), 1)
+        result["duration_sec"] = round(time.time() - started, 1)
+        result["tables"] = after.get("tables")
+        result["note"] = ("Disk geri kazanımı REINDEX/VACUUM ile sınırlıdır; tam küçülme için "
+                          "bakım penceresinde elle: VACUUM FULL memory_embeddings.")
+        return result

@@ -47,19 +47,31 @@ async def save_cmc_settings(request: Request):
         raise HTTPException(status_code=422, detail="API anahtarı boş olamaz.")
 
     probe = await cmc_client.validate_key(key)
-    if not probe["ok"]:
-        # Anahtarın kendisi sızdırılmaz; yalnız CMC'nin hata mesajı döner.
-        raise HTTPException(status_code=422, detail=f"Anahtar doğrulanamadı: {probe['error']}")
+    verified = bool(probe["ok"])
+    if not verified:
+        # Ağ hatası (status 0) ile GEÇERSİZ ANAHTARI ayır: konteyner dışa
+        # çıkamıyorsa kullanıcı anahtarı hiç kaydedemiyordu. Ağ hatasında
+        # kaydedip "doğrulanamadı" işaretliyoruz; 401/403 ise gerçekten kötü
+        # anahtardır ve kaydedilmez.
+        if int(probe.get("status") or 0) != 0:
+            raise HTTPException(status_code=422, detail=f"Anahtar doğrulanamadı: {probe['error']}")
 
     try:
-        await cmc_client.save_api_key(key)
+        await cmc_client.save_api_key(key, verified=verified)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     status = await cmc_client.key_status()
-    return {"ok": True, **status, "plan": probe.get("plan") or {}}
+    return {
+        "ok": True,
+        **status,
+        "verified": verified,
+        "plan": probe.get("plan") or {},
+        "warning": None if verified else ("Anahtar kaydedildi ama CMC'ye ulaşılamadı "
+                                          f"({probe.get('error')}). Sunucu dışa çıkışını kontrol edin."),
+    }
 
 
 @router.delete("/api/cmc/settings")

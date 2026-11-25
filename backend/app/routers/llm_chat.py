@@ -924,10 +924,53 @@ async def chat_prediction_learning_loop():
             logger.exception("Chat prediction learning loop error: %s", exc)
         await asyncio.sleep(120)
 
+#: Sembol bağlamı önbelleği (2026-11-25, kullanıcı: "LLM geç yanıtlıyor").
+#: `symbol_llm_context` her mesajda 7 zaman dilimi için snapshot hesaplıyordu
+#: (~0,5-1,5 sn). Aynı sembolle art arda sorularda bu maliyet tekrar ediyordu;
+#: kısa TTL ile tazelik korunur, tekrar maliyet sıfırlanır.
+_CTX_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_CTX_CACHE_MAX = 64
+
+
+def _ctx_ttl() -> float:
+    try:
+        return max(0.0, float(os.getenv("LLM_CONTEXT_TTL_SEC", "10")))
+    except ValueError:
+        return 10.0
+
+
+def _ctx_cache_get(symbol: str, timeframe: str):
+    ttl = _ctx_ttl()
+    key = (str(symbol).upper(), str(timeframe))
+    hit = _CTX_CACHE.get(key)
+    if not hit:
+        return None
+    ts, payload = hit
+    if ttl <= 0 or (time.time() - ts) > ttl:
+        _CTX_CACHE.pop(key, None)
+        return None
+    return dict(payload)
+
+
+def _ctx_cache_put(symbol: str, timeframe: str, payload: dict) -> None:
+    if _ctx_ttl() <= 0:
+        return
+    key = (str(symbol).upper(), str(timeframe))
+    if key not in _CTX_CACHE and len(_CTX_CACHE) >= _CTX_CACHE_MAX:
+        try:
+            _CTX_CACHE.pop(next(iter(_CTX_CACHE)))
+        except StopIteration:
+            pass
+    _CTX_CACHE[key] = (time.time(), payload)
+
+
 async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
     """Build a fresh, read-only multi-timeframe tool context for the LLM."""
     supported = ("1m", "5m", "15m", "30m", "1h", "4h", "1d")
     preferred = preferred_timeframe if preferred_timeframe in supported else "5m"
+    cached = _ctx_cache_get(symbol, preferred)
+    if cached is not None:
+        return cached
     snapshots = {}
     results = await asyncio.gather(*(symbol_analysis(symbol, tf) for tf in supported), return_exceptions=True)
     for tf, snapshot in zip(supported, results):
@@ -955,6 +998,17 @@ async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
                 ath = (await cmc_client.performance_map([symbol])).get(base) or {}
                 merged = dict(profile)
                 merged.update({k: v for k, v in ath.items() if v is not None})
+                if not merged.get("ath_distance_pct"):
+                    peak = (await cmc_client.peak_180d([symbol])).get(
+                        str(symbol).replace("_", "").upper()) or {}
+                    high = peak.get("peak_180d")
+                    price = merged.get("price_usd")
+                    if high and price:
+                        try:
+                            merged["peak_180d"] = high
+                            merged["peak_distance_pct"] = round((float(price) / float(high) - 1) * 100, 2)
+                        except (TypeError, ValueError, ZeroDivisionError):
+                            pass
                 selected["llm_context"]["cmc"] = {
                     "profile": merged,
                     "flags": cmc_client._flags(merged, ath),
@@ -963,6 +1017,7 @@ async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
                 }
         except Exception:
             pass
+        _ctx_cache_put(symbol, preferred, selected)
     return selected
 
 async def _learned_symbol_context(symbol: str, *, lesson_limit: int = 8, memory_query: str | None = None) -> dict:
@@ -3390,7 +3445,9 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
         return {"error": "Bilinmeyen araç"}
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL])
     tools = _filter_tools_for_role(tools, auth_user)
-    effective_max = _clamp_max_tokens(body.get("max_tokens"), getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
+    effective_max = _clamp_max_tokens(body.get("max_tokens"),
+                                         getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 1200) or 1200,
+                                         cap=getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 1200) or 1200)
     if body.get("stream") is True:
         async def events():
             try:
@@ -3822,8 +3879,12 @@ def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str
             # DENETİM 3.3 #27: `int(body.get(...) or 0)` → `1_000_000` tavanı
             # atlıyordu. Kelepçe aynı zamanda geçersiz/negatif değeri de default'a
             # düşürür; LLM_QUICK_LANE_MAX_TOKENS varsayılan olarak korunur.
-            configured_max = int(getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
-            effective_max = _clamp_max_tokens(body.get("max_tokens"), configured_max)
+            configured_max = int(getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 1200) or 1200)
+            # 2026-11-25: `cap` DA verilir; önceden yalnız default geçiliyordu ve
+            # global CHAT_MAX_TOKENS (4096) tavanı ezmiyordu → istemci 1e9
+            # gönderince 4096'ya kadar yanıt üretilebiliyordu (uzun cevap).
+            effective_max = _clamp_max_tokens(body.get("max_tokens"), configured_max,
+                                              cap=configured_max)
             async for event in llm_analysis.stream_chat(
                     quick, messages or [], quick_tools, quick_executor, body.get("active_skills"),
                     max_tokens=effective_max):
@@ -4304,7 +4365,9 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
             # sohbeti kendi listesini yönetir, burada yalnız genel sohbet.
             tools[:] = _resolve_active_tools(body, tools)
             if any(tool.get("function", {}).get("name") == "open_llm_paper_trade" for tool in tools):
-                effective_max = _clamp_max_tokens(body.get("max_tokens"), getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
+                effective_max = _clamp_max_tokens(body.get("max_tokens"),
+                                         getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 1200) or 1200,
+                                         cap=getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 1200) or 1200)
                 result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"), max_tokens=effective_max)
                 # GÖRÜNÜRLÜK (2026-09-18): `chat()` hataları YUTAR —
                 # {"status": "error"} veya {"status": "disabled"}; eskiden
@@ -4321,7 +4384,9 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
                 yield f"event: done\ndata: {json.dumps({'status': result.get('status', 'ok'), 'model': result.get('model')}, ensure_ascii=False)}\n\n"
                 return
             try:
-                effective_max = _clamp_max_tokens(body.get("max_tokens"), getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
+                effective_max = _clamp_max_tokens(body.get("max_tokens"),
+                                         getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 1200) or 1200,
+                                         cap=getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 1200) or 1200)
                 async for event in llm_analysis.stream_chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"), max_tokens=effective_max):
                     yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 await _persist_chat_memory(messages, layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=session_id)
@@ -4337,7 +4402,9 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
     # sınırları değişmez.
     tools = _filter_tools_for_role(tools, auth_user)
     tools = _resolve_active_tools(body, tools)
-    effective_max = _clamp_max_tokens(body.get("max_tokens"), getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
+    effective_max = _clamp_max_tokens(body.get("max_tokens"),
+                                         getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 1200) or 1200,
+                                         cap=getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 1200) or 1200)
     result = await llm_analysis.chat(context, messages, tools, execute_tool, body.get("active_skills"), max_tokens=effective_max)
     # GÖRÜNÜRLÜK (2026-09-18): buffer yolda da sağlayıcı hatası sessiz kalmasın —
     # {"status": "error"} dict'i istemcide boş yanıt gibi görünür. HTTP 502 ile

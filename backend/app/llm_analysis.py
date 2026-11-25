@@ -119,6 +119,14 @@ TRADE_MANAGER_RULES = """SCALPER TRADE MANAGER ZORUNLU KURALLARI:
 - Öğrenme tek işlemle kural değiştirmez; yeterli örnek ve kronolojik OOS doğrulaması olmadan yeni kuralı etkinleştirme.
 """
 OUTPUT_RULES = """ÇIKTI BİÇİMİ KURALLARI:
+- KISA YANIT BÜTÇESİ (TÜM ROLLER, EN ÖNCE GELİR): Yanıt **en fazla 6 satır / ~90 kelime**. Sorulmayan konuyu yazma; ek bölüm, ek tablo, ek uyarı, "istersen şunu da" cümlesi YOK. Kullanıcı "kısaca" dediyse 4 satırı geçme.
+- SEMBOL SORUSU ŞABLONU (kullanıcı "çıkar mı / ne kadar çıkar / durum ne" derse) TAM OLARAK bu 4 satır:
+  1) **Durum:** tek cümle (yön + fiyat + tek gerekçe).
+  2) **Yukarı:** tetik seviyesi → hedef (yüzde). Hedef yoksa "hedef yok, tetik yok" yaz.
+  3) **Aşağı:** bozulma seviyesi ve altında ne olur (tek cümle).
+  4) **Sonuç:** tek cümle — "çıkabilir / çıkmaz / bekle" ve neden.
+  Bu şablonda tablo, madde listesi, gösterge adı, geçmiş anlatımı YOK.
+- Uzun analiz yalnızca kullanıcı açıkça "detaylı", "tablo", "tam analiz" derse yapılır; o durumda bile en fazla 12 satır.
 - Yanıt dili YALNIZCA Türkçe'dür; İngilizce cümle, iç konuşma veya ara not yanıtın hiçbir yerinde geçemez.
 - Kompakt ve bilgi-yoğun yanıt ver: dolgu cümlesi, giriş paragrafı, özet-özeti, "aşağıda inceleyeceğim" gibi yapılar YOK.
 - KESİNLİKLE GÖSTERGE LİSTESİ DÖKÜMÜ YAPMA: RSI, MACD, EMA, ADX, DI, Supertrend, Aroon, Vortex, CCI, BB, CVD, trade imbalance, depth imbalance vb. göstergeleri asla tek tek sıralama! Kullanıcı açıkça sormadıkça bu kısaltmaları ve ham sayıları yazmak yasaktır; her zaman bunların piyasadaki doğrudan anlamına odaklan (örneğin 'alıcılar güçleniyor', 'destek bölgesinde dinlenme var', 'satıcı baskısı zayıf').
@@ -483,6 +491,33 @@ def _repair_tool_pairing(messages: list[dict]) -> list[dict]:
     return repaired
 
 
+async def execute_tool_calls(tool_calls: list[dict], tool_executor,
+                            timeout: float | None = None) -> list[tuple[str, dict]]:
+    """Bir turdaki TÜM araçları PARALEL çalıştırır; sonuç sırası çağrı sırasıdır.
+
+    NEDEN (2026-11-25, kullanıcı: "LLM çok geç yanıtlıyor"): sıralı çalıştırmada
+    3 araç = 3 × araç süresi. Paralelde toplam süre en yavaş araca iner.
+    Her araç ayrıca `timeout` ile sınırlanır (vars. `TOOL_CALL_TIMEOUT`).
+    """
+    limit = float(timeout or TOOL_CALL_TIMEOUT)
+
+    async def _one(call_item):
+        fn = (call_item or {}).get("function") or {}
+        name = fn.get("name", "")
+        try:
+            arguments = _decode_json_value(fn.get("arguments", "{}"), f"{name} araç argümanları")
+            if not isinstance(arguments, dict):
+                raise ValueError("Araç argümanları nesne olmalı")
+            result = await asyncio.wait_for(tool_executor(name, arguments), timeout=limit)
+        except asyncio.TimeoutError:
+            result = {"error": f"araç zaman aşımı ({limit} sn)", "tool": name, "retryable": True}
+        except Exception as tool_error:  # noqa: BLE001 — araç hatası turu düşürmemeli
+            result = {"error": str(tool_error), "tool": name, "retryable": False}
+        return name, result
+
+    return list(await asyncio.gather(*(_one(c) for c in (tool_calls or []))))
+
+
 def _retryable_provider_status(code: int) -> bool:
     """Sağlayıcının GEÇİCİ hataları: 429 ve 5xx.
 
@@ -558,6 +593,9 @@ def _clamp_max_tokens(value, default=None, cap=None):
     Çağıran yüzeyler (routers/llm_chat.py) kelepçeyi uygular; burada ikinci bir
     savunma katmanı var: negatif/0/geçersiz → default, aşırı büyük → cap.
     `cap` verilmezse `CHAT_MAX_TOKENS` (0 ise 4096) kullanılır.
+
+    2026-11-25: çağıran taraf `cap` (ör. hızlı şerit tavanı) verirse tavan O olur;
+    önceki davranış parametreyi yok sayıp global 4096'ya kırpıyordu.
     """
     if cap is None:
         cap = CHAT_MAX_TOKENS or 4096
@@ -883,22 +921,18 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
             if not tool_calls or not tool_executor:
                 break
             conversation.append(assistant)
-            for call_item in tool_calls:
-                fn = call_item.get("function") or {}; name = fn.get("name", "")
-                tool_stats["tool_calls"] += 1
-                try:
-                    arguments = _decode_json_value(fn.get("arguments", "{}"), f"{name} araç argümanları")
-                    if not isinstance(arguments, dict): raise ValueError("Araç argümanları nesne olmalı")
-                    # 2026-11-25: araç başına süre sınırı. Tek yavaş araç tüm
-                    # turu (ve SSE bağlantısını) kilitlemesin; aşımda modele
-                    # "zaman aşımı" sonucu döner, sohbet devam eder.
-                    tool_result = await asyncio.wait_for(
-                        tool_executor(name, arguments), timeout=TOOL_CALL_TIMEOUT)
-                except asyncio.TimeoutError:
-                    tool_result = {"error": f"araç zaman aşımı ({TOOL_CALL_TIMEOUT} sn)", "tool": name,
-                                   "retryable": True}
-                except Exception as tool_error:
-                    tool_result = {"error": str(tool_error), "tool": name, "retryable": False}
+
+            # 2026-11-25 (kullanıcı: "LLM çok geç yanıtlıyor"): araçlar SIRAYLA
+            # çalışıyordu; model 3 araç isterse süreler toplanıyordu. Artık aynı
+            # turdaki araçlar PARALEL çalışır (bkz. `execute_tool_calls`).
+            tool_stats["tool_calls"] += len(tool_calls)
+            started_tools = time.perf_counter()
+            results = await execute_tool_calls(tool_calls, tool_executor)
+            parallel_ms = int((time.perf_counter() - started_tools) * 1000)
+            if len(results) > 1:
+                logger.info("araç turu paralel: %d araç %d ms (round=%d)",
+                            len(results), parallel_ms, tool_round)
+            for call_item, (name, tool_result) in zip(tool_calls, results):
                 conversation.append({"role": "tool", "tool_call_id": call_item.get("id", name), "name": name,
                                      "content": json.dumps(_trim_tool_result(tool_result), ensure_ascii=False, default=str)})
             payload["messages"] = conversation
@@ -951,21 +985,36 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
                 raise RuntimeError("Sağlayıcı yanıtı boş döndü; reasoning içeriği başka dilde olduğu için iletilmedi (kural: yanıt yalnızca Türkçe)")
             else:
                 raise RuntimeError("Sağlayıcı yanıtı 2 denemede de boş döndü — metin ve reasoning içeriği yok")
-        # KESİLME KORUMASI (2026-09-18, kullanıcı raporu: yanıt "Let..." diye
-        # yarıda kalmıştı): GLM tipi interleaved-thinking modeller İngilizce iç
-        # konuşmasını content'e döküyor; verbose monolog bütçeyi tüketip
-        # finish_rule "length" ile ortadan kesiliyor ve sohbet yolu kesilme
-        # SESSİZ kabul ediyordu (metin olduğu için hiçbir kontrol yoktu).
-        # Artık: metin varsa tek "devam" turu ile kapatılır.
-        if finish_rule == "length":
+        # KESİLME KORUMASI (2026-09-18; 2026-11-25 kullanıcı: "token sınırı
+        # yüzünden yanıt yarım kalmasın"):
+        #   * `finish_reason == "length"` ise DEVAM turu(ları) yapılır; metin
+        #     birleştirilir (tek tur yetmiyordu — uzun yanıt ikinci turda da
+        #     kesilebiliyordu).
+        #   * Tur sayısı `LLM_CONTINUE_MAX_ROUNDS` (vars. 2), toplam uzunluk
+        #     `LLM_ANSWER_MAX_CHARS` (vars. 12000) ile sınırlı → sonsuz döngü yok.
+        #   * Tüm turlara rağmen hâlâ "length" ise metin korunur, sonuna " …"
+        #     eklenir ve sonuçta `truncated: True` işaretlenir (sessiz yarım
+        #     cümle yerine görünür bilgi).
+        try:
+            max_rounds = max(0, int(os.getenv("LLM_CONTINUE_MAX_ROUNDS", "2")))
+        except ValueError:
+            max_rounds = 2
+        max_chars = max(2000, int(os.getenv("LLM_ANSWER_MAX_CHARS", "12000")))
+        used_rounds = 0
+        while (finish_rule == "length" and used_rounds < max_rounds
+               and (text is None or len(text) < max_chars)):
+            used_rounds += 1
             continue_messages = list(conversation)
             if text:
                 continue_messages.append({"role": "assistant", "content": text})
-                continue_prompt = "Kaldığın yerden kaldığın cümleyi kesintisiz kapatıp devam et. Ara monolog ekleme; sadece final yanıtı tamamla."
+                continue_prompt = ("Kaldığın yerden, kaldığın cümleyi kesintisiz kapatıp devam et. "
+                                   "Ara monolog ekleme; sadece kalan yanıtı tamamla.")
             else:
                 continue_prompt = "Final yanıtı tamamla; ara monolog ekleme."
             continue_messages.append({"role": "user", "content": continue_prompt})
             continue_payload = {**payload, "messages": continue_messages}
+            if "max_tokens" in continue_payload:
+                continue_payload["max_tokens"] = max(int(continue_payload["max_tokens"]), 400)
             try:
                 cont_req = Request(url, data=json.dumps(continue_payload).encode(),
                                    headers={"Content-Type": "application/json",
@@ -975,15 +1024,28 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
                 cont_raw = await asyncio.get_running_loop().run_in_executor(_LLM_EXECUTOR, cont_response.read)
                 cont_data = response_data(_decode_provider_response(cont_raw))
                 cont_choices = cont_data.get("choices", []) if isinstance(cont_data, dict) else []
-                cont_text = _message_text(cont_choices[0].get("message") if cont_choices else None) or (cont_data.get("output_text") if isinstance(cont_data, dict) else None)
+                cont_message = cont_choices[0].get("message") if cont_choices else None
+                cont_text = _message_text(cont_message) or (cont_data.get("output_text") if isinstance(cont_data, dict) else None)
+                finish_rule = cont_choices[0].get("finish_reason") if cont_choices else None
                 if cont_text:
                     text = (text + cont_text) if text else cont_text
-                    logger.warning("kesilme koruması: devam turu uygulandı (round=%s, +%d karakter)", tool_round, len(cont_text))
+                    logger.warning("kesilme koruması: devam turu %d uygulandı (+%d karakter)",
+                                   used_rounds, len(cont_text))
+                else:
+                    break
             except Exception as cont_exc:
-                logger.warning("kesilme koruması: devam turu başarısız — mevcut metin iletildi (%s)", type(cont_exc).__name__)
+                logger.warning("kesilme koruması: devam turu başarısız — mevcut metin iletildi (%s)",
+                               type(cont_exc).__name__)
+                break
+        truncated = finish_rule == "length"
+        if truncated and text:
+            text = str(text).rstrip() + " …"
+            logger.warning("kesilme koruması: %d devam turuna rağmen yanıt uzunluk sınırında "
+                           "(toplam %d karakter) — '…' ile işaretlendi", used_rounds, len(text))
         tool_stats["estimated_tokens"] = _estimate_tokens(conversation)
         return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"],
-                "generated_at": time.time(), "tool_loop": tool_stats}
+                "generated_at": time.time(), "tool_loop": tool_stats,
+                "truncated": bool(truncated), "continue_rounds": used_rounds}
     except Exception as exc:
         return {"enabled": True, "status": "error", "text": None, "error": str(exc)}
 

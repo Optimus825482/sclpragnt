@@ -32,7 +32,7 @@ type Config = {
   top_gainers_auto_activate: boolean;
   top_gainers_limit: number;
   top_gainers_refresh_sec: number;
-} & MaBuySettings;
+};
 
 import ChatSettingsPanel from "./ChatSettingsPanel";
 import RequireAdmin from "../components/RequireAdmin";
@@ -40,7 +40,6 @@ import { useAuth } from "../lib/auth";
 
 import UserSettings from "../components/user/UserSettings";
 import { useIsUserView } from "../lib/adminView";
-import type { MaBuySettings } from "../components/admin/MaBuySettingsCard";
 import CmcSettings from "../components/CmcSettings";
 import DbStatsCard from "../components/DbStatsCard";
 
@@ -104,7 +103,7 @@ function SettingsPageInner() {
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab") as any;
-    if (tab && ["symbols", "radar", "app", "strategies", "auto-paper", "macd", "llm", "chat"].includes(tab)) {
+    if (tab && ["symbols", "radar", "app", "notifications", "strategies", "auto-paper", "macd", "llm", "chat"].includes(tab)) {
       setActiveTab(tab);
     }
   }, []);
@@ -760,16 +759,6 @@ function SettingsPageInner() {
               </div>
               <input type="number" min={0} max={100} step={1} value={numInput(draft.gainer_radar_min_score)} onChange={(e) => setDraft((d) => ({ ...d, gainer_radar_min_score: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none" />
             </div>
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="eyebrow">MONİTORİNG MİNİMUM SKOR</p>
-                <p className="text-xs text-bunker-muted mt-1">Bildirim gönderme eşiği (0-100 panel skoru, global). Bu değerin altındaki adaylar bildirilmez, radar listesinde gösterilmez ve raporlara katılmaz. Riskli (RISK-OFF) rejimde eşik 1.5× uygulanır ve etkin değer monitoring sayfasında gösterilir. Mevcut: {monitoringMinScore ?? "—"}.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <input type="number" min={0} max={100} step={1} value={monitoringMinScoreInput} onChange={(e) => setMonitoringMinScoreInput(e.target.value === "" ? "" : String(Number(e.target.value)))} className="w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none" />
-                <button type="button" onClick={saveMonitoringMinScore} disabled={savingMonitoringMinScore || !isAdmin} className="ui-button ui-button-primary px-3 py-1.5 text-xs disabled:opacity-50">{savingMonitoringMinScore ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
-              </div>
-            </div>
             <div className="mt-5 border-t border-bunker-800 pt-4">
               <p className="eyebrow">LİKİDİTE FİLTRESİ</p>
               <p className="text-xs text-bunker-muted mt-1">İşlem açılmadan önce düşük hacim ve sığ emir defteri engellenir.</p>
@@ -1153,10 +1142,10 @@ function SettingsPageInner() {
  * kartı BURAYA taşındı (Ayarlar > Radar). Aynı uçlar kullanılır:
  *   GET  /api/monitoring/settings   (okuma)
  *   PUT  /api/monitoring/settings   (yazım — merge semantiği, yalnız gönderilenler)
- * Ayrıca birleşik radar (Hız Avcısı + Yükseliş + Radar) anahtarları da buradadır:
- *   radar_combined_enabled / radar_unified_notify /
- *   radar_route_velocity_auto_through_auto_paper / radar_confluence_window_sec
- * Kapalıyken hiçbir üretim davranışı değişmez — anahtarlar Aşama 2 teslimatı için.
+ * 2026-11-25 (temizlik): hiçbir tüketicisi olmayan üç anahtar panelden kaldırıldı
+ * (`radar_combined_enabled`, `radar_route_velocity_auto_through_auto_paper`,
+ * `radar_confluence_window_sec` — config'te duruyorlar ama üretim davranışını
+ * etkilemiyorlardı). Yalnız `radar_unified_notify` burada kalır.
  *
  * NOT: Bu bileşen Monitoring'deki CANLI göstergeleri içermez; eşik rozeti, sağlık
  * çipleri, teşhis kartı ve "ŞİMDİ TARA"/"BİLDİRİM SIFIRLA" operatörlük eylemleri
@@ -1171,7 +1160,6 @@ function RadarSettingsPanel() {
   const [targetPctInput, setTargetPctInput] = useState<string>("");
   const [quietStart, setQuietStart] = useState("");
   const [quietEnd, setQuietEnd] = useState("");
-  const [confluenceInput, setConfluenceInput] = useState<string>("");
   // KOMBİNE YÜKSELİŞ (2026-10-11): tek WhatsApp kanalı ayarları (env DEĞİL, panel).
   const [combinedTopN, setCombinedTopN] = useState<string>("");
   const [combinedMinScore, setCombinedMinScore] = useState<string>("");
@@ -1190,7 +1178,6 @@ function RadarSettingsPanel() {
       if (data?.min_target_pct != null) setTargetPctInput(String(data.min_target_pct));
       if (data?.quiet_hours_start) setQuietStart(String(data.quiet_hours_start));
       if (data?.quiet_hours_end) setQuietEnd(String(data.quiet_hours_end));
-      if (data?.radar_confluence_window_sec != null) setConfluenceInput(String(data.radar_confluence_window_sec));
       if (data?.combined_rising_top_n != null) setCombinedTopN(String(data.combined_rising_top_n));
       if (data?.combined_rising_min_score != null) setCombinedMinScore(String(data.combined_rising_min_score));
       if (data?.combined_rising_start_hour != null) setCombinedStart(String(data.combined_rising_start_hour));
@@ -1250,12 +1237,6 @@ function RadarSettingsPanel() {
   const saveQuietHours = async () => {
     if ((quietStart && !quietEnd) || (!quietStart && quietEnd)) { setError("Sessiz saat başlangıç ve bitiş birlikte girilmeli."); return; }
     await put({ quiet_hours_start: quietStart || null, quiet_hours_end: quietEnd || null }, "Sessiz saatler kaydedildi.");
-  };
-
-  const saveConfluence = async () => {
-    const val = Number(confluenceInput);
-    if (!Number.isFinite(val) || val < 60 || val > 21600) { setError("Çakışma penceresi 60-21600 sn arasında olmalı."); return; }
-    await put({ radar_confluence_window_sec: Math.round(val) }, "Çakışma penceresi kaydedildi.");
   };
 
   // KOMBİNE YÜKSELİŞ: tüm kombine ayarları TEK istekte kaydet (doğrulama sunucuda).
@@ -1357,28 +1338,10 @@ function RadarSettingsPanel() {
             <p className="text-xs text-bunker-muted mt-1">Üç sinyal kaynağı tek karar noktasında birleşir: her kaynak kendi kalibre eşiğini korur, sembol herhangi birini geçerse adaydır. İki kaynak aynı pencere içinde geçerse <span className="font-mono">confluence</span> işaretlenir. Yeni eşik icat edilmez.</p>
             <div className="mt-3 flex flex-wrap items-end gap-3">
               <div>
-                <p className="eyebrow text-bunker-muted">BİRLEŞİK MOTOR</p>
-                {toggle("radar_combined_enabled", settings.radar_combined_enabled, "Birleşik motor açıldı", "Birleşik motor kapatıldı")}
-              </div>
-              <div>
                 <p className="eyebrow text-bunker-muted">TEK TİP BİLDİRİM</p>
                 {toggle("radar_unified_notify", settings.radar_unified_notify, "Tek tip bildirim açıldı", "Tek tip bildirim kapatıldı")}
                 <p className="text-[11px] text-bunker-muted mt-1 max-w-[26ch]">Aynı sembol için iki ayrı push yerine tek bildirim (tag: radar-SEMBOLOLUŞUR).</p>
               </div>
-              <div>
-                <p className="eyebrow text-bunker-muted">OTONOM → AUTO PAPER</p>
-                {toggle("radar_route_velocity_auto_through_auto_paper", settings.radar_route_velocity_auto_through_auto_paper, "Yönlendirme açıldı", "Yönlendirme kapatıldı")}
-                <p className="text-[11px] text-bunker-muted mt-1 max-w-[26ch]">Tüm otonom paper pozisyonları tek defterde; max 3 açık pozisyon ve B1-B4 merdiveniyle kapanır.</p>
-              </div>
-              <div>
-                <p className="eyebrow text-bunker-muted">ÇAKIŞMA PENCERESİ (SN)</p>
-                <input type="number" min={60} max={21600} step={60} value={confluenceInput}
-                  onChange={(e) => setConfluenceInput(e.target.value)} placeholder="1800"
-                  title="İki kaynağın aynı olay sayılması için maksimum aralık (60-21600 sn)"
-                  className={numInputCls} />
-              </div>
-              <button type="button" onClick={saveConfluence} disabled={saving}
-                className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
             </div>
           </div>
 

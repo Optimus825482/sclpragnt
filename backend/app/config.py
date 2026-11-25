@@ -1155,7 +1155,10 @@ class Config:
     # embedding/pgvector, journal agregasyonu, araç döngüsü) ATLAR; tek provider
     # çağrısı yapar ve araçsız yolda sağlayıcı akışı jeton jeton akar. Kısa yanıt
     # için üst sınır: uzun cevap = daha yavaş ilk-jeton ve boşa maliyet.
-    LLM_QUICK_LANE_MAX_TOKENS = max(128, int(os.getenv("LLM_QUICK_LANE_MAX_TOKENS", "4096")))
+    # 2026-11-25 (kullanıcı: "çok uzun cevap veriyor"): hızlı şerit çıktısı
+    # kısaltıldı. 4096 token ≈ 3000 kelime; kısa cevap için 1200 yeterli ve
+    # üretim süresini de düşürür. Uzun analiz isteyen `...=4096` ile açar.
+    LLM_QUICK_LANE_MAX_TOKENS = max(128, int(os.getenv("LLM_QUICK_LANE_MAX_TOKENS", "1200")))
     LLM_QUICK_LANE_ENABLED = os.getenv("LLM_QUICK_LANE_ENABLED", "true").lower() == "true"
     # Bellek bağlamı OPSİYONEL bağlamdır; embedding sağlayıcısı yavaşsa yanıtı
     # bekletmemeli (embedding çağrısının kendi timeout'u 30 sn).
@@ -1284,7 +1287,12 @@ class Config:
     # Otonom açılışta effective_sl = max(sl_pct, min(TAVAN, 1.2×ATR%)) — ATR
     # stop'u yalnız GENİŞLETİR (asla daraltmaz), genişletme bu tavanla sınırlı.
     # Eski kod tavan yerine sl_pct'nin kendisini kullanıyordu → ATR ölü koddu.
-    AUTO_PAPER_ATR_SL_CAP_PCT = float(os.getenv("AUTO_PAPER_ATR_SL_CAP_PCT", "2.8"))
+    AUTO_PAPER_ATR_SL_CAP_PCT = float(os.getenv("AUTO_PAPER_ATR_SL_CAP_PCT", "3.2"))
+    # 2026-11-25: oynaklık boyut ölçeği — referans stop %1,8; çarpan yalnız küçültür.
+    AUTO_PAPER_VOL_SIZE_REF_SL_PCT = float(os.getenv("AUTO_PAPER_VOL_SIZE_REF_SL_PCT", "1.8"))
+    # 2026-11-25: küme freni — aynı pencerede en fazla N otonom giriş.
+    AUTO_PAPER_CLUSTER_WINDOW_MIN = float(os.getenv("AUTO_PAPER_CLUSTER_WINDOW_MIN", "5"))
+    AUTO_PAPER_CLUSTER_MAX_ENTRIES = int(os.getenv("AUTO_PAPER_CLUSTER_MAX_ENTRIES", "2"))  # 2026-11-25: 15m ATR tabanı için 2.8→3.2
     AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "1.5"))  # Eski varsayılan 2.0 → 1.5 (2026-09-17, Erkan kararı: radar/velocity bildirimlerinin hedefi MFE tavanına otursun; replay geometrisi + canlı 50 işlem verisi).
     AUTO_PAPER_MIN_ORDER_TRY = float(os.getenv("AUTO_PAPER_MIN_ORDER_TRY", "50.0"))
     # Hedef tavanı (2026-10-07): bildirimin kendi `target_pct`'i bu değeri aşarsa
@@ -1403,6 +1411,8 @@ class Config:
     # 2026-09-28 kârlılık düzeltmesi: erken breakeven kâr korumasını trailing'den
     # ÖNCE devreye sokar — trailing aktif olduğunda stop zaten maliyet üstünde olur
     # ve zarar riski sıfırlanır. Varsayılan %1.0.
+    # 2026-11-25: ÖLÇÜM (Sinyal İzleme, 4 tarama/90 gün) trailing 2,0/1,0'ı
+    # "KORUNDU" diye işaretledi → deneme geri alındı.
     AUTO_PAPER_BREAKEVEN_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_TRIGGER_PCT", "1.0"))
     # Trailing stop modülü (kâr takibi): pozisyon trailing_trigger_pct kadar
     # kara geçince aktifleşir ve fiyatı trailing_gap_pct geriden takip eder.

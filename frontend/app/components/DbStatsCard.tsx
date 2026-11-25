@@ -54,6 +54,38 @@ export default function DbStatsCard() {
     load();
   }, [load]);
 
+  const deepClean = async () => {
+    if (busy) return;
+    if (!window.confirm("Hafıza vektörleri için derin temizlik çalışacak (budama + indeks yeniden kurma + VACUUM). Uzun sürebilir ve bu süre boyunca yavaşlama olabilir. Devam?")) return;
+    setBusy(true); setError(""); setNote("");
+    try {
+      const r = await apiRequest(`${API_BASE}/api/system/db-deep-clean`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tables: ["memory_embeddings"] }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : "Derin temizlik başarısız");
+      const ok = d?.ok !== false;
+      const extra = d?.reclaimed_mb !== undefined ? ` · geri kazanım ${d.reclaimed_mb} MB` : "";
+      const dur = d?.duration_sec !== undefined ? ` · ${d.duration_sec} sn` : "";
+      setNote(ok
+        ? `Derin temizlik bitti${dur}${extra}.`
+        : `Derin temizlik kısmen çalıştı: ${d?.error || "hata"}`);
+      if (d?.steps) {
+        const failed = Object.values(d.steps).flatMap((st: any) =>
+          Object.entries(st || {}).filter(([, v]) => typeof v === "string" && v.startsWith("atlandı"))
+        );
+        if (failed.length) setNote((prev) => `${prev} Atlandı: ${failed.map(([k]) => k).join(", ")}`);
+      }
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Derin temizlik başarısız");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const prune = async () => {
     if (busy) return;
     setBusy(true); setError(""); setNote("");
@@ -112,6 +144,9 @@ export default function DbStatsCard() {
           </button>
           <button type="button" onClick={prune} disabled={busy} className="ui-button ui-button-primary">
             {busy ? "ÇALIŞIYOR…" : "BUDAMA ÇALIŞTIR"}
+          </button>
+          <button type="button" onClick={deepClean} disabled={busy} className="ui-button ui-button-secondary">
+            HAFIZA DERİN TEMİZLİK
           </button>
         </div>
       </div>

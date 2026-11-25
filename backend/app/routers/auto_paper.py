@@ -136,6 +136,26 @@ def _effective_sl_pct(sl_pct: float, atr_pct: float, cap_pct: float | None = Non
     return max(float(sl_pct), min(cap, 1.2 * float(atr_pct)))
 
 
+def _vol_size_multiplier(sl_frac: float) -> float:
+    """Stop genişliğine göre pozisyon çarpanı (yüksek oynaklıkta küçük pozisyon).
+
+    2026-11-25 (kullanıcı: "kâr etsin"): stop ATR ile genişledikçe TL riski de
+    büyüyordu. Referans stopa (`AUTO_PAPER_VOL_SIZE_REF_SL_PCT`, vars. %1,8)
+    göre ölçeklenir: çarpan = ref/stop, [0,5 .. 1,0] aralığına kırpılır.
+    Böylece işlem başına TL riski kabaca sabit kalır (risk-parite).
+
+    NEDEN üst sınır 1,0: dar stopla pozisyonu BÜYÜTMEK kaldıraç etkisi yaratır
+    (gerçek veride dar stoplar gürültüde kesiliyordu) — yalnız küçültme yapılır.
+    """
+    try:
+        ref = float(getattr(config, "AUTO_PAPER_VOL_SIZE_REF_SL_PCT", 1.8)) / 100.0
+        if ref <= 0 or sl_frac is None or sl_frac <= 0:
+            return 1.0
+        return max(0.5, min(1.0, ref / float(sl_frac)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 # 2026-10-27 (işlem planı): bildirimin dondurulmuş `trade_plan`'ı. Yalnız plan sözlükse ve
 # "veri_yetersiz" uyarısı yoksa uygulanır; aksi halde bugünkü davranış birebir korunur.
 # İSTİSNA: `max_amount_try` tavanı defterden türer (istatistikten bağımsız) → "veri_yetersiz"
@@ -863,6 +883,24 @@ async def _cooldown_gate(notification: dict, symbol: str, settings: dict) -> dic
     if now_ts < sl_cooldown_until:
         return _blocked(symbol, "stop_loss_cooldown", remaining_sec=round(sl_cooldown_until - now_ts, 0))
 
+    # C) KÜME FRENİ (2026-11-25): aynı kısa pencerede çok sayıda otonom giriş
+    # korelasyonlu risk üretiyordu (aynı dakikada 3-4 sembol, birlikte stop).
+    # Varsayılan: 5 dakikada en fazla 2 açılış. 0 = kapalı.
+    try:
+        cluster_window_min = float(settings.get("cluster_window_minutes",
+                                                getattr(config, "AUTO_PAPER_CLUSTER_WINDOW_MIN", 5.0)) or 0)
+        cluster_max = int(settings.get("cluster_max_entries",
+                                       getattr(config, "AUTO_PAPER_CLUSTER_MAX_ENTRIES", 2)) or 0)
+        if cluster_window_min > 0 and cluster_max > 0:
+            opened = await database.count_auto_paper_opened_since(now_ts - cluster_window_min * 60.0)
+            if opened >= cluster_max:
+                logger.info("auto_paper %s: küme freni — son %.0f dk içinde %d açılış",
+                            symbol, cluster_window_min, opened)
+                return _blocked(symbol, "cluster_limit", entries=opened,
+                                window_min=cluster_window_min, limit=cluster_max)
+    except Exception as cluster_exc:
+        logger.debug("auto_paper %s: küme freni kontrolü atlandı: %s", symbol, cluster_exc)
+
     win_cooldown_min = float(settings.get("post_win_cooldown_minutes", getattr(config, "AUTO_PAPER_POST_WIN_COOLDOWN_MINUTES", 15.0)))
     win_cooldown_until = _post_win_cooldowns.get(symbol, 0.0)
     if win_cooldown_min > 0 and now_ts >= win_cooldown_until:
@@ -1186,24 +1224,52 @@ def _exit_apply_volume_breakout(symbol: str, current_price: float, target_pct: f
     return target_pct
 
 
+def _atr_pct_for(symbol: str, price: float, timeframe: str) -> float | None:
+    """Verilen zaman diliminde ATR yüzdesi (yoksa None)."""
+    try:
+        from app.technical_analysis import _atr
+        kline = market.get_ut_kline(symbol, timeframe)
+        if not kline:
+            return None
+        highs = kline.get("highs") or []
+        lows = kline.get("lows") or []
+        closes = kline.get("closes") or []
+        if len(closes) < 15 or not price:
+            return None
+        atr_val = _atr(highs, lows, closes, 14)
+        if not atr_val:
+            return None
+        return float(atr_val) / float(price)
+    except Exception:
+        return None
+
+
 def _exit_volatility_sl(symbol: str, current_price: float, sl_pct: float,
                         volatility_sl_enabled: bool) -> float:
-    """Volatiliteye duyarlı SL (ATR koruması, ATR stop'u yalnız GENİŞLETİR)."""
+    """Volatiliteye duyarlı SL (ATR koruması; yalnız GENİŞLETİR).
+
+    2026-11-25 (kullanıcı: "otonom işlemler neden zarar ediyor"): yalnız 5m ATR
+    kullanılıyordu → stop 5 dakikalık gürültüye göre 1,7-1,8% çıkıyor, oysa
+    işlemler 15dk-1saat ölçeğinde yönetiliyor. Gerçek veride işlemlerin %57'si
+    bu dar stopla kesildi. Artık 15m ATR de dikkate alınır:
+        taban = max(1,2 × ATR5m, 0,9 × ATR15m)
+    Tavan (`AUTO_PAPER_ATR_SL_CAP_PCT`, vars. 3,2%) genişlemeyi sınırlar.
+    """
     effective_sl_pct = sl_pct
     if not volatility_sl_enabled:
         return effective_sl_pct
     try:
-        from app.technical_analysis import _atr
-        kline = market.get_ut_kline(symbol, "5m") or market.get_ut_kline(symbol, "1m")
-        if kline:
-            highs = kline.get("highs") or []
-            lows = kline.get("lows") or []
-            closes = kline.get("closes") or []
-            if len(closes) >= 15:
-                atr_val = _atr(highs, lows, closes, 14)
-                if atr_val and current_price > 0:
-                    atr_pct = atr_val / current_price
-                    effective_sl_pct = _effective_sl_pct(sl_pct, atr_pct)
+        atr5 = _atr_pct_for(symbol, current_price, "5m") or _atr_pct_for(symbol, current_price, "1m")
+        atr15 = _atr_pct_for(symbol, current_price, "15m")
+        # `_effective_sl_pct` ATR'yi 1,2 ile çarpar; burada HAM ATR eşdeğeri
+        # verilir: max(1,2×ATR5m, 0,9×ATR15m) = 1,2 × max(ATR5m, 0,75×ATR15m).
+        candidates = []
+        if atr5:
+            candidates.append(atr5)
+        if atr15:
+            candidates.append(0.75 * atr15)
+        if candidates:
+            effective_sl_pct = _effective_sl_pct(sl_pct, max(candidates))
     except Exception as atr_err:
         logger.debug("auto_paper %s: ATR stop hesaplama atlandı: %s", symbol, atr_err)
     return effective_sl_pct
@@ -1423,6 +1489,20 @@ async def _calc_exit_plan(symbol: str, notification: dict, current_price: float,
     if plan_exit is not None:
         target_pct = plan_exit["target_pct"]
 
+    # D) Stop genişliğine göre boyut: ATR ile genişleyen stopta TL riski sabit
+    # kalsın (çarpan yalnız KÜÇÜLTÜR). Miktar/fill yeniden hesaplanır.
+    # Yalnız ATR stopunun uygulandığı işlemlerde (plan/profil YOKKEN) ölçekle:
+    # plan/profil işlemlerinin boyutu kendi risk kuralıyla belirlenir.
+    vol_mult = _vol_size_multiplier(effective_sl_pct) if volatility_sl_enabled else 1.0
+    if vol_mult < 1.0:
+        order_value = order_value * vol_mult
+        fill_entry, quantity, net_order_value = _exit_fill_and_quantity(current_price, order_value)
+        if quantity <= 0:
+            return None, _blocked(symbol, "zero_quantity", price=current_price)
+        take_profit_price = fill_entry * (1 + target_pct / 100 + cost_markup)
+        logger.info("auto_paper %s: oynaklık boyut çarpanı %.2f (stop %.2f%%)",
+                    symbol, vol_mult, effective_sl_pct * 100)
+
     stop_loss_price = fill_entry * (1 - effective_sl_pct)
     now = time.time()
 
@@ -1463,6 +1543,18 @@ def _build_trade_record(symbol: str, notification: dict, plan: dict, settings: d
     notification_key = notification.get("notification_key")
 
     fill_entry = plan["fill_entry"]
+    try:
+        from app.state import analyzer as _analyzer
+        volume_ratio_val = _analyzer._entry_volume_ratio(symbol, None)
+    except Exception:
+        volume_ratio_val = None
+    # 2026-11-25: giriş OI değişimi (kanıtta en güçlü filtre) artık KAYDEDİLİR —
+    # yoksa "OI'de elendi/geçti" sayaçları ölçülemiyor.
+    try:
+        from app.derivatives_service import get_cached_squeeze_confirmation
+        oi_change_val = (get_cached_squeeze_confirmation(symbol) or {}).get("oi_change_1h_pct")
+    except Exception:
+        oi_change_val = None
     trade_data = {
         "symbol": symbol,
         "side": "LONG",
@@ -1486,6 +1578,11 @@ def _build_trade_record(symbol: str, notification: dict, plan: dict, settings: d
         "exit_profile": plan["trade_exit_profile"],
         "max_hold_minutes": plan["trade_max_hold"],
         "plan_context": plan["plan_context"],
+        # 2026-11-25 (031): kalibrasyonun hacim bandını eşleyebilmesi için giriş
+        # hacim oranı KAYDEDİLİR. Canlı giriş yoluyla AYNI hesap
+        # (`analyzer._entry_volume_ratio`); alınamazsa NULL kalır (kova "unknown").
+        "entry_volume_ratio": volume_ratio_val,
+        "oi_change_pct": oi_change_val,
         "created_at": now,
         "updated_at": now,
     }
@@ -2253,6 +2350,14 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
                 logger.warning("auto_paper %s akış evrenine ekleme koruması: %s", symbol, exc)
     if not price_is_fresh:
         return
+
+    # 3b) MAE/MFE ölçümü (2026-11-25): stop aşımı mı, dar stop mu?
+    # Yalnız ekstrem iyileşince DB'ye yazılır (bkz. database.update_auto_paper_excursions).
+    try:
+        gross_now = ((current_price - entry_price) / entry_price * 100) if entry_price else 0.0
+        await database.update_auto_paper_excursions(trade_id, min(0.0, gross_now), max(0.0, gross_now))
+    except Exception as exc:
+        logger.debug("auto_paper %s MAE/MFE güncellenemedi: %s", symbol, exc)
 
     # 4) TP-primary + SL + tepe güncellemesi
     closed, peak_price = await _check_tp_sl_exit(trade, symbol, trade_id, now, current_price, settings)
