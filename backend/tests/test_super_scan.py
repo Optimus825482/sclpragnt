@@ -37,6 +37,7 @@ def test_super_scan_ranks_and_filters():
     assert top["source_count"] == 2
     assert top["confluence"] is True
     assert out["scanned"] == 4 and out["eligible"] == 2
+    assert out["diagnostics"]["by_source"] == {"velocity": 3, "rising": 1}
 
 
 def test_super_scan_uses_cache():
@@ -53,6 +54,34 @@ def test_super_scan_uses_cache():
         asyncio.run(monitoring.radar_super_scan(limit=5))  # önbellek
 
     assert calls["n"] == 1, "30 sn içinde ikinci tarama yapılmamalı"
+
+
+def test_super_scan_applies_request_options_to_shared_scan(monkeypatch):
+    from app import binance_tr_public
+
+    scan = AsyncMock(return_value=[
+        {"symbol": f"COIN{i}_TRY", "price": 10.0, "unified_score": 75.0 - i}
+        for i in range(12)
+    ])
+    monkeypatch.setattr(monitoring, "_combined_scan_rows", scan)
+    monkeypatch.setattr(binance_tr_public, "ticker_24h", AsyncMock(return_value=[]))
+    monkeypatch.setitem(monitoring._SUPER_SCAN_CACHE, "payload", None)
+    monkeypatch.setitem(monitoring._SUPER_SCAN_TASK, "task", None)
+
+    async def scenario():
+        background, radar = await asyncio.gather(
+            monitoring.radar_super_scan(limit=6),
+            monitoring.radar_super_scan(limit=12),
+        )
+        strict = await monitoring.radar_super_scan(limit=12, min_score=72.0)
+        return background, radar, strict
+
+    background, radar, strict = asyncio.run(scenario())
+    assert len(background["items"]) == 6
+    assert len(radar["items"]) == radar["eligible"] == 12
+    assert len(strict["items"]) == strict["eligible"] == 4
+    assert background["generated_at"] == radar["generated_at"] == strict["generated_at"]
+    scan.assert_awaited_once()
 
 
 def test_shallow_liquidity_is_excluded():

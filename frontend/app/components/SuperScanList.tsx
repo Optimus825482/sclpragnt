@@ -18,7 +18,7 @@ import SymbolLink from "./SymbolLink";
 type SuperScanDiag = { rows?: number; blocked?: number; below_score?: number; below_atr?: number;
   thin_volume?: number; by_source?: Record<string, number>; elapsed_ms?: number };
 type SuperScanPayload = { items?: SuperRow[]; scanned?: number; eligible?: number; generated_at?: number;
-  pending?: boolean; message?: string; diagnostics?: SuperScanDiag };
+  pending?: boolean; detail?: string; diagnostics?: SuperScanDiag };
 
 type SuperRow = {
   symbol: string;
@@ -36,6 +36,7 @@ type SuperRow = {
 };
 
 const REFRESH_MS = 30_000;
+const PENDING_REFRESH_MS = 15_000;
 
 function fmtPrice(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -58,13 +59,20 @@ export default function SuperScanList() {
       // 2026-11-25: tarama soğukken uzun sürebiliyor → 60 sn tanınır; backend
       // 20 sn'de yanıt veremezse `pending` döner ve arka planda ısıtır.
       const r = await apiRequest(`${API_BASE}/api/radar/super-scan?limit=12`, { cache: "no-store", timeoutMs: 60_000 });
-      const d: SuperScanPayload = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(typeof (d as any)?.detail === "string" ? (d as any).detail : "Tarama alınamadı");
-      setRows(Array.isArray(d?.items) ? d.items : []);
-      setMeta({ scanned: d?.scanned, eligible: d?.eligible, generated_at: d?.generated_at, diag: d?.diagnostics });
-      setPending(Boolean(d?.pending));
+      const d: SuperScanPayload | null = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(typeof d?.detail === "string" ? d.detail : "Tarama alınamadı");
+      if (d?.pending === true) {
+        setPending(true);
+        setError(null);
+        return;
+      }
+      if (!Array.isArray(d?.items)) throw new Error("Tarama yanıtı okunamadı");
+      setRows(d.items);
+      setMeta({ scanned: d.scanned, eligible: d.eligible, generated_at: d.generated_at, diag: d.diagnostics });
+      setPending(false);
       setError(null);
     } catch (err) {
+      setPending(false);
       setError(err instanceof Error ? err.message : "Tarama alınamadı");
     } finally {
       inFlight.current = false;
@@ -74,25 +82,16 @@ export default function SuperScanList() {
   useEffect(() => {
     load();
   }, [load]);
-  useVisibleInterval(load, REFRESH_MS);
-
-  // Tarama hazırlanıyorsa 15 sn sonra bir kez daha dene.
-  useEffect(() => {
-    if (!pending) return;
-    const t = setTimeout(() => load(), 15_000);
-    return () => clearTimeout(t);
-  }, [pending, load]);
+  useVisibleInterval(load, pending ? PENDING_REFRESH_MS : REFRESH_MS);
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-bunker-muted">
-          {pending
-            ? "Tüm tarayıcılar tek listede · tarama hazırlanıyor…"
-            : <>Tüm tarayıcılar tek listede · {meta.scanned ?? "…"} aday tarandı,{" "}
-                {meta.eligible ?? "…"} uygun
-                {meta.generated_at ? ` · ${new Date(meta.generated_at * 1000).toLocaleTimeString("tr-TR")}` : ""}
-              </>}
+          {rows === null ? "Tüm tarayıcılar tek listede" : <>
+            Son tarama · {meta.scanned ?? "…"} aday tarandı, {meta.eligible ?? "…"} uygun
+            {meta.generated_at ? ` · ${new Date(meta.generated_at * 1000).toLocaleTimeString("tr-TR")}` : ""}
+          </>}
         </p>
         <button type="button" onClick={load} className="ui-button ui-button-secondary">
           YENİLE
@@ -111,14 +110,14 @@ export default function SuperScanList() {
           <li><span className="font-mono text-white">hedef %X</span>: bildirimin kâr hedefi · <span className="font-mono text-white">X dk</span>: beklenen tutma süresi.</li>
           <li><span className="font-mono text-sky-300">AI · DePIN · Meme…</span>: CMC sektör etiketleri.</li>
           <li><span className="font-mono text-amber-300">HACIM_PATLAMASI</span>: 24s hacim +%100’den fazla arttı · <span className="font-mono text-amber-300">ATH_YAKIN</span>: 180 günlük zirveye %3 içinde · <span className="font-mono text-amber-300">7G_ASIRI_ISINMA</span>: 7 günde +%40 üzeri (skordan −5) · <span className="font-mono text-amber-300">7G_SERT_DUSUS</span>: 7 günde −%25 altı · <span className="font-mono text-amber-300">DUSUK_SIRALAMA</span>: CMC sıralaması 300’ün altında.</li>
-          <li>Liste 90 saniyede bir, sekmeyi açtığında tazelenir (YENİLE anlık). Bildirim ve otonom işlem <b>yalnız</b> bu listeden beslenir.</li>
+          <li>Liste sekmeyi açtığında ve sekme açıkken 30 saniyede bir tazelenir. Bildirim ve otonom işlem <b>yalnız</b> bu listeden beslenir.</li>
         </ul>
       </details>
 
       {error && <p className="rounded-lg bg-neon-red/10 p-3 text-sm text-neon-red">{error}</p>}
       {pending && !error && (
-        <p className="py-6 text-center text-sm text-amber-300">
-          Tarama hazırlanıyor… 15 saniye içinde otomatik yenilenecek (YENİLE ile hemen deneyebilirsin).
+        <p role="status" className="py-6 text-center text-sm text-amber-300">
+          Tarama hazırlanıyor… Sonuç 15 saniyede bir kontrol ediliyor.
         </p>
       )}
       {rows == null && !pending && !error && <p className="py-6 text-center text-sm text-bunker-muted">Taranıyor…</p>}
