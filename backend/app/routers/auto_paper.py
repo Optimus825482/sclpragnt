@@ -574,7 +574,12 @@ async def restore_runtime_state() -> None:
 # Core: bildirim → pozisyon açılışı
 # ---------------------------------------------------------------------------
 async def _push_gate(notification: dict) -> dict | None:
-    """2026-10-18 (AUTO_PAPER_ONLY_ON_PUSH, kullanıcı kararı): otonom giriş yalnız push bildirimi GÖNDERİLMİŞ sinyalde.
+    """Sessizlik nabzı kapısı + (isteğe bağlı) push şartı.
+
+    2026-11-25 (kullanıcı): `AUTO_PAPER_ONLY_ON_PUSH` VARSAYILAN KAPALI. Otonom
+    giriş artık "push gönderildi mi" şartına bağlı değil — giriş kalitesi
+    skor/ATR/OI/kalite/küme kapılarıyla belirlenir. Push yalnız bildirimdir.
+    (Eski davranış 2026-10-18: yalnız push'lanmış sinyalde giriş.)
 
     Eskiden yalnız velocity yolunda (çağıran tarafta) uygulanıyordu; radar teslimi, hızlı yol, yükseliş,
     LLM-sonrası ve koruma-sonrası yeniden açma yolları kapıyı atlıyordu. Artık TÜM yollar buradan geçer.

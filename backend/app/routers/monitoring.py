@@ -7739,6 +7739,89 @@ def stop_monitoring_loop():
 # Yükselenler (2026-11-25, kullanıcı isteği): radar sayfasında "Yükselenler"
 # sekmesi için TR'nin kendi 24s ticker'ından ilk 20.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# SÜPER TARAMA (2026-11-25, kullanıcı): tüm tarama algoritmaları TEK listede.
+# ---------------------------------------------------------------------------
+_SUPER_SCAN_CACHE: dict = {"generated_at": 0.0, "payload": None}
+
+
+@router.get("/api/radar/super-scan")
+async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
+                           min_atr_pct: float = 0.0, force: bool = False):
+    """Tüm tarayıcıları birleştirip TEK sıralı liste döndürür (salt okunur).
+
+    KAYNAKLAR: hız avcısı (5/15 dk), günlük momentum, short-squeeze, snapback,
+    erken keşif, yükseliş eğilimi, MACD MTF — `unified_scan.combined_scan_rows`
+    hepsini zaten birleştiriyor; bu uç onu KALİTE KAPILARINDAN geçirip
+    tek skorla sıralar:
+
+      skor = unified_score + 6×(teyit eden kaynak sayısı)
+             + CMC bonusu (hacim patlaması +5, zirveye yakın +3, 7g aşırı ısınma −5)
+      eleme: blocked_by dolu · skor < min_score · ATR < min_atr_pct (veri varsa)
+
+    30 sn önbellek (kuvvetli tarama pahalı); `force=1` ile atlanır.
+    """
+    import time as _time
+
+    ttl = 30.0
+    cached = _SUPER_SCAN_CACHE
+    if (not force and cached.get("payload") is not None
+            and (_time.time() - float(cached.get("generated_at") or 0)) < ttl):
+        payload = cached["payload"]
+    else:
+        rows = await _combined_scan_rows()
+        scored = []
+        for row in rows or []:
+            if row.get("blocked_by"):
+                continue
+            score = float(row.get("unified_score") or row.get("scan_score") or 0.0)
+            if score < float(min_score):
+                continue
+            atr = row.get("atr_pct_15m")
+            if float(min_atr_pct or 0) > 0 and atr is not None:
+                try:
+                    if float(atr) < float(min_atr_pct):
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            sources = list(dict.fromkeys(
+                [*(row.get("unified_sources") or []), *(row.get("signal_sources") or [])]))
+            cmc = row.get("cmc") or {}
+            flags = row.get("cmc_flags") or []
+            bonus = 0.0
+            if "HACIM_PATLAMASI" in flags:
+                bonus += 5.0
+            if "ATH_YAKIN" in flags:
+                bonus += 3.0
+            if "7G_ASIRI_ISINMA" in flags:
+                bonus -= 5.0
+            total = round(score + 6.0 * max(0, len(sources) - 1) + bonus, 2)
+            scored.append({
+                "symbol": row.get("symbol"),
+                "price": row.get("price"),
+                "score": round(score, 1),
+                "super_score": total,
+                "sources": sources,
+                "source_count": len(sources),
+                "confluence": bool(row.get("confluence_4way")),
+                "atr_pct_15m": atr,
+                "target_pct": row.get("target_pct"),
+                "horizon_minutes": row.get("horizon_minutes"),
+                "cmc_flags": flags,
+                "cmc_rank": cmc.get("rank"),
+                "market_cap_usd": cmc.get("market_cap_usd"),
+                "peak_distance_pct": cmc.get("peak_distance_pct") or cmc.get("ath_distance_pct"),
+                "tags": (cmc.get("tags") or [])[:4],
+                "blocked_by": None,
+            })
+        scored.sort(key=lambda r: r["super_score"], reverse=True)
+        payload = {"generated_at": _time.time(), "source": "unified_scan",
+                   "scanned": len(rows or []), "eligible": len(scored),
+                   "items": scored[:max(1, min(50, int(limit)))]}
+        _SUPER_SCAN_CACHE.update({"generated_at": _time.time(), "payload": payload})
+    return payload
+
+
 @router.get("/api/radar/top-gainers")
 async def radar_top_gainers(limit: int = 20, min_volume_try: float = 5_000_000.0):
     """Son 24 saatte en çok yükselen TRY çiftleri (salt okunur).

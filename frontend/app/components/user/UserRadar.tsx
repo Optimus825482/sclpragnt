@@ -11,13 +11,14 @@ import { useWatchPrices } from "../../lib/useWatchPrices";
 import { SCORE_LABEL, SCORE_TOOLTIP, confidenceBadge, hitProbLabel, netTargetText, pctChange } from "../../lib/userUi";
 import SymbolLink from "../SymbolLink";
 import TopGainersList from "../TopGainersList";
+import SuperScanList from "../SuperScanList";
 import { RadarScanLogButton } from "../admin/RadarScanLogModal";
 
 // 2026-10-17 (basit arayüz): "Isınanlar" sekmesi kaldırıldı — kullanıcıyı karıştırıyordu;
 // yalnız izlemedekiler ve gönderilen bildirimler gösterilir.
 // 2026-11-25 (kullanıcı isteği): MA kesişim gösterimleri kaldırıldı — radar
 // sayfasında MA BUY kartı ve "H4 kesişimleri" sekmesi yok.
-type TabId = "watch" | "history" | "gainers";
+type TabId = "watch" | "history" | "gainers" | "super";
 
 type RadarItem = {
   key: string;
@@ -39,6 +40,7 @@ const TABS: { id: TabId; label: string; empty: string }[] = [
   { id: "watch", label: "İzlemedekiler", empty: "Şu an izlemede coin yok. Güçlü bir hareket olduğunda burada görünür." },
   { id: "history", label: "Gönderilen bildirimler", empty: "Henüz gönderilmiş bir bildirim yok." },
   { id: "gainers", label: "Yükselenler", empty: "Şu an yükselen çift yok." },
+  { id: "super", label: "Süper Tarama", empty: "Kalite kapılarını geçen aday yok." },
 ];
 
 const DEFAULT_REASON = "Sistem bu coinde güçlü bir yükseliş sinyali buldu";
@@ -252,7 +254,7 @@ export default function UserRadar() {
     mounted.current = true;
     try {
       const saved = window.localStorage.getItem(TAB_KEY);
-      if (saved === "watch" || saved === "history" || saved === "gainers") setTab(saved);
+      if (saved === "watch" || saved === "history" || saved === "gainers" || saved === "super") setTab(saved);
     } catch {
       /* localStorage yok */
     }
@@ -318,7 +320,7 @@ export default function UserRadar() {
   );
   useLiveMessages(onLive, ["monitoring_alert"]);
 
-  const lists: Record<TabId, RadarItem[] | null> = { watch, history, gainers: [] };
+  const lists: Record<TabId, RadarItem[] | null> = { watch, history, gainers: [], super: [] };
   const items = lists[tab];
   const symbols = (items ?? []).map((i) => i.symbol);
   const prices = useWatchPrices(symbols);
@@ -351,7 +353,9 @@ export default function UserRadar() {
         ))}
       </div>
       <div role="tabpanel" id="radar-panel" aria-labelledby={`radar-tab-${tab}`} className="mt-3">
-        {tab === "gainers" ? (
+        {tab === "super" ? (
+          <SuperScanList />
+        ) : tab === "gainers" ? (
           <TopGainersList />
         ) : items == null ? (
           <p className="py-8 text-center text-sm text-bunker-muted">
