@@ -1286,7 +1286,10 @@ async def startup_services():
     _start_background(daily_first_notification_loop, "daily-first-notification")
     await asyncio.sleep(_yield)
     # 2026-10-26: N7 taraması her saat başı otomatik; sıra 1-2 (skor > eşik) push edilir.
-    _start_background(n7_hourly_loop, "n7-hourly")
+    # 2026-11-25 (kullanıcı): N7 saatlik taraması kaldırıldı → döngü yalnız
+    # N7_HOURLY_ENABLED=1 ise başlar (varsayılan kapalı).
+    if getattr(config, "N7_HOURLY_ENABLED", False):
+        _start_background(n7_hourly_loop, "n7-hourly")
     await asyncio.sleep(_yield)
     _start_background(binance_account_push_loop, "binance-account-push")
     await asyncio.sleep(_yield)

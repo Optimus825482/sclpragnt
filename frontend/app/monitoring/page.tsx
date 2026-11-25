@@ -14,7 +14,6 @@ import AppLoader from "../components/AppLoader";
 import UserRadar from "../components/user/UserRadar";
 import { RadarScanLogButton } from "../components/admin/RadarScanLogModal";
 import SuperScanList from "../components/SuperScanList";
-import N7ScanPanel from "../components/N7ScanPanel";
 import { useIsUserView } from "../lib/adminView";
 
 type NotificationSettings = {
@@ -2012,16 +2011,9 @@ export default function MonitoringPage() {
           <button type="button" role="tab" aria-selected={topTab === "radar"} onClick={() => pickTab("radar")} className={tabCls(topTab === "radar")}>
             🎯 RADAR
           </button>
-          <button type="button" role="tab" aria-selected={topTab === "n7"} onClick={() => pickTab("n7")} className={tabCls(topTab === "n7")}>
-            ⚡ N7 TARAMA
-          </button>
         </div>
       </div>
-      {topTab === "n7" ? (
-        <main className="page-shell space-y-6">
-          <N7ScanPanel />
-        </main>
-      ) : userView ? (
+      {userView ? (
         <UserRadar />
       ) : (
         <AdminMonitoringPage />

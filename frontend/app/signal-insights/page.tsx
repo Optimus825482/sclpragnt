@@ -280,23 +280,33 @@ export default function SignalInsightsPage() {
         )}
       </Card>
 
-      {/* 2) CANLI FİLTRE SAYAÇLARI */}
+      {/* 2) CANLI FİLTRE SAYAÇLARI — 2026-11-25: super-only modunda gösterilmez */}
       <Card>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-base font-semibold">Filtre Sayaçları (son {filters?.window_hours ?? 24} saat)</h2>
+          {overview?.scope === "super_scan" && <Badge tone="neutral">kapsam dışı</Badge>}
           {filters?.error && <Badge tone="warning">kısmi veri</Badge>}
         </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          <StatCard label="Aday" value={filters?.candidates ?? "—"} />
-          <StatCard label="ATR'de elendi" value={filters?.atr_rejected ?? "—"}
-            tone={(filters?.atr_rejected ?? 0) > 0 ? "warning" : "default"} />
-          <StatCard label="Geçen" value={filters?.passed ?? "—"} tone="positive" />
-          <StatCard label="Ort. ATR" value={fmt(filters?.avg_atr_pct, 2, "%")} />
-          <StatCard label="OI'de elendi" value="ölçülemiyor"
-            detail="DB'de kayıtlı değil" />
-        </div>
-        {overview?.note && (
-          <p className="mt-2 text-xs text-[var(--muted)]">{overview.note}</p>
+        {overview?.scope === "super_scan" ? (
+          <p className="text-xs text-[var(--muted)]">
+            Bu sayaçlar tüm radar yollarını kapsar; ölçüm artık <b>yalnız süper tarama</b> işlemleriyle
+            yapıldığı için burada gösterilmiyor. Güncel akış için Radar → Süper Tarama sekmesine bakın.
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <StatCard label="Aday" value={filters?.candidates ?? "—"} />
+              <StatCard label="ATR'de elendi" value={filters?.atr_rejected ?? "—"}
+                tone={(filters?.atr_rejected ?? 0) > 0 ? "warning" : "default"} />
+              <StatCard label="Geçen" value={filters?.passed ?? "—"} tone="positive" />
+              <StatCard label="Ort. ATR" value={fmt(filters?.avg_atr_pct, 2, "%")} />
+              <StatCard label="OI'de elendi" value="ölçülemiyor"
+                detail="DB'de kayıtlı değil" />
+            </div>
+            {overview?.note && (
+              <p className="mt-2 text-xs text-[var(--muted)]">{overview.note}</p>
+            )}
+          </>
         )}
       </Card>
 
@@ -320,7 +330,10 @@ export default function SignalInsightsPage() {
       <Card>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-base font-semibold">Canlı İşlem Sonuçları (son {days} gün)</h2>
-          {outcomes?.error && <Badge tone="warning">kısmi veri</Badge>}
+          <div className="flex items-center gap-2">
+            {outcomes?.scope === "super_scan" && <Badge tone="positive">yalnız süper tarama</Badge>}
+            {outcomes?.error && <Badge tone="warning">kısmi veri</Badge>}
+          </div>
         </div>
         {outcome && !windowEmpty ? (
           <>

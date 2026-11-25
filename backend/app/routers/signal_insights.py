@@ -21,6 +21,7 @@ import time
 from fastapi import APIRouter, Request
 
 from app import config, database
+from app.config import config as _settings  # ayar NESNESİ (modül değil)
 
 logger = logging.getLogger(__name__)
 
@@ -151,10 +152,16 @@ async def _processing_lag() -> dict:
 async def overview(request: Request):
     """Aktif parametreler + son 24s filtre sayaçları + akış tazeliği."""
     params = await _active_params()
+    super_only = bool(getattr(_settings, "SIGNAL_INSIGHTS_SUPER_ONLY", True))
+    counters = None if super_only else await _filter_counts(24)
     return {
         "ok": True,
+        "scope": "super_scan" if super_only else "all_trades",
         "params": params,
-        "filters_24h": await _filter_counts(24),
+        # 2026-11-25: super-only modunda ADAY sayaçları gösterilmez; çünkü
+        # velocity_candidates tüm radar yollarını kapsar (eski veri izlenimi
+        # veriyordu). İşlem ölçümü /outcomes tarafında 'super:%' ile filtrelidir.
+        "filters_24h": counters,
         "freshness": await _processing_lag(),
         "note": (
             "ATR sayacı gerçek veridir (velocity_candidates.atr_pct). OI sayaçları "
@@ -274,9 +281,12 @@ async def outcomes(request: Request, days: int = 7):
     """Son N günün paper işlem sonuçları + çıkış nedeni dağılımı."""
     days = max(1, min(int(days), 90))
     since = time.time() - days * 86400
+    super_only = bool(getattr(_settings, "SIGNAL_INSIGHTS_SUPER_ONLY", True))
     out = {"ok": True, "days": days, "summary": None, "by_reason": [],
+           "scope": "super_scan" if super_only else "all_trades",
            "error": None, "window_empty": False, "last_trade_at": None,
-           "note": None}
+           "note": ("Kapsam: yalnız süper tarama işlemleri (notification_key 'super:%')"
+                    if super_only else None)}
     def _summary_op(conn):
         cur = conn.execute(
             """select count(*) c,

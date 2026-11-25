@@ -504,12 +504,14 @@ class Config:
     # 2026-10-26 (kullanıcı isteği): her sembol için günde (Europe/Istanbul) EN FAZLA 1 push; tüm taramalar için
     # geçerli (alerting.deliver_web_push kapısı). Kapatılırsa eski davranış: her push gider, başlıkta #N sayacı.
     PUSH_ONE_PER_SYMBOL_PER_DAY = os.getenv("PUSH_ONE_PER_SYMBOL_PER_DAY", "true").strip().lower() not in {"0", "false", "no", "off"}
-    # 2026-10-26 (kullanıcı isteği): N7 taraması her saat başı otomatik koşar; sıra 1-2 sonuç skoru eşikten BÜYÜKSE push.
-    N7_HOURLY_ENABLED = os.getenv("N7_HOURLY_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+    # 2026-11-25 (kullanıcı): N7 saatlik taraması SİSTEMDEN KALDIRILDI.
+    # Varsayılan KAPALI; döngü hiç başlamaz, push/otonom paper üretmez.
+    # (Açmak için N7_HOURLY_ENABLED=1.)
+    N7_HOURLY_ENABLED = os.getenv("N7_HOURLY_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
     N7_PUSH_MIN_SCORE = float(os.getenv("N7_PUSH_MIN_SCORE", "10") or 10)
     N7_PUSH_TOP = max(1, int(os.getenv("N7_PUSH_TOP", "2") or 2))
     # 2026-10-28: N7 push'u da radar/MA ile aynı teslim düzeninde → push GİTTİYSE otonom paper açılır.
-    N7_AUTO_PAPER_ENABLED = os.getenv("N7_AUTO_PAPER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    N7_AUTO_PAPER_ENABLED = os.getenv("N7_AUTO_PAPER_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}  # 2026-11-25: N7 kaldırıldı
     MA_BUY_NOTIFY_COOLDOWN_MIN = max(0.0, float(os.getenv("MA_BUY_NOTIFY_COOLDOWN_MIN", "15") or 0))  # sembol başına (TF'ler ortak)
     MA_BUY_NOTIFY_MAX_AGE_SEC = max(10.0, float(os.getenv("MA_BUY_NOTIFY_MAX_AGE_SEC", "90") or 90))  # mum kapanışından bu kadar sonra bayat
     MA_BUY_AUTO_PAPER_ENABLED = os.getenv("MA_BUY_AUTO_PAPER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}

@@ -120,11 +120,32 @@ def test_overview_oi_counter_is_none_with_reason():
     class R:
         pass
 
-    o = asyncio.run(si.overview(R()))
+    # 2026-11-25: super-only modunda aday sayaçları KAPSAM DIŞI (None).
+    # Sayaç sözleşmesini görmek için modu geçici olarak kapatıyoruz.
+    from app.config import config as _cfg
+    _old = _cfg.SIGNAL_INSIGHTS_SUPER_ONLY
+    _cfg.SIGNAL_INSIGHTS_SUPER_ONLY = False
+    try:
+        o = asyncio.run(si.overview(R()))
+    finally:
+        _cfg.SIGNAL_INSIGHTS_SUPER_ONLY = _old
     f = o["filters_24h"]
     # DB'de oi_change_pct kolonu yok -> None olmalı
     assert f.get("oi_rejected") is None or isinstance(f.get("oi_rejected"), int)
     assert "velocity_candidates.atr_pct" in o["note"] or "OI" in o["note"]
+
+
+def test_overview_super_only_hides_counters():
+    """Super-only: scope='super_scan' ve filtre sayaçları gösterilmez."""
+    import asyncio
+    from app.routers import signal_insights as si
+
+    class R:
+        pass
+
+    o = asyncio.run(si.overview(R()))
+    assert o["scope"] == "super_scan"
+    assert o["filters_24h"] is None
 
 
 def test_outcomes_fail_open():
