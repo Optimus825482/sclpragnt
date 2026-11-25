@@ -116,7 +116,7 @@ class StaleTickerRestFallbackTests(unittest.IsolatedAsyncioTestCase):
         """Ticker bayat; REST 96 döner (stop 97'nin altında) → SL ÇALIŞIR (eskiden erken return)."""
         rest = AsyncMock(return_value=(96.0, {"source": "rest"}))
         close = await _run(_trade(), _market(50.0, age_sec=_STALE_AGE), rest)
-        rest.assert_awaited_once_with("APTEST")
+        rest.assert_awaited_once_with("APTEST", execution_only=True)
         close.assert_awaited_once()
         args = close.await_args.args
         self.assertEqual(args[4], "stop_loss")

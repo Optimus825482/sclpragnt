@@ -26,7 +26,7 @@ from contextvars import ContextVar
 from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
-from app import database, ma_buy_profiles, notification_plan, paper_ledger, price_service, security
+from app import database, ma_buy_profiles, notification_plan, paper_ledger, security
 from app.api_common import log_user_action, _background_tasks, _start_background, _fresh_public_price
 # R3-06: likidite + korelasyon küme kapıları (velocity-auto ile aynı kaynak)
 # için analyzer örneği kullanılır (state'ten; market ile aynı yaşam döngüsü).
@@ -61,6 +61,14 @@ def _price_evidence(price: float, quote: dict | None, *, observed_at: float) -> 
         "candle_is_closed": quote.get("candle_is_closed"),
         "observed_at": observed_at,
     }
+
+
+def _candle_price(quote: dict | None) -> bool:
+    if not quote:
+        return False
+    return (quote.get("candle_close_time_ms") is not None
+            or bool(quote.get("candle_timeframe"))
+            or "kline" in str(quote.get("source") or "").lower())
 
 
 def _settlement_input(reason: str, current: float, trigger: float | None = None) -> float:
@@ -974,28 +982,31 @@ async def _resolve_entry_price(notification: dict, symbol: str, settings: dict) 
     ticker = market.get_ticker(symbol)
     price_quote = ticker
     current_price = float(ticker.get("last_price") or 0) if ticker else 0
-    if current_price <= 0:
-        current_price = float(notification.get("price") or 0)
-        price_quote = {"source": "notification_fallback"}
-    if current_price <= 0:
-        return current_price, _blocked(symbol, "no_price")
-
     try:
         freshness = market.ticker_freshness(symbol, max_age_sec=60)
     except Exception:
         freshness = {"fresh": False, "age_sec": None}
 
+    actual_ts = (ticker or {}).get("exchange_event_time_ms")
+    if actual_ts is not None:
+        freshness = {"fresh": paper_ledger.is_fresh(actual_ts, max_age_sec=60),
+                     "age_sec": time.time() - float(actual_ts) / 1000}
+    if _candle_price(ticker) or not math.isfinite(current_price) or current_price <= 0:
+        freshness["fresh"] = False
+
     if not bool(freshness.get("fresh")):
         try:
-            rest_px = await price_service.rest_ticker_price(symbol)
-            if rest_px:
-                current_price = float(rest_px)
-                freshness = {"fresh": True, "age_sec": 0.0, "source": "binance_tr_rest_auto_paper"}
-                price_quote = {"source": freshness["source"]}
+            fallback_price, fallback_quote = await _fresh_public_price(symbol, execution_only=True)
+            if fallback_price:
+                current_price = fallback_price
+                price_quote = fallback_quote
+                timestamp = (price_quote or {}).get("exchange_event_time_ms") or (price_quote or {}).get("timestamp")
+                freshness = {"fresh": True, "age_sec": time.time() - float(timestamp) / 1000 if timestamp else 0.0}
         except Exception as exc:
             logger.warning("auto_paper %s: REST ticker fetch hatasi: %s", symbol, exc)
 
-    if not bool(freshness.get("fresh")):
+    # A scan detection timestamp describes the signal, not its underlying price.
+    if not bool(freshness.get("fresh")) and notification.get("source") != "super_scan":
         notif_time = float(notification.get("detected_at") or notification.get("timestamp") or 0)
         if notif_time > 1e11:
             notif_time /= 1000.0
@@ -1004,9 +1015,6 @@ async def _resolve_entry_price(notification: dict, symbol: str, settings: dict) 
             freshness = {"fresh": True, "age_sec": round(time.time() - notif_time, 1),
                          "source": "notification_fallback"}
             price_quote = {"source": freshness["source"], "timestamp": notif_time * 1000}
-
-    if current_price <= 0:
-        current_price = float(notification.get("price") or 0)
 
     if not bool(freshness.get("fresh")) or current_price <= 0:
         logger.warning("auto_paper %s: taze ticker yok (age=%ss) - bayat fiyata acilis engellendi",
@@ -1980,10 +1988,14 @@ async def _fresh_trade_price(trade: dict, symbol: str, now: float):
     # sonraki turda yeniden denemek yerine pozisyon dokunulmadan bırakılır
     # (süre/sembol çıkışı da aynı turda ertelenir — en kötü halde bir sonraki
     # turlarda taze fiyatla kapanır).
-    ticker_ts = float((ticker or {}).get("timestamp") or 0)
-    price_is_fresh = bool(current_price > 0 and paper_ledger.is_fresh(ticker_ts, now))
+    candle_price = _candle_price(ticker)
+    ticker_ts = float((ticker or {}).get("exchange_event_time_ms") or (ticker or {}).get("timestamp") or 0)
+    usable_ticker = math.isfinite(current_price) and current_price > 0 and not candle_price
+    price_is_fresh = usable_ticker and paper_ledger.is_fresh(ticker_ts, now)
     # Son bilinen fiyat (bayat ticker, yoksa DB tepe/giriş) — yalnız zorla kapanışta kullanılır.
-    last_known_price = current_price if current_price > 0 else float(trade.get("peak_price") or float(trade["entry_price"]))
+    last_known_price = current_price if usable_ticker else float(trade.get("peak_price") or float(trade["entry_price"]))
+    if not usable_ticker:
+        decision_quote = {"source": "stored_peak_or_entry"}
     # Log gürültü kapısı (2026-11-10, flap düzeltmesi): likit olmayan/15-20 sn
     # kadanslı sembollerde her tur uyarı yerine sembol başına aralıkta bir.
     # Sayaç YAPIŞKANDIR — ara tazelik anları sıfırlamaz. REST yedeği her turda
@@ -1992,8 +2004,8 @@ async def _fresh_trade_price(trade: dict, symbol: str, now: float):
     if current_price > 0 and not price_is_fresh:
         _stale_logged = _stale_ticker_log_gate(symbol, now)
         if _stale_logged:
-            logger.warning("auto_paper %s: ticker BAYAT (yaş=%.1fs > %ss) — REST fiyat yedeği deneniyor (bu satır sembol başına %d sn'de bir)",
-                           symbol, (now * 1000 - ticker_ts) / 1000.0, config.MAX_TICKER_AGE_SEC,
+            logger.warning("auto_paper %s: fiyat yürütmeye uygun değil (kaynak=%s, mum=%s, yaş=%.1fs) — ticker yedeği deneniyor (aralık=%ss)",
+                           symbol, (ticker or {}).get("source"), candle_price, (now * 1000 - ticker_ts) / 1000.0,
                            int(_STALE_TICKER_LOG_INTERVAL_SEC))
     # 2026-10-15 (denetim düzeltmesi, madde 1): ticker bayat/eksikse ESKİDEN bu
     # tur erken dönülüyor, SL/trailing/max_hold hiç çalışmıyordu (WS akışında
@@ -2003,7 +2015,7 @@ async def _fresh_trade_price(trade: dict, symbol: str, now: float):
     if not price_is_fresh:
         rest_price = None
         try:
-            rest_price, _rest_info = await _fresh_public_price(symbol)
+            rest_price, _rest_info = await _fresh_public_price(symbol, execution_only=True)
         except Exception as rest_exc:
             if _stale_logged:
                 logger.warning("auto_paper %s: REST fiyat yedeği hatası: %s", symbol, rest_exc)

@@ -11,6 +11,7 @@ REST kaynaklarında yaş 0.0 kabul edilir (anlık sorgu).
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 from app import binance_tr_public as _btp
@@ -49,7 +50,7 @@ def mini_ticker_quote(symbol, *, market_obj=None, now_sec: float | None = None,
         ts_ms = float(row.get("timestamp") or 0)
     except (TypeError, ValueError):
         return None
-    if price <= 0 or ts_ms <= 0:
+    if not math.isfinite(price) or price <= 0 or not math.isfinite(ts_ms) or ts_ms <= 0:
         return None
     now = time.time() if now_sec is None else float(now_sec)
     age = max(0.0, now - ts_ms / 1000.0)
@@ -91,7 +92,7 @@ async def rest_ticker_price(symbol) -> float | None:
     rows = await _btp.ticker_price([normalized])
     row = next((r for r in (rows or []) if str(r.get("symbol", "")).upper() == normalized), None)
     price = float((row or {}).get("price") or 0)
-    return price if price > 0 else None
+    return price if math.isfinite(price) and price > 0 else None
 
 
 async def rest_kline_price(symbol) -> float | None:

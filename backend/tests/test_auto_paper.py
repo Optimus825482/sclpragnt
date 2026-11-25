@@ -153,9 +153,10 @@ class AutoPaperChurnLogicTests(unittest.TestCase):
             auto_paper.get_auto_paper_settings = fake_settings
             auto_paper.market.ticker_freshness = fake_freshness
             try:
-                result = await auto_paper.try_open_from_notification(
-                    _make_notification(score=80.0, notif_id=777)
-                )
+                with patch.object(auto_paper.market, "get_ticker", return_value={"last_price": 100.0}):
+                    result = await auto_paper.try_open_from_notification(
+                        _make_notification(score=80.0, notif_id=777)
+                    )
             finally:
                 auto_paper.database.get_recent_auto_paper_trade_by_notification = original_prior
                 auto_paper.get_auto_paper_settings = original_settings

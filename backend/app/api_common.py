@@ -314,7 +314,7 @@ def _start_background(coro_factory, name, single_pass=False):
     task.add_done_callback(_restart_if_failed)
     return task
 
-async def _fresh_public_price(symbol: str):
+async def _fresh_public_price(symbol: str, *, execution_only: bool = False):
     """Geriye dönük sarmalayıcı: `price_service.get_price` + eski önbellek onarımı.
 
     Fiyat okuma kuralları (taze WS → REST ticker → REST 1m kline) artık
@@ -322,6 +322,19 @@ async def _fresh_public_price(symbol: str):
     yan etkiyi korur: REST'ten gelen fiyat `market.tickers` önbelleğine yazılır.
     Yeni çağıranlar doğrudan `price_service.get_price` kullanmalı (önbellek yazmaz).
     """
+    if execution_only:
+        # The general helper can return a chart close and refresh its cache
+        # timestamp. Execution needs an independent ticker and no cache rewrite.
+        mini = price_service.mini_ticker_quote(symbol, market_obj=market)
+        if mini is not None:
+            price, _age, source = mini
+            row = market.mini_tickers[price_service.normalize(symbol)]
+            return price, {**row, "source": source}
+        price = await price_service.rest_ticker_price(symbol)
+        if price is None:
+            return None, None
+        return price, {"source": price_service.SOURCE_REST_TICKER}
+
     price, _age, source = await price_service.get_price(symbol, market_obj=market)
     if not price:
         return None, None
