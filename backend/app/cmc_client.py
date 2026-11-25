@@ -593,6 +593,41 @@ _INFO_CACHE: dict[str, tuple[float, dict]] = {}
 _INFO_TTL = 86400.0
 
 
+async def _tr_movers(limit: int = 10, min_quote_volume: float = 5_000_000.0):
+    """Binance TR 24s ticker'ından en çok yükselen/düşen (ücretsiz, gerçek zamanlı).
+
+    Dönen: ({"gainers": [...], "losers": [...]} | None, kaynak adı)
+    Hacim tabanı: likit olmayan 3-5 milyon TL'lik çiftlerin ±%80 hareketleri
+    listeyi kirletiyordu. Hata → (None, "unavailable").
+    """
+    try:
+        from app import binance_tr_public
+
+        rows = await binance_tr_public.ticker_24h()
+        out = []
+        for row in rows or []:
+            try:
+                qv = float(row.get("quoteVolume") or 0)
+                pct = float(row.get("priceChangePercent") or 0)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if qv < min_quote_volume:
+                continue
+            out.append({"symbol": str(row.get("symbol") or ""),
+                        "price": row.get("lastPrice"),
+                        "change_24h": pct,
+                        "volume_24h": qv})
+        if not out:
+            return None, "unavailable"
+        out.sort(key=lambda x: x["change_24h"], reverse=True)
+        gainers = [x for x in out if x["change_24h"] > 0][:max(1, limit)]
+        losers = [x for x in out if x["change_24h"] < 0][-max(1, min(5, limit)):]
+        return {"gainers": gainers, "losers": losers}, "binance_tr"
+    except Exception as exc:
+        logger.debug("TR movers alınamadı: %s", exc)
+        return None, "unavailable"
+
+
 async def categories(limit: int = 8, force: bool = False) -> list[dict]:
     """Sektör kategorileri (piyasa değeri + ortalama değişim). ÜCRETSİZ planda var.
 
@@ -715,8 +750,11 @@ async def brief(force: bool = False) -> dict:
     fng = await _call("/v3/fear-and-greed/latest", credits=1, public_ok=True)
     glob = await _call("/v1/global-metrics/quotes/latest", credits=1, public_ok=True)
     trending = await community_trending(10)
-    listed = await listings_sorted("percent_change_24h", "desc", 10)
-    listed_losers = await listings_sorted("percent_change_24h", "asc", 5)
+    # 2026-11-25 (kullanıcı): "gainers/losers Binance TR'den de alınabiliyor" —
+    # doğru: işlem evrenimiz TRY çiftleri. CMC listings tüm dünyayı USD'de
+    # sıralıyordu (hem alakasız hem 2 kredi). Artık TR'nin kendi 24s ticker'ı
+    # kullanılır: ücretsiz, gerçek zamanlı ve TAM bizim evrenimiz.
+    tr_movers, tr_source = await _tr_movers(10)
     news_rows = await _call("/v1/content/latest", {"limit": 5, "news_type": "news"},
                             credits=0, public_ok=True)
     cats = await categories(8)
@@ -733,15 +771,15 @@ async def brief(force: bool = False) -> dict:
         "fetched_at": now,
         "fear_greed": _fear_greed(fng["data"]) if fng["ok"] else None,
         "global": _global(glob["data"]) if glob["ok"] else None,
-        "trending": (_symbols_basic(trending["data"], 10) if trending["ok"]
-                     else (_symbols(listed["data"], 10) if listed["ok"] else None)),
-        "gainers": _symbols(listed["data"], 10) if listed["ok"] else None,
-        "losers": _symbols(listed_losers["data"], 5) if listed_losers["ok"] else None,
+        "trending": _symbols_basic(trending["data"], 10) if trending["ok"] else None,
+        "gainers": (tr_movers or {}).get("gainers"),
+        "losers": (tr_movers or {}).get("losers"),
+        "movers_source": tr_source,
         "news": _news(news_rows["data"]) if news_rows["ok"] else None,
         "categories": cats or None,
         "errors": {name: res["error"] for name, res in
                    (("fear_greed", fng), ("global", glob), ("trending", trending),
-                    ("listings", listed), ("news", news_rows)) if not res["ok"]},
+                    ("news", news_rows)) if not res["ok"]},
     }
     _BRIEF_CACHE = (now, payload)
     return payload

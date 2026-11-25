@@ -49,11 +49,17 @@ def test_mixed_sources_share_bucket_space():
 
 
 def test_live_entry_falls_back_to_unknown_volume_bucket():
-    """Canlı girişte hacim bandı dolu olsa da tarih kovası 'unknown' ise eşleşmeli."""
-    rows = [{"pnl": -10.0, "entry_time": time.time() - 3600, "strategy": "AUTO_PAPER",
+    """Canlı girişte hacim bandı dolu olsa da tarih kovası 'unknown' ise eşleşmeli.
+
+    NOT (2026-11-25): kova SAAT bandına bağlı; `now - 3600` saat sınırını aşınca
+    test zamana göre kırılıyordu. Sabit bir zaman damgası kullanılıp saat bandı
+    O damgadan hesaplanır.
+    """
+    ts = time.time() - 60  # aynı saat bandında kal
+    rows = [{"pnl": -10.0, "entry_time": ts, "strategy": "AUTO_PAPER",
              "entry_context": {}} for _ in range(20)]
     buckets = calibration.build_buckets(rows)
-    hour = calibration.datetime.now(calibration.BUCKET_TZ).hour
+    hour = calibration.datetime.fromtimestamp(ts, tz=calibration.BUCKET_TZ).hour
 
     exact = calibration.confidence_multiplier(
         buckets, strategy="AUTO_PAPER", hour=hour, volume_ratio=1.4)

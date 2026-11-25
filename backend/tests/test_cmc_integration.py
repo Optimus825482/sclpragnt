@@ -257,6 +257,26 @@ def test_attach_falls_back_to_peak_distance(store, monkeypatch):
     assert profile["peak_distance_pct"] == pytest.approx(-50.0, abs=0.01)
 
 
+def test_movers_come_from_binance_tr(store, monkeypatch):
+    """Gainers/losers CMC yerine Binance TR 24s ticker'ından gelmeli (ücretsiz)."""
+    from app import binance_tr_public
+
+    async def fake_ticker(symbols=None):
+        return [
+            {"symbol": "AAA_TRY", "lastPrice": "10", "priceChangePercent": "25.0", "quoteVolume": "90000000"},
+            {"symbol": "BBB_TRY", "lastPrice": "5", "priceChangePercent": "8.0", "quoteVolume": "20000000"},
+            {"symbol": "CCC_TRY", "lastPrice": "1", "priceChangePercent": "-12.0", "quoteVolume": "8000000"},
+            {"symbol": "DUST_TRY", "lastPrice": "1", "priceChangePercent": "300.0", "quoteVolume": "1000"},
+        ]
+
+    monkeypatch.setattr(binance_tr_public, "ticker_24h", fake_ticker)
+    movers, source = asyncio.run(cmc_client._tr_movers(10))
+    assert source == "binance_tr"
+    assert movers["gainers"][0]["symbol"] == "AAA_TRY"
+    assert all(x["symbol"] != "DUST_TRY" for x in movers["gainers"]), "düşük hacim elenmeli"
+    assert movers["losers"][-1]["symbol"] == "CCC_TRY"
+
+
 def test_brief_uses_free_plan_endpoints(store, monkeypatch):
     """trending/gainers 403 olsa da ÜCRETSİZ uçlardan veri üretilmeli."""
     seen = []
@@ -285,6 +305,13 @@ def test_brief_uses_free_plan_endpoints(store, monkeypatch):
         return {"ok": False, "status": 403, "data": None,
                 "error": "HTTP 403 (1006): plan doesn't support"}
 
+    from app import binance_tr_public
+
+    async def fake_ticker(symbols=None):
+        return [{"symbol": "AAA_TRY", "lastPrice": "10", "priceChangePercent": "20",
+                 "quoteVolume": "90000000"}]
+
+    monkeypatch.setattr(binance_tr_public, "ticker_24h", fake_ticker)
     monkeypatch.setattr(cmc_client, "_http_get", fake_http)
     cmc_client._BRIEF_CACHE = None
     cmc_client._PLAN_BLOCKED.clear()
@@ -294,8 +321,8 @@ def test_brief_uses_free_plan_endpoints(store, monkeypatch):
     assert any("community/trending/token" in p for p in seen), "trending topluluk ucundan gelmeli"
     assert data["fear_greed"]["value"] == 20
     assert data["trending"][0]["symbol"] == "PEPE"
-    assert data["gainers"][0]["symbol"] == "ABC"
-    assert data["losers"][0]["symbol"] == "ABC"
+    assert data["gainers"][0]["symbol"] == "AAA_TRY", "gainers Binance TR'den gelmeli"
+    assert data["movers_source"] == "binance_tr"
     assert data["news"][0]["title"] == "Haber başlığı"
 
 
