@@ -7754,3 +7754,38 @@ def stop_monitoring_loop():
         task.cancel()
         _background_tasks.discard(task)
     _loop_task = None
+
+
+# ---------------------------------------------------------------------------
+# Yükselenler (2026-11-25, kullanıcı isteği): radar sayfasında "Yükselenler"
+# sekmesi için TR'nin kendi 24s ticker'ından ilk 20.
+# ---------------------------------------------------------------------------
+@router.get("/api/radar/top-gainers")
+async def radar_top_gainers(limit: int = 20, min_volume_try: float = 5_000_000.0):
+    """Son 24 saatte en çok yükselen TRY çiftleri (salt okunur).
+
+    KAYNAK: Binance TR 24s ticker (ücretsiz, gerçek zamanlı). Hacim tabanı
+    düşük likiditeli ±%300 hareketlerini eler. Yanıt 5 sn önbellekli ticker
+    verisinden üretilir; istek başına ek ağ çağrısı yapılmaz.
+    """
+    from app.binance_tr_public import ticker_24h
+
+    rows = await ticker_24h()
+    items = []
+    for row in rows or []:
+        try:
+            qv = float(row.get("quoteVolume") or 0)
+            pct = float(row.get("priceChangePercent") or 0)
+            price = float(row.get("lastPrice") or 0)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if qv < float(min_volume_try) or pct <= 0 or price <= 0:
+            continue
+        items.append({"symbol": str(row.get("symbol") or ""), "price": price,
+                      "change_24h": round(pct, 2), "volume_24h": qv,
+                      "high_24h": float(row.get("highPrice") or 0) or None,
+                      "low_24h": float(row.get("lowPrice") or 0) or None})
+    items.sort(key=lambda x: x["change_24h"], reverse=True)
+    return {"generated_at": time.time(), "source": "binance_tr",
+            "count": len(items[:max(1, min(50, int(limit)))]),
+            "items": items[:max(1, min(50, int(limit)))]}
