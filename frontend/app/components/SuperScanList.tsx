@@ -15,7 +15,10 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 import SymbolLink from "./SymbolLink";
 
-type SuperScanPayload = { items?: SuperRow[]; scanned?: number; eligible?: number; generated_at?: number; pending?: boolean; message?: string };
+type SuperScanDiag = { rows?: number; blocked?: number; below_score?: number; below_atr?: number;
+  thin_volume?: number; by_source?: Record<string, number>; elapsed_ms?: number };
+type SuperScanPayload = { items?: SuperRow[]; scanned?: number; eligible?: number; generated_at?: number;
+  pending?: boolean; message?: string; diagnostics?: SuperScanDiag };
 
 type SuperRow = {
   symbol: string;
@@ -43,7 +46,7 @@ function fmtPrice(value: number | null): string {
 
 export default function SuperScanList() {
   const [rows, setRows] = useState<SuperRow[] | null>(null);
-  const [meta, setMeta] = useState<{ scanned?: number; eligible?: number; generated_at?: number }>({});
+  const [meta, setMeta] = useState<{ scanned?: number; eligible?: number; generated_at?: number; diag?: SuperScanDiag }>({});
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
@@ -58,7 +61,7 @@ export default function SuperScanList() {
       const d: SuperScanPayload = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof (d as any)?.detail === "string" ? (d as any).detail : "Tarama alınamadı");
       setRows(Array.isArray(d?.items) ? d.items : []);
-      setMeta({ scanned: d?.scanned, eligible: d?.eligible, generated_at: d?.generated_at });
+      setMeta({ scanned: d?.scanned, eligible: d?.eligible, generated_at: d?.generated_at, diag: d?.diagnostics });
       setPending(Boolean(d?.pending));
       setError(null);
     } catch (err) {
@@ -84,9 +87,12 @@ export default function SuperScanList() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-bunker-muted">
-          Tüm tarayıcılar tek listede · {meta.scanned ?? "…"} aday tarandı,{" "}
-          {meta.eligible ?? "…"} uygun
-          {meta.generated_at ? ` · ${new Date(meta.generated_at * 1000).toLocaleTimeString("tr-TR")}` : ""}
+          {pending
+            ? "Tüm tarayıcılar tek listede · tarama hazırlanıyor…"
+            : <>Tüm tarayıcılar tek listede · {meta.scanned ?? "…"} aday tarandı,{" "}
+                {meta.eligible ?? "…"} uygun
+                {meta.generated_at ? ` · ${new Date(meta.generated_at * 1000).toLocaleTimeString("tr-TR")}` : ""}
+              </>}
         </p>
         <button type="button" onClick={load} className="ui-button ui-button-secondary">
           YENİLE
@@ -116,8 +122,28 @@ export default function SuperScanList() {
         </p>
       )}
       {rows == null && !pending && !error && <p className="py-6 text-center text-sm text-bunker-muted">Taranıyor…</p>}
-      {rows && rows.length === 0 && !error && (
-        <p className="py-6 text-center text-sm text-bunker-muted">Şu an kalite kapılarını geçen aday yok.</p>
+      {rows && rows.length === 0 && !pending && !error && (
+        <div className="rounded-lg border border-bunker-800 bg-bunker-900/40 px-3 py-3 text-center text-xs text-bunker-muted">
+          <p className="text-sm text-white">Şu an kalite kapılarını geçen aday yok.</p>
+          {meta.diag && (
+            <p className="mt-2 font-mono text-[11px]">
+              tarandı {meta.diag.rows ?? 0}
+              {" · "}engelli {meta.diag.blocked ?? 0}
+              {" · "}skor altı {meta.diag.below_score ?? 0}
+              {" · "}ATR altı {meta.diag.below_atr ?? 0}
+              {" · "}sığ hacim {meta.diag.thin_volume ?? 0}
+              {meta.diag.elapsed_ms != null ? ` · ${meta.diag.elapsed_ms} ms` : ""}
+            </p>
+          )}
+          {meta.diag?.by_source && Object.keys(meta.diag.by_source).length > 0 && (
+            <p className="mt-1 font-mono text-[11px]">
+              kaynaklar: {Object.entries(meta.diag.by_source).map(([k, v]) => `${k} ${v}`).join(" · ")}
+            </p>
+          )}
+          <p className="mt-2">
+            Aday yoksa sebep genelde piyasa sakinliği (hacim patlaması yok) veya aktif sembol sayısının azlığıdır.
+          </p>
+        </div>
       )}
 
       {rows && rows.length > 0 && (

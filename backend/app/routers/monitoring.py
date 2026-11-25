@@ -7786,6 +7786,7 @@ async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
         # Yanıt 20 sn ile sınırlanır; aşılırsa `pending` döner ve arka planda
         # ısıtma başlar (sonraki YENİLE hızlı gelir).
         try:
+            _t0 = _time.perf_counter()
             rows = await asyncio.wait_for(_combined_scan_rows(), timeout=20.0)
         except asyncio.TimeoutError:
             async def _warm():
@@ -7816,20 +7817,28 @@ async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
             vol_threshold = 0.0
             logger.debug("süper tarama hacim haritası alınamadı: %s", exc)
         scored = []
+        diag = {"rows": len(rows or []), "blocked": 0, "below_score": 0,
+                "below_atr": 0, "thin_volume": 0, "by_source": {}}
         for row in rows or []:
+            for src in (row.get("unified_sources") or []) + (row.get("signal_sources") or []):
+                diag["by_source"][str(src)] = diag["by_source"].get(str(src), 0) + 1
             if row.get("blocked_by"):
+                diag["blocked"] += 1
                 continue
             sym_key = str(row.get("symbol") or "").replace("_", "").upper()
             row_vol = vol_map.get(sym_key)
             if vol_threshold > 0 and row_vol is not None and row_vol < vol_threshold:
+                diag["thin_volume"] += 1
                 continue
             score = float(row.get("unified_score") or row.get("scan_score") or 0.0)
             if score < float(min_score):
+                diag["below_score"] += 1
                 continue
             atr = row.get("atr_pct_15m")
             if float(min_atr_pct or 0) > 0 and atr is not None:
                 try:
                     if float(atr) < float(min_atr_pct):
+                        diag["below_atr"] += 1
                         continue
                 except (TypeError, ValueError):
                     pass
@@ -7865,8 +7874,10 @@ async def radar_super_scan(limit: int = 12, min_score: float = 50.0,
                 "volume_24h_try": row_vol,
             })
         scored.sort(key=lambda r: r["super_score"], reverse=True)
+        diag["elapsed_ms"] = int((_time.perf_counter() - _t0) * 1000)
         payload = {"generated_at": _time.time(), "source": "unified_scan",
                    "scanned": len(rows or []), "eligible": len(scored),
+                   "diagnostics": diag,
                    "items": scored[:max(1, min(50, int(limit)))]}
         _SUPER_SCAN_CACHE.update({"generated_at": _time.time(), "payload": payload})
     return payload
