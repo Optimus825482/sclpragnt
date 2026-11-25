@@ -26,7 +26,7 @@ main.py (app kurulumu + lifecycle + WS) ──► WebSocket /ws üzerinden front
 
 ### Modüler API yapısı
 
-Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **24** modül dosyası vardır; bunların **21**'si `APIRouter` tanımlar ve `main.py` içinde **22** adet `include_router` kaydı yapılır (`ai_trading_suite_routes.py` iki router tanımlayıp iki kez kaydedilir; 2026-11-10 doğrulaması; aşağıdaki tablo eksiksizdir ve `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır). `runtime.py`, `global_radar.py` ve `llm_position_tools.py` `APIRouter` **kullanmaz**: `runtime.py` uzun-ömürlü döngüleri ve yardımcıları taşır (fonksiyonları `main.py` tarafından doğrudan import edilir), `global_radar.py` Binance Global arka plan tarama döngüsünü çalıştırır, `llm_position_tools.py` yalnız LLM araç (tool) şema tanımlarını sağlar.
+Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **25** modül dosyası vardır ve bunların **22**'si `APIRouter` tanımlar ve `main.py` içinde **23** adet `include_router` kaydı yapılır. `ai_trading_suite_routes.py` iki router tanımlar ve iki kez kaydedilir. Tablo `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır. `runtime.py` arka plan döngülerini ve yardımcıları, `global_radar.py` Binance Global tarama döngüsünü, `llm_position_tools.py` LLM araç şemalarını içerir.
 
 | Modül | Sorumluluk |
 |---|---|
@@ -37,6 +37,7 @@ Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. 
 | **`app/routers/monitoring.py`** | **Sistemin en kritik parçası: master radar, unified sinyal zarfı, master-surge kapıları, hedef/pending takibi, bildirim üretimi.** Bu modül 2026-09-26 denetimine kadar hiç belgelenmemişti (rapor #107) |
 | `app/routers/macd_monitor.py` | MACD / rising-signal izleme döngüsü, kilit-temelli hesaplama |
 | `app/routers/auto_paper.py` | Otonom paper pozisyon açma (radar/velocity bildirimlerinden), max-open ve idempotans kuralları |
+| `app/routers/auto_paper_diagnostics.py` | Yöneticiye açık salt okunur teşhis. `GET /api/auto-paper/diagnostics?day=YYYY-MM-DD` kapanışlar ve bağlı karar kayıtlarını, `GET /api/auto-paper/diagnostics/{trade_id}/market` giriş ve çıkış çevresindeki kayıtlı 5 dakikalık mumları ve emir defteri örneklerini döndürür. |
 | `app/routers/velocity.py` | Hız Avcısı aday takibi, microflow/sembol aktivasyonu, otonom paper girişler |
 | `app/routers/llm_chat.py` | LLM sohbet, market tarama, chat auto-trade |
 | `app/routers/chart_forecast.py` | Grafik için ML/istatistik tahmin uçları (cache'li) |
