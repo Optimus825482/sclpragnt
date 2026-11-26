@@ -8,6 +8,7 @@ analysis for both LLM Chat/Assistant and the Master Surge Engine.
 import asyncio
 import json
 import logging
+import math
 import time
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -293,6 +294,34 @@ def get_cached_derivatives_intel(symbol: str, max_age_sec: float | None = None) 
 # ----------------------------------------------------------------------
 _OI_HIST_CACHE: dict[str, tuple[float, dict]] = {}
 OI_HIST_TTL_SEC = 300.0  # 5 dk TTL — openInterestHist çağrısını kısıtlar
+OI_SAMPLE_MINUTES = 5
+OI_SHADOW_WINDOW_MINUTES = 15
+OI_SHADOW_MAX_SAMPLE_AGE_SEC = OI_HIST_TTL_SEC + OI_SAMPLE_MINUTES * 60
+
+
+def _open_interest_15m(history: list | None, as_of: float) -> dict | None:
+    """Compute the change between observed samples exactly 15 minutes apart."""
+    samples = {}
+    for row in history if isinstance(history, list) else []:
+        try:
+            timestamp = int(row["timestamp"])
+            quantity = float(row["sumOpenInterest"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if 0 <= timestamp <= as_of * 1000 and math.isfinite(quantity) and quantity > 0:
+            samples[timestamp] = quantity
+
+    if not samples:
+        return None
+    end = max(samples)
+    start = end - OI_SHADOW_WINDOW_MINUTES * 60_000
+    first = samples.get(start)
+    if first is None:
+        return None
+    change = round((samples[end] - first) / first * 100, 10)
+    if not math.isfinite(change):
+        return None
+    return {"change_pct": change, "start_timestamp_ms": start, "end_timestamp_ms": end}
 
 
 def get_cached_squeeze_confirmation(symbol: str,
@@ -318,7 +347,7 @@ def get_cached_squeeze_confirmation(symbol: str,
 async def squeeze_confirmation(symbol: str) -> dict:
     """Short-squeeze teyit verisi: OI 1s değişimi + funding trendi.
 
-    DÖNÜŞ: {"oi_change_1h_pct": float|None, "funding_trend": "strengthening"|
+    DÖNÜŞ: {"oi_change_1h_pct": float|None, "oi_15m": dict|None, "funding_trend": "strengthening"|
     "easing"|"flat"|None, "confirm_score_mult": float, "squeeze_confirmed": bool}
     Ağ/listeli olmama durumunda çarpan 1.0 (nötr) döner — tarama asla düşmez.
     """
@@ -345,7 +374,8 @@ async def squeeze_confirmation(symbol: str) -> dict:
         return _fetch_fapi_json(oi_url), _fetch_fapi_json(fr_url)
 
     oi_hist, fr_hist = await asyncio.to_thread(_fetch_sync)
-    result: dict = {"oi_change_1h_pct": None, "funding_trend": None,
+    result: dict = {"oi_change_1h_pct": None, "oi_15m": _open_interest_15m(oi_hist, now),
+                    "funding_trend": None,
                     "confirm_score_mult": 1.0, "squeeze_confirmed": False}
     try:
         if isinstance(oi_hist, list) and len(oi_hist) >= 2:

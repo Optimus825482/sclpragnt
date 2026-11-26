@@ -38,6 +38,8 @@ Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. 
 | `app/routers/macd_monitor.py` | MACD / rising-signal izleme döngüsü, kilit-temelli hesaplama |
 | `app/routers/auto_paper.py` | Otonom paper pozisyon açma (radar/velocity bildirimlerinden), max-open ve idempotans kuralları |
 | `app/routers/auto_paper_diagnostics.py` | Yöneticiye açık salt okunur teşhis. `GET /api/auto-paper/diagnostics?day=YYYY-MM-DD` kapanışları ve bağlı karar kayıtlarını döndürür. `GET /api/auto-paper/diagnostics/{trade_id}/market` açık veya kapalı işlemin karar kaydını, 5 dakikalık mumları ve emir defteri örneklerini döndürür. Kaydedilmeyen giriş, çıkış ve fiyat kaynak zamanları `null` kalır. |
+
+Süper Tarama'dan açılan ve `short_squeeze` ailesi bulunan paper işlemlerinin `entry_evidence.oi_shadow` alanı, mevcut OI eşiğine göre gölge sonucu gösterir. Ölçüm, Binance Futures örneklerinden tam 15 dakika arayla alınan miktarları karşılaştırır. `would_block` ve `would_pass` gözlem sonuçlarıdır. Eksik, 10 dakikadan eski, devre dışı veya 15 dakika harici ölçümler sırasıyla `unavailable`, `stale`, `disabled` ve `unsupported_window` olarak kaydedilir. Olay kaydı trade kimliğiyle eşleştirilebilir.
 | `app/routers/velocity.py` | Hız Avcısı aday takibi, microflow/sembol aktivasyonu, otonom paper girişler |
 | `app/routers/llm_chat.py` | LLM sohbet, market tarama, chat auto-trade |
 | `app/routers/chart_forecast.py` | Grafik için ML/istatistik tahmin uçları (cache'li) |

@@ -26,7 +26,7 @@ from contextvars import ContextVar
 from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
-from app import database, ma_buy_profiles, notification_plan, paper_ledger, security
+from app import database, derivatives_service, ma_buy_profiles, notification_plan, paper_ledger, security
 from app.api_common import log_user_action, _background_tasks, _start_background, _fresh_public_price
 # R3-06: likidite + korelasyon küme kapıları (velocity-auto ile aynı kaynak)
 # için analyzer örneği kullanılır (state'ten; market ile aynı yaşam döngüsü).
@@ -1660,6 +1660,41 @@ async def _calc_exit_plan(symbol: str, notification: dict, current_price: float,
     }, None
 
 
+def _squeeze_oi_shadow(symbol: str, scan: dict, confirmation: dict, settings: dict, now: float) -> dict | None:
+    """Record what the configured OI gate would do with a fresh 15-minute observation."""
+    if "short_squeeze" not in (scan.get("source_families") or []):
+        return None
+
+    threshold = float(settings.get("min_oi_change_pct", 0) or 0)
+    window = float(settings.get("oi_window_min", derivatives_service.OI_SHADOW_WINDOW_MINUTES))
+    evidence = {
+        "status": "unavailable",
+        "minimum_pct": threshold,
+        "configured_window_minutes": window,
+        "source": "binance_futures_open_interest_5m",
+        "futures_symbol": derivatives_service.symbol_to_futures(symbol),
+    }
+    if threshold <= 0:
+        evidence["status"] = "disabled"
+        return evidence
+    if window != derivatives_service.OI_SHADOW_WINDOW_MINUTES:
+        evidence["status"] = "unsupported_window"
+        return evidence
+
+    sample = confirmation.get("oi_15m")
+    if sample is None:
+        return evidence
+    age = now - sample["end_timestamp_ms"] / 1000
+    if age < 0:
+        return evidence
+    evidence.update(sample, sample_age_seconds=round(age, 3))
+    if age > derivatives_service.OI_SHADOW_MAX_SAMPLE_AGE_SEC:
+        evidence["status"] = "stale"
+        return evidence
+    evidence["status"] = "would_block" if sample["change_pct"] < threshold else "would_pass"
+    return evidence
+
+
 def _build_trade_record(symbol: str, notification: dict, plan: dict, settings: dict
                         ) -> tuple[dict, dict]:
     """Aşama 3 — `trade_data` + `signal` sözlüklerini kurar (DB insert girdisi)."""
@@ -1682,9 +1717,10 @@ def _build_trade_record(symbol: str, notification: dict, plan: dict, settings: d
     # 2026-11-25: giriş OI değişimi (kanıtta en güçlü filtre) artık KAYDEDİLİR —
     # yoksa "OI'de elendi/geçti" sayaçları ölçülemiyor.
     try:
-        from app.derivatives_service import get_cached_squeeze_confirmation
-        oi_change_val = (get_cached_squeeze_confirmation(symbol) or {}).get("oi_change_1h_pct")
+        squeeze_confirmation = derivatives_service.get_cached_squeeze_confirmation(symbol) or {}
+        oi_change_val = squeeze_confirmation.get("oi_change_1h_pct")
     except Exception:
+        squeeze_confirmation = {}
         oi_change_val = None
     trade_data = {
         "symbol": symbol,
@@ -1728,6 +1764,15 @@ def _build_trade_record(symbol: str, notification: dict, plan: dict, settings: d
             "initial_stop_price": plan["stop_loss_price"],
             "initial_target_price": plan["take_profit_price"],
         }
+        scan = notification.get("scan_evidence")
+        if notification.get("source") == "super_scan" and isinstance(scan, dict):
+            try:
+                oi_shadow = _squeeze_oi_shadow(symbol, scan, squeeze_confirmation, settings, now)
+            except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+                oi_shadow = None
+                logger.debug("auto_paper %s: invalid OI shadow evidence", symbol, exc_info=True)
+            if oi_shadow is not None:
+                trade_data["diagnostics"]["oi_shadow"] = oi_shadow
     signal = {
         "timestamp": now,
         "symbol": symbol,
@@ -1838,6 +1883,15 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             return handle
 
         trade_id = trade["id"]
+        oi_shadow = (trade_data.get("diagnostics") or {}).get("oi_shadow")
+        if oi_shadow is not None:
+            logger.info("%s", json.dumps({
+                "event": "auto_paper_oi_shadow",
+                "entry_point": "super_scan",
+                "trade_id": trade_id,
+                "symbol": symbol,
+                **oi_shadow,
+            }))
 
         # 5) Açılış sonrası yan etkiler
         await _apply_post_open_effects(symbol, notification, plan, current_price, trade_id)

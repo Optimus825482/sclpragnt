@@ -1,10 +1,77 @@
 import asyncio
+import json
+import logging
 from unittest.mock import AsyncMock
+import pytest
 
-from app import api_common, database, price_service
+from app import api_common, database, derivatives_service, price_service
 from app.market_data import MarketData
 from app.routers import auto_paper
 from app.super_scan_notify import _envelope
+
+
+@pytest.mark.parametrize(
+    "families,change,end_ms,window,threshold,expected",
+    [
+        (["short_squeeze"], 0.7983, 1_800_000, 15, 1.2, "would_block"),
+        (["short_squeeze", "macd"], 1.0354, 1_800_000, 15, 1.2, "would_block"),
+        (["short_squeeze"], 1.2, 1_800_000, 15, 1.2, "would_pass"),
+        (["short_squeeze"], 2.1, 1_200_000, 15, 1.2, "stale"),
+        (["short_squeeze"], 2.1, 2_100_000, 15, 1.2, "unavailable"),
+        (["short_squeeze"], None, None, 15, 1.2, "unavailable"),
+        (["short_squeeze"], 2.1, 1_800_000, 30, 1.2, "unsupported_window"),
+        (["short_squeeze"], 2.1, 1_800_000, 15, 0, "disabled"),
+        (["momentum"], 2.1, 1_800_000, 15, 1.2, None),
+    ],
+)
+def test_oi_shadow_is_persisted_without_blocking_paper_open(
+    monkeypatch, caplog, families, change, end_ms, window, threshold, expected,
+):
+    occurrence = None if change is None else {
+        "change_pct": change, "start_timestamp_ms": end_ms - 900_000, "end_timestamp_ms": end_ms,
+    }
+    monkeypatch.setattr(derivatives_service, "get_cached_squeeze_confirmation", lambda _: {
+        "oi_15m": occurrence, "oi_change_1h_pct": 0.31,
+    })
+    monkeypatch.setattr(auto_paper, "_resolve_order_size", AsyncMock(return_value=(10_000, 500, 50, None)))
+    plan = {
+        "now": 1_801.0, "fill_entry": 1.0, "quantity": 500, "net_order_value": 500,
+        "stop_loss_price": 0.96, "take_profit_price": 1.1, "target_pct": 10,
+        "tp1_scalp_val": None, "tp2_runner_val": None, "trade_exit_profile": None,
+        "trade_max_hold": None, "plan_context": None,
+    }
+    monkeypatch.setattr(auto_paper, "_calc_exit_plan", AsyncMock(return_value=(plan, None)))
+    insert = AsyncMock(return_value=({"id": 3099}, "opened"))
+    monkeypatch.setattr(database, "open_auto_paper_trade", insert)
+    monkeypatch.setattr(auto_paper, "_apply_post_open_effects", AsyncMock())
+    notif = {"source": "super_scan", "notification_key": "super:BABYTRY:6",
+             "scan_evidence": {"source_families": families},
+             "_paper_diagnostics": {"thresholds": {"oi_change_pct": {"evaluated": False}}}}
+
+    with caplog.at_level(logging.INFO, logger=auto_paper.logger.name):
+        result = asyncio.run(auto_paper._open_new_trade(
+            "BABYTRY", notif, 1.0, {"oi_window_min": window, "min_oi_change_pct": threshold},
+        ))
+
+    assert result["status"] == "opened"
+    insert.assert_awaited_once()
+    record, _ = insert.await_args.args
+    assert record["oi_change_pct"] == 0.31
+    assert record["diagnostics"]["thresholds"]["oi_change_pct"] == {"evaluated": False}
+    decision = record["diagnostics"].get("oi_shadow")
+    events = [json.loads(r.message) for r in caplog.records if '"event": "auto_paper_oi_shadow"' in r.message]
+    if expected is None:
+        assert decision is None
+        assert events == []
+    else:
+        assert decision["status"] == expected
+        assert decision["minimum_pct"] == threshold
+        assert decision["configured_window_minutes"] == window
+        assert events == [{"event": "auto_paper_oi_shadow", "entry_point": "super_scan",
+                           "trade_id": 3099, "symbol": "BABYTRY", **decision}]
+        if expected.startswith("would_"):
+            assert decision["change_pct"] == change
+            assert decision["end_timestamp_ms"] == end_ms
 
 
 def test_envelope_keeps_scan_evidence():

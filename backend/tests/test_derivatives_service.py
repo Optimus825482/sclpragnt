@@ -3,12 +3,49 @@ import pathlib
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app import derivatives_service
+from app.config import config
+
+
+def test_squeeze_confirmation_keeps_exact_15m_metadata(monkeypatch):
+    monkeypatch.setattr(derivatives_service, "_OI_HIST_CACHE", {})
+    monkeypatch.setattr(derivatives_service.time, "time", lambda: 1_801)
+    monkeypatch.setattr(config, "AUTO_PAPER_OI_WINDOW_MIN", 30)
+    rows = [{"timestamp": 300_000 * i, "sumOpenInterest": str(value)}
+            for i, value in enumerate([100, 105, 110, 120, 121, 122, 123])]
+    mock_fapi = MagicMock(side_effect=[rows, []])
+    monkeypatch.setattr(derivatives_service, "_fetch_fapi_json", mock_fapi)
+
+    captured = asyncio.run(derivatives_service.squeeze_confirmation("BABYTRY"))
+
+    assert captured["oi_change_1h_pct"] == 23
+    expected = {
+        "change_pct": pytest.approx(2.5),
+        "start_timestamp_ms": 900_000,
+        "end_timestamp_ms": 1_800_000,
+    }
+    assert captured["oi_15m"] == expected
+    assert derivatives_service.get_cached_squeeze_confirmation("BABYTRY")["oi_15m"] == expected
+    assert mock_fapi.call_count == 2
+
+
+@pytest.mark.parametrize("first_timestamp,oi", [(899_999, "100"), (900_000, "NaN"), (900_000, "0")])
+def test_squeeze_confirmation_rejects_invalid_15m_sample(monkeypatch, first_timestamp, oi):
+    monkeypatch.setattr(derivatives_service, "_OI_HIST_CACHE", {})
+    monkeypatch.setattr(derivatives_service.time, "time", lambda: 1_801)
+    rows = [{"timestamp": first_timestamp, "sumOpenInterest": oi},
+            {"timestamp": 1_800_000, "sumOpenInterest": "102"}]
+    monkeypatch.setattr(derivatives_service, "_fetch_fapi_json", MagicMock(side_effect=[rows, []]))
+
+    captured = asyncio.run(derivatives_service.squeeze_confirmation("BABYTRY"))
+
+    assert captured["oi_15m"] is None
 
 
 class DerivativesServiceTests(unittest.TestCase):
