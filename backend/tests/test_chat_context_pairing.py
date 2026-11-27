@@ -8,8 +8,10 @@ Kapsanan gerçek hatalar:
 """
 import asyncio
 import io
+import json
 from urllib.error import HTTPError
 
+import numpy as np
 import pytest
 
 from app import llm_analysis
@@ -136,6 +138,47 @@ def test_stream_chat_reports_tool_path_exception(monkeypatch):
     assert events[-1]["event"] == "error"
     assert events[-1]["data"]["error_code"] == "provider_error"
     assert "sağlayıcı çöktü" in events[-1]["data"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_chart_chat_stream_serializes_numpy_market_snapshot(monkeypatch):
+    async def active_config():
+        return {"model": {"name": "test-model", "temperature": 0.2}, "skills": [],
+                "provider": {"base_url": "https://example.com/v1", "api_key_encrypted": "test"}}
+
+    async def provider_url(url):
+        return url
+
+    provider_payloads = []
+
+    async def provider_open(request, **kwargs):
+        provider_payloads.append(json.loads(request.data))
+        return io.BytesIO(b'{"choices":[{"message":{"role":"assistant","content":"THETRY analizi hazir"}}]}')
+
+    monkeypatch.setattr(llm_analysis.database, "get_active_llm_config", active_config)
+    monkeypatch.setattr(llm_analysis, "validate_provider_url", provider_url)
+    monkeypatch.setattr(llm_analysis, "decrypt_key", lambda _: "test")
+    monkeypatch.setattr(llm_analysis, "safe_provider_open", provider_open)
+
+    snapshot = {"symbol": "THETRY", "symbol_data": {
+        "empty_flow": np.array([]),
+        "bids": np.array([[1.85, 250]]),
+        "momentum": np.arange(20),
+        "price": np.array(1.86123),
+        "sample_count": np.int64(20),
+        "buyer_dominant": np.bool_(False),
+    }}
+    events = [event async for event in llm_analysis.stream_chat(
+        snapshot, [{"role": "user", "content": "Bu coinde şu an genel durum nedir?"}],
+        tools=[{"type": "function", "function": {"name": "sample"}}],
+        tool_executor=lambda *_: None,
+    )]
+
+    assert [event["event"] for event in events] == ["delta", "done"]
+    data = json.loads(provider_payloads[0]["messages"][1]["content"].split("\n", 1)[1])
+    assert data == {"symbol": "THETRY", "symbol_data": {
+        "momentum": list(range(15)), "price": 1.8612, "sample_count": 20, "buyer_dominant": False,
+    }}
 
 
 def test_tool_timeout_constant_sane():

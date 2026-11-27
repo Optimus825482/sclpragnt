@@ -2,6 +2,7 @@ import asyncio, ast, json, logging, math, os, re, time
 from urllib.error import HTTPError
 from urllib.request import Request
 from cryptography.fernet import Fernet
+import numpy as np
 from app import database
 from app.config import config
 from app.security import safe_provider_open, validate_provider_url, _validate_provider_url_sync, _LLM_EXECUTOR
@@ -414,13 +415,20 @@ def _json_load_lenient(value, *, _visited: int = 0) -> object:
 
 def _prune_empty_and_truncate(data, depth=0):
     """Recursively strip None/empty fields, round floats, and drop huge raw candle/depth arrays."""
-    if depth > 5:
+    if depth > 5 or data is None:
+        return None
+    if isinstance(data, np.ndarray):
+        if data.size == 0:
+            return None
+        if data.ndim == 0:
+            data = data.item()
+    if isinstance(data, np.generic):
+        data = data.item()
+    if isinstance(data, str) and not data:
         return None
     if isinstance(data, dict):
         cleaned = {}
         for k, v in data.items():
-            if v is None or v == "" or v == [] or v == {}:
-                continue
             # Token koruması: prompt şişiren ham klines/derinlik dizilerini düşür
             if k in ("klines", "raw_klines", "candles", "orderbook", "depth", "bids", "asks", "raw_data", "raw_candles"):
                 continue
@@ -428,7 +436,7 @@ def _prune_empty_and_truncate(data, depth=0):
             if pruned is not None:
                 cleaned[k] = pruned
         return cleaned if cleaned else None
-    elif isinstance(data, list):
+    elif isinstance(data, (list, np.ndarray)):
         pruned_list = []
         for x in data[:15]:
             p = _prune_empty_and_truncate(x, depth + 1)
@@ -443,7 +451,7 @@ def _prune_empty_and_truncate(data, depth=0):
 def _compact_json_dumps(data) -> str:
     """Serialize snapshot with minimal whitespace and pruned empty/raw fields."""
     pruned = _prune_empty_and_truncate(data)
-    return json.dumps(pruned or {}, ensure_ascii=False, separators=(',', ':'), default=str)
+    return json.dumps({} if pruned is None else pruned, ensure_ascii=False, separators=(',', ':'), default=str)
 
 
 def _repair_tool_pairing(messages: list[dict]) -> list[dict]:
