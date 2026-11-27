@@ -7,7 +7,7 @@ from pytest import approx, mark
 from app import large_move_paper
 from app.large_move_paper import (
     MINUTE,
-    RADAR_SIGNAL_AGE,
+    Alert,
     Tracker,
     database,
     followup_path,
@@ -15,6 +15,7 @@ from app.large_move_paper import (
     read_book,
     recent_signal_notifications,
     scan_missing_bars,
+    save_entry,
     signal_notification,
     trailing_level,
 )
@@ -72,10 +73,10 @@ async def test_periodic_radar_fills_missing_close_once_and_keeps_live_episode(mo
     monkeypatch.setattr(large_move_paper, "klines", fetch)
     alerts = []
 
-    def accept(symbol, stamp, price, traded, *, max_age):
+    def accept(symbol, stamp, price, traded, *, from_radar):
         alert = trackers[symbol].observe(stamp, price, traded)
         if alert:
-            alerts.append((alert, max_age))
+            alerts.append((alert, from_radar))
 
     symbols = ["USDTTRY", "HEITRY", "PORTALTRY", "PORTALUSDT"]
     close_ms = 35 * MINUTE
@@ -85,10 +86,45 @@ async def test_periodic_radar_fills_missing_close_once_and_keeps_live_episode(mo
     fetch.assert_awaited_once_with("PORTALTRY", "1m", 2, end_time_ms=close_ms - 1)
     assert trackers["PORTALTRY"] is port
     assert port.last == 34 * MINUTE
-    [(alert, max_age)] = alerts
+    [(alert, from_radar)] = alerts
     assert (alert.seed, alert.base, alert.level, alert.stamp) == (watch.seed, 100, 15, close_ms)
-    assert max_age == RADAR_SIGNAL_AGE
+    assert from_radar
     assert port.observe(34 * MINUTE, 116, True) is None
+
+
+@mark.asyncio
+@mark.parametrize(("from_radar", "lag", "ask", "expected"), [
+    (True, 30, 1.598, None),
+    (True, 30, 1.63, "radar_price_moved"),
+    (True, 30, 1.55, "radar_price_moved"),
+    (True, 91, 1.598, "stale_signal"),
+    (False, 30, 1.598, "stale_signal"),
+])
+async def test_late_radar_entry_requires_current_price_near_confirmed_signal(
+    monkeypatch, from_radar, lag, ask, expected,
+):
+    migration = Path(__file__).resolve().parents[1] / "migrations/034_large_move_paper.sql"
+    alert = Alert(MINUTE, 1.37, 10 * MINUTE, 1.597, 15)
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(migration.read_text(encoding="utf-8"))
+        conn.execute("CREATE TABLE llm_settings (key TEXT, value TEXT)")
+        conn.create_function("pg_advisory_xact_lock", 1, lambda _: None)
+        conn.execute(
+            "INSERT INTO large_move_paper (symbol, seed_ms, base_price, watch_ms, status) VALUES (?, ?, ?, ?, 'watch')",
+            ("THETRY", alert.seed, alert.base, alert.stamp),
+        )
+
+        async def run_db(operation):
+            return operation(conn)
+
+        monkeypatch.setattr(database, "_run_db", run_db)
+        book = [(ask - 0.001, 1000)], [(ask, 1000)]
+        assert await save_entry("THETRY", alert, book, alert.stamp / 1000 + lag, from_radar=from_radar)
+        row = conn.execute("SELECT status, reason, entry_price FROM large_move_paper").fetchone()
+        assert row["reason"] == expected
+        assert row["status"] == ("blocked" if expected else "open")
+        assert row["entry_price"] == (None if expected else approx(ask))
 
 
 def warmed_tracker():

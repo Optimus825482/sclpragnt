@@ -29,6 +29,7 @@ MAX_SIGNAL_AGE = 15
 RADAR_SCAN_SECONDS = 60
 RADAR_WS_GRACE_SECONDS = 8
 RADAR_SIGNAL_AGE = 90
+RADAR_MAX_ENTRY_DRIFT = 0.01
 RADAR_HISTORY_BARS = 61
 RADAR_CONCURRENCY = 6
 FOLLOWUP_BARS = 30
@@ -158,7 +159,7 @@ async def scan_missing_bars(symbols, trackers, accept, close_ms):
             if not tracker or (len(tracker.closes) < tracker.closes.maxlen and len(bars) > len(tracker.closes)):
                 trackers[symbol] = Tracker()
             for stamp, price, traded in bars:
-                accept(symbol, stamp, price, traded, max_age=RADAR_SIGNAL_AGE)
+                accept(symbol, stamp, price, traded, from_radar=True)
 
     await asyncio.gather(*(recover(symbol) for symbol in symbols if radar_symbol(symbol)))
 
@@ -211,13 +212,15 @@ async def save_watch(symbol: str, alert: Alert):
     ).rowcount)
 
 
-async def save_entry(symbol, alert, book, now):
+async def save_entry(symbol, alert, book, now, *, from_radar=False):
     fill = sweep(book[1], NOTIONAL) if book else None
     spread = None
     if book:
         bid, ask = book[0][0][0], book[1][0][0]
         spread = 200 * (ask - bid) / (ask + bid)
     cost = NOTIONAL * (1 + FEE)
+    age = now - alert.stamp / 1000
+    max_age = RADAR_SIGNAL_AGE if from_radar else MAX_SIGNAL_AGE
     start_today = datetime.combine(datetime.fromtimestamp(now, ISTANBUL).date(),
                                    day_time.min, ISTANBUL).timestamp()
 
@@ -250,12 +253,17 @@ async def save_entry(symbol, alert, book, now):
             reason = "global_kill_switch"
         elif daily_limit > 0 and wallet["today_pnl"] <= -daily_limit:
             reason = "daily_loss_limit"
-        elif now - alert.stamp / 1000 > MAX_SIGNAL_AGE:
+        elif age > max_age:
             reason = "stale_signal"
         elif not fill:
             reason = "quote_unavailable"
         elif fill["filled_try"] < NOTIONAL - 1e-7:
             reason = "insufficient_depth"
+        elif from_radar and age > MAX_SIGNAL_AGE and (
+            not Tracker._reached(fill["avg_price"], alert.base, 1.15)
+            or fill["avg_price"] > alert.price * (1 + RADAR_MAX_ENTRY_DRIFT)
+        ):
+            reason = "radar_price_moved"
         elif wallet["same_symbol"]:
             reason = "already_open"
         elif STARTING_CASH + wallet["realized"] - wallet["reserved"] < cost:
@@ -469,11 +477,12 @@ async def run(market):
     queue: asyncio.Queue = asyncio.Queue(maxsize=512)
     retry_until: dict[str, float] = {}
 
-    def accept(symbol, stamp, price, traded, *, max_age):
+    def accept(symbol, stamp, price, traded, *, from_radar=False):
         alert = trackers[symbol].observe(stamp, price, traded)
+        max_age = RADAR_SIGNAL_AGE if from_radar else MAX_SIGNAL_AGE
         if alert and abs(time.time() - alert.stamp / 1000) <= max_age:
             try:
-                queue.put_nowait((symbol, alert))
+                queue.put_nowait((symbol, alert, from_radar))
             except asyncio.QueueFull:
                 logger.error("Large-move paper queue full for %s", symbol)
 
@@ -494,7 +503,7 @@ async def run(market):
         # Preserve the active episode until REST can fill a missing close.
         if tracker.last and stamp > tracker.last + MINUTE:
             return
-        accept(symbol, stamp, price, bar["volume"] > 0, max_age=MAX_SIGNAL_AGE)
+        accept(symbol, stamp, price, bar["volume"] > 0)
 
     async def quote(symbol, enough):
         live = market.get_depth_snapshot(symbol, max_age=2)
@@ -508,15 +517,16 @@ async def run(market):
             logger.debug("Large-move paper quote unavailable for %s", symbol, exc_info=True)
             return book
 
-    async def entry(symbol, alert):
+    async def entry(symbol, alert, from_radar):
         try:
             await save_watch(symbol, alert)
             if alert.level == 15:
                 book = None
-                if time.time() - alert.stamp / 1000 <= MAX_SIGNAL_AGE:
+                max_age = RADAR_SIGNAL_AGE if from_radar else MAX_SIGNAL_AGE
+                if time.time() - alert.stamp / 1000 <= max_age:
                     await asyncio.sleep(DELAY)
                     book = await quote(symbol, lambda b: sum(p * q for p, q in b[1]) >= NOTIONAL)
-                if await save_entry(symbol, alert, book, time.time()):
+                if await save_entry(symbol, alert, book, time.time(), from_radar=from_radar):
                     await ws_manager.broadcast({
                         "type": "large_move_alert",
                         "data": signal_notification(symbol, alert.seed, alert.stamp, alert.price, alert.base),
@@ -529,8 +539,8 @@ async def run(market):
         async with asyncio.TaskGroup() as tasks:
             async def process_entries():
                 while True:
-                    symbol, alert = await queue.get()
-                    await entry(symbol, alert)
+                    symbol, alert, from_radar = await queue.get()
+                    await entry(symbol, alert, from_radar)
 
             async def update_trade(trade):
                 book = await quote(trade["symbol"], lambda b: sum(q for _, q in b[0]) >= trade["quantity"])

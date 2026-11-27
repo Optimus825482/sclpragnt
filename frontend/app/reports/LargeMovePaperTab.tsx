@@ -52,6 +52,7 @@ const reasons: Record<string, string> = {
   target: "Hedef", trailing: "Takip stopu", stop: "Stop", time: "Süre", quote_unavailable: "Kotasyon yok",
   insufficient_depth: "Yetersiz derinlik", insufficient_cash: "Yetersiz paper bakiye",
   already_open: "Paritede açık işlem var", stale_signal: "Sinyal gecikti",
+  radar_price_moved: "Fiyat radar giriş aralığından çıktı",
   global_kill_switch: "Girişler durduruldu", daily_loss_limit: "Günlük zarar sınırı",
 };
 const percent = (n: number | null) => n == null ? "—" : `%${n.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
