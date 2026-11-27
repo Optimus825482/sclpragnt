@@ -1417,6 +1417,8 @@ async def startup_services():
         _start_background(combined_paper_management_loop, "combined-paper")
     await asyncio.sleep(_yield)
     _start_background(auto_paper_start_loop, "auto-paper-start")
+    from app.large_move_paper import run as run_large_move_paper
+    _start_background(lambda: run_large_move_paper(market), "large-move-paper")
     await asyncio.sleep(_yield)
     _start_background(macd_monitor_start_loop, "macd-monitor")
     await asyncio.sleep(_yield)

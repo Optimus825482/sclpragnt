@@ -22,6 +22,7 @@ const MacdMtfTab = lazy(() => import("./MacdMtfTab"));
 const DailyFirstNotificationTab = lazy(() => import("./DailyFirstNotificationTab"));
 const LlmVsRulesTab = lazy(() => import("./LlmVsRulesTab"));
 const CombinedRisingTab = lazy(() => import("./CombinedRisingTab"));
+const LargeMovePaperTab = lazy(() => import("./LargeMovePaperTab"));
 
 // NOT (denetim #48): `num` / `pct` / `fmtDt` artık `lib/format.ts`'ten geliyor.
 // Bu sayfa kendi kopyalarını taşıyordu ve `fmtDt`, `format.ts`'teki
@@ -1621,7 +1622,7 @@ function SelfLearningTab() {
 function AdminReportsPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
-  const [tab, setTab] = useState<"overview" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "daily_first" | "daily_rising"  | "advanced">("overview");
+  const [tab, setTab] = useState<"overview" | "radar" | "positions" | "llm_compare" | "symbols" | "mtf" | "daily_first" | "daily_rising" | "large_move_paper" | "advanced">("overview");
   const [advancedSubTab, setAdvancedSubTab] = useState("velocity");
   // VARSAYILAN: "bu deploy" görünümü. `day=all` + arşiv kapalı = yalnız rapor
   // başlangıcı (2026-10-07 11:30) SONRASI veri. `selectedDay` bir güne
@@ -1645,6 +1646,7 @@ function AdminReportsPage() {
     { id: "overview", label: "📊 Performans Özeti", icon: "📊" },
     { id: "radar", label: "🎯 Sinyal & Hedef Başarısı", icon: "🎯" },
     { id: "positions", label: "💼 Otonom Pozisyonlar", icon: "💼" },
+    { id: "large_move_paper", label: "Büyük Hareket Paper", icon: "paper" },
     { id: "llm_compare", label: "🤖 Kural vs LLM", icon: "🤖" },
     { id: "symbols", label: "📈 Sembol Başarısı", icon: "📈" },
     { id: "mtf", label: "🧠 MTF Konfluans", icon: "🧠" },
@@ -1767,6 +1769,7 @@ function AdminReportsPage() {
               key={item.id}
               type="button"
               onClick={() => setTab(item.id as any)}
+              aria-pressed={active}
               className={`rounded-xl px-3 py-2.5 font-mono text-xs font-bold transition-all flex items-center justify-center gap-1.5 text-center leading-snug ${
                 active
                   ? "bg-neon-green/20 text-neon-green border border-neon-green/50 shadow-md scale-[1.02]"
@@ -1789,6 +1792,7 @@ function AdminReportsPage() {
         {tab === "mtf" && <MacdMtfTab includeArchived={includeArchived} />}
         {tab === "daily_first" && <DailyFirstNotificationTab />}
         {tab === "daily_rising" && <CombinedRisingTab includeArchived={includeArchived} />}
+        {tab === "large_move_paper" && isAdmin && <LargeMovePaperTab day={selectedDay} includeArchived={includeArchived} />}
       </Suspense>
       {tab === "advanced" && isAdmin && (
         <div className="space-y-4">

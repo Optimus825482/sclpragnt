@@ -1,0 +1,3 @@
+ALTER TABLE large_move_paper
+  ADD COLUMN IF NOT EXISTS peak_net_pct DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS trailing_stop_pct DOUBLE PRECISION;

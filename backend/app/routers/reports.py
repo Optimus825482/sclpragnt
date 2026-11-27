@@ -2,7 +2,7 @@
 import asyncio
 import time
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import partial
 
 from fastapi import APIRouter, HTTPException, Request
@@ -21,6 +21,16 @@ from app.routers.llm_chat import (_forecast_evaluation_state, _chat_prediction_l
 
 logger = logging.getLogger("scalper.reports")
 router = APIRouter()
+
+
+@router.get("/api/reports/large-move-paper")
+async def get_large_move_paper_report(request: Request, day: date | None = None,
+                                     include_archived: bool = False):
+    from app.api_common import require_admin
+    from app.large_move_paper import report
+
+    require_admin(request)
+    return await report(day, include_archived)
 
 
 # ---------------------------------------------------------------------------

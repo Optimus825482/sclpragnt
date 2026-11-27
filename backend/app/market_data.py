@@ -133,6 +133,7 @@ class MarketData:
         # olduğundan, grafik doğrudan Binance'ye bağlanmak YERINE bu kanalı kullanır
         # → browser'dan erişilemeyen WS adresi sorunu ortadan kalkar.
         self._bar_listeners: list[callable] = []
+        self._depth_snapshots: dict[str, tuple[float, list, list]] = {}
 
         # Source-specific health prevents a healthy REST refresh from hiding a
         # dead WS stream (and vice versa). The legacy aggregate fields remain
@@ -1343,6 +1344,8 @@ class MarketData:
             except (TypeError, ValueError):
                 return
         received_at = float(data.get("received_at", 0) or time.time())
+        if isinstance(bids, list) and isinstance(asks, list) and bids and asks:
+            self._depth_snapshots[symbol] = (received_at, top_bids, top_asks)
         flow = self.orderflow[symbol]
         flow.update({
             "bid_price": bid,
@@ -1356,6 +1359,12 @@ class MarketData:
 
     def get_orderflow(self, symbol):
         return dict(self.orderflow.get(symbol.upper(), {}))
+
+    def get_depth_snapshot(self, symbol, max_age=2):
+        snapshot = self._depth_snapshots.get(symbol.upper())
+        if snapshot is None or not 0 <= time.time() - snapshot[0] <= max_age:
+            return None
+        return {"bids": snapshot[1], "asks": snapshot[2]}
 
     # Aggressive-flow accumulation window in seconds. B-10: pencere artık
     # GERÇEK kayan penceredir (1 sn'lik kovalar) — "tumbling reset" değil.
