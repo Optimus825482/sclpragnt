@@ -294,6 +294,31 @@ class MixedHistoryReconcileTests(_LedgerCase):
         self.assertAlmostEqual(self.db.cash(), figures.cash(), places=9)
 
 
+class PortfolioStatsPeriodTests(_LedgerCase):
+    def test_wallet_pnl_uses_reset_period_while_daily_stats_keep_their_filter(self):
+        self.db.execute("INSERT INTO llm_settings VALUES ('portfolio_reset_at', '100')")
+        self.db.execute("INSERT INTO llm_settings VALUES ('reports_baseline_at', '180')")
+        self.db.execute("INSERT INTO trades (pnl, exit_time) VALUES (5, 150), (500, 90)")
+        self.db.execute(
+            """INSERT INTO auto_paper_trades (symbol, status, entry_price, quantity, order_value_try,
+                       entry_time, exit_time, pnl, created_at, updated_at)
+               VALUES ('OLDTRY', 'closed', 1, 10, 10, 1, 90, 500, 1, 90),
+                      ('PRIORTRY', 'closed', 1, 10, 10, 120, 150, 28.54, 120, 150),
+                      ('DAYTRY', 'closed', 1, 10, 10, 200, 250, -239.12, 200, 250),
+                      ('OPENTRY', 'open', 1, 10, 10, 230, NULL, 100, 230, 230)"""
+        )
+        stats = asyncio.run(database.get_auto_paper_stats(
+            since=200, until=300, include_portfolio_pnl=True,
+        ))
+        self.assertEqual(stats["closed"], 1)
+        self.assertEqual(stats["open"], 1)
+        self.assertEqual(stats["total_pnl_try"], -239.12)
+        self.assertEqual(stats["portfolio_realized_pnl_try"], -205.58)
+        self.assertNotIn("portfolio_realized_pnl_try", asyncio.run(
+            database.get_auto_paper_stats(since=200, until=300),
+        ))
+
+
 class OverallocationModelTests(_LedgerCase):
     def test_position_at_exact_budget_is_not_a_candidate(self):
         """Nakdin tamamını efektif oranla kullanan ana defter açılışı, aday taramasında

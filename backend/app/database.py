@@ -981,6 +981,17 @@ class _ReconcileFigures(NamedTuple):
                 - self.open_cost - self.open_commission)
 
 
+def _combined_realized_pnl_sync(conn, cutoff: float) -> float:
+    row = conn.execute(
+        """SELECT
+           COALESCE((SELECT SUM(pnl) FROM trades WHERE (? = 0 OR exit_time > ?)), 0) +
+           COALESCE((SELECT SUM(pnl) FROM auto_paper_trades
+                     WHERE status = 'closed' AND (? = 0 OR exit_time > ?)), 0)""",
+        (cutoff, cutoff, cutoff, cutoff),
+    ).fetchone()
+    return float(row[0] or 0)
+
+
 def _portfolio_reconcile_figures(conn, cutoff: float) -> _ReconcileFigures:
     """Mutabakat rakamlarının TEK kaynağı (V-01/V-13).
 
@@ -997,12 +1008,7 @@ def _portfolio_reconcile_figures(conn, cutoff: float) -> _ReconcileFigures:
     tests/test_wallet_commission_parity.py.
     """
     legacy = _legacy_wallet_commission_pct()
-    realized = float(conn.execute(
-        "SELECT COALESCE(SUM(pnl),0) FROM trades WHERE (?=0 OR exit_time>?)",
-        (cutoff, cutoff)).fetchone()[0] or 0)
-    realized += float(conn.execute(
-        "SELECT COALESCE(SUM(pnl),0) FROM auto_paper_trades WHERE status='closed' AND (?=0 OR exit_time>?)",
-        (cutoff, cutoff)).fetchone()[0] or 0)
+    realized = _combined_realized_pnl_sync(conn, cutoff)
     main_open_cost = float(conn.execute(
         "SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
     auto_open_cost = float(conn.execute(
@@ -7964,6 +7970,7 @@ async def get_auto_paper_stats(
     until: float | None = None,
     day: str | None = None,
     ignore_reports_baseline: bool = False,
+    include_portfolio_pnl: bool = False,
 ) -> dict:
     """Otonom paper trade istatistikleri (seçilen gün veya reset_at sonrası, SQL agregatı).
 
@@ -8032,7 +8039,7 @@ async def get_auto_paper_stats(
         closed = int(row["closed"] or 0)
         winning = int(row["winning"] or 0)
         total_pnl = float(row["total_pnl"] or 0.0)
-        return {
+        stats = {
             "total": closed + int(open_row["open"] or 0),
             "open": int(open_row["open"] or 0),
             "closed": closed,
@@ -8043,6 +8050,11 @@ async def get_auto_paper_stats(
             "total_invested_try": round(float(row["total_invested"] or 0.0), 2),
             "avg_pnl_try": round(total_pnl / closed, 2) if closed else 0.0,
         }
+        if include_portfolio_pnl:
+            stats["portfolio_realized_pnl_try"] = round(
+                _combined_realized_pnl_sync(conn, _get_reset_cutoff_sync(conn)), 2,
+            )
+        return stats
     return await _run_db(op)
 
 

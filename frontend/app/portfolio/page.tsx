@@ -33,7 +33,6 @@ type MainPosition = {
 type Portfolio = {
   try?: number;
   total_value?: number;
-  realized_pnl?: number;
   unrealized_pnl?: number;
   positions: MainPosition[];
 };
@@ -72,6 +71,7 @@ type AutoPaperStats = {
   total_pnl_try: number;
   total_invested_try: number;
   avg_pnl_try: number;
+  portfolio_realized_pnl_try?: number;
 };
 
 /* ------------------------------------------------------------------ */
@@ -208,7 +208,7 @@ export default function PortfolioPage() {
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => { setApRecent(d.trades || []); markSource("son kapananlar", false); })
       .catch(() => markSource("son kapananlar", true));
-    apiRequest(`${API_BASE}/api/auto-paper/stats`, { cache: "no-store" })
+    apiRequest(`${API_BASE}/api/auto-paper/stats?include_portfolio_pnl=true`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => { setApStats(d.stats || null); markSource("istatistikler", false); })
       .catch(() => markSource("istatistikler", true));
@@ -259,7 +259,6 @@ export default function PortfolioPage() {
         // bırakılır; UI bunu nötr "—" olarak gösterir.
         try: snap.try != null ? Number(snap.try) : undefined,
         total_value: snap.total_value != null ? Number(snap.total_value) : undefined,
-        realized_pnl: snap.realized_pnl != null ? Number(snap.realized_pnl) : undefined,
         unrealized_pnl: snap.unrealized_pnl != null ? Number(snap.unrealized_pnl) : undefined,
         positions: Array.isArray(snap.positions) ? snap.positions : [],
       });
@@ -438,12 +437,7 @@ export default function PortfolioPage() {
   // "₺0,00" yeşil görünüp "başabaş" izlenimi verirdi.
   const totalValue = portfolio?.total_value ?? null;
   const freeTry = portfolio?.try ?? null;
-  // Gerçekleşen K/Z (ana + otonom): iki kaynak da gelmeden toplam `null`.
-  const realizedTotal: number | null = portfolio == null
-    ? null
-    : (portfolio.realized_pnl == null && apStats?.total_pnl_try == null
-        ? null
-        : (portfolio.realized_pnl ?? 0) + (apStats?.total_pnl_try ?? 0));
+  const realizedTotal = apStats?.portfolio_realized_pnl_try ?? null;
 
   const apEnabled = apSettings?.settings?.enabled;
 
@@ -500,10 +494,10 @@ export default function PortfolioPage() {
         <MetricCard label="AÇIK KAR/ZARAR" value={signedMoney(totalOpenPnl)} toneClass={tone(totalOpenPnl)} />
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard label="GERÇEKLEŞEN K/Z (tümü)" value={signedMoney(realizedTotal)} toneClass={tone(realizedTotal)} hint="ana + otonom kapanan işlemler" />
-        <MetricCard label="OTONOM BAŞARI" value={apStats?.closed ? `%${apStats.win_rate?.toFixed(1)}` : "—"} toneClass={apStats && apStats.win_rate >= 50 ? "ui-tone-positive" : apStats ? "ui-tone-negative" : ""} hint={`${apStats?.winning ?? 0} kazanç · ${apStats?.losing ?? 0} kayıp`} />
-        <MetricCard label="OTONOM KAPANAN" value={String(apStats?.closed ?? 0)} hint={`toplam ${apStats?.total ?? 0} işlem`} />
-        <MetricCard label="OTONOM NET PnL" value={signedMoney(apStats?.total_pnl_try)} toneClass={tone(apStats?.total_pnl_try)} />
+        <MetricCard label="GERÇEKLEŞEN K/Z (tümü)" value={signedMoney(realizedTotal)} toneClass={tone(realizedTotal)} hint="son portföy sıfırlamasından beri · ana + otonom" />
+        <MetricCard label="OTONOM BAŞARI (bugün)" value={apStats?.closed ? `%${apStats.win_rate?.toFixed(1)}` : "—"} toneClass={apStats && apStats.win_rate >= 50 ? "ui-tone-positive" : apStats ? "ui-tone-negative" : ""} hint={`${apStats?.winning ?? 0} kazanç · ${apStats?.losing ?? 0} kayıp`} />
+        <MetricCard label="OTONOM KAPANAN (bugün)" value={String(apStats?.closed ?? 0)} hint={`toplam ${apStats?.total ?? 0} işlem`} />
+        <MetricCard label="OTONOM NET K/Z (bugün)" value={signedMoney(apStats?.total_pnl_try)} toneClass={tone(apStats?.total_pnl_try)} />
       </div>
 
       {/* ---- Otonom Paper bölümü ---- */}
