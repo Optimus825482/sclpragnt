@@ -48,12 +48,12 @@ export default function Sidebar() {
     const [notificationsOpen, setNotificationsOpen] = useState(false);
     const [macroRegime, setMacroRegime] = useState<any>(null);
     const onLiveMessage = useCallback((message: any) => {
-        if (message.type !== "alert") return;
+        if (message.type !== "alert" && message.type !== "large_move_alert") return;
         const item = { ...(message.data || {}), id: message.data?.id || `${Date.now()}`, triggered_at: message.data?.triggered_at || Date.now() / 1000 };
         setNotifications((current) => [item, ...current.filter((entry) => entry.id !== item.id)].slice(0, 30));
         setUnread((count) => count + 1);
     }, []);
-    useLiveMessages(onLiveMessage, ["alert"]);
+    useLiveMessages(onLiveMessage, ["alert", "large_move_alert"]);
     useEffect(() => {
         // Service worker kaydı artık AppShell'de (useServiceWorker): kullanıcı kabuğu da push alsın.
         const handler = (event: Event) => { event.preventDefault(); setInstallEvent(event); };
@@ -86,7 +86,11 @@ export default function Sidebar() {
     }, []);
     useEffect(() => {
         const load = () => apiFetch("/api/alerts")
-            .then((data) => setNotifications((data.events || []).slice(0, 30)))
+            .then((data) => setNotifications((current) => {
+                const byId = new Map<string | number, any>();
+                for (const item of [...(data.events || []), ...current]) byId.set(item.id, item);
+                return [...byId.values()].sort((a, b) => b.triggered_at - a.triggered_at).slice(0, 30);
+            }))
             .catch(() => undefined);
         load();
     }, []);
@@ -237,7 +241,24 @@ export default function Sidebar() {
                     <button type="button" onClick={() => setNotificationsOpen(false)} className="text-bunker-muted hover:text-white" aria-label="Bildirimleri kapat">✕</button>
                 </div>
                 <div className="max-h-[75vh] overflow-y-auto p-4">
-                    {notifications.length === 0 ? <p className="py-8 text-center font-mono text-sm text-bunker-muted">Henüz bildirim yok.</p> : <div className="space-y-2">{notifications.map((item, index) => <article key={item.id || index} className="rounded-lg border border-bunker-800 bg-bunker-900/70 p-3"><div className="flex items-start justify-between gap-3">{item.symbol ? <SymbolLink symbol={item.symbol} className="font-bold text-neon-green hover:text-white" /> : <span className="font-mono text-sm font-bold text-neon-green">SİSTEM</span>}<time className="font-mono text-[10px] text-bunker-muted">{formatNotificationDate(item.triggered_at)}</time></div><p className="mt-1 text-sm text-white">{item.message || item.reason || "Yeni alarm bildirimi"}</p>{item.ml_hit_probability != null && <span className={`mt-1 inline-block ${ML_PROB_CLASS}`} title={ML_PROB_TITLE}>ML {formatMlProbability(item.ml_hit_probability)}</span>}</article>)}</div>}
+                    {notifications.length === 0 ? <p className="py-8 text-center font-mono text-sm text-bunker-muted">Henüz bildirim yok.</p> : (
+                        <div className="space-y-2">
+                            {notifications.map((item, index) => {
+                                const isLargeMove = item.kind === "large_move";
+                                return (
+                                    <article key={item.id || index} className={`rounded-lg border bg-bunker-900/70 p-3 ${isLargeMove ? "large-move-notice" : "border-bunker-800"}`}>
+                                        {isLargeMove && <p className="large-move-notice-label mb-1 font-mono text-xs font-bold">Büyük Yükseliş</p>}
+                                        <div className="flex items-start justify-between gap-3">
+                                            {item.symbol ? <SymbolLink symbol={item.symbol} className="font-bold text-neon-green hover:text-white" /> : <span className="font-mono text-sm font-bold text-neon-green">SİSTEM</span>}
+                                            <time className="font-mono text-[10px] text-bunker-muted">{formatNotificationDate(item.triggered_at)}</time>
+                                        </div>
+                                        <p className="mt-1 text-sm text-white">{item.message || item.reason || "Yeni alarm bildirimi"}</p>
+                                        {item.ml_hit_probability != null && <span className={`mt-1 inline-block ${ML_PROB_CLASS}`} title={ML_PROB_TITLE}>ML {formatMlProbability(item.ml_hit_probability)}</span>}
+                                    </article>
+                                );
+                            })}
+                        </div>
+                    )}
                 </div>
             </section>
         </div>}

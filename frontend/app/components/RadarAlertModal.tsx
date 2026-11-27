@@ -57,11 +57,11 @@ export type RadarAlertItem = {
   signals?: Record<string, unknown> | null;
 };
 
-// Dialog türü: radar (monitoring_alert) · alarm (alert) · yükseliş (rising_alert).
 // NOT (2026-10-07): Global taraması v4'ün içine alındığında "global" türü
 // KALDIRILDI — Global erken tespitleri sıradan bir TR radar bildirimi olarak
 // görünür (kullanıcı direktifi: arayüzde Global'e dair hiçbir şey olmayacak).
-type AlertKind = "radar" | "alarm" | "rising";
+type AlertKind = "radar" | "alarm" | "rising" | "large_move";
+type QueuedAlert = { item: RadarAlertItem; kind: AlertKind };
 
 // 2026-10-17: renkler artık `globals.css` içindeki `.ra-*` sınıflarından (opak, tema-bağımsız) gelir;
 // burada yalnız metin/ikon tutulur. `data-kind` üst çizgi/vurgu rengini seçer.
@@ -69,6 +69,7 @@ const KIND_META: Record<AlertKind, { eyebrow: string; icon: string }> = {
   radar: { eyebrow: "RADAR BİLDİRİMİ", icon: "🚨" },
   alarm: { eyebrow: "ALARM BİLDİRİMİ", icon: "🔔" },
   rising: { eyebrow: "YÜKSELİŞ EĞİLİMİ BİLDİRİMİ", icon: "📈" },
+  large_move: { eyebrow: "BÜYÜK YÜKSELİŞ BİLDİRİMİ", icon: "📈" },
 };
 
 const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -83,7 +84,7 @@ const fmtPrice = (value: number | undefined, _symbol?: string) => {
 
 export default function RadarAlertModal() {
   const [item, setItem] = useState<RadarAlertItem | null>(null);
-  const [queue, setQueue] = useState<RadarAlertItem[]>([]);
+  const [queue, setQueue] = useState<QueuedAlert[]>([]);
   const [kind, setKind] = useState<AlertKind>("radar");
   const busyRef = useRef(false);
   // Canlı (WS) gelen bildirim anahtarları: yeniden bağlanınca REST telafisi aynısını tekrar göstermesin.
@@ -106,29 +107,28 @@ export default function RadarAlertModal() {
     if (!item && queue.length > 0) {
       const [head, ...rest] = queue;
       setQueue(rest);
-      showNext(
-        head,
-        head.alertKind === "yukselis" || head.alertKind === "erken" ? "rising" : "radar"
-      );
+      showNext(head.item, head.kind);
     }
   }, [item, queue, showNext]);
 
   // Kuyruğa ekle: meşgulse bekletir (en çok 5), değilse ilkini hemen gösterir.
   const enqueue = useCallback((entries: RadarAlertItem[], alertKind: AlertKind) => {
+    const alerts = entries.map((entry) => ({ item: entry, kind: alertKind }));
     if (busyRef.current) {
-      setQueue((current) => [...current, ...entries].slice(-5));
+      setQueue((current) => [...current, ...alerts].slice(-5));
       return;
     }
-    const [head, ...rest] = entries;
+    const [head, ...rest] = alerts;
     if (rest.length) setQueue((current) => [...current, ...rest].slice(-5));
-    showNext(head, alertKind);
+    showNext(head.item, head.kind);
   }, [showNext]);
 
   const onLiveMessage = useCallback((message: { type: string; data?: unknown }) => {
     if (message.type !== "monitoring_alert" && message.type !== "alert"
-        && message.type !== "rising_alert") return;
+        && message.type !== "rising_alert" && message.type !== "large_move_alert") return;
     const alertKind: AlertKind =
-      message.type === "rising_alert" ? "rising"
+      message.type === "large_move_alert" ? "large_move"
+        : message.type === "rising_alert" ? "rising"
         : message.type === "monitoring_alert" ? "radar" : "alarm";
     // ÖNEMLİ: `monitoring_alert` ve `rising_alert` yayınları LİSTE taşır
     // (`data: [...]`), `alert` ise tek nesne. Eskiden `data` her zaman nesne
@@ -147,7 +147,8 @@ export default function RadarAlertModal() {
         id: raw.id ?? (raw as any).event_key ?? `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         symbol: raw.symbol,
         message: raw.message || raw.reason
-          || (alertKind === "rising" ? "Yükseliş sinyali" : alertKind === "radar" ? "Yeni radar fırsatı" : "Yeni alarm"),
+          || (alertKind === "large_move" ? "Büyük yükseliş sinyali"
+            : alertKind === "rising" ? "Yükseliş sinyali" : alertKind === "radar" ? "Yeni radar fırsatı" : "Yeni alarm"),
         title: raw.title,
         alertKind: raw.alertKind ?? (raw.kind === "erken" || raw.kind === "yukselis" ? raw.kind : undefined),
         triggered_at: raw.triggered_at ?? raw.detected_at ?? Date.now() / 1000,
@@ -162,7 +163,7 @@ export default function RadarAlertModal() {
     enqueue(entries, alertKind);
   }, [enqueue]);
 
-  useLiveMessages(onLiveMessage, ["monitoring_alert", "alert", "rising_alert"]);
+  useLiveMessages(onLiveMessage, ["monitoring_alert", "alert", "rising_alert", "large_move_alert"]);
 
   // Ses kilidi: ilk dokunuşta paylaşılan AudioContext açılır; aksi halde (özellikle iOS) WS ile
   // gelen alarm modalı sessiz kalır (mobil denetimi P6).
@@ -243,7 +244,7 @@ export default function RadarAlertModal() {
         ref={dialogRef}
         role="alertdialog"
         aria-modal="true"
-        aria-labelledby="radar-alert-title"
+        aria-labelledby="radar-alert-kind radar-alert-title"
         aria-describedby="radar-alert-message"
         tabIndex={-1}
         data-kind={kind}
@@ -254,7 +255,7 @@ export default function RadarAlertModal() {
           <div className="ra-head-main">
             <span className="ra-icon" aria-hidden="true">{meta.icon}</span>
             <div>
-              <p className="ra-eyebrow">{meta.eyebrow}</p>
+              <p id="radar-alert-kind" className="ra-eyebrow">{meta.eyebrow}</p>
               <h2 id="radar-alert-title" className="ra-title">
                 {item.symbol ? <SymbolLink symbol={item.symbol} className="ra-symbol" /> : "YENİ ALARM"}
               </h2>
@@ -273,7 +274,7 @@ export default function RadarAlertModal() {
             <div className="ra-tiles">
               {item.price != null && (
                 <div className="ra-tile">
-                  <p className="ra-tile-label">ANLIK</p>
+                  <p className="ra-tile-label">{kind === "large_move" ? "SİNYAL FİYATI" : "ANLIK"}</p>
                   <p className="ra-tile-value">{fmtPrice(item.price, item.symbol)}</p>
                 </div>
               )}

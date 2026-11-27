@@ -705,6 +705,12 @@ body { font-family: var(--font-plex), ui-sans-serif, system-ui, sans-serif; }
 }
 [data-theme="light"] .ra-card[data-kind="alarm"] { --ra-accent: var(--u-warn); --ra-symbol: var(--u-warn); }
 [data-theme="light"] .ra-card[data-kind="rising"] { --ra-accent: var(--u-info); --ra-symbol: var(--u-info); }
+.ra-card[data-kind="large_move"] { --ra-line: #fb7185; --ra-accent: #fda4af; --ra-symbol: #fda4af; }
+.large-move-notice { border-color: #fb7185; }
+.large-move-notice-label { color: #fda4af; }
+[data-theme="light"] .ra-card[data-kind="large_move"] { --ra-line: #be123c; --ra-accent: #9f1239; --ra-symbol: #9f1239; }
+[data-theme="light"] .large-move-notice { border-color: #be123c; }
+[data-theme="light"] .large-move-notice-label { color: #9f1239; }
 .ra-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: 1rem 1.25rem; background: var(--ra-head); border-bottom: 1px solid var(--ra-line); }
 .ra-head-main { display: flex; align-items: center; gap: .6rem; min-width: 0; }
 .ra-icon { font-size: 1.4rem; line-height: 1; }

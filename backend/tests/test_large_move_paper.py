@@ -1,6 +1,53 @@
-from pytest import approx
+import sqlite3
+from pathlib import Path
 
-from app.large_move_paper import MINUTE, Tracker, followup_path, mark_exit, read_book, trailing_level
+from pytest import approx, mark
+
+from app.large_move_paper import (
+    MINUTE,
+    Tracker,
+    database,
+    followup_path,
+    mark_exit,
+    read_book,
+    recent_signal_notifications,
+    signal_notification,
+    trailing_level,
+)
+
+
+@mark.asyncio
+async def test_notification_history_matches_live_payload_for_confirmed_signals(monkeypatch):
+    migration = Path(__file__).resolve().parents[1] / "migrations/034_large_move_paper.sql"
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(migration.read_text(encoding="utf-8"))
+        conn.executemany(
+            """INSERT INTO large_move_paper
+               (symbol, seed_ms, base_price, watch_ms, signal_ms, signal_price, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("WATCHTRY", 0, 100, 60000, None, None, "watch"),
+                ("OPENTRY", 0, 100, 60000, 120000, 115, "open"),
+                ("PORTALTRY", 60000, 100, 120000, 180000, 118.5, "blocked"),
+            ],
+        )
+
+        async def run_db(operation):
+            return operation(conn)
+
+        monkeypatch.setattr(database, "_run_db", run_db)
+        events = await recent_signal_notifications()
+        assert [event["symbol"] for event in events] == ["PORTALTRY", "OPENTRY"]
+        assert events[0] == signal_notification("PORTALTRY", 60000, 180000, 118.5, 100)
+        assert events[0] == {
+            "id": "large-move-PORTALTRY-60000",
+            "kind": "large_move",
+            "symbol": "PORTALTRY",
+            "message": "Bir dakikalık mum baz fiyatın +%18,5 üzerinde kapandı.",
+            "price": 118.5,
+            "triggered_at": 180.0,
+        }
 
 
 def warmed_tracker():

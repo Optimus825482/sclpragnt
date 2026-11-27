@@ -11,6 +11,7 @@ from statistics import median
 from app import database
 from app.binance_tr_public import depth, klines
 from app.trade_size import parse_levels, sweep
+from app.ws_runtime import ws_manager
 
 MINUTE = 60_000
 WINDOW = 30 * MINUTE
@@ -40,6 +41,31 @@ class Alert:
     stamp: int
     price: float
     level: int
+
+
+def signal_notification(symbol: str, seed_ms: int, signal_ms: int, price: float, base: float) -> dict:
+    rise = f"{100 * (price / base - 1):.1f}".replace(".", ",")
+    return {
+        "id": f"large-move-{symbol}-{seed_ms}",
+        "kind": "large_move",
+        "symbol": symbol,
+        "message": f"Bir dakikalık mum baz fiyatın +%{rise} üzerinde kapandı.",
+        "price": price,
+        "triggered_at": signal_ms / 1000,
+    }
+
+
+async def recent_signal_notifications(limit: int = 30) -> list[dict]:
+    def read(conn):
+        rows = conn.execute(
+            """SELECT symbol, seed_ms, signal_ms, signal_price, base_price
+               FROM large_move_paper WHERE signal_ms IS NOT NULL
+               ORDER BY signal_ms DESC, symbol LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [signal_notification(r["symbol"], r["seed_ms"], r["signal_ms"],
+                                    r["signal_price"], r["base_price"]) for r in rows]
+    return await database._run_db(read)
 
 
 class Tracker:
@@ -149,7 +175,7 @@ async def save_entry(symbol, alert, book, now):
             (symbol, alert.seed),
         ).fetchone()
         if not existing or existing["status"] != "watch":
-            return
+            return False
         settings = {r["key"]: r["value"] for r in conn.execute(
             """SELECT key, value FROM llm_settings
                WHERE key IN ('global_trading_halt', 'daily_loss_limit_pct')"""
@@ -195,8 +221,9 @@ async def save_entry(symbol, alert, book, now):
                 (alert.stamp, alert.price, spread, now, fill["avg_price"], fill["qty"],
                  cost, FEE, symbol, alert.seed),
             )
+        return True
 
-    await database._run_db(write)
+    return await database._run_db(write)
 
 
 async def open_trades():
@@ -429,7 +456,11 @@ async def run(market):
             if alert.level == 15:
                 await asyncio.sleep(DELAY)
                 book = await quote(symbol, lambda b: sum(p * q for p, q in b[1]) >= NOTIONAL)
-                await save_entry(symbol, alert, book, time.time())
+                if await save_entry(symbol, alert, book, time.time()):
+                    await ws_manager.broadcast({
+                        "type": "large_move_alert",
+                        "data": signal_notification(symbol, alert.seed, alert.stamp, alert.price, alert.base),
+                    })
         except Exception:
             logger.exception("Large-move paper alert persistence failed for %s", symbol)
 

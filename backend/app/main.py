@@ -1669,7 +1669,15 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/api/alerts")
 async def get_alerts(active_only: bool = False):
-    return {"alerts": await database.list_alert_rules(active_only=active_only), "events": await database.get_alert_events(100), "paper_only": True}
+    from app.large_move_paper import recent_signal_notifications
+
+    rules, alarms, large_moves = await asyncio.gather(
+        database.list_alert_rules(active_only=active_only),
+        database.get_alert_events(100),
+        recent_signal_notifications(100),
+    )
+    events = sorted([*alarms, *large_moves], key=lambda event: event["triggered_at"], reverse=True)
+    return {"alerts": rules, "events": events[:100], "paper_only": True}
 
 @app.get("/api/strategy/breaker")
 async def strategy_breaker_status():
