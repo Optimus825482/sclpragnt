@@ -13,6 +13,34 @@ from app import derivatives_service
 from app.config import config
 
 
+@pytest.mark.asyncio
+async def test_chart_open_interest_uses_fresh_exact_window_and_its_own_cache(monkeypatch):
+    now = 1_801
+    monkeypatch.setattr(derivatives_service.time, "time", lambda: now)
+    monkeypatch.setattr(derivatives_service, "_CHART_OI_CACHE", {})
+    monkeypatch.setattr(derivatives_service, "_OI_HIST_CACHE", {})
+    rows = [{"timestamp": 1_800_000, "sumOpenInterest": "102"},
+            {"timestamp": 900_000, "sumOpenInterest": "100"}]
+    fetch = MagicMock(side_effect=[rows, rows, None])
+    monkeypatch.setattr(derivatives_service, "_fetch_fapi_json", fetch)
+
+    result = await derivatives_service.chart_open_interest("PORTALTRY")
+    assert result == {
+        "futures_symbol": "PORTALUSDT", "source": "binance_usdm_futures", "window_minutes": 15,
+        "status": "fresh", "change_pct": 2, "start_timestamp_ms": 900_000, "end_timestamp_ms": 1_800_000,
+    }
+    assert await derivatives_service.chart_open_interest("PORTALTRY") == result
+    assert fetch.call_count == 1
+    assert "symbol=PORTALUSDT&period=5m" in fetch.call_args.args[0]
+    assert not derivatives_service._OI_HIST_CACHE
+
+    now = 2_401
+    assert (await derivatives_service.chart_open_interest("PORTALTRY"))["status"] == "stale"
+    missing = await derivatives_service.chart_open_interest("NOSYMBOLTRY")
+    assert missing["status"] == "unavailable"
+    assert "change_pct" not in missing
+
+
 def test_squeeze_confirmation_keeps_exact_15m_metadata(monkeypatch):
     monkeypatch.setattr(derivatives_service, "_OI_HIST_CACHE", {})
     monkeypatch.setattr(derivatives_service.time, "time", lambda: 1_801)

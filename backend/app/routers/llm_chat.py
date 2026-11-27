@@ -3142,6 +3142,7 @@ async def _get_orderbook_pressure_tool(args: dict) -> dict:
             "ask_qty": ask_qty,
             "spread_pct": round(spread_pct, 3),
             "bid_ask_ratio": round(ratio, 2),
+            "ask_to_bid_quote_ratio": round(ask_value / bid_value, 2),
             "bid_quote_value": round(bid_value, 2),
             "ask_quote_value": round(ask_value, 2),
             "depth_levels": min(len(bids), len(asks)),
@@ -3736,9 +3737,12 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
     age = _quick_price_age(ticker)
     price = ticker.get("last_price")
     reference = float(price) if isinstance(price, (int, float)) and math.isfinite(price) and price > 0 and age is not None and age <= _QUICK_PRICE_MAX_AGE_SEC else None
-    levels, book = await asyncio.gather(
+    from app.derivatives_service import chart_open_interest
+
+    levels, book, futures_oi = await asyncio.gather(
         _quick_price_levels(sym, reference),
         _get_orderbook_pressure_tool({"symbol": sym}),
+        chart_open_interest(sym),
     )
     if not price and not macd_row and not candidate and levels["status"] != "ok" and not book["ok"] and not (live_snapshot and live_snapshot.get("data_ready")):
         return None
@@ -3767,11 +3771,17 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
             "Yoksa seviye doğrulanamadı de; ATR veya tahmin yüzdesinden seviye türetme. "
             "price_status fresh dışında ticker fiyatını anlık diye sunma. "
             "Tahta verisi yoksa taraf baskısı söyleme; top 5 seviye anlık görünüm. "
+            "Tahtada bid_qty ve ask_qty yalnız en iyi fiyatlardaki adettir. "
+            "İlk beş seviyedeki satış/alış katı için ask_to_bid_quote_ratio alanını ve toplam TL tutarlarını kullan. "
+            "Vadeli OI için futures_open_interest.status fresh ise change_pct ve 15 dk penceresini kullan. "
+            "Bu Binance Global vadeli sözleşme verisidir; OI değişimi spot alım akışını veya long/short yönünü kanıtlamaz. "
+            "OI durumu unavailable veya stale ise yüzde verme. "
             "Hedef ve model olasılığını gözlenen seviyelerden ayrı anlat."
         ),
         "answer_contract": contract,
         "price_levels": levels,
         "orderbook_pressure": book if book["ok"] else {"ok": False},
+        "futures_open_interest": futures_oi,
         "price_status": "fresh" if reference else ("stale_or_unverified" if price else "unavailable"),
     }
     if price:

@@ -297,6 +297,7 @@ OI_HIST_TTL_SEC = 300.0  # 5 dk TTL — openInterestHist çağrısını kısıtl
 OI_SAMPLE_MINUTES = 5
 OI_SHADOW_WINDOW_MINUTES = 15
 OI_SHADOW_MAX_SAMPLE_AGE_SEC = OI_HIST_TTL_SEC + OI_SAMPLE_MINUTES * 60
+_CHART_OI_CACHE: dict[str, tuple[float, dict | None]] = {}
 
 
 def _open_interest_15m(history: list | None, as_of: float) -> dict | None:
@@ -322,6 +323,33 @@ def _open_interest_15m(history: list | None, as_of: float) -> dict | None:
     if not math.isfinite(change):
         return None
     return {"change_pct": change, "start_timestamp_ms": start, "end_timestamp_ms": end}
+
+
+async def chart_open_interest(symbol: str) -> dict:
+    """Fresh 15-minute OI evidence for display, with a cache local to the chart assistant."""
+    futures_symbol = symbol_to_futures(symbol)
+    now = time.time()
+    cached = _CHART_OI_CACHE.get(futures_symbol)
+    if cached and now - cached[0] < (OI_HIST_TTL_SEC if cached[1] else 30):
+        sample = cached[1]
+    else:
+        url = f"{FAPI_BASE}/futures/data/openInterestHist?symbol={futures_symbol}&period=5m&limit=6"
+        try:
+            history = await asyncio.wait_for(asyncio.to_thread(_fetch_fapi_json, url, 1.8), timeout=2.0)
+        except TimeoutError:
+            history = None
+        sample = _open_interest_15m(history, time.time())
+        _CHART_OI_CACHE[futures_symbol] = (time.time(), sample)
+
+    evidence = {"futures_symbol": futures_symbol, "source": "binance_usdm_futures",
+                "window_minutes": OI_SHADOW_WINDOW_MINUTES, "status": "unavailable"}
+    if sample:
+        age = time.time() - sample["end_timestamp_ms"] / 1000
+        if 0 <= age <= OI_SHADOW_MAX_SAMPLE_AGE_SEC:
+            evidence.update(sample, status="fresh")
+        else:
+            evidence["status"] = "stale"
+    return evidence
 
 
 def get_cached_squeeze_confirmation(symbol: str,

@@ -109,6 +109,10 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         self.deep_patch = patch.object(llm_chat, "deep_analyze_symbol", new=AsyncMock(return_value={"data_ready": False}))
         self.deep_patch.start()
         self.addCleanup(self.deep_patch.stop)
+        self.futures_oi = self.enterContext(patch(
+            "app.derivatives_service.chart_open_interest",
+            new=AsyncMock(return_value={"status": "unavailable"}),
+        ))
         self.candles = AsyncMock(return_value=[])
         self.book = AsyncMock(return_value={})
         for name, mock in (("fetch_klines", self.candles), ("orderbook", self.book)):
@@ -168,6 +172,7 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("radar_candidate", quick)
         self.assertNotIn("learned_target", quick)
         self.assertNotIn("active_notification", quick)
+        self.assertEqual({"status": "unavailable"}, quick["futures_open_interest"])
 
     async def test_prefetches_closed_market_levels_and_actual_book(self):
         llm_chat.market = _FakeMarket({"last_price": 0.0993, "timestamp": 6_000_100})
@@ -175,7 +180,10 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
             [(i + 1) * 300_000, "0.0993", "0.101", "0.098", "0.0993", "300", (i + 2) * 300_000 - 1]
             for i in range(19)
         ] + [[6_000_000, "0.1", "9", "0.001", "0.1", "300", 6_299_999]]
-        self.book.return_value = {"bids": [["0.099", "1000"]], "asks": [["0.100", "600"]]}
+        self.book.return_value = {"bids": [["0.099", "1000"], ["0.098", "500"]],
+                                  "asks": [["0.100", "600"], ["0.101", "2000"]]}
+        self.futures_oi.return_value = {"status": "fresh", "futures_symbol": "EGLDUSDT",
+                                        "window_minutes": 15, "change_pct": 1.5}
         with patch.object(llm_chat.time, "time", return_value=6000.1), \
              patch.object(llm_chat.database, "get_symbol_target_state", AsyncMock(return_value=None)), \
              patch.object(llm_chat.database, "get_pending_monitoring_notification", AsyncMock(return_value=None)):
@@ -183,6 +191,10 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         assert quick["price_levels"]["support"] == 0.098
         assert quick["price_levels"]["resistance"] == 0.101
         assert quick["orderbook_pressure"]["spread_pct"] == 1.005
+        assert quick["orderbook_pressure"]["ask_qty"] == 600
+        assert quick["orderbook_pressure"]["ask_to_bid_quote_ratio"] == 1.77
+        assert quick["futures_open_interest"] == self.futures_oi.return_value
+        self.futures_oi.assert_awaited_once_with("EGLDTRY")
 
     async def test_missing_orderbook_does_not_claim_balanced_book(self):
         result = await llm_chat._get_orderbook_pressure_tool({"symbol": "EGLDTRY"})
