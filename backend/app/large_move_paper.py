@@ -9,7 +9,7 @@ from datetime import date, datetime, time as day_time, timedelta, timezone
 from statistics import median
 
 from app import database
-from app.binance_tr_public import depth, klines
+from app.binance_tr_public import depth, klines, trading_symbols
 from app.trade_size import parse_levels, sweep
 from app.ws_runtime import ws_manager
 
@@ -26,6 +26,11 @@ TRAIL_INITIAL_GAP = 1.25
 TRAIL_MIN_GAP = 0.50
 TRAIL_TIGHTEN_PER_POINT = 0.15
 MAX_SIGNAL_AGE = 15
+RADAR_SCAN_SECONDS = 60
+RADAR_WS_GRACE_SECONDS = 8
+RADAR_SIGNAL_AGE = 90
+RADAR_HISTORY_BARS = 61
+RADAR_CONCURRENCY = 6
 FOLLOWUP_BARS = 30
 ISTANBUL = timezone(timedelta(hours=3))
 STABLE = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "USD1", "USDP", "USDE", "EUR",
@@ -108,6 +113,54 @@ class Tracker:
     def _reached(price: float, base: float, multiplier: float) -> bool:
         threshold = base * multiplier
         return price >= threshold or math.isclose(price, threshold, rel_tol=1e-12)
+
+
+def radar_bars(candles, close_ms):
+    """Normalize REST candles up to the requested completed minute."""
+    bars = {}
+    for candle in candles if isinstance(candles, list) else []:
+        try:
+            stamp, price, volume, end = int(candle[0]), float(candle[4]), float(candle[5]), int(candle[6])
+        except (IndexError, TypeError, ValueError, OverflowError):
+            continue
+        if (stamp > 0 and stamp % MINUTE == 0 and end == stamp + MINUTE - 1
+                and end < close_ms and math.isfinite(price) and price > 0 and math.isfinite(volume)):
+            bars[stamp] = (stamp, price, volume > 0)
+    return [bars[stamp] for stamp in sorted(bars)]
+
+
+def radar_symbol(symbol):
+    return symbol.endswith("TRY") and symbol[:-3] not in STABLE
+
+
+async def scan_missing_bars(symbols, trackers, accept, close_ms):
+    """Fill missing closes and warm untracked pairs without polling healthy streams."""
+    slots = asyncio.Semaphore(RADAR_CONCURRENCY)
+
+    async def recover(symbol):
+        async with slots:
+            tracker = trackers.get(symbol)
+            limit = RADAR_HISTORY_BARS
+            if tracker and len(tracker.closes) == tracker.closes.maxlen:
+                missing = (close_ms - MINUTE - tracker.last) // MINUTE
+                if missing <= 0:
+                    return
+                limit = min(limit, missing)
+            try:
+                candles = await asyncio.wait_for(
+                    klines(symbol, "1m", limit, end_time_ms=close_ms - 1), timeout=6,
+                )
+            except (TimeoutError, OSError, RuntimeError, ValueError):
+                logger.debug("Large-move radar candles unavailable for %s", symbol, exc_info=True)
+                return
+            bars = radar_bars(candles, close_ms)
+            tracker = trackers.get(symbol)
+            if not tracker or (len(tracker.closes) < tracker.closes.maxlen and len(bars) > len(tracker.closes)):
+                trackers[symbol] = Tracker()
+            for stamp, price, traded in bars:
+                accept(symbol, stamp, price, traded, max_age=RADAR_SIGNAL_AGE)
+
+    await asyncio.gather(*(recover(symbol) for symbol in symbols if radar_symbol(symbol)))
 
 
 def read_book(raw):
@@ -416,27 +469,32 @@ async def run(market):
     queue: asyncio.Queue = asyncio.Queue(maxsize=512)
     retry_until: dict[str, float] = {}
 
+    def accept(symbol, stamp, price, traded, *, max_age):
+        alert = trackers[symbol].observe(stamp, price, traded)
+        if alert and abs(time.time() - alert.stamp / 1000) <= max_age:
+            try:
+                queue.put_nowait((symbol, alert))
+            except asyncio.QueueFull:
+                logger.error("Large-move paper queue full for %s", symbol)
+
     def on_bar(symbol, timeframe, bar):
-        if (timeframe != "1m" or not bar["closed"] or not symbol.endswith("TRY")
-                or symbol[:-3] in STABLE):
+        if timeframe != "1m" or not bar["closed"] or not radar_symbol(symbol):
             return
         stamp, price = int(bar["time"]), float(bar["close"])
         if not math.isfinite(price) or price <= 0:
             return
         tracker = trackers.get(symbol)
-        if tracker is None or stamp > tracker.last + MINUTE:
+        if tracker is None:
             tracker = trackers[symbol] = Tracker()
             history = market.klines.get("1m", {}).get(symbol, {})
-            for t, p, volume in zip(*(history.get(key, [])[-61:]
+            for t, p, volume in zip(*(history.get(key, [])[-RADAR_HISTORY_BARS:]
                                       for key in ("timestamps", "closes", "volumes"))):
                 if t < stamp and p > 0 and math.isfinite(p):
                     tracker.observe(int(t), p, volume > 0)
-        alert = tracker.observe(stamp, price, bar["volume"] > 0)
-        if alert and abs(time.time() - alert.stamp / 1000) <= MAX_SIGNAL_AGE:
-            try:
-                queue.put_nowait((symbol, alert))
-            except asyncio.QueueFull:
-                logger.error("Large-move paper queue full for %s", symbol)
+        # Preserve the active episode until REST can fill a missing close.
+        if tracker.last and stamp > tracker.last + MINUTE:
+            return
+        accept(symbol, stamp, price, bar["volume"] > 0, max_age=MAX_SIGNAL_AGE)
 
     async def quote(symbol, enough):
         live = market.get_depth_snapshot(symbol, max_age=2)
@@ -454,8 +512,10 @@ async def run(market):
         try:
             await save_watch(symbol, alert)
             if alert.level == 15:
-                await asyncio.sleep(DELAY)
-                book = await quote(symbol, lambda b: sum(p * q for p, q in b[1]) >= NOTIONAL)
+                book = None
+                if time.time() - alert.stamp / 1000 <= MAX_SIGNAL_AGE:
+                    await asyncio.sleep(DELAY)
+                    book = await quote(symbol, lambda b: sum(p * q for p, q in b[1]) >= NOTIONAL)
                 if await save_entry(symbol, alert, book, time.time()):
                     await ws_manager.broadcast({
                         "type": "large_move_alert",
@@ -501,9 +561,22 @@ async def run(market):
                         logger.exception("Large-move paper follow-up tracking failed")
                     await asyncio.sleep(30)
 
+            async def scan_radar():
+                while True:
+                    now = time.time()
+                    await asyncio.sleep((RADAR_WS_GRACE_SECONDS - now % RADAR_SCAN_SECONDS) % RADAR_SCAN_SECONDS)
+                    close_ms = int(time.time() // 60) * MINUTE
+                    try:
+                        symbols = await asyncio.wait_for(trading_symbols(), timeout=6)
+                        await scan_missing_bars(symbols, trackers, accept, close_ms)
+                    except Exception:
+                        logger.exception("Large-move radar scan failed")
+                    await asyncio.sleep(1)
+
             for _ in range(8):
                 tasks.create_task(process_entries())
             tasks.create_task(manage())
             tasks.create_task(track_followups())
+            tasks.create_task(scan_radar())
     finally:
         market.remove_bar_listener(on_bar)

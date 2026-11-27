@@ -1,16 +1,20 @@
 import sqlite3
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from pytest import approx, mark
 
+from app import large_move_paper
 from app.large_move_paper import (
     MINUTE,
+    RADAR_SIGNAL_AGE,
     Tracker,
     database,
     followup_path,
     mark_exit,
     read_book,
     recent_signal_notifications,
+    scan_missing_bars,
     signal_notification,
     trailing_level,
 )
@@ -48,6 +52,43 @@ async def test_notification_history_matches_live_payload_for_confirmed_signals(m
             "price": 118.5,
             "triggered_at": 180.0,
         }
+
+
+@mark.asyncio
+async def test_periodic_radar_fills_missing_close_once_and_keeps_live_episode(monkeypatch):
+    def candle(minute, close):
+        stamp = minute * MINUTE
+        return [stamp, close, close, close, close, 10, stamp + MINUTE - 1]
+
+    port = warmed_tracker()
+    assert port.observe(31 * MINUTE, 103, True) is None
+    watch = port.observe(32 * MINUTE, 110, True)
+    healthy = warmed_tracker()
+    for minute in range(31, 35):
+        healthy.observe(minute * MINUTE, 100, True)
+    trackers = {"PORTALTRY": port, "HEITRY": healthy}
+    candles = [candle(35, 145), candle(34, 116), candle(33, 112), candle(32, 110)]
+    fetch = AsyncMock(return_value=candles)
+    monkeypatch.setattr(large_move_paper, "klines", fetch)
+    alerts = []
+
+    def accept(symbol, stamp, price, traded, *, max_age):
+        alert = trackers[symbol].observe(stamp, price, traded)
+        if alert:
+            alerts.append((alert, max_age))
+
+    symbols = ["USDTTRY", "HEITRY", "PORTALTRY", "PORTALUSDT"]
+    close_ms = 35 * MINUTE
+    await scan_missing_bars(symbols, trackers, accept, close_ms)
+    await scan_missing_bars(symbols, trackers, accept, close_ms)
+
+    fetch.assert_awaited_once_with("PORTALTRY", "1m", 2, end_time_ms=close_ms - 1)
+    assert trackers["PORTALTRY"] is port
+    assert port.last == 34 * MINUTE
+    [(alert, max_age)] = alerts
+    assert (alert.seed, alert.base, alert.level, alert.stamp) == (watch.seed, 100, 15, close_ms)
+    assert max_age == RADAR_SIGNAL_AGE
+    assert port.observe(34 * MINUTE, 116, True) is None
 
 
 def warmed_tracker():
