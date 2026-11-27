@@ -9,7 +9,7 @@ from datetime import date, datetime, time as day_time, timedelta, timezone
 from statistics import median
 
 from app import database
-from app.binance_tr_public import depth
+from app.binance_tr_public import depth, klines
 from app.trade_size import parse_levels, sweep
 
 MINUTE = 60_000
@@ -25,6 +25,7 @@ TRAIL_INITIAL_GAP = 1.25
 TRAIL_MIN_GAP = 0.50
 TRAIL_TIGHTEN_PER_POINT = 0.15
 MAX_SIGNAL_AGE = 15
+FOLLOWUP_BARS = 30
 ISTANBUL = timezone(timedelta(hours=3))
 STABLE = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "USD1", "USDP", "USDE", "EUR",
           "EURI", "TRY", "WBETH", "BNSOL"}
@@ -254,6 +255,95 @@ async def save_marks(updates):
         await database._run_db(write)
 
 
+def followup_path(rows, start_ms, end_ms, base_price=None):
+    """Summarize consecutive complete minutes and a late threshold crossing if applicable."""
+    candles = {}
+    for row in rows:
+        try:
+            stamp = int(row[0])
+            high, low, close = map(float, row[2:5])
+        except (ValueError, TypeError, IndexError, KeyError, OverflowError):
+            continue
+        if (start_ms <= stamp and stamp + MINUTE <= end_ms
+                and all(math.isfinite(p) for p in (low, high, close))
+                and 0 < low <= close <= high):
+            candles[stamp] = (low, high, close)
+    path = []
+    for stamp in range(start_ms, end_ms, MINUTE):
+        if stamp not in candles:
+            break
+        path.append(candles[stamp])
+    if not path:
+        return None
+    late_signal = None
+    if base_price is not None:
+        late_signal = next((
+            start_ms + i * MINUTE for i, (_, _, close) in enumerate(path, 1)
+            if Tracker._reached(close, base_price, 1.15)
+        ), None)
+    return len(path), min(bar[0] for bar in path), max(bar[1] for bar in path), path[-1][2], late_signal
+
+
+async def refresh_followup_paths():
+    now = time.time()
+    rows = await database._run_db(lambda conn: conn.execute(
+        """SELECT symbol, seed_ms, closed_at, watch_ms, base_price, status FROM large_move_paper
+           WHERE followup_bars < ? AND (followup_check_at IS NULL OR followup_check_at <= ?)
+                 AND ((status = 'closed' AND reason IN ('stop', 'trailing') AND closed_at <= ?)
+                      OR (status = 'watch' AND seed_ms + ? <= ?))
+           ORDER BY followup_check_at NULLS FIRST, watch_ms DESC LIMIT 4""",
+        (FOLLOWUP_BARS, now, now - 120, WINDOW, int((now - 60) * 1000)),
+    ).fetchall())
+
+    async def fetch(row):
+        expired_watch = row["status"] == "watch"
+        start = row["seed_ms"] + WINDOW if expired_watch else math.ceil(row["closed_at"] / 60) * MINUTE
+        query_start = row["watch_ms"] - MINUTE if expired_watch else start
+        end = min(start + FOLLOWUP_BARS * MINUTE, int(now // 60) * MINUTE)
+        watch_high = None
+        try:
+            candles = await asyncio.wait_for(
+                klines(row["symbol"], "1m", (end - query_start) // MINUTE,
+                       start_time_ms=query_start, end_time_ms=end - 1),
+                timeout=8,
+            )
+            candles = candles if isinstance(candles, list) else []
+            result = followup_path(candles, start, end, row["base_price"] if expired_watch else None)
+            if expired_watch:
+                during_watch = followup_path(candles, query_start, start)
+                if during_watch and during_watch[0] == (start - query_start) // MINUTE:
+                    watch_high = during_watch[2]
+        except (OSError, RuntimeError, ValueError):
+            logger.debug("Follow-up candles unavailable for %s", row["symbol"], exc_info=True)
+            result = None
+        return row, result, watch_high
+
+    observed = await asyncio.gather(*(fetch(row) for row in rows))
+
+    def write(conn):
+        for row, result, watch_high in observed:
+            key = (row["symbol"], row["seed_ms"], row["status"])
+            if result:
+                bars, low, high, close, late_signal = result
+                conn.execute(
+                    """UPDATE large_move_paper SET followup_bars = ?, followup_low = ?,
+                       followup_high = ?, followup_close = ?, late_signal_ms = ?,
+                       watch_high = COALESCE(?, watch_high), followup_check_at = ?
+                       WHERE symbol = ? AND seed_ms = ? AND status = ? AND followup_bars <= ?""",
+                    (bars, low, high, close, late_signal, watch_high, now + 60, *key, bars),
+                )
+            else:
+                conn.execute(
+                    """UPDATE large_move_paper SET followup_check_at = ?,
+                       watch_high = COALESCE(?, watch_high)
+                       WHERE symbol = ? AND seed_ms = ? AND status = ? AND followup_bars < ?""",
+                    (now + 300, watch_high, *key, FOLLOWUP_BARS),
+                )
+
+    if observed:
+        await database._run_db(write)
+
+
 async def report(day: date | None, include_archived: bool):
     def read(conn):
         lower = 0 if include_archived else database._get_reports_baseline_sync(conn) * 1000
@@ -288,7 +378,8 @@ async def report(day: date | None, include_archived: bool):
                     "activation_pct": TRAIL_START, "initial_gap": TRAIL_INITIAL_GAP,
                     "min_gap": TRAIL_MIN_GAP, "tighten_per_point": TRAIL_TIGHTEN_PER_POINT,
                 },
-                "stop_pct": STOP, "hold_minutes": HOLD_SECONDS // 60, "limit": 300,
+                "stop_pct": STOP, "hold_minutes": HOLD_SECONDS // 60,
+                "followup_minutes": FOLLOWUP_BARS, "limit": 300,
                 "summary": dict(stats), "rows": [dict(r) for r in rows]}
     return await database._run_db(read)
 
@@ -371,8 +462,17 @@ async def run(market):
                         logger.exception("Large-move paper position management failed")
                     await asyncio.sleep(DELAY)
 
+            async def track_followups():
+                while True:
+                    try:
+                        await refresh_followup_paths()
+                    except Exception:
+                        logger.exception("Large-move paper follow-up tracking failed")
+                    await asyncio.sleep(30)
+
             for _ in range(8):
                 tasks.create_task(process_entries())
             tasks.create_task(manage())
+            tasks.create_task(track_followups())
     finally:
         market.remove_bar_listener(on_bar)

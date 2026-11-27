@@ -1,6 +1,6 @@
 from pytest import approx
 
-from app.large_move_paper import MINUTE, Tracker, mark_exit, read_book, trailing_level
+from app.large_move_paper import MINUTE, Tracker, followup_path, mark_exit, read_book, trailing_level
 
 
 def warmed_tracker():
@@ -47,3 +47,25 @@ def test_trailing_activates_at_net_profit_and_never_backs_off():
     assert trailing_level(4.3, 5, 4.2) == approx((5, 4.2))
     assert trailing_level(7, 5, 4.2) == approx((7, 6.5))
     assert trailing_level(12, 7, 6.5) == approx((12, 11.5))
+
+
+def test_post_stop_path_measures_rebound_without_exit_candle_or_open_bar():
+    rows = [
+        [0, 4.8, 5, 4.2, 4.66],
+        [MINUTE, 4.6, 4.7, 4.16, 4.19],
+        [2 * MINUTE, 4.2, 4.53, 4.2, 4.49],
+        [3 * MINUTE, 4.49, 5, 4.48, 5],
+    ]
+    assert followup_path(rows, MINUTE, 3 * MINUTE) == (2, 4.16, 4.7, 4.49, None)
+    assert followup_path(rows[::2], MINUTE, 3 * MINUTE) is None
+    assert followup_path([rows[1], rows[3]], MINUTE, 4 * MINUTE) == (1, 4.16, 4.7, 4.19, None)
+
+
+def test_late_signal_uses_close_and_reports_the_time_the_candle_closes():
+    rows = [
+        [0, 1.32, 1.413, 1.32, 1.3746],
+        [MINUTE, 1.373, 1.44, 1.34, 1.3812],
+        [2 * MINUTE, 1.385, 1.438, 1.385, 1.4073],
+    ]
+    assert followup_path(rows, MINUTE, 3 * MINUTE, 1.2171)[-1] == 3 * MINUTE
+    assert followup_path(rows, MINUTE, 2 * MINUTE, 1.2171)[-1] is None

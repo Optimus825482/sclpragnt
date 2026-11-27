@@ -11,6 +11,7 @@ type Row = {
   watch_ms: number;
   signal_ms: number | null;
   signal_price: number | null;
+  base_price: number;
   spread_pct: number | null;
   display_status: "watch" | "expired" | "blocked" | "open" | "closed";
   reason: string | null;
@@ -23,6 +24,12 @@ type Row = {
   mark_net_pct: number | null;
   peak_net_pct: number | null;
   trailing_stop_pct: number | null;
+  followup_bars?: number;
+  followup_low?: number | null;
+  followup_high?: number | null;
+  followup_close?: number | null;
+  watch_high?: number | null;
+  late_signal_ms?: number | null;
 };
 
 type Report = {
@@ -32,13 +39,14 @@ type Report = {
   trailing: { activation_pct: number; initial_gap: number; min_gap: number };
   stop_pct: number;
   hold_minutes: number;
+  followup_minutes?: number;
   limit: number;
   summary: { watched: number; signals: number; opened: number; closed: number; blocked: number; wins: number; net_try: number };
   rows: Row[];
 };
 
 const statuses: Record<Row["display_status"], string> = {
-  watch: "İzleniyor", expired: "Sinyal çıkmadı", blocked: "Açılmadı", open: "Açık", closed: "Kapandı",
+  watch: "İzleniyor", expired: "Pencere doldu", blocked: "Açılmadı", open: "Açık", closed: "Kapandı",
 };
 const reasons: Record<string, string> = {
   target: "Hedef", trailing: "Takip stopu", stop: "Stop", time: "Süre", quote_unavailable: "Kotasyon yok",
@@ -53,6 +61,33 @@ const cash = (n: number) => n.toLocaleString("tr-TR", { style: "currency", curre
 const stamp = (ms: number) => new Date(ms).toLocaleString("tr-TR", {
   timeZone: "Europe/Istanbul", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
 });
+
+function Followup({ row, minutes }: { row: Row; minutes: number }) {
+  const { followup_bars: bars, followup_low: low, followup_high: high, followup_close: close, entry_price: entry } = row;
+  if (row.display_status === "expired") {
+    const watchPeak = row.watch_high != null ? 100 * (row.watch_high / row.base_price - 1) : null;
+    return (
+      <>
+        <div>{row.late_signal_ms ? `Pencere sonrası +%15 kapanış · ${stamp(row.late_signal_ms)}` : "Pencere içinde +%15 kapanış gelmedi"}</div>
+        {watchPeak != null && <div className="text-xs text-bunker-muted">Pencere içi zirve {percent(watchPeak)}</div>}
+        {bars && high != null && close != null ? <div className="text-xs text-bunker-muted">
+          Son {price(close)} · Zirve {price(high)} · {bars}/{minutes} dk
+        </div> : null}
+      </>
+    );
+  }
+  if (row.display_status !== "closed" || (row.reason !== "stop" && row.reason !== "trailing")) return "—";
+  if (!bars || low == null || high == null || close == null) return "Mum verisi bekleniyor";
+  const rebound = 100 * (close / low - 1);
+  return (
+    <>
+      <div>Son {price(close)} · Zirve {price(high)}</div>
+      <div className="text-xs text-bunker-muted">
+        Dipten {percent(rebound)} · {entry != null && (high >= entry ? "Girişe ulaştı" : "Girişin altında")} · {bars}/{minutes} dk
+      </div>
+    </>
+  );
+}
 
 export default function LargeMovePaperTab({ day, includeArchived }: { day: string; includeArchived: boolean }) {
   const scope = `${day}/${includeArchived}`;
@@ -124,7 +159,7 @@ export default function LargeMovePaperTab({ day, includeArchived }: { day: strin
         <div className="table-scroll max-h-[36rem]" role="region" aria-label="Büyük Hareket paper işlem geçmişi" tabIndex={0}>
           <table className="data-table table-compact whitespace-nowrap">
             <thead className="sticky top-0 z-10 bg-bunker-950">
-              <tr>{["Parite", "İzleme", "+%15 sinyali", "Giriş spread’i", "Durum", "Giriş", "Son kotasyon / çıkış", "Net zirve", "Takip stopu", "Net sonuç"].map((label) => (
+              <tr>{["Parite", "İzleme", "+%15 sinyali", "Giriş spread’i", "Durum", "Giriş", "Son kotasyon / çıkış", "Net zirve", "Takip stopu", "Net sonuç", "Sonraki hareket"].map((label) => (
                 <th key={label} scope="col">{label}</th>
               ))}</tr>
             </thead>
@@ -146,6 +181,7 @@ export default function LargeMovePaperTab({ day, includeArchived }: { day: strin
                     <td>{percent(row.peak_net_pct)}</td>
                     <td>{percent(row.trailing_stop_pct)}</td>
                     <td className={net == null ? "text-bunker-muted" : net >= 0 ? "text-neon-green" : "text-rose-300"}>{percent(net)}</td>
+                    <td><Followup row={row} minutes={data.followup_minutes ?? 30} /></td>
                   </tr>
                 );
               })}
