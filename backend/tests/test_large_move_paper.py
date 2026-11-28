@@ -47,8 +47,10 @@ async def test_notification_history_keeps_watch_and_signal_as_separate_events(mo
         monkeypatch.setattr(database, "_run_db", run_db)
         events = await recent_notifications()
         assert [(event["symbol"], event["kind"]) for event in events] == [
-            ("PORTALTRY", "large_move"), ("OPENTRY", "large_move"),
-            ("PORTALTRY", "large_move_watch"), ("OPENTRY", "large_move_watch"),
+            ("PORTALTRY", "large_move"),
+            ("OPENTRY", "large_move"),
+            ("PORTALTRY", "large_move_watch"),
+            ("OPENTRY", "large_move_watch"),
             ("WATCHTRY", "large_move_watch"),
         ]
         assert events[0] == signal_notification("PORTALTRY", 60000, 180000, 118.5, 100)
@@ -97,9 +99,13 @@ async def test_worker_records_early_watch_silently_then_broadcasts_watch_and_sig
     notices = asyncio.Queue()
     push = asyncio.Queue()
     listener_ready = asyncio.Event()
-    market = SimpleNamespace(klines={}, get_depth_snapshot=lambda *a, **kw: {
-        "bids": [[114.9, 20]], "asks": [[115, 20]],
-    })
+    market = SimpleNamespace(
+        klines={},
+        get_depth_snapshot=lambda *a, **kw: {
+            "bids": [[114.9, 20]],
+            "asks": [[115, 20]],
+        },
+    )
 
     def add_listener(listener):
         market.listener = listener
@@ -141,9 +147,16 @@ async def test_worker_records_early_watch_silently_then_broadcasts_watch_and_sig
             await asyncio.wait_for(listener_ready.wait(), 2)
 
             def candle(minute, price):
-                market.listener("CFGTRY", "1m", {
-                    "closed": True, "time": minute * MINUTE, "close": price, "volume": 10,
-                })
+                market.listener(
+                    "CFGTRY",
+                    "1m",
+                    {
+                        "closed": True,
+                        "time": minute * MINUTE,
+                        "close": price,
+                        "volume": 10,
+                    },
+                )
 
             for minute in range(1, 31):
                 candle(minute, 100)
@@ -216,10 +229,20 @@ async def test_monitor_joins_watch_stages_and_distinguishes_expired_rows(monkeyp
 
         payload = await large_move_paper.monitor_rows(market)
         cfg, robo, the = payload["rows"]
-        assert (cfg["symbol"], cfg["display_status"], cfg["early_watch_price"], cfg["current_price"]) == ("CFGTRY", "watch", 105, 109)
+        assert (cfg["symbol"], cfg["display_status"], cfg["early_watch_price"], cfg["current_price"]) == (
+            "CFGTRY",
+            "watch",
+            105,
+            109,
+        )
         assert cfg["early_watch_ms"] == seed + MINUTE
         assert cfg["watch_ms"] == seed + 3 * MINUTE
-        assert (robo["symbol"], robo["display_status"], robo["watch_ms"], robo["current_price"]) == ("ROBOTRY", "early", None, None)
+        assert (robo["symbol"], robo["display_status"], robo["watch_ms"], robo["current_price"]) == (
+            "ROBOTRY",
+            "early",
+            None,
+            None,
+        )
         assert (the["symbol"], the["display_status"]) == ("THETRY", "expired")
 
 
@@ -261,15 +284,22 @@ async def test_periodic_radar_fills_missing_close_once_and_keeps_live_episode(mo
 
 
 @mark.asyncio
-@mark.parametrize(("from_radar", "lag", "ask", "expected"), [
-    (True, 30, 1.598, None),
-    (True, 30, 1.63, "radar_price_moved"),
-    (True, 30, 1.55, "radar_price_moved"),
-    (True, 91, 1.598, "stale_signal"),
-    (False, 30, 1.598, "stale_signal"),
-])
+@mark.parametrize(
+    ("from_radar", "lag", "ask", "expected"),
+    [
+        (True, 30, 1.598, None),
+        (True, 30, 1.63, "radar_price_moved"),
+        (True, 30, 1.55, "radar_price_moved"),
+        (True, 91, 1.598, "stale_signal"),
+        (False, 30, 1.598, "stale_signal"),
+    ],
+)
 async def test_late_radar_entry_requires_current_price_near_confirmed_signal(
-    monkeypatch, from_radar, lag, ask, expected,
+    monkeypatch,
+    from_radar,
+    lag,
+    ask,
+    expected,
 ):
     migration = Path(__file__).resolve().parents[1] / "migrations/034_large_move_paper.sql"
     alert = Alert(MINUTE, 1.37, 10 * MINUTE, 1.597, 15)
@@ -326,18 +356,18 @@ def test_gap_rewarm_and_direct_jump():
 
 def test_exit_walk_uses_bids_and_round_trip_cost():
     book = read_book({"bids": [["102", "5"], ["100", "6"]], "asks": [["103", "10"]]})
-    price, net, pct = mark_exit(book[0], 10, 1002, .002)
+    price, net, pct = mark_exit(book[0], 10, 1002, 0.002)
     assert price == 101
     assert net == approx(5.98)
     assert pct == approx(100 * net / 1002)
-    assert mark_exit(book[0], 12, 1002, .002) is None
+    assert mark_exit(book[0], 12, 1002, 0.002) is None
     assert read_book({"bids": [[110, 100]], "asks": [[109, 100]]}) is None
 
 
 def test_trailing_activates_at_net_profit_and_never_backs_off():
     assert trailing_level(1.99, None, None) == (1.99, None)
-    assert trailing_level(2, 1.99, None) == (2, .75)
-    assert trailing_level(5, 2, .75) == approx((5, 4.2))
+    assert trailing_level(2, 1.99, None) == (2, 0.75)
+    assert trailing_level(5, 2, 0.75) == approx((5, 4.2))
     assert trailing_level(4.3, 5, 4.2) == approx((5, 4.2))
     assert trailing_level(7, 5, 4.2) == approx((7, 6.5))
     assert trailing_level(12, 7, 6.5) == approx((12, 11.5))
@@ -551,3 +581,40 @@ async def test_in_app_notification_list_includes_early_watch_events(monkeypatch)
         assert early["id"] == f"large-move-early-CFGTRY-{seed}"
         # en yeni olay başta
         assert events[0]["kind"] == "large_move_watch"
+
+
+def test_gradual_rise_seeds_off_the_three_hour_low():
+    """Kademeli yükseliş: fiyat her 10 dakikada ~%1 adımlarla, arada küçük
+    geri çekilmelerle 3 saatte ~%12 yükseliyor. 30 dk medyanı fiyatla birlikte
+    yükseldiği için medyan tabanı +%3'ü görmüyor; 3 saatlik dibe göre +%5
+    kırılımı yakalanmalı (NIGHTTRY 2026-11-28 vakası)."""
+    tracker = Tracker()
+    price = 2.50
+    alerts = []
+    for minute in range(1, 181):
+        if minute % 10 == 0:
+            price *= 1.01  # adım yükseliş
+        elif minute % 3 == 0:
+            price *= 0.999  # küçük geri çekilme
+        alert = tracker.observe(minute * MINUTE, price, True)
+        if alert:
+            alerts.append(alert)
+    assert alerts, "kademeli yükseliş hiç yakalanmadı"
+    first = alerts[0]
+    assert first.level == 5
+    assert first.base < price * 0.96, "taban 3 saatlik dip olmalı, güncel fiyat değil"
+
+
+def test_flat_market_still_produces_no_alert():
+    tracker = Tracker()
+    for minute in range(1, 181):
+        assert tracker.observe(minute * MINUTE, 100.0, True) is None
+
+
+def test_sharp_pump_still_seeds_off_the_median():
+    tracker = Tracker()
+    for minute in range(1, 31):
+        tracker.observe(minute * MINUTE, 100.0, True)
+    alert = tracker.observe(31 * MINUTE, 105.0, True)
+    assert alert is not None and alert.level == 5
+    assert alert.base == approx(100.0)

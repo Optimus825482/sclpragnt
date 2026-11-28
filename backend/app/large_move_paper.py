@@ -1,4 +1,5 @@
 """Live Binance TR one-minute acceleration experiment with an isolated paper ledger."""
+
 import asyncio
 import logging
 import math
@@ -26,6 +27,12 @@ TRAIL_START = 2.0
 TRAIL_INITIAL_GAP = 1.25
 TRAIL_MIN_GAP = 0.50
 TRAIL_TIGHTEN_PER_POINT = 0.15
+# Kademeli yükseliş tohumu (2026-11-28): 30 dk dibine göre bu oranı gören
+# sembol izlemeye alınır; medyan*GRADUAL_GUARD şartı dip-recovery gürültüsünü
+# keser. Yükselişlerin medyan tabanı yakalayamadığı durumlar için eklendi.
+GRADUAL_MULT = 1.05  # 3 saatlik dibe göre kademeli kırılım
+GRADUAL_GUARD = 1.015  # aynı anda 30 dk medyanının üstünde olmalı
+SLOW_BARS = 180  # yavaş taban penceresi (3 saat)
 MAX_SIGNAL_AGE = 15
 RADAR_SCAN_SECONDS = 60
 RADAR_WS_GRACE_SECONDS = 8
@@ -45,8 +52,7 @@ EARLY_PUSH_COOLDOWN_SEC = 3600.0
 _early_push_sent: dict[str, float] = {}
 _early_push_log: deque[float] = deque(maxlen=64)
 ISTANBUL = timezone(timedelta(hours=3))
-STABLE = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "USD1", "USDP", "USDE", "EUR",
-          "EURI", "TRY", "WBETH", "BNSOL"}
+STABLE = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "USD1", "USDP", "USDE", "EUR", "EURI", "TRY", "WBETH", "BNSOL"}
 _WALLET_LOCK = 39401157
 logger = logging.getLogger(__name__)
 
@@ -132,7 +138,9 @@ async def recent_notifications(limit: int = 30) -> list[dict]:
         events = []
         for r in rows:
             if r["level"] == 2:
-                events.append(signal_notification(r["symbol"], r["seed_ms"], r["event_ms"], r["price"], r["base_price"]))
+                events.append(
+                    signal_notification(r["symbol"], r["seed_ms"], r["event_ms"], r["price"], r["base_price"])
+                )
             else:
                 events.append(watch_notification(r["symbol"], r["seed_ms"], r["event_ms"]))
         # Erken izleme (+%5) olayları ayrı tablodan; tablo yoksa (eski şema /
@@ -147,10 +155,12 @@ async def recent_notifications(limit: int = 30) -> list[dict]:
             logger.debug("erken izleme bildirimleri okunamadı", exc_info=True)
             early_rows = []
         for r in early_rows:
-            events.append(early_watch_notification(
-                r["symbol"], r["seed_ms"], r["event_ms"], r["price"], r["base_price"] or 0.0))
+            events.append(
+                early_watch_notification(r["symbol"], r["seed_ms"], r["event_ms"], r["price"], r["base_price"] or 0.0)
+            )
         events.sort(key=lambda e: e.get("triggered_at") or 0.0, reverse=True)
         return events[:limit]
+
     return await database._run_db(read)
 
 
@@ -159,6 +169,10 @@ class Tracker:
 
     def __init__(self):
         self.closes = deque(maxlen=30)
+        # Yavaş taban (2026-11-28): kademeli yükselişler 30 dk medyanıyla
+        # yakalanamıyor (medyan fiyatla birlikte yükseliyor). 3 saatlik dip
+        # ayrıca tutulur; "3 saatte +%5" kırılımı da izlemeye alınır.
+        self.slow = deque(maxlen=SLOW_BARS)
         self.last = 0
         self.was_above = False
         self.seed = None
@@ -172,20 +186,40 @@ class Tracker:
             self.__init__()
         self.last = stamp
         anchor = median(self.closes) if len(self.closes) == 30 else None
+        slow_low = min(self.slow) if len(self.slow) >= 30 else None
         self.closes.append(price)
+        self.slow.append(price)
         if anchor is None:
             return None
-        above = traded and self._reached(price, anchor, 1.03)
+        # İKİ TABAN (2026-11-28 düzeltmesi): eski ölçüt yalnız 30 dk MEDYANINA
+        # göre +%3 arıyordu. Kademeli yükselişte medyan fiyatla birlikte
+        # yükseldiği için fark hiç oluşmuyordu (NIGHTTRY 2 saatte +%7 yükseldi,
+        # medyan oranı en fazla +%2,32 kaldı → Monitor onu izlemeye almadı).
+        # Artık "3 saatlik dibe göre +%5" de tohumluyor; medyan*1.015 koruması
+        # dip-recovery gürültüsünü ve 3 saatlik eski dibi kesiyor.
+        sharp = self._reached(price, anchor, 1.03)
+        gradual = bool(
+            slow_low and self._reached(price, slow_low, GRADUAL_MULT) and self._reached(price, anchor, GRADUAL_GUARD)
+        )
+        above = bool(traded and (sharp or gradual))
         if self.seed is not None and stamp >= self.seed + WINDOW:
             self.seed = None
         if self.seed is None and above and not self.was_above:
-            self.seed, self.base, self.level = stamp, anchor, 0
+            # Taban, hareketi tetikleyen seviyedir: ani sıçramada 30 dk medyanı,
+            # yavaş yükselişte 3 saatlik dip (seviyeler o tabana göre ölçülür).
+            self.seed, self.base, self.level = stamp, anchor if sharp else slow_low, 0
         self.was_above = above
         if self.seed is None or not traded or stamp + MINUTE >= self.seed + WINDOW:
             return None
-        level = (15 if self._reached(price, self.base, 1.15) else
-                 10 if self._reached(price, self.base, 1.10) else
-                 5 if self._reached(price, self.base, 1.05) else 0)
+        level = (
+            15
+            if self._reached(price, self.base, 1.15)
+            else 10
+            if self._reached(price, self.base, 1.10)
+            else 5
+            if self._reached(price, self.base, 1.05)
+            else 0
+        )
         if level <= self.level:
             return None
         self.level = level
@@ -205,8 +239,15 @@ def radar_bars(candles, close_ms):
             stamp, price, volume, end = int(candle[0]), float(candle[4]), float(candle[5]), int(candle[6])
         except (IndexError, TypeError, ValueError, OverflowError):
             continue
-        if (stamp > 0 and stamp % MINUTE == 0 and end == stamp + MINUTE - 1
-                and end < close_ms and math.isfinite(price) and price > 0 and math.isfinite(volume)):
+        if (
+            stamp > 0
+            and stamp % MINUTE == 0
+            and end == stamp + MINUTE - 1
+            and end < close_ms
+            and math.isfinite(price)
+            and price > 0
+            and math.isfinite(volume)
+        ):
             bars[stamp] = (stamp, price, volume > 0)
     return [bars[stamp] for stamp in sorted(bars)]
 
@@ -230,7 +271,8 @@ async def scan_missing_bars(symbols, trackers, accept, close_ms):
                 limit = min(limit, missing)
             try:
                 candles = await asyncio.wait_for(
-                    klines(symbol, "1m", limit, end_time_ms=close_ms - 1), timeout=6,
+                    klines(symbol, "1m", limit, end_time_ms=close_ms - 1),
+                    timeout=6,
                 )
             except (TimeoutError, OSError, RuntimeError, ValueError):
                 logger.debug("Large-move radar candles unavailable for %s", symbol, exc_info=True)
@@ -254,8 +296,7 @@ def read_book(raw):
         return None
     if not bids or not asks or bids[0][0] >= asks[0][0]:
         return None
-    if any(not math.isfinite(p) or not math.isfinite(q) or min(p, q) <= 0
-           for p, q in (*bids, *asks)):
+    if any(not math.isfinite(p) or not math.isfinite(q) or min(p, q) <= 0 for p, q in (*bids, *asks)):
         return None
     return bids, asks
 
@@ -283,14 +324,16 @@ def trailing_level(pct: float, previous_peak: float | None, previous_stop: float
 
 
 async def save_early_watch(symbol: str, alert: Alert):
-    await database._run_db(lambda conn: conn.execute(
-        """INSERT INTO large_move_early_watch (symbol, seed_ms, base_price, watch_ms, watch_price)
+    await database._run_db(
+        lambda conn: conn.execute(
+            """INSERT INTO large_move_early_watch (symbol, seed_ms, base_price, watch_ms, watch_price)
            VALUES (?, ?, ?, ?, ?)
            ON CONFLICT (symbol, seed_ms) DO UPDATE SET
              base_price = EXCLUDED.base_price, watch_ms = EXCLUDED.watch_ms, watch_price = EXCLUDED.watch_price
            WHERE large_move_early_watch.watch_ms > EXCLUDED.watch_ms""",
-        (symbol, alert.seed, alert.base, alert.stamp, alert.price),
-    ))
+            (symbol, alert.seed, alert.base, alert.stamp, alert.price),
+        )
+    )
 
 
 async def save_watch(symbol: str, alert: Alert) -> bool:
@@ -317,10 +360,16 @@ async def deliver_watch_push(event: dict, alert: Alert):
     try:
         symbol = event["symbol"]
         await alerting.deliver_alert_push(
-            event["message"], title=f"{symbol} izlemeye alındı",
-            url=f"/charts?symbol={symbol}&timeframe=1m", tag=event["id"],
-            extra={"symbol": symbol, "source": "large_move_watch", "detected_at": event["triggered_at"],
-                   "horizon_minutes": (alert.seed + WINDOW - alert.stamp) / MINUTE},
+            event["message"],
+            title=f"{symbol} izlemeye alındı",
+            url=f"/charts?symbol={symbol}&timeframe=1m",
+            tag=event["id"],
+            extra={
+                "symbol": symbol,
+                "source": "large_move_watch",
+                "detected_at": event["triggered_at"],
+                "horizon_minutes": (alert.seed + WINDOW - alert.stamp) / MINUTE,
+            },
         )
     except Exception:
         logger.exception("Large-move watch push failed for %s", event["symbol"])
@@ -332,11 +381,17 @@ async def deliver_early_push(event: dict, alert: Alert):
         symbol = event["symbol"]
         note_early_push(symbol, time.time())
         await alerting.deliver_alert_push(
-            event["message"], title=f"{symbol} erken izlemede",
-            url=f"/monitor", tag=event["id"],
-            extra={"symbol": symbol, "source": "large_move_early", "detected_at": event["triggered_at"],
-                   "base_price": event.get("base"),
-                   "horizon_minutes": (alert.seed + WINDOW - alert.stamp) / MINUTE},
+            event["message"],
+            title=f"{symbol} erken izlemede",
+            url=f"/monitor",
+            tag=event["id"],
+            extra={
+                "symbol": symbol,
+                "source": "large_move_early",
+                "detected_at": event["triggered_at"],
+                "base_price": event.get("base"),
+                "horizon_minutes": (alert.seed + WINDOW - alert.stamp) / MINUTE,
+            },
         )
     except Exception:
         logger.exception("Large-move early push failed for %s", event.get("symbol"))
@@ -351,8 +406,7 @@ async def save_entry(symbol, alert, book, now, *, from_radar=False):
     cost = NOTIONAL * (1 + FEE)
     age = now - alert.stamp / 1000
     max_age = RADAR_SIGNAL_AGE if from_radar else MAX_SIGNAL_AGE
-    start_today = datetime.combine(datetime.fromtimestamp(now, ISTANBUL).date(),
-                                   day_time.min, ISTANBUL).timestamp()
+    start_today = datetime.combine(datetime.fromtimestamp(now, ISTANBUL).date(), day_time.min, ISTANBUL).timestamp()
 
     def write(conn):
         conn.execute("SELECT pg_advisory_xact_lock(?)", (_WALLET_LOCK,))
@@ -362,10 +416,13 @@ async def save_entry(symbol, alert, book, now, *, from_radar=False):
         ).fetchone()
         if not existing or existing["status"] != "watch":
             return False
-        settings = {r["key"]: r["value"] for r in conn.execute(
-            """SELECT key, value FROM llm_settings
+        settings = {
+            r["key"]: r["value"]
+            for r in conn.execute(
+                """SELECT key, value FROM llm_settings
                WHERE key IN ('global_trading_halt', 'daily_loss_limit_pct')"""
-        ).fetchall()}
+            ).fetchall()
+        }
         try:
             daily_limit = STARTING_CASH * float(settings.get("daily_loss_limit_pct", "0")) / 100
         except ValueError:
@@ -389,9 +446,13 @@ async def save_entry(symbol, alert, book, now, *, from_radar=False):
             reason = "quote_unavailable"
         elif fill["filled_try"] < NOTIONAL - 1e-7:
             reason = "insufficient_depth"
-        elif from_radar and age > MAX_SIGNAL_AGE and (
-            not Tracker._reached(fill["avg_price"], alert.base, 1.15)
-            or fill["avg_price"] > alert.price * (1 + RADAR_MAX_ENTRY_DRIFT)
+        elif (
+            from_radar
+            and age > MAX_SIGNAL_AGE
+            and (
+                not Tracker._reached(fill["avg_price"], alert.base, 1.15)
+                or fill["avg_price"] > alert.price * (1 + RADAR_MAX_ENTRY_DRIFT)
+            )
         ):
             reason = "radar_price_moved"
         elif wallet["same_symbol"]:
@@ -409,8 +470,7 @@ async def save_entry(symbol, alert, book, now, *, from_radar=False):
                 """UPDATE large_move_paper SET signal_ms = ?, signal_price = ?, spread_pct = ?,
                        status = 'open', opened_at = ?, entry_price = ?, quantity = ?,
                        entry_cost = ?, fee_rate = ? WHERE symbol = ? AND seed_ms = ?""",
-                (alert.stamp, alert.price, spread, now, fill["avg_price"], fill["qty"],
-                 cost, FEE, symbol, alert.seed),
+                (alert.stamp, alert.price, spread, now, fill["avg_price"], fill["qty"], cost, FEE, symbol, alert.seed),
             )
         return True
 
@@ -426,9 +486,13 @@ async def open_trades():
                WHERE status = 'open' AND exit_due_at IS NULL AND opened_at <= ?""",
             (HOLD_SECONDS + DELAY, now - HOLD_SECONDS),
         )
-        return [dict(r) for r in conn.execute(
-            "SELECT * FROM large_move_paper WHERE status = 'open' ORDER BY symbol, seed_ms"
-        ).fetchall()]
+        return [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM large_move_paper WHERE status = 'open' ORDER BY symbol, seed_ms"
+            ).fetchall()
+        ]
+
     return await database._run_db(read)
 
 
@@ -469,6 +533,7 @@ async def save_marks(updates):
                    WHERE symbol = ? AND seed_ms = ? AND status = 'open'""",
                 (price, pct, now, peak, floor, reason, now + DELAY if reason else None, *key),
             )
+
     if updates:
         await database._run_db(write)
 
@@ -482,9 +547,12 @@ def followup_path(rows, start_ms, end_ms, base_price=None):
             high, low, close = map(float, row[2:5])
         except (ValueError, TypeError, IndexError, KeyError, OverflowError):
             continue
-        if (start_ms <= stamp and stamp + MINUTE <= end_ms
-                and all(math.isfinite(p) for p in (low, high, close))
-                and 0 < low <= close <= high):
+        if (
+            start_ms <= stamp
+            and stamp + MINUTE <= end_ms
+            and all(math.isfinite(p) for p in (low, high, close))
+            and 0 < low <= close <= high
+        ):
             candles[stamp] = (low, high, close)
     path = []
     for stamp in range(start_ms, end_ms, MINUTE):
@@ -495,23 +563,29 @@ def followup_path(rows, start_ms, end_ms, base_price=None):
         return None
     late_signal = None
     if base_price is not None:
-        late_signal = next((
-            start_ms + i * MINUTE for i, (_, _, close) in enumerate(path, 1)
-            if Tracker._reached(close, base_price, 1.15)
-        ), None)
+        late_signal = next(
+            (
+                start_ms + i * MINUTE
+                for i, (_, _, close) in enumerate(path, 1)
+                if Tracker._reached(close, base_price, 1.15)
+            ),
+            None,
+        )
     return len(path), min(bar[0] for bar in path), max(bar[1] for bar in path), path[-1][2], late_signal
 
 
 async def refresh_followup_paths():
     now = time.time()
-    rows = await database._run_db(lambda conn: conn.execute(
-        """SELECT symbol, seed_ms, closed_at, watch_ms, base_price, status FROM large_move_paper
+    rows = await database._run_db(
+        lambda conn: conn.execute(
+            """SELECT symbol, seed_ms, closed_at, watch_ms, base_price, status FROM large_move_paper
            WHERE followup_bars < ? AND (followup_check_at IS NULL OR followup_check_at <= ?)
                  AND ((status = 'closed' AND reason IN ('stop', 'trailing') AND closed_at <= ?)
                       OR (status = 'watch' AND seed_ms + ? <= ?))
            ORDER BY followup_check_at NULLS FIRST, watch_ms DESC LIMIT 4""",
-        (FOLLOWUP_BARS, now, now - 120, WINDOW, int((now - 60) * 1000)),
-    ).fetchall())
+            (FOLLOWUP_BARS, now, now - 120, WINDOW, int((now - 60) * 1000)),
+        ).fetchall()
+    )
 
     async def fetch(row):
         expired_watch = row["status"] == "watch"
@@ -521,8 +595,9 @@ async def refresh_followup_paths():
         watch_high = None
         try:
             candles = await asyncio.wait_for(
-                klines(row["symbol"], "1m", (end - query_start) // MINUTE,
-                       start_time_ms=query_start, end_time_ms=end - 1),
+                klines(
+                    row["symbol"], "1m", (end - query_start) // MINUTE, start_time_ms=query_start, end_time_ms=end - 1
+                ),
                 timeout=8,
             )
             candles = candles if isinstance(candles, list) else []
@@ -607,8 +682,10 @@ async def monitor_rows(market):
     cutoff = now_ms - MONITOR_HOURS * 60 * MINUTE
 
     def read(conn):
-        return [dict(row) for row in conn.execute(
-            """WITH recent AS (
+        return [
+            dict(row)
+            for row in conn.execute(
+                """WITH recent AS (
                  SELECT symbol, seed_ms FROM large_move_early_watch WHERE watch_ms >= ?
                  UNION
                  SELECT symbol, seed_ms FROM large_move_paper WHERE watch_ms >= ? OR status = 'open'
@@ -630,8 +707,9 @@ async def monitor_rows(market):
                              ELSE 2 END,
                         COALESCE(p.signal_ms, p.watch_ms, e.watch_ms) DESC, recent.symbol, recent.seed_ms DESC
                LIMIT ?""",
-            (cutoff, cutoff, WINDOW, WINDOW, now_ms, WINDOW, now_ms, MONITOR_LIMIT),
-        ).fetchall()]
+                (cutoff, cutoff, WINDOW, WINDOW, now_ms, WINDOW, now_ms, MONITOR_LIMIT),
+            ).fetchall()
+        ]
 
     rows = await database._run_db(read)
     prices = {}
@@ -639,8 +717,12 @@ async def monitor_rows(market):
         symbol = row["symbol"]
         if symbol not in prices:
             price = (market.get_ticker(symbol) or {}).get("last_price")
-            if (isinstance(price, (float, int)) and math.isfinite(price) and price > 0
-                    and market.ticker_freshness(symbol, max_age_sec=60)["fresh"]):
+            if (
+                isinstance(price, (float, int))
+                and math.isfinite(price)
+                and price > 0
+                and market.ticker_freshness(symbol, max_age_sec=60)["fresh"]
+            ):
                 prices[symbol] = price
             else:
                 prices[symbol] = None
@@ -693,7 +775,8 @@ async def report(day: date | None, include_archived: bool):
                COUNT(*) FILTER (WHERE status = 'blocked') AS blocked,
                COUNT(*) FILTER (WHERE status = 'closed' AND net_pnl_try > 0) AS wins,
                COALESCE(SUM(net_pnl_try), 0) AS net_try
-               FROM large_move_paper WHERE {where}""", params,
+               FROM large_move_paper WHERE {where}""",
+            params,
         ).fetchone()
         rows = conn.execute(
             f"""SELECT *, CASE WHEN status = 'watch' AND seed_ms + ? <= ? THEN 'expired'
@@ -702,15 +785,26 @@ async def report(day: date | None, include_archived: bool):
                 ORDER BY (status = 'open') DESC, watch_ms DESC, symbol LIMIT 300""",
             (WINDOW, now_ms, *params),
         ).fetchall()
-        return {"paper_only": True, "day": day.isoformat() if day else None,
-                "initial_cash": STARTING_CASH,
-                "notional": NOTIONAL, "fee_pct": FEE * 100, "trailing": {
-                    "activation_pct": TRAIL_START, "initial_gap": TRAIL_INITIAL_GAP,
-                    "min_gap": TRAIL_MIN_GAP, "tighten_per_point": TRAIL_TIGHTEN_PER_POINT,
-                },
-                "stop_pct": STOP, "hold_minutes": HOLD_SECONDS // 60,
-                "followup_minutes": FOLLOWUP_BARS, "limit": 300,
-                "summary": dict(stats), "rows": [dict(r) for r in rows]}
+        return {
+            "paper_only": True,
+            "day": day.isoformat() if day else None,
+            "initial_cash": STARTING_CASH,
+            "notional": NOTIONAL,
+            "fee_pct": FEE * 100,
+            "trailing": {
+                "activation_pct": TRAIL_START,
+                "initial_gap": TRAIL_INITIAL_GAP,
+                "min_gap": TRAIL_MIN_GAP,
+                "tighten_per_point": TRAIL_TIGHTEN_PER_POINT,
+            },
+            "stop_pct": STOP,
+            "hold_minutes": HOLD_SECONDS // 60,
+            "followup_minutes": FOLLOWUP_BARS,
+            "limit": 300,
+            "summary": dict(stats),
+            "rows": [dict(r) for r in rows],
+        }
+
     return await database._run_db(read)
 
 
@@ -738,8 +832,9 @@ async def run(market):
         if tracker is None:
             tracker = trackers[symbol] = Tracker()
             history = market.klines.get("1m", {}).get(symbol, {})
-            for t, p, volume in zip(*(history.get(key, [])[-RADAR_HISTORY_BARS:]
-                                      for key in ("timestamps", "closes", "volumes"))):
+            for t, p, volume in zip(
+                *(history.get(key, [])[-RADAR_HISTORY_BARS:] for key in ("timestamps", "closes", "volumes"))
+            ):
                 if t < stamp and p > 0 and math.isfinite(p):
                     tracker.observe(int(t), p, volume > 0)
         # Preserve the active episode until REST can fill a missing close.
@@ -787,16 +882,19 @@ async def run(market):
                     await asyncio.sleep(DELAY)
                     book = await quote(symbol, lambda b: sum(p * q for p, q in b[1]) >= NOTIONAL)
                 if await save_entry(symbol, alert, book, time.time(), from_radar=from_radar):
-                    await ws_manager.broadcast({
-                        "type": "large_move_alert",
-                        "data": signal_notification(symbol, alert.seed, alert.stamp, alert.price, alert.base),
-                    })
+                    await ws_manager.broadcast(
+                        {
+                            "type": "large_move_alert",
+                            "data": signal_notification(symbol, alert.seed, alert.stamp, alert.price, alert.base),
+                        }
+                    )
         except Exception:
             logger.exception("Large-move paper alert persistence failed for %s", symbol)
 
     market.add_bar_listener(on_bar)
     try:
         async with asyncio.TaskGroup() as tasks:
+
             async def process_entries():
                 while True:
                     symbol, alert, from_radar = await queue.get()
