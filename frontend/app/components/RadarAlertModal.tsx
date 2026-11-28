@@ -235,6 +235,7 @@ export default function RadarAlertModal() {
 
   if (!item) return null;
   const meta = KIND_META[kind];
+  const isLargeMoveWatch = item.kind === "large_move_watch";
   const risingKind = item.alertKind;
   const proximityPct = typeof item.proximity === "number" ? Math.round(item.proximity * 100) : null;
 
@@ -255,9 +256,9 @@ export default function RadarAlertModal() {
           <div className="ra-head-main">
             <span className="ra-icon" aria-hidden="true">{meta.icon}</span>
             <div>
-              <p id="radar-alert-kind" className="ra-eyebrow">{meta.eyebrow}</p>
+              <p id="radar-alert-kind" className="ra-eyebrow">{isLargeMoveWatch ? "BÜYÜK HAREKET · İZLEMEYE ALINDI" : meta.eyebrow}</p>
               <h2 id="radar-alert-title" className="ra-title">
-                {item.symbol ? <SymbolLink symbol={item.symbol} className="ra-symbol" /> : "YENİ ALARM"}
+                {item.symbol ? <SymbolLink symbol={item.symbol} timeframe={kind === "large_move" ? "1m" : undefined} className="ra-symbol" /> : "YENİ ALARM"}
               </h2>
             </div>
           </div>
@@ -334,7 +335,7 @@ export default function RadarAlertModal() {
             <p className="ra-time">{item.triggered_at ? fmtDateTime(item.triggered_at) : ""}</p>
             <div className="ra-actions">
               {item.symbol && (
-                <Link href={`/charts?symbol=${item.symbol}`} onClick={close} className="ui-button ui-button-secondary touch-target flex items-center justify-center">GRAFİĞE GİT</Link>
+                <Link href={`/charts?symbol=${item.symbol}${kind === "large_move" ? "&timeframe=1m" : ""}`} onClick={close} className="ui-button ui-button-secondary touch-target flex items-center justify-center">GRAFİĞE GİT</Link>
               )}
               <button type="button" onClick={close} data-ra-primary className="ui-button ui-button-primary touch-target">ANLAŞILDI</button>
             </div>

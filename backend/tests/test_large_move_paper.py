@@ -1,8 +1,10 @@
+import asyncio
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from pytest import approx, mark
+from pytest import approx, mark, raises
 
 from app import large_move_paper
 from app.large_move_paper import (
@@ -13,16 +15,17 @@ from app.large_move_paper import (
     followup_path,
     mark_exit,
     read_book,
-    recent_signal_notifications,
+    recent_notifications,
     scan_missing_bars,
     save_entry,
+    save_watch,
     signal_notification,
     trailing_level,
 )
 
 
 @mark.asyncio
-async def test_notification_history_matches_live_payload_for_confirmed_signals(monkeypatch):
+async def test_notification_history_keeps_watch_and_signal_as_separate_events(monkeypatch):
     migration = Path(__file__).resolve().parents[1] / "migrations/034_large_move_paper.sql"
     with sqlite3.connect(":memory:") as conn:
         conn.row_factory = sqlite3.Row
@@ -42,8 +45,12 @@ async def test_notification_history_matches_live_payload_for_confirmed_signals(m
             return operation(conn)
 
         monkeypatch.setattr(database, "_run_db", run_db)
-        events = await recent_signal_notifications()
-        assert [event["symbol"] for event in events] == ["PORTALTRY", "OPENTRY"]
+        events = await recent_notifications()
+        assert [(event["symbol"], event["kind"]) for event in events] == [
+            ("PORTALTRY", "large_move"), ("OPENTRY", "large_move"),
+            ("PORTALTRY", "large_move_watch"), ("OPENTRY", "large_move_watch"),
+            ("WATCHTRY", "large_move_watch"),
+        ]
         assert events[0] == signal_notification("PORTALTRY", 60000, 180000, 118.5, 100)
         assert events[0] == {
             "id": "large-move-PORTALTRY-60000",
@@ -53,6 +60,99 @@ async def test_notification_history_matches_live_payload_for_confirmed_signals(m
             "price": 118.5,
             "triggered_at": 180.0,
         }
+        assert events[-1] == {
+            "id": "large-move-watch-WATCHTRY-0",
+            "kind": "large_move_watch",
+            "symbol": "WATCHTRY",
+            "message": "Baz fiyata göre +%10 eşiği geçildi. Parite izlemeye alındı.",
+            "triggered_at": 60.0,
+        }
+        assert await recent_notifications(2) == events[:2]
+
+
+@mark.asyncio
+async def test_watch_returns_true_once_and_preserves_an_earlier_candle(monkeypatch):
+    migration = Path(__file__).resolve().parents[1] / "migrations/034_large_move_paper.sql"
+    with sqlite3.connect(":memory:") as conn:
+        conn.executescript(migration.read_text(encoding="utf-8"))
+
+        async def run_db(operation):
+            return operation(conn)
+
+        monkeypatch.setattr(database, "_run_db", run_db)
+        alert = Alert(60_000, 100, 240_000, 115, 15)
+        assert await save_watch("CFGTRY", alert) is True
+        assert await save_watch("CFGTRY", alert) is False
+        assert await save_watch("CFGTRY", Alert(60_000, 100, 180_000, 110, 10)) is False
+        assert conn.execute("SELECT watch_ms FROM large_move_paper").fetchone()[0] == 180_000
+
+
+@mark.asyncio
+async def test_worker_broadcasts_watch_before_entry_signal_and_sends_one_push(monkeypatch):
+    notices = asyncio.Queue()
+    push = asyncio.Queue()
+    listener_ready = asyncio.Event()
+    market = SimpleNamespace(klines={}, get_depth_snapshot=lambda *a, **kw: {
+        "bids": [[114.9, 20]], "asks": [[115, 20]],
+    })
+
+    def add_listener(listener):
+        market.listener = listener
+        listener_ready.set()
+
+    market.add_bar_listener = add_listener
+    market.remove_bar_listener = lambda listener: None
+    clock = [31 * 60]
+    monkeypatch.setattr(large_move_paper, "time", SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr(large_move_paper, "open_trades", AsyncMock(return_value=[]))
+    monkeypatch.setattr(large_move_paper, "refresh_followup_paths", AsyncMock())
+    monkeypatch.setattr(large_move_paper.ws_manager, "broadcast", notices.put)
+    send_push = AsyncMock(side_effect=lambda *a, **kw: push.put_nowait(kw))
+    monkeypatch.setattr(large_move_paper.alerting, "deliver_alert_push", send_push)
+    save_entry_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(large_move_paper, "save_entry", save_entry_mock)
+
+    migration = Path(__file__).resolve().parents[1] / "migrations/034_large_move_paper.sql"
+    with sqlite3.connect(":memory:") as conn:
+        conn.executescript(migration.read_text(encoding="utf-8"))
+
+        async def run_db(operation):
+            return operation(conn)
+
+        monkeypatch.setattr(database, "_run_db", run_db)
+        worker = asyncio.create_task(large_move_paper.run(market))
+        try:
+            await asyncio.wait_for(listener_ready.wait(), 2)
+
+            def candle(minute, price):
+                market.listener("CFGTRY", "1m", {
+                    "closed": True, "time": minute * MINUTE, "close": price, "volume": 10,
+                })
+
+            for minute in range(1, 31):
+                candle(minute, 100)
+            clock[0] = 32 * 60
+            candle(31, 110)
+            watch = await asyncio.wait_for(notices.get(), 2)
+            pushed = await asyncio.wait_for(push.get(), 2)
+            assert watch["type"] == "large_move_alert"
+            assert watch["data"]["kind"] == "large_move_watch"
+            assert pushed["title"] == "CFGTRY izlemeye alındı"
+            assert pushed["tag"] == watch["data"]["id"]
+            assert pushed["extra"]["symbol"] == "CFGTRY"
+            save_entry_mock.assert_not_awaited()
+
+            clock[0] = 33 * 60
+            candle(32, 115)
+            signal = await asyncio.wait_for(notices.get(), 2)
+            assert signal["data"]["kind"] == "large_move"
+            assert signal["data"]["id"] != watch["data"]["id"]
+            save_entry_mock.assert_awaited_once()
+            send_push.assert_awaited_once()
+        finally:
+            worker.cancel()
+            with raises(asyncio.CancelledError):
+                await worker
 
 
 @mark.asyncio

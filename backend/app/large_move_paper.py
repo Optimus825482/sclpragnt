@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time as day_time, timedelta, timezone
 from statistics import median
 
-from app import database
+from app import alerting, database
 from app.binance_tr_public import depth, klines, trading_symbols
 from app.trade_size import parse_levels, sweep
 from app.ws_runtime import ws_manager
@@ -61,16 +61,32 @@ def signal_notification(symbol: str, seed_ms: int, signal_ms: int, price: float,
     }
 
 
-async def recent_signal_notifications(limit: int = 30) -> list[dict]:
+def watch_notification(symbol: str, seed_ms: int, watch_ms: int) -> dict:
+    return {
+        "id": f"large-move-watch-{symbol}-{seed_ms}",
+        "kind": "large_move_watch",
+        "symbol": symbol,
+        "message": "Baz fiyata göre +%10 eşiği geçildi. Parite izlemeye alındı.",
+        "triggered_at": watch_ms / 1000,
+    }
+
+
+async def recent_notifications(limit: int = 30) -> list[dict]:
     def read(conn):
         rows = conn.execute(
-            """SELECT symbol, seed_ms, signal_ms, signal_price, base_price
+            """SELECT symbol, seed_ms, signal_ms AS event_ms, signal_price, base_price, 1 AS is_signal
                FROM large_move_paper WHERE signal_ms IS NOT NULL
-               ORDER BY signal_ms DESC, symbol LIMIT ?""",
+               UNION ALL
+               SELECT symbol, seed_ms, watch_ms AS event_ms, NULL, base_price, 0 AS is_signal
+               FROM large_move_paper
+               ORDER BY event_ms DESC, is_signal DESC, symbol, seed_ms DESC LIMIT ?""",
             (limit,),
         ).fetchall()
-        return [signal_notification(r["symbol"], r["seed_ms"], r["signal_ms"],
-                                    r["signal_price"], r["base_price"]) for r in rows]
+        return [
+            signal_notification(r["symbol"], r["seed_ms"], r["event_ms"], r["signal_price"], r["base_price"])
+            if r["is_signal"] else watch_notification(r["symbol"], r["seed_ms"], r["event_ms"])
+            for r in rows
+        ]
     return await database._run_db(read)
 
 
@@ -201,15 +217,37 @@ def trailing_level(pct: float, previous_peak: float | None, previous_stop: float
     return peak, floor if previous_stop is None else max(floor, previous_stop)
 
 
-async def save_watch(symbol: str, alert: Alert):
-    await database._run_db(lambda conn: conn.execute(
-        """INSERT INTO large_move_paper (symbol, seed_ms, base_price, watch_ms, status)
-           VALUES (?, ?, ?, ?, 'watch')
-           ON CONFLICT (symbol, seed_ms) DO UPDATE
-           SET watch_ms = LEAST(large_move_paper.watch_ms, EXCLUDED.watch_ms)
-           WHERE large_move_paper.watch_ms > EXCLUDED.watch_ms""",
-        (symbol, alert.seed, alert.base, alert.stamp),
-    ).rowcount)
+async def save_watch(symbol: str, alert: Alert) -> bool:
+    def write(conn):
+        inserted = conn.execute(
+            """INSERT INTO large_move_paper (symbol, seed_ms, base_price, watch_ms, status)
+               VALUES (?, ?, ?, ?, 'watch')
+               ON CONFLICT (symbol, seed_ms) DO NOTHING""",
+            (symbol, alert.seed, alert.base, alert.stamp),
+        ).rowcount
+        if inserted:
+            return True
+        conn.execute(
+            """UPDATE large_move_paper SET watch_ms = ?
+               WHERE symbol = ? AND seed_ms = ? AND watch_ms > ?""",
+            (alert.stamp, symbol, alert.seed, alert.stamp),
+        )
+        return False
+
+    return await database._run_db(write)
+
+
+async def deliver_watch_push(event: dict, alert: Alert):
+    try:
+        symbol = event["symbol"]
+        await alerting.deliver_alert_push(
+            event["message"], title=f"{symbol} izlemeye alındı",
+            url=f"/charts?symbol={symbol}&timeframe=1m", tag=event["id"],
+            extra={"symbol": symbol, "source": "large_move_watch", "detected_at": event["triggered_at"],
+                   "horizon_minutes": (alert.seed + WINDOW - alert.stamp) / MINUTE},
+        )
+    except Exception:
+        logger.exception("Large-move watch push failed for %s", event["symbol"])
 
 
 async def save_entry(symbol, alert, book, now, *, from_radar=False):
@@ -517,9 +555,12 @@ async def run(market):
             logger.debug("Large-move paper quote unavailable for %s", symbol, exc_info=True)
             return book
 
-    async def entry(symbol, alert, from_radar):
+    async def entry(symbol, alert, from_radar, tasks):
         try:
-            await save_watch(symbol, alert)
+            if await save_watch(symbol, alert):
+                event = watch_notification(symbol, alert.seed, alert.stamp)
+                tasks.create_task(deliver_watch_push(event, alert))
+                await ws_manager.broadcast({"type": "large_move_alert", "data": event})
             if alert.level == 15:
                 book = None
                 max_age = RADAR_SIGNAL_AGE if from_radar else MAX_SIGNAL_AGE
@@ -540,7 +581,7 @@ async def run(market):
             async def process_entries():
                 while True:
                     symbol, alert, from_radar = await queue.get()
-                    await entry(symbol, alert, from_radar)
+                    await entry(symbol, alert, from_radar, tasks)
 
             async def update_trade(trade):
                 book = await quote(trade["symbol"], lambda b: sum(q for _, q in b[0]) >= trade["quantity"])

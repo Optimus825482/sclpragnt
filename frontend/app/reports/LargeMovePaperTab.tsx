@@ -19,7 +19,9 @@ type Row = {
   exit_price: number | null;
   mark_price: number | null;
   marked_at: number | null;
+  closed_at: number | null;
   exit_due_at: number | null;
+  net_pnl_try: number | null;
   net_pnl_pct: number | null;
   mark_net_pct: number | null;
   peak_net_pct: number | null;
@@ -131,14 +133,16 @@ export default function LargeMovePaperTab({ day, includeArchived }: { day: strin
   const s = data.summary;
   const cards = [
     ["İzlemeye alınan", s.watched], ["+%15 sinyali", s.signals], ["Açık", s.opened],
-    ["Kapanan", s.closed], ["Açılamayan", s.blocked], ["Net gerçekleşen", cash(s.net_try)],
+    ["Kapanan", s.closed], ["Açılamayan", s.blocked], ["Gerçekleşen paper K/Z", cash(s.net_try)],
   ];
   return (
     <section className="space-y-4" aria-labelledby="large-move-title">
       <div>
         <h2 id="large-move-title" className="text-lg font-bold text-white">Büyük Hareket Paper</h2>
         <p className="mt-1 text-sm text-bunker-muted">
-          +%10 izleme, +%15 paper giriş. {cash(data.initial_cash)} sanal bakiye, işlem başına {cash(data.notional)}.
+          Bu rapor Büyük Hareket stratejisinin ayrı sanal bakiyesini ve işlemlerini gösterir.
+          +%10 kapanışta izleme başlar, +%15 kapanışta paper giriş değerlendirilir.{" "}
+          {cash(data.initial_cash)} sanal bakiye, işlem başına {cash(data.notional)}.
           Takip stopu net {percent(data.trailing.activation_pct)} kârda başlar.
           Zirveye mesafe {points(data.trailing.initial_gap)} yüzde puandan {points(data.trailing.min_gap)} puana kadar daralır.
           İlk stop {percent(data.stop_pct)}, süre çıkışı {data.hold_minutes} dakika.
@@ -160,7 +164,7 @@ export default function LargeMovePaperTab({ day, includeArchived }: { day: strin
         <div className="table-scroll max-h-[36rem]" role="region" aria-label="Büyük Hareket paper işlem geçmişi" tabIndex={0}>
           <table className="data-table table-compact whitespace-nowrap">
             <thead className="sticky top-0 z-10 bg-bunker-950">
-              <tr>{["Parite", "İzleme", "+%15 sinyali", "Giriş spread’i", "Durum", "Giriş", "Son kotasyon / çıkış", "Net zirve", "Takip stopu", "Net sonuç", "Sonraki hareket"].map((label) => (
+              <tr>{["Parite", "İzlemeye alındı", "+%15 sinyali", "Giriş spread’i", "Durum", "Paper giriş", "Son kotasyon / paper çıkış", "Çıkış öncesi net zirve", "Takip stopu", "Net paper K/Z", "Sonraki hareket"].map((label) => (
                 <th key={label} scope="col">{label}</th>
               ))}</tr>
             </thead>
@@ -176,12 +180,18 @@ export default function LargeMovePaperTab({ day, includeArchived }: { day: strin
                     <td>{stamp(row.watch_ms)}</td>
                     <td>{row.signal_ms ? `${stamp(row.signal_ms)} · ${price(row.signal_price)}` : "—"}</td>
                     <td>{percent(row.spread_pct)}</td>
-                    <td>{statuses[row.display_status]}{outcome && <span className="ml-2 text-xs text-bunker-muted">{outcome}</span>}</td>
+                    <td>{statuses[row.display_status]}{outcome && <span className="ml-2 text-xs text-bunker-muted">{" "}{outcome}</span>}</td>
                     <td>{price(row.entry_price)}</td>
-                    <td title={row.marked_at ? stamp(row.marked_at * 1000) : undefined}>{price(row.exit_price ?? row.mark_price)}</td>
+                    <td title={!row.closed_at && row.marked_at ? stamp(row.marked_at * 1000) : undefined}>
+                      {price(row.exit_price ?? row.mark_price)}
+                      {row.closed_at && <span className="block text-xs text-bunker-muted">{stamp(row.closed_at * 1000)}</span>}
+                    </td>
                     <td>{percent(row.peak_net_pct)}</td>
                     <td>{percent(row.trailing_stop_pct)}</td>
-                    <td className={net == null ? "text-bunker-muted" : net >= 0 ? "text-neon-green" : "text-rose-300"}>{percent(net)}</td>
+                    <td className={net == null ? "text-bunker-muted" : net >= 0 ? "text-neon-green" : "text-rose-300"}>
+                      {percent(net)}
+                      {row.net_pnl_try != null && <span className="block text-xs">{cash(row.net_pnl_try)}</span>}
+                    </td>
                     <td><Followup row={row} minutes={data.followup_minutes ?? 30} /></td>
                   </tr>
                 );

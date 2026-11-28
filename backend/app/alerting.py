@@ -289,12 +289,15 @@ async def deliver_alert_push(message, *, title=None, url=None, tag=None, extra=N
     try:
         from app.routers import monitoring as _monitoring
         if await _monitoring.quiet_hours_active():
+            metadata = extra or {}
             _monitoring._deferred_push.append({
                 **payload,
-                "symbol": "ALERT",
+                "symbol": metadata.get("symbol") or "ALERT",
                 # `_flush_deferred_push` bayatlığı detected_at+horizon ile ölçer;
                 # alarm kuralı 24 saat anlamlı kalsın (radar ufku 5-15 dk).
-                "detected_at": time.time(), "horizon_minutes": 24 * 60,
+                "detected_at": metadata.get("detected_at", time.time()),
+                "horizon_minutes": metadata.get("horizon_minutes", 24 * 60),
+                **({"source": metadata["source"]} if "source" in metadata else {}),
                 "deferred_alert": True,
             })
             logger.info("Alarm push'u sessiz saat nedeniyle ertelendi: %s", message[:60])
