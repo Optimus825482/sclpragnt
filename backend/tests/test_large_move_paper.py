@@ -90,6 +90,10 @@ async def test_watch_returns_true_once_and_preserves_an_earlier_candle(monkeypat
 @mark.asyncio
 @mark.parametrize("direct_jump", [False, True])
 async def test_worker_records_early_watch_silently_then_broadcasts_watch_and_signal(monkeypatch, direct_jump):
+    # Erken izleme push'u KAPALI senaryo (LARGE_MOVE_EARLY_PUSH=0): +%5 sessiz kalır.
+    monkeypatch.setenv("LARGE_MOVE_EARLY_PUSH", "0")
+    large_move_paper._early_push_sent.clear()
+    large_move_paper._early_push_log.clear()
     notices = asyncio.Queue()
     push = asyncio.Queue()
     listener_ready = asyncio.Event()
@@ -359,3 +363,164 @@ def test_late_signal_uses_close_and_reports_the_time_the_candle_closes():
     ]
     assert followup_path(rows, MINUTE, 3 * MINUTE, 1.2171)[-1] == 3 * MINUTE
     assert followup_path(rows, MINUTE, 2 * MINUTE, 1.2171)[-1] is None
+
+
+# --- Erken izleme uyarısı + monitor metrikleri (2026-11-28) ----------------
+def test_early_push_gate_is_per_symbol_and_hourly_capped(monkeypatch):
+    monkeypatch.delenv("LARGE_MOVE_EARLY_PUSH", raising=False)
+    large_move_paper._early_push_sent.clear()
+    large_move_paper._early_push_log.clear()
+    now = 1_000_000.0
+
+    assert large_move_paper.early_push_enabled() is True
+    assert large_move_paper.should_push_early("CFGTRY", now) is True
+    large_move_paper.note_early_push("CFGTRY", now)
+    # aynı sembol 60 dk içinde tekrar push almaz
+    assert large_move_paper.should_push_early("CFGTRY", now + 60) is False
+    assert large_move_paper.should_push_early("CFGTRY", now + 3601) is True
+    # farklı sembol etkilenmez
+    assert large_move_paper.should_push_early("ROBOTRY", now) is True
+
+    # saatlik tavan
+    large_move_paper._early_push_sent.clear()
+    large_move_paper._early_push_log.clear()
+    for index in range(large_move_paper.EARLY_PUSH_HOURLY):
+        large_move_paper.note_early_push(f"SYM{index}TRY", now)
+    assert large_move_paper.should_push_early("YENITRY", now + 1) is False
+
+    # kapatma anahtarı
+    monkeypatch.setenv("LARGE_MOVE_EARLY_PUSH", "0")
+    assert large_move_paper.early_push_enabled() is False
+    assert large_move_paper.should_push_early("YENITRY", now + 9999) is False
+
+
+def test_early_watch_notification_carries_rise_and_distinct_id():
+    event = large_move_paper.early_watch_notification("CFGTRY", 60_000, 120_000, 105.0, 100.0)
+    assert event["kind"] == "large_move_early"
+    assert event["id"] == "large-move-early-CFGTRY-60000"
+    assert "+%5,0" in event["message"]
+    assert event["triggered_at"] == 120.0
+
+
+def test_derive_monitor_metrics_reports_progress_and_window():
+    row = {
+        "base_price": 100.0,
+        "current_price": 108.0,
+        "seed_ms": 10 * MINUTE,
+        "early_watch_ms": 12 * MINUTE,
+    }
+    metrics = large_move_paper.derive_monitor_metrics(row, 17 * MINUTE)
+    assert metrics["rise_from_base_pct"] == 8.0
+    assert metrics["to_watch_pct"] == 2.0
+    assert metrics["to_signal_pct"] == 7.0
+    assert metrics["age_min"] == 5.0
+    assert metrics["remaining_min"] == 23.0
+
+    empty = large_move_paper.derive_monitor_metrics({"base_price": 0.0}, 0)
+    assert empty["rise_from_base_pct"] is None and empty["remaining_min"] is None
+
+
+def test_flow_tag_thresholds():
+    assert large_move_paper.flow_tag_for(None) == "BILINMIYOR"
+    assert large_move_paper.flow_tag_for(2.5) == "AKIS_ALICI"
+    assert large_move_paper.flow_tag_for(-2.5) == "AKIS_SATICI"
+    assert large_move_paper.flow_tag_for(0.4) == "DENGELI"
+
+
+@mark.asyncio
+async def test_monitor_rows_add_cvd_confirmation_and_trap_risk(monkeypatch, tmp_path):
+    store = tmp_path / "cvd.jsonl"
+    store.write_text(
+        '{"symbol": "CFGTRY", "hour": "2026-11-28T07:00:00", "cvd_pct_of_volume": -11.93}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CVD_CONFIRMED_PATH", str(store))
+    now = 100_000
+    monkeypatch.setattr(large_move_paper, "time", SimpleNamespace(time=lambda: now))
+    market = SimpleNamespace(
+        get_ticker=lambda symbol: {"last_price": 108.5},
+        ticker_freshness=lambda symbol, **kwargs: {"fresh": True},
+    )
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        for name in ("034_large_move_paper.sql", "037_large_move_early_watch.sql"):
+            conn.executescript((migrations / name).read_text(encoding="utf-8"))
+
+        async def run_db(operation):
+            return operation(conn)
+
+        monkeypatch.setattr(database, "_run_db", run_db)
+        seed = now * 1000 - 5 * MINUTE
+        await large_move_paper.save_early_watch("CFGTRY", Alert(seed, 100, seed + MINUTE, 105, 5))
+
+        payload = await large_move_paper.monitor_rows(market)
+        row = payload["rows"][0]
+        assert row["rise_from_base_pct"] == 8.5
+        assert row["flow_tag"] == "AKIS_SATICI"
+        assert row["confirmed_cvd_pct"] == -11.93
+        assert row["trap_risk"] is True
+
+
+@mark.asyncio
+async def test_worker_pushes_early_watch_at_plus_5_when_enabled(monkeypatch):
+    """LARGE_MOVE_EARLY_PUSH açıkken +%5 aşaması kullanıcıya haber verir."""
+    monkeypatch.delenv("LARGE_MOVE_EARLY_PUSH", raising=False)
+    large_move_paper._early_push_sent.clear()
+    large_move_paper._early_push_log.clear()
+    notices, push = asyncio.Queue(), asyncio.Queue()
+    listener_ready = asyncio.Event()
+    market = SimpleNamespace(klines={}, get_depth_snapshot=lambda *a, **kw: {"bids": [], "asks": []})
+
+    def add_listener(listener):
+        market.listener = listener
+        listener_ready.set()
+
+    market.add_bar_listener = add_listener
+    market.remove_bar_listener = lambda listener: None
+    clock = [31 * 60]
+    monkeypatch.setattr(large_move_paper, "time", SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr(large_move_paper, "open_trades", AsyncMock(return_value=[]))
+    monkeypatch.setattr(large_move_paper, "refresh_followup_paths", AsyncMock())
+    monkeypatch.setattr(large_move_paper.ws_manager, "broadcast", notices.put)
+    send_push = AsyncMock(side_effect=lambda *a, **kw: push.put_nowait(kw))
+    monkeypatch.setattr(large_move_paper.alerting, "deliver_alert_push", send_push)
+    monkeypatch.setattr(large_move_paper, "save_entry", AsyncMock(return_value=True))
+
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        for name in ("034_large_move_paper.sql", "037_large_move_early_watch.sql"):
+            conn.executescript((migrations / name).read_text(encoding="utf-8"))
+
+        async def run_db(operation):
+            return operation(conn)
+
+        monkeypatch.setattr(database, "_run_db", run_db)
+        worker = asyncio.create_task(large_move_paper.run(market))
+        try:
+            await asyncio.wait_for(listener_ready.wait(), 2)
+
+            def candle(minute, price):
+                market.listener("CFGTRY", "1m", {"closed": True, "time": minute * MINUTE, "close": price, "volume": 10})
+
+            for minute in range(1, 31):
+                candle(minute, 100)
+            clock[0] = 32 * 60
+            candle(31, 105)  # +%5: erken izleme
+
+            event = await asyncio.wait_for(notices.get(), 2)
+            pushed = await asyncio.wait_for(push.get(), 2)
+            assert event["data"]["kind"] == "large_move_early"
+            assert pushed["title"] == "CFGTRY erken izlemede"
+            assert pushed["tag"] == event["data"]["id"]
+            assert pushed["url"] == "/monitor"
+            # aynı sembol için ikinci kez push gitmez
+            clock[0] = 33 * 60
+            candle(32, 105.5)
+            await asyncio.sleep(0.2)
+            assert push.empty()
+        finally:
+            worker.cancel()
+            with raises(asyncio.CancelledError):
+                await worker

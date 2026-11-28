@@ -67,6 +67,27 @@ Silinenler üç kategorideydi:
 - **2c.** Manuel operasyon yardımcıları (`purge_*`, `cleanup_*`, `show_*`,
   `analyze_*`).
 
+## 3. CVD onay collector (2026-11-28)
+
+`cvd_confirm_collector.py` — CryptoHFTData'nın **saatlik** parquet dosyalarından
+sembol başına gerçek taker akışını (net CVD, VWAP, iri print'ler) hesaplayıp
+`backend/work/cvd_confirmed.jsonl` dosyasına yazar. Çalışma zamanı bu dosyayı
+`app/confirmed_flow.py` üzerinden **yalnızca okur**; pandas/cryptohftdata
+üretim venv'ine girmez.
+
+```bash
+# research venv (pandas + cryptohftdata) ile:
+backend/work/portal_breakout_replay/.venv-l2/Scripts/python.exe \
+  backend/scripts/cvd_confirm_collector.py --daemon --symbols TLMTRY --interval 600
+```
+
+- API: `GET /api/confirmed-flow`, `GET /api/confirmed-flow/{symbol}`,
+  `GET /api/confirmed-flow/{symbol}/hours` (yönetici oturumu ister).
+- Gecikme: CryptoHFTData gerçek zamanlı yayın vermez; saat bittikten ~1-2 saat
+  sonra yayınlanır (`/v1/status` → `lookback_hours`). Canlı taraf Binance TR
+  1m kline'larından okunur.
+- Test: `tests/test_confirmed_flow.py`.
+
 ## İlgili belgeler
 
 - [`../../docs/ARTEFAKTLAR.md`](../../docs/ARTEFAKTLAR.md) — bu dizinin ürettiği CSV/SQL çıktıları

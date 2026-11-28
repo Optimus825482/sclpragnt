@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import math
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -35,6 +36,14 @@ RADAR_CONCURRENCY = 6
 FOLLOWUP_BARS = 30
 MONITOR_HOURS = 24
 MONITOR_LIMIT = 300
+# Erken izleme (+%5) aşamasında da push gönderilsin mi? Amaç: kullanıcı +%10
+# teyidini beklemeden, pump'ın ilk dakikalarında haberdar olsun. Spam koruması
+# için sembol başına 60 dk'da tek push ve saatte en fazla EARLY_PUSH_HOURLY
+# push vardır; kapatmak için LARGE_MOVE_EARLY_PUSH=0.
+EARLY_PUSH_HOURLY = 8
+EARLY_PUSH_COOLDOWN_SEC = 3600.0
+_early_push_sent: dict[str, float] = {}
+_early_push_log: deque[float] = deque(maxlen=64)
 ISTANBUL = timezone(timedelta(hours=3))
 STABLE = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "USD1", "USDP", "USDE", "EUR",
           "EURI", "TRY", "WBETH", "BNSOL"}
@@ -71,6 +80,42 @@ def watch_notification(symbol: str, seed_ms: int, watch_ms: int) -> dict:
         "message": "Baz fiyata göre +%10 eşiği geçildi. Parite izlemeye alındı.",
         "triggered_at": watch_ms / 1000,
     }
+
+
+def early_watch_notification(symbol: str, seed_ms: int, watch_ms: int, price: float, base: float) -> dict:
+    """+%5 erken izleme uyarısı — teyit (+%10) beklenmeden gönderilir."""
+    rise = f"{100 * (price / base - 1):.1f}".replace(".", ",") if base else "5,0"
+    return {
+        "id": f"large-move-early-{symbol}-{seed_ms}",
+        "kind": "large_move_early",
+        "symbol": symbol,
+        "message": f"Baz fiyata göre +%{rise} — erken izlemeye alındı (teyit için +%10 bekleniyor).",
+        "price": price,
+        "base": base,
+        "triggered_at": watch_ms / 1000,
+    }
+
+
+def early_push_enabled() -> bool:
+    """`LARGE_MOVE_EARLY_PUSH` (varsayılan açık) — kapalıysa +%5'te yalnız kayıt yazılır."""
+    raw = os.getenv("LARGE_MOVE_EARLY_PUSH")
+    return True if raw is None else str(raw).strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def should_push_early(symbol: str, now: float) -> bool:
+    """Erken izleme push'u gönderilmeli mi? (spam koruması, saf fonksiyon)."""
+    if not early_push_enabled():
+        return False
+    last = _early_push_sent.get(symbol)
+    if last is not None and now - last < EARLY_PUSH_COOLDOWN_SEC:
+        return False
+    recent = sum(1 for stamp in _early_push_log if now - stamp < 3600.0)
+    return recent < EARLY_PUSH_HOURLY
+
+
+def note_early_push(symbol: str, now: float) -> None:
+    _early_push_sent[symbol] = now
+    _early_push_log.append(now)
 
 
 async def recent_notifications(limit: int = 30) -> list[dict]:
@@ -262,6 +307,22 @@ async def deliver_watch_push(event: dict, alert: Alert):
         )
     except Exception:
         logger.exception("Large-move watch push failed for %s", event["symbol"])
+
+
+async def deliver_early_push(event: dict, alert: Alert):
+    """+%5 erken izleme push'u — teyit sinyalinden önce haber verir."""
+    try:
+        symbol = event["symbol"]
+        note_early_push(symbol, time.time())
+        await alerting.deliver_alert_push(
+            event["message"], title=f"{symbol} erken izlemede",
+            url=f"/monitor", tag=event["id"],
+            extra={"symbol": symbol, "source": "large_move_early", "detected_at": event["triggered_at"],
+                   "base_price": event.get("base"),
+                   "horizon_minutes": (alert.seed + WINDOW - alert.stamp) / MINUTE},
+        )
+    except Exception:
+        logger.exception("Large-move early push failed for %s", event.get("symbol"))
 
 
 async def save_entry(symbol, alert, book, now, *, from_radar=False):
@@ -484,6 +545,46 @@ async def refresh_followup_paths():
         await database._run_db(write)
 
 
+def derive_monitor_metrics(row: dict, now_ms: int) -> dict:
+    """İzleme satırına okunabilir ilerleme metrikleri ekler (saf fonksiyon).
+
+    - `rise_from_base_pct`: baz fiyattan bu yana gerçekleşen yükseliş
+    - `to_watch_pct` / `to_signal_pct`: +%10 teyit ve +%15 sinyal eşiğine kalan
+    - `age_min` / `remaining_min`: erken izleme yaşı ve pencerenin kalanı
+    """
+    base = row.get("base_price") or 0.0
+    price = row.get("current_price")
+    seed = row.get("seed_ms") or 0
+    out = {
+        "rise_from_base_pct": None,
+        "to_watch_pct": None,
+        "to_signal_pct": None,
+        "age_min": None,
+        "remaining_min": None,
+    }
+    if base and isinstance(price, (int, float)) and price > 0:
+        rise = (price / base - 1) * 100
+        out["rise_from_base_pct"] = round(rise, 2)
+        out["to_watch_pct"] = round(10.0 - rise, 2)
+        out["to_signal_pct"] = round(15.0 - rise, 2)
+    if seed:
+        start = row.get("early_watch_ms") or seed
+        out["age_min"] = round(max(0.0, (now_ms - start) / MINUTE), 1)
+        out["remaining_min"] = round(max(0.0, (seed + WINDOW - now_ms) / MINUTE), 1)
+    return out
+
+
+def flow_tag_for(cvd_pct: float | None) -> str:
+    """Kesinleşmiş saat akışını etikete çevir (CVD yoksa `BILINMIYOR`)."""
+    if cvd_pct is None:
+        return "BILINMIYOR"
+    if cvd_pct >= 1.0:
+        return "AKIS_ALICI"
+    if cvd_pct <= -1.0:
+        return "AKIS_SATICI"
+    return "DENGELI"
+
+
 async def monitor_rows(market):
     now_ms = int(time.time() * 1000)
     cutoff = now_ms - MONITOR_HOURS * 60 * MINUTE
@@ -527,6 +628,32 @@ async def monitor_rows(market):
             else:
                 prices[symbol] = None
         row["current_price"] = prices[symbol]
+
+    # CVD onay katmanı: yalnız kesinleşmiş saati olan semboller için dolar.
+    # (Collector: backend/scripts/cvd_confirm_collector.py, ~1-2 saat gecikmeli.)
+    try:
+        from app.confirmed_flow import load_confirmed
+
+        confirmed = load_confirmed()
+    except Exception:  # noqa: BLE001
+        logger.debug("confirmed flow store okunamadı", exc_info=True)
+        confirmed = {}
+    for row in rows:
+        row.update(derive_monitor_metrics(row, now_ms))
+        hours = confirmed.get(row["symbol"]) or []
+        if hours:
+            oldest = hours[-1]
+            cvd_pct = float(oldest.get("cvd_pct_of_volume") or 0.0)
+            row["confirmed_hour"] = oldest.get("hour")
+            row["confirmed_cvd_pct"] = cvd_pct
+            row["flow_tag"] = flow_tag_for(cvd_pct)
+            rise = row.get("rise_from_base_pct") or 0.0
+            row["trap_risk"] = bool(rise >= 8.0 and cvd_pct <= -1.0)
+        else:
+            row["confirmed_hour"] = None
+            row["confirmed_cvd_pct"] = None
+            row["flow_tag"] = flow_tag_for(None)
+            row["trap_risk"] = False
     return {"rows": rows, "as_of_ms": now_ms, "hours": MONITOR_HOURS, "limit": MONITOR_LIMIT}
 
 
@@ -625,6 +752,10 @@ async def run(market):
         try:
             if alert.level == 5:
                 await record_early(symbol, alert)
+                if should_push_early(symbol, time.time()):
+                    event = early_watch_notification(symbol, alert.seed, alert.stamp, alert.price, alert.base)
+                    await deliver_early_push(event, alert)
+                    await ws_manager.broadcast({"type": "large_move_alert", "data": event})
                 return
             if await save_watch(symbol, alert):
                 # A single candle can cross both watch thresholds.

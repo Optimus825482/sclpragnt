@@ -34,16 +34,34 @@ type MonitorRow = {
   current_price: number | null;
   expires_at_ms: number;
   display_status: keyof typeof statuses;
+  // Sunucu tarafında türetilen ilerleme metrikleri (`derive_monitor_metrics`)
+  rise_from_base_pct?: number | null;
+  to_watch_pct?: number | null;
+  to_signal_pct?: number | null;
+  age_min?: number | null;
+  remaining_min?: number | null;
+  // CVD onay katmanı (kesinleşmiş saatlik akış)
+  confirmed_hour?: string | null;
+  confirmed_cvd_pct?: number | null;
+  flow_tag?: "AKIS_ALICI" | "AKIS_SATICI" | "DENGELI" | "BILINMIYOR";
+  trap_risk?: boolean;
 };
 
 type MonitorSnapshot = { rows: MonitorRow[]; as_of_ms: number; hours: number; limit: number };
-type Filter = "all" | "active" | "signals";
+type Filter = "all" | "active" | "signals" | "risk";
 
 const filters: { id: Filter; label: string }[] = [
   { id: "all", label: "Tümü" },
   { id: "active", label: "Aktif" },
   { id: "signals", label: "+%15 sinyalleri" },
+  { id: "risk", label: "Tuzak riski" },
 ];
+const flowTones: Record<string, string> = {
+  AKIS_ALICI: "text-neon-green",
+  AKIS_SATICI: "text-rose-300",
+  DENGELI: "text-bunker-muted",
+  BILINMIYOR: "text-bunker-muted",
+};
 const percent = new Intl.NumberFormat("tr-TR", {
   style: "percent", maximumFractionDigits: 2, signDisplay: "exceptZero",
 });
@@ -98,7 +116,8 @@ function MonitorView() {
   const symbolQuery = query.trim().replaceAll("_", "").toUpperCase();
   const matching = rows.filter((row) => row.symbol.includes(symbolQuery)
     && (filter !== "active" || isActive(row))
-    && (filter !== "signals" || row.signal_ms != null));
+    && (filter !== "signals" || row.signal_ms != null)
+    && (filter !== "risk" || row.trap_risk === true));
 
   return (
     <section className="max-w-7xl mx-auto space-y-5" aria-labelledby="monitor-title">
@@ -106,17 +125,18 @@ function MonitorView() {
         <div>
           <h1 id="monitor-title" className="text-2xl font-bold text-white">Büyük Hareket Monitor</h1>
           <p className="mt-1 text-sm text-bunker-muted">
-            +%5 erken izleme · +%10 cihaz bildirimi · +%15 paper giriş sinyali
+            +%5 erken izleme + bildirim · +%10 teyit · +%15 paper giriş sinyali · kesinleşmiş saatlik CVD ile tuzak riski
           </p>
         </div>
         <Link className="ui-button ui-button-secondary touch-target" href="/reports">Raporlar</Link>
       </header>
 
-      <dl className="grid grid-cols-3 gap-2">
+      <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {[
           ["Erken izleme", rows.filter((row) => row.display_status === "early").length, "text-cyan-300"],
           ["+%10 teyit", rows.filter((row) => row.display_status === "watch").length, "text-amber-300"],
           ["Açık paper", rows.filter((row) => row.display_status === "open").length, "text-neon-green"],
+          ["Tuzak riski", rows.filter((row) => row.trap_risk === true).length, "text-rose-300"],
         ].map(([label, count, tone]) => (
           <div key={label} className="rounded-lg border border-bunker-800 bg-bunker-950/70 px-3 py-2.5">
             <dt className="text-xs text-bunker-muted">{label}</dt>
@@ -163,7 +183,7 @@ function MonitorView() {
                 <thead className="sticky top-0 z-20 bg-bunker-950">
                   <tr>
                     <th scope="col" className="sticky left-0 bg-bunker-950">Parite</th>
-                    {["Durum", "+%5 erken izleme", "+%10 teyit", "+%15 sinyali", "Güncel / bazdan", "Paper"].map((label) => (
+                    {["Durum", "+%5 erken izleme", "+%10 teyit", "+%15 sinyali", "Güncel / bazdan", "Kalan", "Akış (kesin CVD)", "Paper"].map((label) => (
                       <th scope="col" key={label}>{label}</th>
                     ))}
                   </tr>
@@ -188,6 +208,26 @@ function MonitorView() {
                         <td>
                           {price(row.current_price)}
                           {change != null && <span className={`block text-xs ${change >= 0 ? "text-neon-green" : "text-rose-300"}`}>{percent.format(change)}</span>}
+                        </td>
+                        <td>
+                          {row.to_watch_pct == null ? "—" : (
+                            <span className="font-mono text-xs">
+                              teyit {row.to_watch_pct > 0 ? `+${row.to_watch_pct.toFixed(1)}` : "geçildi"}%
+                              {row.remaining_min != null && <span className="block text-bunker-muted">pencere {row.remaining_min.toFixed(0)} dk</span>}
+                              {row.age_min != null && <span className="block text-bunker-muted">yaş {row.age_min.toFixed(0)} dk</span>}
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          <span className={`font-mono text-xs font-semibold ${flowTones[row.flow_tag ?? "BILINMIYOR"]}`}>
+                            {row.flow_tag === "AKIS_ALICI" ? "alıcı" : row.flow_tag === "AKIS_SATICI" ? "satıcı" : row.flow_tag === "DENGELI" ? "dengeli" : "—"}
+                          </span>
+                          {row.confirmed_cvd_pct != null && (
+                            <span className={`block text-xs ${row.confirmed_cvd_pct >= 0 ? "text-neon-green" : "text-rose-300"}`}>
+                              CVD {percent.format(row.confirmed_cvd_pct / 100)}
+                            </span>
+                          )}
+                          {row.trap_risk && <span className="mt-0.5 inline-block rounded border border-rose-400/60 px-1 text-[10px] font-bold text-rose-300">TUZAK RİSKİ</span>}
                         </td>
                         <td>
                           {row.entry_price == null ? "—" : price(row.entry_price)}

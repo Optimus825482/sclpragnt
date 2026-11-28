@@ -99,6 +99,7 @@ from app.routers import (
     signal_insights as signal_insights_routes,
 )
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
+from app.routers import confirmed_flow as confirmed_flow_routes
 from app.routers import global_radar as global_radar_routes
 from app.routers import cmc as cmc_routes
 from app.routers.global_radar import global_radar_loop
@@ -218,6 +219,7 @@ app.include_router(auto_paper_routes.router)
 app.include_router(auto_paper_diagnostic_routes.router)
 app.include_router(macd_monitor_routes.router)
 app.include_router(snapback_routes.router)
+app.include_router(confirmed_flow_routes.router)
 app.include_router(user_prefs_routes.router)
 app.include_router(cmc_routes.router)
 app.include_router(binance_trade_routes.router)

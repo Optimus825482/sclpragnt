@@ -236,6 +236,12 @@ export default function RadarAlertModal() {
   if (!item) return null;
   const meta = KIND_META[kind];
   const isLargeMoveWatch = item.kind === "large_move_watch";
+  const isLargeMoveEarly = item.kind === "large_move_early";
+  const largeMoveEyebrow = isLargeMoveEarly
+    ? "BÜYÜK HAREKET · ERKEN İZLEME (+%5)"
+    : isLargeMoveWatch
+      ? "BÜYÜK HAREKET · İZLEMEYE ALINDI"
+      : meta.eyebrow;
   const risingKind = item.alertKind;
   const proximityPct = typeof item.proximity === "number" ? Math.round(item.proximity * 100) : null;
 
@@ -256,7 +262,7 @@ export default function RadarAlertModal() {
           <div className="ra-head-main">
             <span className="ra-icon" aria-hidden="true">{meta.icon}</span>
             <div>
-              <p id="radar-alert-kind" className="ra-eyebrow">{isLargeMoveWatch ? "BÜYÜK HAREKET · İZLEMEYE ALINDI" : meta.eyebrow}</p>
+              <p id="radar-alert-kind" className="ra-eyebrow">{largeMoveEyebrow}</p>
               <h2 id="radar-alert-title" className="ra-title">
                 {item.symbol ? <SymbolLink symbol={item.symbol} timeframe={kind === "large_move" ? "1m" : undefined} className="ra-symbol" /> : "YENİ ALARM"}
               </h2>
