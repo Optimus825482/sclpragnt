@@ -108,6 +108,24 @@ def write_store(path: Path, store: dict[tuple[str, str], dict]) -> None:
     tmp.replace(path)
 
 
+def _pending_hours(symbol: str, day: str, store: dict, hours: int, now: datetime) -> list[int]:
+    """O gün için henüz kesinleşmemiş saatler. Boşsa indirme YAPILMAZ.
+
+    Performans (2026-11-28): önceden her turda gün dosyası koşulsuz indiriliyordu
+    (24 parquet, ~4 sn); daemon 10 dakikada bir çalıştığı için çoğu tur boşa
+    gidiyordu. Artık önce eksik saatler hesaplanır.
+    """
+    pending = []
+    for back in range(1, hours + 1):
+        h_time = now - timedelta(hours=back)
+        if h_time.strftime("%Y-%m-%d") != day:
+            continue
+        key = (symbol, h_time.strftime("%Y-%m-%dT%H:00:00"))
+        if key not in store:
+            pending.append(h_time.hour)
+    return pending
+
+
 def collect(symbols: list[str], out: Path, hours: int, now: datetime | None = None) -> int:
     now = now or datetime.now(timezone.utc)
     store = load_existing(out)
@@ -115,6 +133,9 @@ def collect(symbols: list[str], out: Path, hours: int, now: datetime | None = No
     for symbol in symbols:
         wanted = {(now - timedelta(hours=b)).strftime("%Y-%m-%d") for b in range(1, hours + 1)}
         for day in sorted(wanted):
+            pending = _pending_hours(symbol, day, store, hours, now)
+            if not pending:
+                continue  # günün tüm saatleri kesinleşmiş: indirme yok
             frame = fetch_day(symbol, day)
             if frame is None:
                 continue
