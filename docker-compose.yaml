@@ -109,6 +109,8 @@ services:
       # variable to silently switch the backend to the retired SQLite path.
       DB_BACKEND: postgres
       LIVE_TRADING: "false"
+      # 2026-11-28: saatlik kesinlesmis akis deposu (collector servisi doldurur).
+      CVD_CONFIRMED_PATH: /app/work/cvd_confirmed.jsonl
       USE_TESTNET: "false"
       # TR saati: quiet-hours ve "gün" sınırları yerel zaman okuyan kod
       # path'leriyle tutarlı olsun (konteyner varsayılanı UTC'dir).
@@ -181,6 +183,9 @@ services:
     # değişikliği gerektirir).
     volumes:
       - scalper_data:/data
+      # 2026-11-28: CVD onay katmani deposu (collector servisi ayni hacme yazar;
+      # /api/confirmed-flow ve monitor "Akis" kolonu bu dosyadan okur).
+      - cvd_store:/app/work
     expose:
       - "8004"
     healthcheck:
@@ -234,6 +239,29 @@ services:
   # `depends_on … restart: true` zinciri (gateway) bu yoldan TETİKLENMEZ.
   # Aynı konteyner yeniden başladığı için IP'si normalde korunur; IP değişirse
   # gateway'i elle `docker compose restart gateway` ile tazeleyin.
+  # 2026-11-28: CVD onay collector — CryptoHFTData saatlik parquet dosyalarindan
+  # sembol basina gercek taker akisini (net CVD/VWAP) hesaplar ve backend ile
+  # paylasilan `cvd_store` hacmine yazar. Gercek zamanli yayin yok; dosyalar
+  # saat bittikten ~1-2 saat sonra cikar (bkz. docs: "No real-time trading feed").
+  cvd-collector:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.collector
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 0.5
+    environment:
+      CRYPTOHFTDATA_API_KEY: ${CRYPTOHFTDATA_API_KEY:-}
+      CVD_CONFIRMED_SYMBOLS: ${CVD_CONFIRMED_SYMBOLS:-TLMTRY,NIGHTTRY,ACETRY}
+      TZ: ${TZ:-Europe/Istanbul}
+    volumes:
+      - cvd_store:/app/work
+    command: ["python", "scripts/cvd_confirm_collector.py", "--daemon", "--interval", "600"]
+    exclude_from_hc: true
+    labels:
+      - "traefik.enable=false"
+    logging: *default-logging
+
   autoheal:
     image: willfarrell/autoheal:1.2.0
     restart: unless-stopped
@@ -385,6 +413,7 @@ services:
 volumes:
   scalper_data:
   scalper_postgres_data:
+  cvd_store:
 
 # Coolify proxy (Traefik) ağı — compose dışında tanımlı external ağ.
 networks:

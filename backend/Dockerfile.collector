@@ -1,0 +1,17 @@
+# CVD onay collector imajı — yalnız `scripts/cvd_confirm_collector.py` için.
+#
+# Neden ayrı imaj: collector pandas + pyarrow + cryptohftdata ister (~200 MB).
+# Bunlar ÜRETİM çalışma zamanına (`backend/Dockerfile`) girmemeli — uygulamanın
+# kendisi bu bağımlılıkları kullanmıyor, yalnız collector'ın yazdığı JSONL
+# dosyasını okuyor (app/confirmed_flow.py).
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Sürüm sabit: cryptohftdata API'si saatlik parquet şemasıyla birlikte değişebilir.
+RUN pip install --no-cache-dir "cryptohftdata==0.8.1"
+
+COPY scripts/cvd_confirm_collector.py scripts/cvd_confirm_collector.py
+
+# Varsayılan: 10 dakikada bir, CVD_CONFIRMED_SYMBOLS sembollerini yokla.
+CMD ["python", "scripts/cvd_confirm_collector.py", "--daemon", "--interval", "600"]
