@@ -98,8 +98,8 @@ async def get_derivatives_intel(symbol: str) -> dict:
             "description": (
                 f"{futures_sym} vadeli istihbaratına ulaşılamadı (ağ/erişim hatası); "
                 "risk kapısı fail-closed olarak nötr kabul edildi."
-                if _transport_failed else
-                f"{futures_sym} vadeli piyasada listeli değil."
+                if _transport_failed
+                else f"{futures_sym} vadeli piyasada listeli değil."
             ),
             "updated_at": now,
         }
@@ -138,7 +138,9 @@ async def get_derivatives_intel(symbol: str) -> dict:
         crowded_long = True
         derivatives_bias = "LONG_SQUEEZE_RISK"
         surge_bonus = -15  # Şişkin longlarda Master Surge skorunu ciddi kır
-        desc = f"Vadeli piyasada aşırı long birikimi var (%{funding_pct:.3f} fonlama). Long tasfiyesi (dump) riski yüksek!"
+        desc = (
+            f"Vadeli piyasada aşırı long birikimi var (%{funding_pct:.3f} fonlama). Long tasfiyesi (dump) riski yüksek!"
+        )
     elif funding_rate >= 0.0004:
         funding_state = "CROWDED_LONG"
         crowded_long = True
@@ -191,9 +193,9 @@ _SQUEEZE_SCAN_CACHE: dict = {"rows": None, "expires": 0.0}
 SQUEEZE_SCAN_TTL_SEC = 120.0
 
 
-async def scan_short_squeeze(tr_symbols: list[str], *,
-                             min_funding_neg_pct: float = -0.03,
-                             top_n: int = 25) -> list[dict]:
+async def scan_short_squeeze(
+    tr_symbols: list[str], *, min_funding_neg_pct: float = -0.03, top_n: int = 25
+) -> list[dict]:
     """TR sembol evreninde short-squeeze adaylarını bul (toplu funding).
 
     DÖNÜŞ: [{"symbol": "MINATRY", "funding_rate_pct": -0.17, "funding_state": ...,
@@ -206,8 +208,7 @@ async def scan_short_squeeze(tr_symbols: list[str], *,
     if _SQUEEZE_SCAN_CACHE["rows"] is not None and now < _SQUEEZE_SCAN_CACHE["expires"]:
         data = _SQUEEZE_SCAN_CACHE["rows"]
     else:
-        data = await asyncio.to_thread(
-            _fetch_fapi_json, f"{FAPI_BASE}/fapi/v1/premiumIndex")
+        data = await asyncio.to_thread(_fetch_fapi_json, f"{FAPI_BASE}/fapi/v1/premiumIndex")
         _SQUEEZE_SCAN_CACHE["rows"] = data if isinstance(data, list) else []
         _SQUEEZE_SCAN_CACHE["expires"] = now + SQUEEZE_SCAN_TTL_SEC
     if not isinstance(data, list):
@@ -248,19 +249,21 @@ async def scan_short_squeeze(tr_symbols: list[str], *,
             continue
         # daha negatif funding -> daha güçlü squeeze (skor ölçeği)
         score += min(50.0, abs(fr_pct) * 200.0)
-        out.append({
-            "symbol": str(sym).upper(),
-            "futures_symbol": base + "USDT",
-            "funding_rate": fr,
-            "funding_rate_pct": round(fr_pct, 4),
-            "funding_state": state,
-            "short_squeeze_potential": state in ("CROWDED_SHORT", "EXTREME_SHORT"),
-            "derivatives_bias": bias,
-            "mark_price": fut["mark_price"],
-            "score": round(score, 1),
-        })
+        out.append(
+            {
+                "symbol": str(sym).upper(),
+                "futures_symbol": base + "USDT",
+                "funding_rate": fr,
+                "funding_rate_pct": round(fr_pct, 4),
+                "funding_state": state,
+                "short_squeeze_potential": state in ("CROWDED_SHORT", "EXTREME_SHORT"),
+                "derivatives_bias": bias,
+                "mark_price": fut["mark_price"],
+                "score": round(score, 1),
+            }
+        )
     out.sort(key=lambda x: x["score"], reverse=True)
-    return out[:max(1, int(top_n))]
+    return out[: max(1, int(top_n))]
 
 
 def get_cached_derivatives_intel(symbol: str, max_age_sec: float | None = None) -> dict | None:
@@ -325,24 +328,70 @@ def _open_interest_15m(history: list | None, as_of: float) -> dict | None:
     return {"change_pct": change, "start_timestamp_ms": start, "end_timestamp_ms": end}
 
 
+def _fetch_fapi_json_verbose(url: str, timeout: float = 4.0) -> tuple[object, str | None]:
+    """`_fetch_fapi_json` + hata TÜRÜ. Gerekçeyi asistana taşıyabilmek için.
+
+    Döner: (payload, None) veya (None, "no_futures_market" | "timeout" | "network").
+    """
+    try:
+        req = Request(url, headers={"User-Agent": "ScalperAgent/4.0"})
+        with urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8")), None
+    except HTTPError as exc:
+        # 400/-1121: bu sembolün vadeli sözleşmesi yok → "veri eksik" değil.
+        return None, "no_futures_market" if exc.code in (400, 404) else "network"
+    except TimeoutError:
+        return None, "timeout"
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Binance FAPI isteği başarısız: %s (%s)", url, exc)
+        return None, "network"
+
+
 async def chart_open_interest(symbol: str, *, refresh: bool = False) -> dict:
-    """Fresh 15-minute OI evidence for display, with a cache local to the chart assistant."""
+    """Fresh 15-minute OI evidence for display, with a cache local to the chart assistant.
+
+    2026-11-28: başarısızlık artık `reason` ile raporlanır (`no_futures_market`,
+    `timeout`, `sample_unavailable`). Öncesinde yalnız `status: unavailable`
+    dönüyordu ve asistan bunu "açık pozisyon verisi eksik" diye yorumluyordu;
+    oysa çoğu TRY paritesinin vadeli sözleşmesi hiç yok.
+    """
     futures_symbol = symbol_to_futures(symbol)
     now = time.time()
+    reason: str | None = None
+    history: object | None = None  # önbellek isabetinde ağ çağrısı yok
     cached = _CHART_OI_CACHE.get(futures_symbol)
     if not refresh and cached and now - cached[0] < (OI_HIST_TTL_SEC if cached[1] else 30):
         sample = cached[1]
     else:
         url = f"{FAPI_BASE}/futures/data/openInterestHist?symbol={futures_symbol}&period=5m&limit=6"
-        try:
-            history = await asyncio.wait_for(asyncio.to_thread(_fetch_fapi_json, url, 1.8), timeout=2.0)
-        except TimeoutError:
-            history = None
+        history, reason = await asyncio.to_thread(_fetch_fapi_json_verbose, url, 1.8)
+        if not history:
+            # Tek yeniden deneme: sıkı 1,8 sn bütçesi yavaş yanıtta "eksik" üretiyordu.
+            history, reason = await asyncio.to_thread(_fetch_fapi_json_verbose, url, 3.5)
         sample = _open_interest_15m(history, time.time())
         _CHART_OI_CACHE[futures_symbol] = (time.time(), sample)
 
-    evidence = {"futures_symbol": futures_symbol, "source": "binance_usdm_futures",
-                "window_minutes": OI_SHADOW_WINDOW_MINUTES, "status": "unavailable"}
+    evidence = {
+        "futures_symbol": futures_symbol,
+        "source": "binance_usdm_futures",
+        "window_minutes": OI_SHADOW_WINDOW_MINUTES,
+        "status": "unavailable",
+    }
+    if not sample:
+        if reason:
+            evidence["reason"] = reason
+        elif isinstance(history, list) and not history:
+            evidence["reason"] = "no_oi_history"  # sözleşme var, OI geçmişi yok
+        elif history:
+            evidence["reason"] = "insufficient_samples"
+        else:
+            evidence["reason"] = "sample_unavailable"
+        evidence["note"] = {
+            "no_futures_market": "Bu paritenin Binance USD-M vadeli sözleşmesi yok; açık pozisyon verisi hiç üretilmez.",
+            "no_oi_history": "Vadeli sözleşme var ama OI geçmişi yayınlanmıyor; spot akışla teyit gerekir.",
+            "insufficient_samples": "Vadeli sözleşme var ama 15 dakikalık OI penceresi için yeterli örnek yok.",
+            "timeout": "Vadeli OI servisi zaman aşımına uğradı; tekrar denenebilir.",
+        }.get(evidence["reason"], "Vadeli OI örneği alınamadı; spot akışla teyit gerekir.")
     if sample:
         age = time.time() - sample["end_timestamp_ms"] / 1000
         if 0 <= age <= OI_SHADOW_MAX_SAMPLE_AGE_SEC:
@@ -352,8 +401,7 @@ async def chart_open_interest(symbol: str, *, refresh: bool = False) -> dict:
     return evidence
 
 
-def get_cached_squeeze_confirmation(symbol: str,
-                                    max_age_sec: float | None = None) -> dict | None:
+def get_cached_squeeze_confirmation(symbol: str, max_age_sec: float | None = None) -> dict | None:
     """Bellekteki son OI-değişimi/funding-trendi teyidini senkron döner.
 
     2026-11-10: LLM ikinci gözü `oi_change_1h_pct`'i kanıt olarak okur
@@ -392,19 +440,23 @@ async def squeeze_confirmation(symbol: str) -> dict:
         # `period=5m` sabit; bar sayısı = pencere/5 (+1 payı).
         try:
             from app.config import config as _c
+
             _win = float(getattr(_c, "AUTO_PAPER_OI_WINDOW_MIN", 15.0) or 15.0)
         except Exception:  # noqa: BLE001 — config yoksa ölçülen varsayılan
             _win = 15.0
         _bars = max(3, min(48, int(round(_win / 5.0)) + 1))
-        oi_url = (f"{FAPI_BASE}/futures/data/openInterestHist"
-                  f"?symbol={fut}&period=5m&limit={_bars}")
+        oi_url = f"{FAPI_BASE}/futures/data/openInterestHist?symbol={fut}&period=5m&limit={_bars}"
         fr_url = f"{FAPI_BASE}/fapi/v1/fundingRate?symbol={fut}&limit=3"
         return _fetch_fapi_json(oi_url), _fetch_fapi_json(fr_url)
 
     oi_hist, fr_hist = await asyncio.to_thread(_fetch_sync)
-    result: dict = {"oi_change_1h_pct": None, "oi_15m": _open_interest_15m(oi_hist, now),
-                    "funding_trend": None,
-                    "confirm_score_mult": 1.0, "squeeze_confirmed": False}
+    result: dict = {
+        "oi_change_1h_pct": None,
+        "oi_15m": _open_interest_15m(oi_hist, now),
+        "funding_trend": None,
+        "confirm_score_mult": 1.0,
+        "squeeze_confirmed": False,
+    }
     try:
         if isinstance(oi_hist, list) and len(oi_hist) >= 2:
             first = float(oi_hist[0].get("sumOpenInterest") or 0)
@@ -432,6 +484,7 @@ async def squeeze_confirmation(symbol: str) -> dict:
         # Eşikler config'ten (SQUEEZE_OI_*): +%10+ → teyit, ≤−%8 → fade.
         try:
             from app.config import config as _cfg
+
             strong = float(getattr(_cfg, "SQUEEZE_OI_STRONG_PCT", 10.0))
             fade = float(getattr(_cfg, "SQUEEZE_OI_FADE_PCT", -8.0))
             confirm_mult = float(getattr(_cfg, "SQUEEZE_OI_CONFIRM_MULT", 1.25))

@@ -19,15 +19,22 @@ async def test_chart_open_interest_uses_fresh_exact_window_and_its_own_cache(mon
     monkeypatch.setattr(derivatives_service.time, "time", lambda: now)
     monkeypatch.setattr(derivatives_service, "_CHART_OI_CACHE", {})
     monkeypatch.setattr(derivatives_service, "_OI_HIST_CACHE", {})
-    rows = [{"timestamp": 1_800_000, "sumOpenInterest": "102"},
-            {"timestamp": 900_000, "sumOpenInterest": "100"}]
-    fetch = MagicMock(side_effect=[rows, rows, None])
-    monkeypatch.setattr(derivatives_service, "_fetch_fapi_json", fetch)
+    rows = [{"timestamp": 1_800_000, "sumOpenInterest": "102"}, {"timestamp": 900_000, "sumOpenInterest": "100"}]
+    # 2026-11-28: OI artık hata TÜRÜNÜ de taşır (reason) → verbose yardımcı kullanılır.
+    fetch = MagicMock(
+        side_effect=[(rows, None), (rows, None), (None, "no_futures_market"), (None, "no_futures_market")]
+    )
+    monkeypatch.setattr(derivatives_service, "_fetch_fapi_json_verbose", fetch)
 
     result = await derivatives_service.chart_open_interest("PORTALTRY")
     assert result == {
-        "futures_symbol": "PORTALUSDT", "source": "binance_usdm_futures", "window_minutes": 15,
-        "status": "fresh", "change_pct": 2, "start_timestamp_ms": 900_000, "end_timestamp_ms": 1_800_000,
+        "futures_symbol": "PORTALUSDT",
+        "source": "binance_usdm_futures",
+        "window_minutes": 15,
+        "status": "fresh",
+        "change_pct": 2,
+        "start_timestamp_ms": 900_000,
+        "end_timestamp_ms": 1_800_000,
     }
     assert await derivatives_service.chart_open_interest("PORTALTRY") == result
     assert fetch.call_count == 1
@@ -38,6 +45,8 @@ async def test_chart_open_interest_uses_fresh_exact_window_and_its_own_cache(mon
     assert (await derivatives_service.chart_open_interest("PORTALTRY"))["status"] == "stale"
     missing = await derivatives_service.chart_open_interest("NOSYMBOLTRY")
     assert missing["status"] == "unavailable"
+    assert missing["reason"] == "no_futures_market"  # "veri eksik" değil: sözleşme yok
+    assert missing["note"]
     assert "change_pct" not in missing
 
 
@@ -45,25 +54,27 @@ async def test_chart_open_interest_uses_fresh_exact_window_and_its_own_cache(mon
 async def test_chart_open_interest_refresh_retries_a_cached_miss(monkeypatch):
     monkeypatch.setattr(derivatives_service.time, "time", lambda: 1_801)
     monkeypatch.setattr(derivatives_service, "_CHART_OI_CACHE", {})
-    rows = [{"timestamp": 1_800_000, "sumOpenInterest": "102"},
-            {"timestamp": 900_000, "sumOpenInterest": "100"}]
-    fetch = MagicMock(side_effect=[None, rows])
-    monkeypatch.setattr(derivatives_service, "_fetch_fapi_json", fetch)
+    rows = [{"timestamp": 1_800_000, "sumOpenInterest": "102"}, {"timestamp": 900_000, "sumOpenInterest": "100"}]
+    fetch = MagicMock(side_effect=[(None, "timeout"), (None, "timeout"), (rows, None)])
+    monkeypatch.setattr(derivatives_service, "_fetch_fapi_json_verbose", fetch)
 
     assert (await derivatives_service.chart_open_interest("ROBOTRY"))["status"] == "unavailable"
     assert (await derivatives_service.chart_open_interest("ROBOTRY"))["status"] == "unavailable"
     result = await derivatives_service.chart_open_interest("ROBOTRY", refresh=True)
     assert result["status"] == "fresh"
     assert result["change_pct"] == 2
-    assert fetch.call_count == 2
+    # her chart_open_interest çağrısı bir kez dener (yanıt yoksa ikinci kez de dener)
+    assert fetch.call_count == 3
 
 
 def test_squeeze_confirmation_keeps_exact_15m_metadata(monkeypatch):
     monkeypatch.setattr(derivatives_service, "_OI_HIST_CACHE", {})
     monkeypatch.setattr(derivatives_service.time, "time", lambda: 1_801)
     monkeypatch.setattr(config, "AUTO_PAPER_OI_WINDOW_MIN", 30)
-    rows = [{"timestamp": 300_000 * i, "sumOpenInterest": str(value)}
-            for i, value in enumerate([100, 105, 110, 120, 121, 122, 123])]
+    rows = [
+        {"timestamp": 300_000 * i, "sumOpenInterest": str(value)}
+        for i, value in enumerate([100, 105, 110, 120, 121, 122, 123])
+    ]
     mock_fapi = MagicMock(side_effect=[rows, []])
     monkeypatch.setattr(derivatives_service, "_fetch_fapi_json", mock_fapi)
 
@@ -84,8 +95,7 @@ def test_squeeze_confirmation_keeps_exact_15m_metadata(monkeypatch):
 def test_squeeze_confirmation_rejects_invalid_15m_sample(monkeypatch, first_timestamp, oi):
     monkeypatch.setattr(derivatives_service, "_OI_HIST_CACHE", {})
     monkeypatch.setattr(derivatives_service.time, "time", lambda: 1_801)
-    rows = [{"timestamp": first_timestamp, "sumOpenInterest": oi},
-            {"timestamp": 1_800_000, "sumOpenInterest": "102"}]
+    rows = [{"timestamp": first_timestamp, "sumOpenInterest": oi}, {"timestamp": 1_800_000, "sumOpenInterest": "102"}]
     monkeypatch.setattr(derivatives_service, "_fetch_fapi_json", MagicMock(side_effect=[rows, []]))
 
     captured = asyncio.run(derivatives_service.squeeze_confirmation("BABYTRY"))

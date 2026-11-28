@@ -20,6 +20,7 @@ Kilitlenen davranışlar:
   4. Bağlam YALNIZ var olan alanları taşır (prompt şişmez).
   5. `stream_chat` `max_tokens` kabul eder (kısa yanıt = hızlı ilk jeton).
 """
+
 import pathlib
 import sys
 import unittest
@@ -29,11 +30,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.config import config                     # noqa: E402
-from app import llm_analysis                      # noqa: E402
-from app.routers import llm_chat                  # noqa: E402
-from app.routers import macd_monitor              # noqa: E402
-from app.routers import monitoring                # noqa: E402
+from app.config import config  # noqa: E402
+from app import llm_analysis  # noqa: E402
+from app.routers import llm_chat  # noqa: E402
+from app.routers import macd_monitor  # noqa: E402
+from app.routers import monitoring  # noqa: E402
 
 LLM_CHAT_PY = pathlib.Path(llm_chat.__file__)
 
@@ -67,12 +68,19 @@ class QuickLaneSymbolTests(unittest.TestCase):
         self.assertIsNone(llm_chat._quick_lane_symbol(["EGLDTRY"], "EGLDTRY al", trade_intent=True))
 
     def test_research_intent_stays_on_heavy_path(self):
-        self.assertIsNone(llm_chat._quick_lane_symbol(
-            ["EGLDTRY"], "EGLDTRY geriye dönük test", research_only_intent=True))
+        self.assertIsNone(
+            llm_chat._quick_lane_symbol(["EGLDTRY"], "EGLDTRY geriye dönük test", research_only_intent=True)
+        )
 
     def test_depth_request_stays_on_heavy_path(self):
-        for text in ("EGLDTRY detaylı analiz", "EGLDTRY tam analiz", "EGLDTRY rapor",
-                     "EGLDTRY backtest", "EGLDTRY tüm göstergeler", "EGLDTRY işlem planı"):
+        for text in (
+            "EGLDTRY detaylı analiz",
+            "EGLDTRY tam analiz",
+            "EGLDTRY rapor",
+            "EGLDTRY backtest",
+            "EGLDTRY tüm göstergeler",
+            "EGLDTRY işlem planı",
+        ):
             self.assertIsNone(llm_chat._quick_lane_symbol(["EGLDTRY"], text), text)
 
     def test_long_message_stays_on_heavy_path(self):
@@ -110,13 +118,17 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         self.ticker_patch = patch.object(llm_chat, "ticker_price", new=AsyncMock(return_value=[]))
         self.ticker_patch.start()
         self.addCleanup(self.ticker_patch.stop)
-        self.deep_patch = patch.object(llm_chat, "deep_analyze_symbol", new=AsyncMock(return_value={"data_ready": False}))
+        self.deep_patch = patch.object(
+            llm_chat, "deep_analyze_symbol", new=AsyncMock(return_value={"data_ready": False})
+        )
         self.deep_patch.start()
         self.addCleanup(self.deep_patch.stop)
-        self.futures_oi = self.enterContext(patch(
-            "app.derivatives_service.chart_open_interest",
-            new=AsyncMock(return_value={"status": "unavailable"}),
-        ))
+        self.futures_oi = self.enterContext(
+            patch(
+                "app.derivatives_service.chart_open_interest",
+                new=AsyncMock(return_value={"status": "unavailable"}),
+            )
+        )
         self.candles = AsyncMock(return_value=[])
         self.book = AsyncMock(return_value={})
         for name, mock in (("fetch_klines", self.candles), ("orderbook", self.book)):
@@ -130,28 +142,54 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_builds_compact_context_from_caches(self):
         llm_chat.market = _FakeMarket({"symbol": "EGLDTRY", "last_price": 42.5, "timestamp": 1_700_000_000_000})
-        patch.object(macd_monitor, "_SNAPSHOT", {
-            "symbols": {
-                "EGLDTRY": {
-                    "strength": 8.5, "tier": "GUCLU", "dir": 1, "early_score": 61,
-                    "pre": {"dip": True, "approach": True, "m1": False},
-                    "pre_detail": {"proximity": 0.82, "gap_atr": 0.3, "transition": True},
-                    "sigs": {"5m": {"break": True, "state": "expand"}, "15m": None},
-                    "cvd": {"buy_dominant": True, "buy_ratio": 0.62, "whale_net": 1200},
-                    "tfs": {"5m": {"green": 6}, "15m": {"green": 4}, "3m": {"green": 5}},
+        patch.object(
+            macd_monitor,
+            "_SNAPSHOT",
+            {
+                "symbols": {
+                    "EGLDTRY": {
+                        "strength": 8.5,
+                        "tier": "GUCLU",
+                        "dir": 1,
+                        "early_score": 61,
+                        "pre": {"dip": True, "approach": True, "m1": False},
+                        "pre_detail": {"proximity": 0.82, "gap_atr": 0.3, "transition": True},
+                        "sigs": {"5m": {"break": True, "state": "expand"}, "15m": None},
+                        "cvd": {"buy_dominant": True, "buy_ratio": 0.62, "whale_net": 1200},
+                        "tfs": {"5m": {"green": 6}, "15m": {"green": 4}, "3m": {"green": 5}},
+                    }
                 }
-            }
-        }).start()
-        patch.object(monitoring, "get_cached_radar_candidate", lambda symbol: {
-            "symbol": symbol, "mode": "trend_devam", "panel_score": 72.5,
-            "target_pct": 2.5, "horizon_minutes": 5, "ml_target_pct": 1.8,
-            "ml_hit_probability": 0.71, "volume_ratio": 2.1, "block_reason": None,
-        }).start()
-        with patch.object(llm_chat.database, "get_symbol_target_state",
-                          AsyncMock(return_value={"target_pct": 1.9, "total_count": 12, "success_rate": 0.58})), \
-             patch.object(llm_chat.database, "get_pending_monitoring_notification",
-                          AsyncMock(return_value={"target_pct": 2.5, "price": 42.4,
-                                                  "detected_at": 1_700_000_000, "horizon_minutes": 5})):
+            },
+        ).start()
+        patch.object(
+            monitoring,
+            "get_cached_radar_candidate",
+            lambda symbol: {
+                "symbol": symbol,
+                "mode": "trend_devam",
+                "panel_score": 72.5,
+                "target_pct": 2.5,
+                "horizon_minutes": 5,
+                "ml_target_pct": 1.8,
+                "ml_hit_probability": 0.71,
+                "volume_ratio": 2.1,
+                "block_reason": None,
+            },
+        ).start()
+        with (
+            patch.object(
+                llm_chat.database,
+                "get_symbol_target_state",
+                AsyncMock(return_value={"target_pct": 1.9, "total_count": 12, "success_rate": 0.58}),
+            ),
+            patch.object(
+                llm_chat.database,
+                "get_pending_monitoring_notification",
+                AsyncMock(
+                    return_value={"target_pct": 2.5, "price": 42.4, "detected_at": 1_700_000_000, "horizon_minutes": 5}
+                ),
+            ),
+        ):
             quick = await llm_chat._symbol_quick_context("EGLDTRY")
 
         self.assertIsNotNone(quick)
@@ -169,8 +207,10 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_context_omits_missing_fields(self):
         """Var olmayan alan bağlama girmez (prompt şişmesin)."""
         llm_chat.market = _FakeMarket({"symbol": "EGLDTRY", "last_price": 10.0})
-        with patch.object(llm_chat.database, "get_symbol_target_state", AsyncMock(return_value=None)), \
-             patch.object(llm_chat.database, "get_pending_monitoring_notification", AsyncMock(return_value=None)):
+        with (
+            patch.object(llm_chat.database, "get_symbol_target_state", AsyncMock(return_value=None)),
+            patch.object(llm_chat.database, "get_pending_monitoring_notification", AsyncMock(return_value=None)),
+        ):
             quick = await llm_chat._symbol_quick_context("EGLDTRY")
         self.assertNotIn("macd_state", quick)
         self.assertNotIn("radar_candidate", quick)
@@ -181,16 +221,23 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_prefetches_closed_market_levels_and_actual_book(self):
         llm_chat.market = _FakeMarket({"last_price": 0.0993, "timestamp": 6_000_100})
         self.candles.return_value = [
-            [(i + 1) * 300_000, "0.0993", "0.101", "0.098", "0.0993", "300", (i + 2) * 300_000 - 1]
-            for i in range(19)
+            [(i + 1) * 300_000, "0.0993", "0.101", "0.098", "0.0993", "300", (i + 2) * 300_000 - 1] for i in range(19)
         ] + [[6_000_000, "0.1", "9", "0.001", "0.1", "300", 6_299_999]]
-        self.book.return_value = {"bids": [["0.099", "1000"], ["0.098", "500"]],
-                                  "asks": [["0.100", "600"], ["0.101", "2000"]]}
-        self.futures_oi.return_value = {"status": "fresh", "futures_symbol": "EGLDUSDT",
-                                        "window_minutes": 15, "change_pct": 1.5}
-        with patch.object(llm_chat.time, "time", return_value=6000.1), \
-             patch.object(llm_chat.database, "get_symbol_target_state", AsyncMock(return_value=None)), \
-             patch.object(llm_chat.database, "get_pending_monitoring_notification", AsyncMock(return_value=None)):
+        self.book.return_value = {
+            "bids": [["0.099", "1000"], ["0.098", "500"]],
+            "asks": [["0.100", "600"], ["0.101", "2000"]],
+        }
+        self.futures_oi.return_value = {
+            "status": "fresh",
+            "futures_symbol": "EGLDUSDT",
+            "window_minutes": 15,
+            "change_pct": 1.5,
+        }
+        with (
+            patch.object(llm_chat.time, "time", return_value=6000.1),
+            patch.object(llm_chat.database, "get_symbol_target_state", AsyncMock(return_value=None)),
+            patch.object(llm_chat.database, "get_pending_monitoring_notification", AsyncMock(return_value=None)),
+        ):
             quick = await llm_chat._symbol_quick_context("EGLDTRY")
         assert quick["price_levels"]["support"] == 0.098
         assert quick["price_levels"]["resistance"] == 0.101
@@ -209,8 +256,10 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         llm_chat.market = _FakeMarket()
         llm_chat.market.history = {
             "timestamps": [i * 300_000 for i in range(1, 21)],
-            "highs": [0.101] * 20, "lows": [0.098] * 20,
-            "closes": [0.0993] * 20, "volumes": [300] * 20,
+            "highs": [0.101] * 20,
+            "lows": [0.098] * 20,
+            "closes": [0.0993] * 20,
+            "volumes": [300] * 20,
             "source": "binance_tr_public_ws",
         }
         self.candles.side_effect = TimeoutError
@@ -219,16 +268,22 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         assert levels["source"] == "binance_tr_public_ws"
         assert levels["support"] == 0.098
         assert levels["resistance"] == 0.101
-        with patch.object(llm_chat.time, "time", return_value=7301):
-            assert (await llm_chat._quick_price_levels("ROBOTRY", None))["status"] == "unavailable"
+        # 2026-11-28: tazelik toleransı 15 dk -> 30 dk (ince paritelerde tek boşluk
+        # bile "seviye yok" diyordu). 45 dakika sonra artık bayat sayılır.
+        with patch.object(llm_chat.time, "time", return_value=9000):
+            stale = await llm_chat._quick_price_levels("ROBOTRY", None)
+        assert stale["status"] == "unavailable"
+        assert stale["reason"] == "stale_candles"
 
     async def test_db_failure_does_not_break_context(self):
         """Öğrenilmiş hedef okunamazsa bağlam yine kurulur (hızlı şerit düşmesin)."""
         llm_chat.market = _FakeMarket({"symbol": "EGLDTRY", "last_price": 10.0})
-        with patch.object(llm_chat.database, "get_symbol_target_state",
-                          AsyncMock(side_effect=RuntimeError("db down"))), \
-             patch.object(llm_chat.database, "get_pending_monitoring_notification",
-                          AsyncMock(side_effect=RuntimeError("db down"))):
+        with (
+            patch.object(llm_chat.database, "get_symbol_target_state", AsyncMock(side_effect=RuntimeError("db down"))),
+            patch.object(
+                llm_chat.database, "get_pending_monitoring_notification", AsyncMock(side_effect=RuntimeError("db down"))
+            ),
+        ):
             quick = await llm_chat._symbol_quick_context("EGLDTRY")
         self.assertIsNotNone(quick)
         self.assertEqual(10.0, quick["price"])
@@ -239,6 +294,7 @@ class StreamChatContractTests(unittest.TestCase):
 
     def test_stream_chat_accepts_max_tokens(self):
         import inspect
+
         params = inspect.signature(llm_analysis.stream_chat).parameters
         self.assertIn("max_tokens", params)
 
@@ -246,7 +302,7 @@ class StreamChatContractTests(unittest.TestCase):
         """Hızlı şerit config dışında ayar okumaz (tek kaynak: config.py)."""
         source = LLM_CHAT_PY.read_text(encoding="utf-8")
         start = source.index("HIZLI ŞERİT (2026-09-17)")
-        end = source.index("@router.post(\"/api/strategies/llm/chat\")")
+        end = source.index('@router.post("/api/strategies/llm/chat")')
         block = source[start:end]
         self.assertNotIn("os.getenv", block)
 
@@ -264,25 +320,25 @@ class QuickLaneStreamBehaviorTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, body, messages=None):
         captured: dict = {}
 
-        async def fake_stream_chat(context, msgs, tools, tool_executor, active_skills,
-                                   *, max_tokens=None):
+        async def fake_stream_chat(context, msgs, tools, tool_executor, active_skills, *, max_tokens=None):
             captured["tools"] = tools
             captured["tool_executor"] = tool_executor
             captured["max_tokens"] = max_tokens
             captured["context"] = context
             yield {"event": "delta", "data": {"text": "merhaba"}}
 
-        with patch.object(llm_chat.llm_analysis, "stream_chat", fake_stream_chat), \
-             patch.object(llm_chat, "_persist_chat_memory", new=AsyncMock()), \
-             patch.object(llm_chat, "finish_trace", new=AsyncMock()), \
-             patch.object(llm_chat, "_main_pg_pool", lambda: None):
-            resp = llm_chat._symbol_quick_stream(
-                {"symbol": "EGLDTRY"}, body, "trace-1", "sess-1", messages or [])
+        with (
+            patch.object(llm_chat.llm_analysis, "stream_chat", fake_stream_chat),
+            patch.object(llm_chat, "_persist_chat_memory", new=AsyncMock()),
+            patch.object(llm_chat, "finish_trace", new=AsyncMock()),
+            patch.object(llm_chat, "_main_pg_pool", lambda: None),
+        ):
+            resp = llm_chat._symbol_quick_stream({"symbol": "EGLDTRY"}, body, "trace-1", "sess-1", messages or [])
             chunks = [chunk async for chunk in resp.body_iterator]
         return resp, chunks, captured
 
     async def test_quick_lane_passes_tools_and_streams_sse(self):
-        resp, chunks, captured = await self._run({"max_tokens": 10 ** 9})
+        resp, chunks, captured = await self._run({"max_tokens": 10**9})
 
         # 1. Araçsız çağrı jeton jeton akışı sessizce öldürür → araç geçilmeli.
         self.assertEqual("text/event-stream", resp.media_type)
@@ -300,8 +356,10 @@ class QuickLaneStreamBehaviorTests(unittest.IsolatedAsyncioTestCase):
         names = {tool["function"]["name"] for tool in captured["tools"]}
         assert {"get_chart_price_levels", "get_chart_open_interest"} <= names
         execute = captured["tool_executor"]
-        with patch.object(llm_chat, "_quick_price_levels", AsyncMock(return_value={"status": "ok"})) as levels, \
-             patch("app.derivatives_service.chart_open_interest", AsyncMock(return_value={"status": "fresh"})) as oi:
+        with (
+            patch.object(llm_chat, "_quick_price_levels", AsyncMock(return_value={"status": "ok"})) as levels,
+            patch("app.derivatives_service.chart_open_interest", AsyncMock(return_value={"status": "fresh"})) as oi,
+        ):
             assert await execute("get_chart_price_levels", {}) == {"status": "ok"}
             assert await execute("get_chart_open_interest", {}) == {"status": "fresh"}
             assert await execute("get_chart_open_interest", {}) == {"status": "fresh"}
@@ -310,7 +368,7 @@ class QuickLaneStreamBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_client_cannot_exceed_quick_lane_max_tokens(self):
         """DENETİM 3.3 #27: istemci `max_tokens` sunucu tavanını EZEMEZ."""
-        _resp, _chunks, captured = await self._run({"max_tokens": 10 ** 9})
+        _resp, _chunks, captured = await self._run({"max_tokens": 10**9})
         ceiling = int(getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
         self.assertEqual(ceiling, captured["max_tokens"])
 
@@ -322,16 +380,18 @@ class QuickLaneStreamBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_error_is_surfaced_as_sse_error_event(self):
         """stream_chat patlarsa istemciye `event: error` düşmeli (sessiz ölüm yok)."""
+
         async def boom(*args, **kwargs):
             raise RuntimeError("provider down")
             yield  # pragma: no cover — üreteç işareti
 
-        with patch.object(llm_chat.llm_analysis, "stream_chat", boom), \
-             patch.object(llm_chat, "_persist_chat_memory", new=AsyncMock()), \
-             patch.object(llm_chat, "finish_trace", new=AsyncMock()), \
-             patch.object(llm_chat, "_main_pg_pool", lambda: None):
-            resp = llm_chat._symbol_quick_stream(
-                {"symbol": "EGLDTRY"}, {}, "trace-1", "sess-1", [])
+        with (
+            patch.object(llm_chat.llm_analysis, "stream_chat", boom),
+            patch.object(llm_chat, "_persist_chat_memory", new=AsyncMock()),
+            patch.object(llm_chat, "finish_trace", new=AsyncMock()),
+            patch.object(llm_chat, "_main_pg_pool", lambda: None),
+        ):
+            resp = llm_chat._symbol_quick_stream({"symbol": "EGLDTRY"}, {}, "trace-1", "sess-1", [])
             chunks = [chunk async for chunk in resp.body_iterator]
 
         self.assertTrue(any(chunk.startswith("event: error") for chunk in chunks), chunks)
@@ -346,3 +406,41 @@ class QuickLaneStreamBehaviorTests(unittest.IsolatedAsyncioTestCase):
 # --------------------------------------------------------------------------
 if __name__ == "__main__":
     unittest.main()
+
+
+import time  # noqa: E402  (test dosyasının üstünde time import edilmiyor)
+
+
+class LevelsToleranceTests(unittest.TestCase):
+    """2026-11-28: ince TRY paritelerinde mum boşlukları seviye çıkarımını
+    kilitlemesin; ret sebepleri asistana taşınsın."""
+
+    def _rows(self, gaps=(), price=100.0, count=20):
+        now = time.time()
+        rows = []
+        skip = set(gaps)
+        for index in range(count):
+            if index in skip:
+                continue
+            start = int((now - (count - index) * 300) * 1000)
+            rows.append([start, price, price * 1.002, price * 0.998, price, 10, start + 299_999, "1", 5, "1", "1", "0"])
+        return rows
+
+    def test_small_gaps_are_tolerated(self):
+        levels = llm_chat._levels_from_closed_5m(self._rows(gaps=(5, 11)), None, "test")
+        self.assertEqual(levels["status"], "ok")
+        self.assertIsNotNone(levels["support"])
+        self.assertIsNotNone(levels["resistance"])
+
+    def test_too_many_gaps_reports_a_reason(self):
+        levels = llm_chat._levels_from_closed_5m(self._rows(gaps=(3, 6, 9, 12, 15)), None, "test")
+        self.assertEqual(levels["status"], "unavailable")
+        self.assertEqual(levels["reason"], "gappy_candles")
+        self.assertEqual(levels["gaps"], 5)
+
+    def test_stale_candles_report_age(self):
+        rows = self._rows()
+        with patch.object(llm_chat.time, "time", return_value=time.time() + 3600):
+            levels = llm_chat._levels_from_closed_5m(rows, None, "test")
+        self.assertEqual(levels["reason"], "stale_candles")
+        self.assertGreater(levels["age_minutes"], 30)
