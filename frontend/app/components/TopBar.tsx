@@ -5,6 +5,7 @@ const labels: Record<string, string> = {
   "/": "Canlı Terminal",
   "/portfolio": "Sanal Portföy",
   "/monitoring": "Radar & Hız Avcısı",
+  "/monitor": "Monitor",
   "/charts": "Grafik",
   "/technical-charts": "Teknik Grafik (4'lü Ekran)",
   "/binance-tr": "Binance TR Canlı İşlem",

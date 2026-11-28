@@ -33,6 +33,8 @@ RADAR_MAX_ENTRY_DRIFT = 0.01
 RADAR_HISTORY_BARS = 61
 RADAR_CONCURRENCY = 6
 FOLLOWUP_BARS = 30
+MONITOR_HOURS = 24
+MONITOR_LIMIT = 300
 ISTANBUL = timezone(timedelta(hours=3))
 STABLE = {"USDT", "USDC", "FDUSD", "TUSD", "DAI", "USD1", "USDP", "USDE", "EUR",
           "EURI", "TRY", "WBETH", "BNSOL"}
@@ -120,7 +122,8 @@ class Tracker:
         if self.seed is None or not traded or stamp + MINUTE >= self.seed + WINDOW:
             return None
         level = (15 if self._reached(price, self.base, 1.15) else
-                 10 if self._reached(price, self.base, 1.10) else 0)
+                 10 if self._reached(price, self.base, 1.10) else
+                 5 if self._reached(price, self.base, 1.05) else 0)
         if level <= self.level:
             return None
         self.level = level
@@ -215,6 +218,17 @@ def trailing_level(pct: float, previous_peak: float | None, previous_stop: float
     gap = max(TRAIL_MIN_GAP, TRAIL_INITIAL_GAP - (peak - TRAIL_START) * TRAIL_TIGHTEN_PER_POINT)
     floor = peak - gap
     return peak, floor if previous_stop is None else max(floor, previous_stop)
+
+
+async def save_early_watch(symbol: str, alert: Alert):
+    await database._run_db(lambda conn: conn.execute(
+        """INSERT INTO large_move_early_watch (symbol, seed_ms, base_price, watch_ms, watch_price)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (symbol, seed_ms) DO UPDATE SET
+             base_price = EXCLUDED.base_price, watch_ms = EXCLUDED.watch_ms, watch_price = EXCLUDED.watch_price
+           WHERE large_move_early_watch.watch_ms > EXCLUDED.watch_ms""",
+        (symbol, alert.seed, alert.base, alert.stamp, alert.price),
+    ))
 
 
 async def save_watch(symbol: str, alert: Alert) -> bool:
@@ -470,6 +484,52 @@ async def refresh_followup_paths():
         await database._run_db(write)
 
 
+async def monitor_rows(market):
+    now_ms = int(time.time() * 1000)
+    cutoff = now_ms - MONITOR_HOURS * 60 * MINUTE
+
+    def read(conn):
+        return [dict(row) for row in conn.execute(
+            """WITH recent AS (
+                 SELECT symbol, seed_ms FROM large_move_early_watch WHERE watch_ms >= ?
+                 UNION
+                 SELECT symbol, seed_ms FROM large_move_paper WHERE watch_ms >= ? OR status = 'open'
+               )
+               SELECT recent.symbol, recent.seed_ms, COALESCE(p.base_price, e.base_price) AS base_price,
+                      e.watch_ms AS early_watch_ms, e.watch_price AS early_watch_price,
+                      p.watch_ms, p.signal_ms, p.signal_price, p.entry_price, p.exit_price,
+                      p.closed_at, p.net_pnl_pct, p.mark_net_pct,
+                      recent.seed_ms + ? AS expires_at_ms,
+                      CASE WHEN p.status IN ('open', 'closed', 'blocked') THEN p.status
+                           WHEN recent.seed_ms + ? <= ? THEN 'expired'
+                           WHEN p.watch_ms IS NOT NULL THEN 'watch'
+                           ELSE 'early' END AS display_status
+               FROM recent
+               LEFT JOIN large_move_early_watch e USING (symbol, seed_ms)
+               LEFT JOIN large_move_paper p USING (symbol, seed_ms)
+               ORDER BY CASE WHEN p.status = 'open' THEN 0
+                             WHEN recent.seed_ms + ? > ? AND p.signal_ms IS NULL THEN 1
+                             ELSE 2 END,
+                        COALESCE(p.signal_ms, p.watch_ms, e.watch_ms) DESC, recent.symbol, recent.seed_ms DESC
+               LIMIT ?""",
+            (cutoff, cutoff, WINDOW, WINDOW, now_ms, WINDOW, now_ms, MONITOR_LIMIT),
+        ).fetchall()]
+
+    rows = await database._run_db(read)
+    prices = {}
+    for row in rows:
+        symbol = row["symbol"]
+        if symbol not in prices:
+            price = (market.get_ticker(symbol) or {}).get("last_price")
+            if (isinstance(price, (float, int)) and math.isfinite(price) and price > 0
+                    and market.ticker_freshness(symbol, max_age_sec=60)["fresh"]):
+                prices[symbol] = price
+            else:
+                prices[symbol] = None
+        row["current_price"] = prices[symbol]
+    return {"rows": rows, "as_of_ms": now_ms, "hours": MONITOR_HOURS, "limit": MONITOR_LIMIT}
+
+
 async def report(day: date | None, include_archived: bool):
     def read(conn):
         lower = 0 if include_archived else database._get_reports_baseline_sync(conn) * 1000
@@ -555,9 +615,20 @@ async def run(market):
             logger.debug("Large-move paper quote unavailable for %s", symbol, exc_info=True)
             return book
 
+    async def record_early(symbol, alert):
+        try:
+            await save_early_watch(symbol, alert)
+        except Exception:
+            logger.exception("Large-move early watch persistence failed for %s", symbol)
+
     async def entry(symbol, alert, from_radar, tasks):
         try:
+            if alert.level == 5:
+                await record_early(symbol, alert)
+                return
             if await save_watch(symbol, alert):
+                # A single candle can cross both watch thresholds.
+                tasks.create_task(record_early(symbol, alert))
                 event = watch_notification(symbol, alert.seed, alert.stamp)
                 tasks.create_task(deliver_watch_push(event, alert))
                 await ws_manager.broadcast({"type": "large_move_alert", "data": event})

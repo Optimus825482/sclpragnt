@@ -33,6 +33,15 @@ async def get_large_move_paper_report(request: Request, day: date | None = None,
     return await report(day, include_archived)
 
 
+@router.get("/api/reports/large-move-monitor")
+async def get_large_move_monitor(request: Request):
+    from app.api_common import require_admin
+    from app.large_move_paper import monitor_rows
+
+    require_admin(request)
+    return await monitor_rows(market)
+
+
 # ---------------------------------------------------------------------------
 # RAPOR BAŞLANGICI ("bu deploy" sınırı) — 2026-10-07
 # ---------------------------------------------------------------------------

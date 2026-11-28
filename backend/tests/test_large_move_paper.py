@@ -88,7 +88,8 @@ async def test_watch_returns_true_once_and_preserves_an_earlier_candle(monkeypat
 
 
 @mark.asyncio
-async def test_worker_broadcasts_watch_before_entry_signal_and_sends_one_push(monkeypatch):
+@mark.parametrize("direct_jump", [False, True])
+async def test_worker_records_early_watch_silently_then_broadcasts_watch_and_signal(monkeypatch, direct_jump):
     notices = asyncio.Queue()
     push = asyncio.Queue()
     listener_ready = asyncio.Event()
@@ -112,9 +113,20 @@ async def test_worker_broadcasts_watch_before_entry_signal_and_sends_one_push(mo
     save_entry_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(large_move_paper, "save_entry", save_entry_mock)
 
-    migration = Path(__file__).resolve().parents[1] / "migrations/034_large_move_paper.sql"
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
     with sqlite3.connect(":memory:") as conn:
-        conn.executescript(migration.read_text(encoding="utf-8"))
+        conn.row_factory = sqlite3.Row
+        for name in ("034_large_move_paper.sql", "037_large_move_early_watch.sql"):
+            conn.executescript((migrations / name).read_text(encoding="utf-8"))
+
+        early_recorded = asyncio.Event()
+        save_early = large_move_paper.save_early_watch
+
+        async def save_early_then_signal(symbol, alert):
+            await save_early(symbol, alert)
+            early_recorded.set()
+
+        monkeypatch.setattr(large_move_paper, "save_early_watch", save_early_then_signal)
 
         async def run_db(operation):
             return operation(conn)
@@ -132,7 +144,19 @@ async def test_worker_broadcasts_watch_before_entry_signal_and_sends_one_push(mo
             for minute in range(1, 31):
                 candle(minute, 100)
             clock[0] = 32 * 60
-            candle(31, 110)
+            if direct_jump:
+                candle(31, 115)
+            else:
+                candle(31, 105)
+                await asyncio.wait_for(early_recorded.wait(), 2)
+                assert conn.execute("SELECT watch_price FROM large_move_early_watch").fetchone()[0] == 105
+                assert conn.execute("SELECT COUNT(*) FROM large_move_paper").fetchone()[0] == 0
+                assert notices.empty()
+                send_push.assert_not_awaited()
+                save_entry_mock.assert_not_awaited()
+
+                clock[0] = 33 * 60
+                candle(32, 110)
             watch = await asyncio.wait_for(notices.get(), 2)
             pushed = await asyncio.wait_for(push.get(), 2)
             assert watch["type"] == "large_move_alert"
@@ -140,19 +164,59 @@ async def test_worker_broadcasts_watch_before_entry_signal_and_sends_one_push(mo
             assert pushed["title"] == "CFGTRY izlemeye alındı"
             assert pushed["tag"] == watch["data"]["id"]
             assert pushed["extra"]["symbol"] == "CFGTRY"
-            save_entry_mock.assert_not_awaited()
-
-            clock[0] = 33 * 60
-            candle(32, 115)
+            if not direct_jump:
+                save_entry_mock.assert_not_awaited()
+                clock[0] = 34 * 60
+                candle(33, 115)
             signal = await asyncio.wait_for(notices.get(), 2)
             assert signal["data"]["kind"] == "large_move"
             assert signal["data"]["id"] != watch["data"]["id"]
             save_entry_mock.assert_awaited_once()
             send_push.assert_awaited_once()
+            await asyncio.wait_for(early_recorded.wait(), 2)
+            expected = 115 if direct_jump else 105
+            assert conn.execute("SELECT watch_price FROM large_move_early_watch").fetchone()[0] == expected
         finally:
             worker.cancel()
             with raises(asyncio.CancelledError):
                 await worker
+
+
+@mark.asyncio
+async def test_monitor_joins_watch_stages_and_distinguishes_expired_rows(monkeypatch):
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
+    now = 100_000
+    now_ms = now * 1000
+    monkeypatch.setattr(large_move_paper, "time", SimpleNamespace(time=lambda: now))
+    market = SimpleNamespace(
+        get_ticker=lambda symbol: {"last_price": 109},
+        ticker_freshness=lambda symbol, **kwargs: {"fresh": symbol == "CFGTRY"},
+    )
+
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        for name in ("034_large_move_paper.sql", "037_large_move_early_watch.sql"):
+            conn.executescript((migrations / name).read_text(encoding="utf-8"))
+
+        async def run_db(operation):
+            return operation(conn)
+
+        monkeypatch.setattr(database, "_run_db", run_db)
+        seed = now_ms - 5 * MINUTE
+        await large_move_paper.save_early_watch("CFGTRY", Alert(seed, 100, seed + 2 * MINUTE, 106, 5))
+        await large_move_paper.save_early_watch("CFGTRY", Alert(seed, 100, seed + MINUTE, 105, 5))
+        await save_watch("CFGTRY", Alert(seed, 100, seed + 3 * MINUTE, 110, 10))
+        await large_move_paper.save_early_watch("ROBOTRY", Alert(seed, 100, seed + MINUTE, 105, 5))
+        expired = now_ms - 40 * MINUTE
+        await large_move_paper.save_early_watch("THETRY", Alert(expired, 100, expired + MINUTE, 105, 5))
+
+        payload = await large_move_paper.monitor_rows(market)
+        cfg, robo, the = payload["rows"]
+        assert (cfg["symbol"], cfg["display_status"], cfg["early_watch_price"], cfg["current_price"]) == ("CFGTRY", "watch", 105, 109)
+        assert cfg["early_watch_ms"] == seed + MINUTE
+        assert cfg["watch_ms"] == seed + 3 * MINUTE
+        assert (robo["symbol"], robo["display_status"], robo["watch_ms"], robo["current_price"]) == ("ROBOTRY", "early", None, None)
+        assert (the["symbol"], the["display_status"]) == ("THETRY", "expired")
 
 
 @mark.asyncio
@@ -237,13 +301,15 @@ def warmed_tracker():
 def test_watch_and_entry_share_a_prior_only_seed_and_do_not_repeat():
     tracker = warmed_tracker()
     assert tracker.observe(31 * MINUTE, 103, True) is None
-    watch = tracker.observe(32 * MINUTE, 110, True)
-    assert (watch.level, watch.base, watch.seed, watch.stamp) == (10, 100, 31 * MINUTE, 33 * MINUTE)
-    assert tracker.observe(33 * MINUTE, 115, False) is None
-    entry = tracker.observe(34 * MINUTE, 115, True)
-    assert (entry.level, entry.seed, entry.stamp) == (15, watch.seed, 35 * MINUTE)
-    assert tracker.observe(34 * MINUTE, 130, True) is None
+    early = tracker.observe(32 * MINUTE, 105, True)
+    assert (early.level, early.base, early.seed, early.stamp) == (5, 100, 31 * MINUTE, 33 * MINUTE)
+    watch = tracker.observe(33 * MINUTE, 110, True)
+    assert (watch.level, watch.seed, watch.stamp) == (10, early.seed, 34 * MINUTE)
+    assert tracker.observe(34 * MINUTE, 115, False) is None
+    entry = tracker.observe(35 * MINUTE, 115, True)
+    assert (entry.level, entry.seed, entry.stamp) == (15, watch.seed, 36 * MINUTE)
     assert tracker.observe(35 * MINUTE, 130, True) is None
+    assert tracker.observe(36 * MINUTE, 130, True) is None
 
 
 def test_gap_rewarm_and_direct_jump():
