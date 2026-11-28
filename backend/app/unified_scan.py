@@ -16,6 +16,7 @@ from typing import Any
 from app.config import config
 from app import master_surge
 from app import snapback_service
+from app import target_attainability
 from app import unified_signals
 from app.state import analyzer
 from app.candidate_features import candidate_features as _candidate_features
@@ -438,6 +439,18 @@ async def combined_scan_rows() -> list[dict]:
             + _source_ids(candidate)
         ))
 
+    # 2026-11-27: hedef ulaşılabilirliği — her sembolün KENDİ 5m/15m kline'ından
+    # ileri maksimum hareket dağılımı (p95/p99, hedefe ulaşan mum oranı).
+    # Önbellek TTL'li (varsayılan 30 dk); ağ hatasında sessizce atlanır.
+    # 2026-11-28: yenileme ARKA PLANDA başlatılır — kapı fail-open olduğu için
+    # ölçüm bir sonraki turda kullanılır; tarama ağ beklemesiyle yavaşlamaz.
+    try:
+        _att_symbols = [str(c.get("symbol") or "") for c in merged]
+        if _att_symbols:
+            target_attainability.refresh_background(_att_symbols)
+    except Exception as exc:
+        logger.debug("kombine: ulaşılabilirlik yenilemesi başlatılamadı: %s", exc)
+
     _today_mfe: dict[tuple[str, int], float] = {}
     try:
         for r in await mo._today_rising_rows(limit=200):
@@ -530,6 +543,9 @@ async def combined_scan_rows() -> list[dict]:
                             or scan_started_at),
             "target_pct": c.get("target_pct"),
             "horizon_minutes": c.get("horizon_minutes"),
+            # 2026-11-27: sembolün kendi ileri maksimum dağılımı (ölçüm alanı).
+            # Kapı varsayılan AÇIK (RADAR_TARGET_ATTAINABILITY_GATE=0 ile kapanır).
+            "attainability": target_attainability.stats(sym),
             "ceiling_pct": ceil_pct,
             "ceiling_price": c.get("ceiling_price") or (
                 round(price * (1 + float(ceil_pct) / 100.0), 8) if ceil_pct else None),

@@ -25,6 +25,7 @@ from app import notification_policy as _notification_policy
 from app import llm_second_eye
 from app import macd_mtf
 from app import master_surge
+from app import target_attainability  # 2026-11-27: hedef ulaşılabilirlik kapısı
 from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
 from app.alerting import deliver_web_push
@@ -1547,6 +1548,12 @@ def gate_candidate(c: dict, scan_score=None) -> str | None:
       * skor tabanı (`RADAR_LIST_MIN_SCAN_SCORE`, journal `scan_score` alanı;
         `scan_score=` parametresi kombine yoldan kalite puanını taşır) →
         "skor tabanı altı (65.0 < 70)" — `_score_floor_block_reason`.
+
+    2026-11-27 (hedef ulaşılabilirliği): en sonda, sembolün KENDİ 15m ileri
+    maksimum dağılımı hedefin altındaysa (`p99 < hedef`) blok nedeni
+    "hedef_ulasilamaz:..." döner — `target_attainability.block_reason`.
+    Bayrak varsayılan AÇIK (`RADAR_TARGET_ATTAINABILITY_GATE=0` ile kapanır);
+    ölçüm yoksa/bayatsa fail-open.
     """
     if not isinstance(c, dict):
         return None
@@ -1574,6 +1581,22 @@ def gate_candidate(c: dict, scan_score=None) -> str | None:
     floor_block = _score_floor_block_reason(c, scan_score)
     if floor_block:
         return floor_block
+    # 2026-11-27: hedef ulaşılabilirlik kapısı — sembolün kendi 15m dağılımında
+    # p99 hareketi bildirim hedefinin altındaysa aday işleme/listeye girmez.
+    # Hedef olarak yalnız `target_pct` kullanılır; `ceiling_pct` ATR tavanıdır
+    # (bildirim hedefi değil) ve onu kullanmak adayı haksız yere eler.
+    # Önbellek yoksa/bayatsa fail-open (None).
+    attain_block = target_attainability.block_reason(
+        c.get("symbol"),
+        c.get("target_pct"),
+        c.get("horizon_minutes"),
+    )
+    if attain_block:
+        return attain_block
+    # Ölçüm henüz yoksa arka planda hazırla (senkron kapı bekleyemez; fail-open
+    # kuralı gereği bu tur karar değişmez, sonraki turda kapı devreye girer).
+    if c.get("symbol") and target_attainability.stats(c.get("symbol")) is None:
+        target_attainability.refresh_background([c.get("symbol")])
     return None
 
 

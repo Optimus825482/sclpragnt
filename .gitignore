@@ -95,3 +95,8 @@ $null
 # Canli DB dump'lari (buyuk binary, repoya girmemeli)
 *.dump
 backend/work/rise/
+
+# codebase-index cache (machine-local; do not commit)
+.claude/cache/codebase-index/
+# CocoIndex Code (ccc)
+/.cocoindex_code/
