@@ -121,19 +121,36 @@ def note_early_push(symbol: str, now: float) -> None:
 async def recent_notifications(limit: int = 30) -> list[dict]:
     def read(conn):
         rows = conn.execute(
-            """SELECT symbol, seed_ms, signal_ms AS event_ms, signal_price, base_price, 1 AS is_signal
+            """SELECT symbol, seed_ms, signal_ms AS event_ms, signal_price AS price, base_price, 2 AS level
                FROM large_move_paper WHERE signal_ms IS NOT NULL
                UNION ALL
-               SELECT symbol, seed_ms, watch_ms AS event_ms, NULL, base_price, 0 AS is_signal
+               SELECT symbol, seed_ms, watch_ms AS event_ms, NULL AS price, base_price, 1 AS level
                FROM large_move_paper
-               ORDER BY event_ms DESC, is_signal DESC, symbol, seed_ms DESC LIMIT ?""",
+               ORDER BY event_ms DESC, level DESC, symbol, seed_ms DESC LIMIT ?""",
             (limit,),
         ).fetchall()
-        return [
-            signal_notification(r["symbol"], r["seed_ms"], r["event_ms"], r["signal_price"], r["base_price"])
-            if r["is_signal"] else watch_notification(r["symbol"], r["seed_ms"], r["event_ms"])
-            for r in rows
-        ]
+        events = []
+        for r in rows:
+            if r["level"] == 2:
+                events.append(signal_notification(r["symbol"], r["seed_ms"], r["event_ms"], r["price"], r["base_price"]))
+            else:
+                events.append(watch_notification(r["symbol"], r["seed_ms"], r["event_ms"]))
+        # Erken izleme (+%5) olayları ayrı tablodan; tablo yoksa (eski şema /
+        # pg yetkisi) bildirim listesi çalışmaya devam eder.
+        try:
+            early_rows = conn.execute(
+                """SELECT symbol, seed_ms, watch_ms AS event_ms, watch_price AS price, base_price
+                   FROM large_move_early_watch ORDER BY event_ms DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        except Exception:  # noqa: BLE001
+            logger.debug("erken izleme bildirimleri okunamadı", exc_info=True)
+            early_rows = []
+        for r in early_rows:
+            events.append(early_watch_notification(
+                r["symbol"], r["seed_ms"], r["event_ms"], r["price"], r["base_price"] or 0.0))
+        events.sort(key=lambda e: e.get("triggered_at") or 0.0, reverse=True)
+        return events[:limit]
     return await database._run_db(read)
 
 

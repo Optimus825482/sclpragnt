@@ -524,3 +524,30 @@ async def test_worker_pushes_early_watch_at_plus_5_when_enabled(monkeypatch):
             worker.cancel()
             with raises(asyncio.CancelledError):
                 await worker
+
+
+@mark.asyncio
+async def test_in_app_notification_list_includes_early_watch_events(monkeypatch):
+    """Uygulama içi bildirim listesi (/api/alerts) +%5 erken izleme olayını da göstermeli."""
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        for name in ("034_large_move_paper.sql", "037_large_move_early_watch.sql"):
+            conn.executescript((migrations / name).read_text(encoding="utf-8"))
+
+        async def run_db(operation):
+            return operation(conn)
+
+        monkeypatch.setattr(database, "_run_db", run_db)
+        seed = 100 * MINUTE
+        await large_move_paper.save_early_watch("CFGTRY", Alert(seed, 100, seed + MINUTE, 105, 5))
+        await save_watch("CFGTRY", Alert(seed, 100, seed + 2 * MINUTE, 110, 10))
+
+        events = await recent_notifications(10)
+        kinds = [event["kind"] for event in events]
+        assert "large_move_early" in kinds
+        assert "large_move_watch" in kinds
+        early = next(event for event in events if event["kind"] == "large_move_early")
+        assert early["id"] == f"large-move-early-CFGTRY-{seed}"
+        # en yeni olay başta
+        assert events[0]["kind"] == "large_move_watch"
