@@ -41,6 +41,23 @@ async def test_chart_open_interest_uses_fresh_exact_window_and_its_own_cache(mon
     assert "change_pct" not in missing
 
 
+@pytest.mark.asyncio
+async def test_chart_open_interest_refresh_retries_a_cached_miss(monkeypatch):
+    monkeypatch.setattr(derivatives_service.time, "time", lambda: 1_801)
+    monkeypatch.setattr(derivatives_service, "_CHART_OI_CACHE", {})
+    rows = [{"timestamp": 1_800_000, "sumOpenInterest": "102"},
+            {"timestamp": 900_000, "sumOpenInterest": "100"}]
+    fetch = MagicMock(side_effect=[None, rows])
+    monkeypatch.setattr(derivatives_service, "_fetch_fapi_json", fetch)
+
+    assert (await derivatives_service.chart_open_interest("ROBOTRY"))["status"] == "unavailable"
+    assert (await derivatives_service.chart_open_interest("ROBOTRY"))["status"] == "unavailable"
+    result = await derivatives_service.chart_open_interest("ROBOTRY", refresh=True)
+    assert result["status"] == "fresh"
+    assert result["change_pct"] == 2
+    assert fetch.call_count == 2
+
+
 def test_squeeze_confirmation_keeps_exact_15m_metadata(monkeypatch):
     monkeypatch.setattr(derivatives_service, "_OI_HIST_CACHE", {})
     monkeypatch.setattr(derivatives_service.time, "time", lambda: 1_801)

@@ -7818,6 +7818,17 @@ async def get_last_auto_paper_winning_trade_time(symbol: str) -> float | None:
     return await _run_db(op)
 
 
+async def get_latest_auto_paper_trade_outcome(symbol: str) -> dict | None:
+    """Sembolün son işlemindeki kapanış durumunu ve muhasebeleşmiş net K/Z'yi oku."""
+    def op(conn):
+        row = conn.execute(
+            "SELECT status, exit_time, pnl FROM auto_paper_trades WHERE symbol=? "
+            "ORDER BY entry_time DESC, id DESC LIMIT 1", (str(symbol).upper(),)
+        ).fetchone()
+        return {"status": row[0], "exit_time": row[1], "pnl": row[2]} if row else None
+    return await _run_db(op)
+
+
 async def update_auto_paper_excursions(trade_id: int, adverse_pct: float,
                                        favorable_pct: float) -> None:
     """MAE/MFE (en kötü/en iyi gezinme) alanlarını YALNIZ iyileştikçe günceller.

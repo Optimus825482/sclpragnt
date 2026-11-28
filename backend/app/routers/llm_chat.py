@@ -3579,9 +3579,8 @@ def _tool_activity_summary(name: str, args: dict) -> str:
 # tool döngüsü (her tur = 1 provider çağrısı). Üstelik araç listesi dolu olduğu
 # için `stream_chat` TAMPONLAR (llm_analysis.py:577): kullanıcı yanıtı TEK BLOK
 # olarak, bütün döngü bitince görür.
-# Hızlı şerit: yalnız HAZIR bellek önbellekleri (+2 indeksli tek-satır DB
-# okuması), ARAÇSIZ çağrı — araçsız yolda sağlayıcı akışı JETON JETON akar —
-# ve kısa yanıt sözleşmesi.
+# Hızlı şerit: hazır bellek verileri, süre sınırlı canlı okumalar, salt
+# okunur analiz araçları ve kısa yanıt sözleşmesi.
 _QUICK_LANE_DEPTH_RE = re.compile(
     r"(detay|derin|tam\s+analiz|tüm\s+gösterge|tum\s+gosterge|rapor|backtest|"
     r"geriye\s*dönük|geriye\s*donuk|simüle|simule|varsayımsal|varsayimsal|"
@@ -3603,50 +3602,100 @@ def _quick_price_age(ticker: dict) -> float | None:
     return None
 
 
+_CHART_EVIDENCE_TOOLS = [
+    {"type": "function", "function": {
+        "name": "get_chart_price_levels",
+        "description": "Seçili grafiğin kapanmış 5 dk mumlarından gözlenen destek ve direnci getirir.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "get_chart_open_interest",
+        "description": "Seçili sembolün Binance USD-M vadeli sözleşmesinde tam 15 dk açık pozisyon değişimini getirir. Spot akış veya yön teyidi değildir.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+]
+_CHART_EVIDENCE_NAMES = {tool["function"]["name"] for tool in _CHART_EVIDENCE_TOOLS}
+
+
+def _levels_from_closed_5m(raw, reference: float | None, source: str) -> dict:
+    now_ms = time.time() * 1000
+    candles = {}
+    for row in raw or []:
+        try:
+            start, close_at = int(row[0]), int(row[6])
+            high, low, close, volume = map(float, (row[2], row[3], row[4], row[5]))
+        except (IndexError, TypeError, ValueError, OverflowError):
+            continue
+        if (start < close_at < now_ms and all(math.isfinite(v) for v in (high, low, close, volume))
+                and 0 < low <= close <= high and volume >= 0):
+            candles[start] = (high, low, close, close_at, volume)
+    rows = sorted(candles.items())[-36:]
+    if (len(rows) < 12 or now_ms - rows[-1][1][3] > 900_000
+            or any(right[0] - left[0] != 300_000 for left, right in zip(rows, rows[1:]))):
+        return {"status": "unavailable"}
+    highs, lows, closes, close_times, volumes = zip(*(row for _, row in rows))
+    ref = reference if reference else closes[-1]
+    lows_below = [value for value in lows if value < ref]
+    highs_above = [value for value in highs if value > ref]
+    swing_low = [lows[i] for i in range(1, len(lows) - 1)
+                 if lows[i] < ref and lows[i] <= min(lows[i - 1], lows[i + 1])]
+    swing_high = [highs[i] for i in range(1, len(highs) - 1)
+                  if highs[i] > ref and highs[i] >= max(highs[i - 1], highs[i + 1])]
+    support = max(swing_low or lows_below, default=None)
+    resistance = min(swing_high or highs_above, default=None)
+    change = (closes[-1] / closes[-12] - 1) * 100
+    previous_volumes = volumes[-13:-1]
+    average_volume = sum(previous_volumes) / len(previous_volumes)
+    return {
+        "status": "ok", "source": source, "last_closed_at": close_times[-1] / 1000,
+        "reference_price": ref, "reference_source": "fresh_ticker" if reference else "last_5m_close",
+        "recent_change_pct": round(change, 2), "recent_change_minutes": 55,
+        "last_5m_volume_ratio": round(volumes[-1] / average_volume, 2) if average_volume > 0 else None,
+        "support": support, "resistance": resistance,
+        "support_distance_pct": round((support / ref - 1) * 100, 2) if support is not None else None,
+        "resistance_distance_pct": round((resistance / ref - 1) * 100, 2) if resistance is not None else None,
+    }
+
+
 async def _quick_price_levels(symbol: str, reference: float | None) -> dict:
     """Kapanmış 5 dakikalık mumlardan gözlenen en yakın seviyeleri hesaplar."""
     try:
         raw = await asyncio.wait_for(fetch_klines(symbol, "5m", limit=37), timeout=2.0)
-        now_ms = time.time() * 1000
-        candles = {}
-        for row in raw or []:
-            try:
-                start, close_at = int(row[0]), int(row[6])
-                high, low, close, volume = map(float, (row[2], row[3], row[4], row[5]))
-            except (IndexError, TypeError, ValueError):
-                continue
-            if (start < close_at < now_ms and all(math.isfinite(v) for v in (high, low, close, volume))
-                    and 0 < low <= close <= high and volume >= 0):
-                candles[start] = (high, low, close, close_at, volume)
-        rows = sorted(candles.items())[-36:]
-        if (len(rows) < 12 or now_ms - rows[-1][1][3] > 900_000
-                or any(right[0] - left[0] != 300_000 for left, right in zip(rows, rows[1:]))):
-            return {"status": "unavailable"}
-        highs, lows, closes, close_times, volumes = zip(*(row for _, row in rows))
-        ref = reference if reference else closes[-1]
-        lows_below = [value for value in lows if value < ref]
-        highs_above = [value for value in highs if value > ref]
-        swing_low = [lows[i] for i in range(1, len(lows) - 1)
-                     if lows[i] < ref and lows[i] <= min(lows[i - 1], lows[i + 1])]
-        swing_high = [highs[i] for i in range(1, len(highs) - 1)
-                      if highs[i] > ref and highs[i] >= max(highs[i - 1], highs[i + 1])]
-        support = max(swing_low or lows_below, default=None)
-        resistance = min(swing_high or highs_above, default=None)
-        change = (closes[-1] / closes[-12] - 1) * 100
-        previous_volumes = volumes[-13:-1]
-        average_volume = sum(previous_volumes) / len(previous_volumes)
-        return {
-            "status": "ok", "source": "binance_tr_closed_5m", "last_closed_at": close_times[-1] / 1000,
-            "reference_price": ref, "reference_source": "fresh_ticker" if reference else "last_5m_close",
-            "recent_change_pct": round(change, 2), "recent_change_minutes": 55,
-            "last_5m_volume_ratio": round(volumes[-1] / average_volume, 2) if average_volume > 0 else None,
-            "support": support, "resistance": resistance,
-            "support_distance_pct": round((support / ref - 1) * 100, 2) if support is not None else None,
-            "resistance_distance_pct": round((resistance / ref - 1) * 100, 2) if resistance is not None else None,
-        }
-    except Exception:
-        return {"status": "unavailable"}
+        levels = _levels_from_closed_5m(raw, reference, "binance_tr_closed_5m")
+        if levels["status"] == "ok":
+            return levels
+    except Exception as exc:
+        logger.debug("Grafik mum verisi %s: %s", symbol, type(exc).__name__)
 
+    history = market.get_ut_kline(symbol, "5m")
+    if not history.get("source"):
+        return {"status": "unavailable"}
+    # Piyasa önbelleği yalnız kapanmış mumları tutar.
+    rows = (
+        (stamp, None, high, low, close, volume, stamp + 299_999)
+        for stamp, high, low, close, volume in zip(
+            history["timestamps"], history["highs"], history["lows"],
+            history["closes"], history["volumes"],
+        )
+    )
+    return _levels_from_closed_5m(rows, reference, history["source"])
+
+
+async def _execute_chart_evidence(name: str, symbol: str, *, refresh=False) -> dict:
+    if not re.fullmatch(r"[A-Z0-9]{4,20}", symbol):
+        return {"status": "unavailable"}
+    if name == "get_chart_price_levels":
+        ticker = market.get_ticker(symbol) or {}
+        age = _quick_price_age(ticker)
+        price = ticker.get("last_price")
+        reference = (
+            float(price) if isinstance(price, (int, float)) and math.isfinite(price)
+            and price > 0 and age is not None and age <= _QUICK_PRICE_MAX_AGE_SEC else None
+        )
+        return await _quick_price_levels(symbol, reference)
+    from app.derivatives_service import chart_open_interest
+
+    return await chart_open_interest(symbol, refresh=refresh)
 
 def _merge_body_symbols(requested_symbols, body):
     """Gövdedeki sembol alanlarını (symbols / symbol / current_symbol) requested_symbols'a ekle.
@@ -3776,7 +3825,13 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
             "Vadeli OI için futures_open_interest.status fresh ise change_pct ve 15 dk penceresini kullan. "
             "Bu Binance Global vadeli sözleşme verisidir; OI değişimi spot alım akışını veya long/short yönünü kanıtlamaz. "
             "OI durumu unavailable veya stale ise yüzde verme. "
-            "Hedef ve model olasılığını gözlenen seviyelerden ayrı anlat."
+            "Hedef ve model olasılığını gözlenen seviyelerden ayrı anlat. "
+            "Akış verisinde yalnız kaynağın bildirdiği zaman penceresini söyle."
+            + (
+                " İlk veri eksikse get_chart_price_levels veya get_chart_open_interest ile bir kez yeniden kontrol et. "
+                "Tekrar da veri yoksa kullanıcıya hangi verinin doğrulanamadığını sade Türkçe söyle."
+                if (body or {}).get("chart_assistant") else ""
+            )
         ),
         "answer_contract": contract,
         "price_levels": levels,
@@ -3936,8 +3991,22 @@ def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str
                 LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL,
                 LLM_CMC_COIN_PROFILE_TOOL, LLM_CMC_MARKET_CONTEXT_TOOL,
             ]
+            chart_evidence = {}
+            if body.get("chart_assistant"):
+                quick_tools.extend(_CHART_EVIDENCE_TOOLS)
+                for name, key, ready in (
+                    ("get_chart_price_levels", "price_levels", "ok"),
+                    ("get_chart_open_interest", "futures_open_interest", "fresh"),
+                ):
+                    result = quick.get(key) or {}
+                    if result.get("status") == ready:
+                        chart_evidence[name] = result
             quick_tools = _dedupe_tools(quick_tools)
             async def quick_executor(name, args):
+                if body.get("chart_assistant") and name in _CHART_EVIDENCE_NAMES:
+                    if name not in chart_evidence:
+                        chart_evidence[name] = await _execute_chart_evidence(name, quick["symbol"], refresh=True)
+                    return chart_evidence[name]
                 sym = str(args.get("symbol") or quick.get("symbol") or "")
                 if name == "get_master_surge_prediction":
                     return await _get_master_surge_tool({**args, "symbol": sym})
@@ -3964,11 +4033,11 @@ def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str
                 if name == "get_cmc_market_context":
                     return await execute_cmc_market_context(args)
                 if name == "deep_analyze_symbol":
-                    return await deep_analyze_symbol(args)
+                    return await deep_analyze_symbol({**args, "symbol": sym})
                 if name == "get_microstructure_snapshot":
-                    return await get_microstructure_snapshot(args)
+                    return await get_microstructure_snapshot({**args, "symbol": sym})
                 if name == "get_regime_snapshot":
-                    return await get_regime_snapshot(args)
+                    return await get_regime_snapshot({**args, "symbol": sym})
                 return {"error": f"Araç '{name}' hızlı şeritte desteklenmiyor"}
             # DENETİM 3.3 #27: `int(body.get(...) or 0)` → `1_000_000` tavanı
             # atlıyordu. Kelepçe aynı zamanda geçersiz/negatif değeri de default'a
@@ -4195,12 +4264,22 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
                   LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL,
                   LLM_DERIVATIVES_TOOL, LLM_MACRO_SENTIMENT_TOOL, LLM_ORDERBOOK_PRESSURE_TOOL,
                   LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL])
+    chart_symbol = str(body.get("current_symbol") or body.get("symbol") or "").replace("_", "").upper()
+    if context["chart_assistant"] and chart_symbol:
+        tools.extend(_CHART_EVIDENCE_TOOLS)
+        context["chart_evidence_policy"] = (
+            "Kullanıcı grafik seviyelerini veya vadeli açık pozisyon değişimini sorarsa "
+            "get_chart_price_levels veya get_chart_open_interest kullan. "
+            "Vadeli açık pozisyon değişimi spot para girişini veya fiyat yönünü doğrulamaz."
+        )
     tool_error_count = 0
     failed_tool_calls = set()
 
     async def _dispatch_tool(name, args):
         denied = _admin_only_denied(name, auth_user)
         if denied: return denied
+        if context["chart_assistant"] and name in _CHART_EVIDENCE_NAMES:
+            return await _execute_chart_evidence(name, chart_symbol)
         if name == "get_derivatives_intel": return await _get_derivatives_tool(args)
         if name == "get_macro_market_sentiment": return await _get_macro_sentiment_tool(args)
         if name == "get_orderbook_pressure": return await _get_orderbook_pressure_tool(args)

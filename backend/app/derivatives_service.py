@@ -325,12 +325,12 @@ def _open_interest_15m(history: list | None, as_of: float) -> dict | None:
     return {"change_pct": change, "start_timestamp_ms": start, "end_timestamp_ms": end}
 
 
-async def chart_open_interest(symbol: str) -> dict:
+async def chart_open_interest(symbol: str, *, refresh: bool = False) -> dict:
     """Fresh 15-minute OI evidence for display, with a cache local to the chart assistant."""
     futures_symbol = symbol_to_futures(symbol)
     now = time.time()
     cached = _CHART_OI_CACHE.get(futures_symbol)
-    if cached and now - cached[0] < (OI_HIST_TTL_SEC if cached[1] else 30):
+    if not refresh and cached and now - cached[0] < (OI_HIST_TTL_SEC if cached[1] else 30):
         sample = cached[1]
     else:
         url = f"{FAPI_BASE}/futures/data/openInterestHist?symbol={futures_symbol}&period=5m&limit=6"

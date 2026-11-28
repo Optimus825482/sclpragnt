@@ -800,6 +800,22 @@ async def _entry_dedup_gate(symbol: str, settings: dict) -> dict | None:
     return None
 
 
+async def profitable_super_scan_reentry(notification: dict) -> bool:
+    """Son pozisyon net kârla kapandıysa yalnız kapanıştan sonraki sinyale uygulanır."""
+    symbol = notification.get("symbol")
+    if notification.get("source") != "super_scan" or not symbol or not notification.get("detected_at"):
+        return False
+    try:
+        trade = await database.get_latest_auto_paper_trade_outcome(symbol)
+        if not trade or trade["status"] != "closed":
+            return False
+        pnl, closed_at, detected_at = map(float, (trade["pnl"], trade["exit_time"], notification["detected_at"]))
+        return all(map(math.isfinite, (pnl, closed_at, detected_at))) and pnl > 0 and 0 < closed_at < detected_at
+    except Exception as exc:
+        logger.debug("auto_paper %s kârlı yeniden giriş kontrolü: %s", symbol, exc)
+        return False
+
+
 def _entry_flag_gates(notification: dict, symbol: str) -> dict | None:
     """passes / block_reason / rejim rozeti / master_surge kapıları."""
     passes = notification.get("passes")
@@ -892,19 +908,18 @@ def _entry_suite_gates(notification: dict, symbol: str) -> dict | None:
 
 
 async def _compute_entry_gates(notification: dict, symbol: str, settings: dict,
-                               open_trade: dict | None) -> dict | None:
+                               open_trade: dict | None, profitable_reentry: bool = False) -> dict | None:
     """Aşama 2 — dedup + akıllı-para / rejim / LLM / trap kapıları.
 
     Açık pozisyon varsa TP-güncelleme yoluna gidileceği için kalite kapıları
     BİLİNÇLİ atlanır — mevcut pozisyonu iyileştirmek riskli değildir.
     """
-    if open_trade is None:
+    if open_trade is not None:
+        return None
+    if not profitable_reentry:
         blocked = await _entry_dedup_gate(symbol, settings)
         if blocked is not None:
             return blocked
-    else:
-        return None
-
     blocked = _entry_flag_gates(notification, symbol)
     if blocked is not None:
         return blocked
@@ -914,7 +929,8 @@ async def _compute_entry_gates(notification: dict, symbol: str, settings: dict,
     return _entry_suite_gates(notification, symbol)
 
 
-async def _cooldown_gate(notification: dict, symbol: str, settings: dict) -> dict | None:
+async def _cooldown_gate(notification: dict, symbol: str, settings: dict,
+                         profitable_reentry: bool = False) -> dict | None:
     """Aşama 3a — sessiz saatler + stop-loss ve post-win cooldown kapıları."""
     try:
         from app.routers import monitoring as _monitoring_mod
@@ -957,6 +973,9 @@ async def _cooldown_gate(notification: dict, symbol: str, settings: dict) -> dic
                                 window_min=cluster_window_min, limit=cluster_max)
     except Exception as cluster_exc:
         logger.debug("auto_paper %s: küme freni kontrolü atlandı: %s", symbol, cluster_exc)
+
+    if profitable_reentry:
+        return None
 
     win_cooldown_min = float(settings.get("post_win_cooldown_minutes", getattr(config, "AUTO_PAPER_POST_WIN_COOLDOWN_MINUTES", 15.0)))
     win_cooldown_until = _post_win_cooldowns.get(symbol, 0.0)
@@ -1165,14 +1184,15 @@ async def _try_open_impl(notification: dict) -> dict | None:
 
         # Açık pozisyon tek okuma: dedup + TP-güncelleme kararı paylaşır
         open_trade = await database.get_open_auto_paper_trade(symbol)
+        profitable_reentry = open_trade is None and await profitable_super_scan_reentry(notification)
 
         # 2) Dedup + akıllı-para/rejim/LLM/trap kapıları
-        block = await _compute_entry_gates(notification, symbol, settings, open_trade)
+        block = await _compute_entry_gates(notification, symbol, settings, open_trade, profitable_reentry)
         if block is not None:
             return block
 
         # 3) Sessiz saat + cooldown kapıları
-        block = await _cooldown_gate(notification, symbol, settings)
+        block = await _cooldown_gate(notification, symbol, settings, profitable_reentry)
         if block is not None:
             return block
 

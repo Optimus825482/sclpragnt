@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import logging
+import math
 import time
 
 from app.config import config
@@ -56,10 +57,10 @@ def _envelope(item: dict) -> dict:
     target = item.get("target_pct")
     detected_at = item.get("detected_at")
     notification_key = f"super:{symbol}"
-    if detected_at:
-        # Aynı beş dakikalık sinyal yeniden işlenmez. Yeni sinyal, önceki
-        # pozisyonun kalıcı DB anahtarına takılmadan normal kapılara ulaşır.
-        notification_key = f"super:{symbol.replace('_', '')}:{int(detected_at // 300)}"
+    if isinstance(detected_at, (float, int)) and math.isfinite(detected_at) and detected_at > 0:
+        # Sinyal tekrar okunduğunda anahtarı sabittir. Yeni bir tespit,
+        # önceki pozisyon aynı beş dakikada kapanmış olsa bile ayrı anahtar alır.
+        notification_key = f"super:{symbol.replace('_', '')}:{int(detected_at * 1000)}"
     horizon = item.get("horizon_minutes") or 15
     sources = ", ".join(item.get("sources") or []) or "süper tarama"
     tags = ", ".join(item.get("tags") or []) or ""
@@ -95,6 +96,7 @@ def _envelope(item: dict) -> dict:
         "source": "super_scan",
         # Sinyal İzleme yalnız süper tarama işlemlerini sayar (LIKE 'super:%').
         "notification_key": notification_key,
+        "detected_at": detected_at,
         "sent_via_push": True,
         "super_scan": True,
         "atr_pct": item.get("atr_pct_15m"),
@@ -133,12 +135,17 @@ async def run_once() -> dict:
             blocked[item["paper_block_reason"]] += 1
             continue
         symbol = str(item.get("symbol") or "")
-        if await _recently_pushed(symbol, cooldown):
-            continue
         notif = _envelope(item)
         notif["scan_evidence"].update({"rank": rank, "minimum_rank_score": min_score, "top_n": top_n})
+        in_cooldown = await _recently_pushed(symbol, cooldown)
+        if in_cooldown and (
+            getattr(config, "AUTO_PAPER_ONLY_ON_PUSH", False)
+            or not await auto_paper.profitable_super_scan_reentry(notif)
+        ):
+            continue
+        send_push = push_enabled and not in_cooldown
         notif["sent_via_push"] = False
-        if not push_enabled:
+        if not send_push:
             # Açık pozisyonu olan sembol deneme hakkını tüketmesin; aksi halde
             # ilk TOP_N aday her turda takılıp alt sıradaki fırsatlar hiç
             # denenmez (2026-11-25 denetimi).
@@ -156,7 +163,7 @@ async def run_once() -> dict:
                 if rejection["reason"] == "auto_paper_disabled":
                     break
                 continue
-        if push_enabled:
+        if send_push:
             ok = False
             try:
                 ok = bool(await monitoring._send_push(notif))
@@ -173,13 +180,13 @@ async def run_once() -> dict:
             notif["sent_via_push"] = False
             notif["push_skipped_reason"] = "super_scan_push_disabled"
         attempted += 1
-        if push_enabled:
+        if send_push:
             await _mark_pushed(symbol)
         try:
             result = await auto_paper.try_open_from_notification(notif)
             if isinstance(result, dict) and result.get("status") == "opened":
                 opened += 1
-                if not push_enabled:
+                if not send_push:
                     await _mark_pushed(symbol)
             else:
                 blocked[(result or {}).get("reason") or "paper_not_opened"] += 1

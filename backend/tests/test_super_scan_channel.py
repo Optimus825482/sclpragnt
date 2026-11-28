@@ -230,12 +230,56 @@ def test_envelope_target_formatting():
     assert "hedef %3.0" in notif["message"]
 
 
-def test_signal_key_deduplicates_one_window_and_allows_next():
+def test_signal_key_deduplicates_one_detection_and_allows_new_detection():
     first = super_scan_notify._envelope({"symbol": "AAA_TRY", "detected_at": 600})
-    repeat = super_scan_notify._envelope({"symbol": "AAATRY", "detected_at": 899})
-    later = super_scan_notify._envelope({"symbol": "AAATRY", "detected_at": 900})
-    assert first["notification_key"] == repeat["notification_key"] == "super:AAATRY:2"
-    assert later["notification_key"] == "super:AAATRY:3"
+    repeat = super_scan_notify._envelope({"symbol": "AAATRY", "detected_at": 600})
+    later = super_scan_notify._envelope({"symbol": "AAATRY", "detected_at": 601})
+    assert first["notification_key"] == repeat["notification_key"] == "super:AAATRY:600000"
+    assert later["notification_key"] == "super:AAATRY:601000"
+
+
+@pytest.mark.parametrize("trade,detected_at,expected", [
+    ({"status": "closed", "pnl": 2, "exit_time": 100}, 105, True),
+    ({"status": "closed", "pnl": 2, "exit_time": 100}, 95, False),
+    ({"status": "closed", "pnl": 0, "exit_time": 100}, 105, False),
+    ({"status": "closed", "pnl": -1, "exit_time": 100}, 105, False),
+    ({"status": "open", "pnl": 2, "exit_time": None}, 105, False),
+])
+def test_profitable_reentry_requires_positive_closed_latest_trade(monkeypatch, trade, detected_at, expected):
+    monkeypatch.setattr(auto_paper.database, "get_latest_auto_paper_trade_outcome", AsyncMock(return_value=trade))
+    notice = {"source": "super_scan", "symbol": "MANTRATRY", "detected_at": detected_at}
+    assert asyncio.run(auto_paper.profitable_super_scan_reentry(notice)) is expected
+
+
+def test_new_signal_after_profit_reaches_paper_insert_despite_cooldowns(monkeypatch):
+    open_trade = AsyncMock(return_value={"status": "opened"})
+    rows = [{"symbol": "MANTRATRY", "score": 80, "super_score": 86, "detected_at": 105}]
+    monkeypatch.setattr(config, "SUPER_SCAN_PUSH_ENABLED", False)
+    monkeypatch.setattr(config, "AUTO_PAPER_ONLY_ON_PUSH", False)
+    monkeypatch.setattr(monitoring, "super_scan_for_paper", AsyncMock(return_value={"items": rows}))
+    monkeypatch.setattr(super_scan_notify, "_recently_pushed", AsyncMock(return_value=True))
+    monkeypatch.setattr(super_scan_notify, "_mark_pushed", AsyncMock())
+    monkeypatch.setattr(auto_paper.database, "get_latest_auto_paper_trade_outcome", AsyncMock(
+        return_value={"status": "closed", "exit_time": 100, "pnl": 3.5}
+    ))
+    monkeypatch.setattr(auto_paper.database, "get_open_auto_paper_trade", AsyncMock(return_value=None))
+    dedup = AsyncMock(return_value={"status": "blocked", "reason": "symbol_dedup"})
+    win = AsyncMock(return_value=100)
+    monkeypatch.setattr(auto_paper, "_entry_dedup_gate", dedup)
+    monkeypatch.setattr(auto_paper.database, "get_last_auto_paper_winning_trade_time", win)
+    monkeypatch.setattr(auto_paper.database, "get_last_auto_paper_stop_loss_time", AsyncMock(return_value=None))
+    monkeypatch.setattr(auto_paper.database, "count_auto_paper_opened_since", AsyncMock(return_value=0))
+    monkeypatch.setattr(monitoring, "quiet_hours_active", AsyncMock(return_value=False))
+    monkeypatch.setattr(auto_paper, "_entry_suite_gates", lambda *args: None)
+    monkeypatch.setattr(auto_paper.database, "get_recent_auto_paper_trade_by_notification_key", AsyncMock(return_value=None))
+    monkeypatch.setattr(auto_paper, "_resolve_entry_price", AsyncMock(return_value=(1.0, None)))
+    monkeypatch.setattr(auto_paper, "_max_open_gate", AsyncMock(return_value=None))
+    monkeypatch.setattr(auto_paper, "_sizing_gate", AsyncMock(return_value=(1000.0, 100.0, None)))
+    monkeypatch.setattr(auto_paper, "_open_new_trade", open_trade)
+    assert asyncio.run(super_scan_notify.run_once())["opened"] == 1
+    open_trade.assert_awaited_once()
+    dedup.assert_not_awaited()
+    win.assert_not_awaited()
 
 
 def test_run_once_reports_top_score():

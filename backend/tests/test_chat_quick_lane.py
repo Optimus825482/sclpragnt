@@ -39,13 +39,17 @@ LLM_CHAT_PY = pathlib.Path(llm_chat.__file__)
 
 
 class _FakeMarket:
-    """Yalnız `get_ticker` kullanan test double'ı (ağ/WS yok)."""
+    """Grafik sohbetinin piyasa önbelleği için test double'ı."""
 
     def __init__(self, ticker=None):
         self._ticker = ticker or {}
+        self.history = {}
 
     def get_ticker(self, symbol):
         return self._ticker
+
+    def get_ut_kline(self, symbol, tf):
+        return self.history
 
 
 class QuickLaneSymbolTests(unittest.TestCase):
@@ -201,6 +205,23 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         assert result["ok"] is False
         assert "bid_ask_ratio" not in result
 
+    async def test_levels_fall_back_to_fresh_closed_market_cache(self):
+        llm_chat.market = _FakeMarket()
+        llm_chat.market.history = {
+            "timestamps": [i * 300_000 for i in range(1, 21)],
+            "highs": [0.101] * 20, "lows": [0.098] * 20,
+            "closes": [0.0993] * 20, "volumes": [300] * 20,
+            "source": "binance_tr_public_ws",
+        }
+        self.candles.side_effect = TimeoutError
+        with patch.object(llm_chat.time, "time", return_value=6301):
+            levels = await llm_chat._quick_price_levels("ROBOTRY", None)
+        assert levels["source"] == "binance_tr_public_ws"
+        assert levels["support"] == 0.098
+        assert levels["resistance"] == 0.101
+        with patch.object(llm_chat.time, "time", return_value=7301):
+            assert (await llm_chat._quick_price_levels("ROBOTRY", None))["status"] == "unavailable"
+
     async def test_db_failure_does_not_break_context(self):
         """Öğrenilmiş hedef okunamazsa bağlam yine kurulur (hızlı şerit düşmesin)."""
         llm_chat.market = _FakeMarket({"symbol": "EGLDTRY", "last_price": 10.0})
@@ -273,6 +294,19 @@ class QuickLaneStreamBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(chunks[0].startswith("event: delta\ndata: "), repr(chunks[0]))
         self.assertIn('"merhaba"', chunks[0])
         self.assertTrue(chunks[0].endswith("\n\n"), "SSE olayı çift satır sonuyla bitmeli")
+
+    async def test_chart_tools_retry_missing_levels_and_oi_for_selected_symbol(self):
+        _, _, captured = await self._run({"chart_assistant": True})
+        names = {tool["function"]["name"] for tool in captured["tools"]}
+        assert {"get_chart_price_levels", "get_chart_open_interest"} <= names
+        execute = captured["tool_executor"]
+        with patch.object(llm_chat, "_quick_price_levels", AsyncMock(return_value={"status": "ok"})) as levels, \
+             patch("app.derivatives_service.chart_open_interest", AsyncMock(return_value={"status": "fresh"})) as oi:
+            assert await execute("get_chart_price_levels", {}) == {"status": "ok"}
+            assert await execute("get_chart_open_interest", {}) == {"status": "fresh"}
+            assert await execute("get_chart_open_interest", {}) == {"status": "fresh"}
+        levels.assert_awaited_once_with("EGLDTRY", None)
+        oi.assert_awaited_once_with("EGLDTRY", refresh=True)
 
     async def test_client_cannot_exceed_quick_lane_max_tokens(self):
         """DENETİM 3.3 #27: istemci `max_tokens` sunucu tavanını EZEMEZ."""
