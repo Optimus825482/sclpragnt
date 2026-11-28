@@ -19,6 +19,7 @@ Collector: `backend/scripts/cvd_confirm_collector.py` (research venv, pandas
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -37,6 +38,20 @@ CVD_WEAK_PCT = 1.0
 LIVE_TAKER_BUY = 55.0
 LIVE_TAKER_SELL = 45.0
 LIVE_VOLUME_HOT = 1.5  # 15m hacim / 60m taban
+# Performans (2026-11-28): monitor sayfası 5 sn'de bir yokluyor ve /api/alerts +
+# scan_confirmed_flow aynı dosyayı/kline'ları tekrar tekrar okuyordu.
+#  * `load_confirmed` dosyayı (mtime, size) değişene kadar BELLEKTE tutar.
+#  * Canlı kline yanıtı `LIVE_TTL_SEC` boyunca sembol başına önbelleklenir.
+#  * Geçersiz/zaman aşımına düşen sembol `BAD_SYMBOL_TTL_SEC` boyunca atlanır
+#    (temel katman 400 hatasında 4 kez yeniden denediği için 5 sembollü tarama
+#    15 sn'ye çıkıyordu).
+LIVE_TTL_SEC = float(os.environ.get("CVD_LIVE_TTL_SEC", "5"))
+BAD_SYMBOL_TTL_SEC = float(os.environ.get("CVD_BAD_SYMBOL_TTL_SEC", "600"))
+SCAN_CONCURRENCY = max(1, int(os.environ.get("CVD_SCAN_CONCURRENCY", "8")))
+
+_STORE_CACHE: dict[str, tuple[tuple, dict]] = {}
+_LIVE_CACHE: dict[str, tuple[float, dict]] = {}
+_BAD_SYMBOLS: dict[str, float] = {}
 
 
 def confirmed_path() -> Path:
@@ -45,11 +60,23 @@ def confirmed_path() -> Path:
 
 
 def load_confirmed(path: Path | None = None) -> dict[str, list[dict]]:
-    """Sembol -> saat kayıtları (eskiden yeniye). Aynı saat için son kayıt geçerli."""
+    """Sembol -> saat kayıtları (eskiden yeniye). Aynı saat için son kayıt geçerli.
+
+    Dosya (mtime, size) değişmedikçe ayrıştırma TEKRARLANMAZ: monitor sayfası
+    5 sn'de bir okuduğu için bu, istek başına milisaniyeleri kaldırır.
+    Dönen sözlük çağıran tarafından DEĞİŞTİRİLMEMELİDİR (paylaşılan önbellek).
+    """
     target = path or confirmed_path()
-    out: dict[str, dict[str, dict]] = {}
-    if not target.exists():
+    try:
+        stat = target.stat()
+    except OSError:
         return {}
+    signature = (str(target), int(stat.st_mtime_ns), int(stat.st_size))
+    cached = _STORE_CACHE.get(str(target))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+
+    out: dict[str, dict[str, dict]] = {}
     try:
         with target.open(encoding="utf-8") as fh:
             for line in fh:
@@ -67,7 +94,12 @@ def load_confirmed(path: Path | None = None) -> dict[str, list[dict]]:
     except OSError as exc:  # dosya okunamazsa sessizce boş dönmek yerine logla
         logger.warning("confirmed_flow: %s okunamadı: %s", target, exc)
         return {}
-    return {sym: [rows[h] for h in sorted(rows)] for sym, rows in out.items()}
+    parsed = {sym: [rows[h] for h in sorted(rows)] for sym, rows in out.items()}
+    # Sınırsız büyümeyi engelle: en fazla 4 dosya yolu (pratikte tek yol var).
+    if len(_STORE_CACHE) > 4:
+        _STORE_CACHE.clear()
+    _STORE_CACHE[str(target)] = (signature, parsed)
+    return parsed
 
 
 def _cvd_pct(row: dict) -> float:
@@ -199,17 +231,46 @@ def _verdict(score_conf: int, reasons: list[str], live: dict, hours: list[dict])
     return "NOTR"
 
 
+async def _live_for(symbol: str) -> dict:
+    """Canlı kline okuması — TTL'li önbellek + geçersiz sembol negatif önbelleği.
+
+    Monitor sayfası 5 sn'de bir yokluyor; aynı sembol için kline'ı her seferinde
+    yeniden çekmek gereksiz REST yükü (ve olası 429) üretiyordu.
+    """
+    now = time.time()
+    cached = _LIVE_CACHE.get(symbol)
+    if cached is not None and now - cached[0] < LIVE_TTL_SEC:
+        return cached[1]
+    bad_until = _BAD_SYMBOLS.get(symbol)
+    if bad_until is not None and now < bad_until:
+        return {}
+    try:
+        rows = await klines(symbol, "1m", limit=60)
+        live = live_read(rows)
+    except Exception as exc:  # noqa: BLE001 — canlı taraf düşerse kesin taraf yine dönsün
+        _BAD_SYMBOLS[symbol] = now + BAD_SYMBOL_TTL_SEC
+        logger.warning("confirmed_flow: %s canlı kline hatası: %s", symbol, exc)
+        return {}
+    _BAD_SYMBOLS.pop(symbol, None)
+    if len(_LIVE_CACHE) > 500:
+        _LIVE_CACHE.clear()
+    _LIVE_CACHE[symbol] = (now, live)
+    return live
+
+
+def reset_for_tests() -> None:
+    """Bellek önbelleklerini temizle (testler arası kirlilik olmasın)."""
+    _STORE_CACHE.clear()
+    _LIVE_CACHE.clear()
+    _BAD_SYMBOLS.clear()
+
+
 async def confirm_flow_snapshot(symbol: str, store: dict[str, list[dict]] | None = None) -> dict:
     """Tek sembol için canlı + kesin birleşik okuma."""
     symbol = symbol.upper()
     data = store if store is not None else load_confirmed()
     hours = data.get(symbol, [])
-    try:
-        rows = await klines(symbol, "1m", limit=60)
-        live = live_read(rows)
-    except Exception as exc:  # noqa: BLE001 — canlı taraf düşerse kesin taraf yine dönsün
-        logger.warning("confirmed_flow: %s canlı kline hatası: %s", symbol, exc)
-        live = {}
+    live = dict(await _live_for(symbol))  # paylaşılan önbellek kopyalanır
     score_conf, reasons = score_confirmed(hours)
     verdict = _verdict(score_conf, reasons, live, hours)
     if hours and live.get("price"):
@@ -250,11 +311,28 @@ async def confirm_flow_snapshot(symbol: str, store: dict[str, list[dict]] | None
 
 
 async def scan_confirmed_flow(store: dict[str, list[dict]] | None = None) -> dict:
-    """İzlenen tüm semboller için özet liste (verdict'e göre sıralı)."""
+    """İzlenen tüm semboller için özet liste (verdict'e göre sıralı).
+
+    Semboller PARALEL okunur (`SCAN_CONCURRENCY`, varsayılan 8): sıralı okuma
+    her sembol için ayrı REST turu beklediğinden 5 sembolde ~15 sn sürüyordu.
+    """
     data = store if store is not None else load_confirmed()
+    symbols = sorted(data)
+    semaphore = asyncio.Semaphore(SCAN_CONCURRENCY)
+
+    async def one(sym: str) -> dict | None:
+        async with semaphore:
+            try:
+                return await confirm_flow_snapshot(sym, store=data)
+            except Exception as exc:  # noqa: BLE001 — tek sembol taramayı düşürmesin
+                logger.warning("confirmed_flow: %s okunamadı: %s", sym, exc)
+                return None
+
+    snaps = await asyncio.gather(*(one(sym) for sym in symbols))
     rows = []
-    for sym in sorted(data):
-        snap = await confirm_flow_snapshot(sym, store=data)
+    for sym, snap in zip(symbols, snaps):
+        if snap is None:
+            continue
         rows.append(
             {
                 "symbol": sym,

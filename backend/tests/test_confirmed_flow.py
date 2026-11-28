@@ -126,3 +126,71 @@ class LiveReadTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CacheTest(unittest.TestCase):
+    """2026-11-28 performans: dosya ve canlı veri önbellekleri."""
+
+    def test_load_confirmed_serves_from_cache_until_file_changes(self):
+        import os as _os
+        import tempfile
+
+        fd, name = tempfile.mkstemp(suffix=".jsonl")
+        _os.close(fd)  # Windows: açık handle dosya silmeyi engeller
+        path = pathlib.Path(name)
+        cf.reset_for_tests()
+        try:
+            path.write_text(
+                json.dumps({"symbol": "AAA", "hour": "2026-11-28T06:00:00", "cvd_pct_of_volume": 1.0}) + "\n",
+                encoding="utf-8",
+            )
+            first = cf.load_confirmed(path)
+            second = cf.load_confirmed(path)
+            self.assertIs(first, second)  # ayrıştırma tekrarlanmadı
+            path.write_text(
+                json.dumps({"symbol": "AAA", "hour": "2026-11-28T06:00:00", "cvd_pct_of_volume": 1.0})
+                + "\n"
+                + json.dumps({"symbol": "AAA", "hour": "2026-11-28T07:00:00", "cvd_pct_of_volume": -5.0})
+                + "\n",
+                encoding="utf-8",
+            )
+            third = cf.load_confirmed(path)
+            self.assertIsNot(first, third)
+            self.assertEqual(len(third["AAA"]), 2)
+        finally:
+            path.unlink(missing_ok=True)
+            cf.reset_for_tests()
+
+    def test_live_reads_are_cached_and_bad_symbols_are_skipped(self):
+        import asyncio
+
+        calls = {"ok": 0, "bad": 0}
+        rows = [[i, "1.0", "1.0", "1.0", "1.0", "100", 0, "100", 5, "60", "60", "0"] for i in range(30)]
+
+        async def fake_klines(symbol, interval, limit=60):
+            if symbol == "BADTRY":
+                calls["bad"] += 1
+                raise RuntimeError("Invalid symbol")
+            calls["ok"] += 1
+            return rows
+
+        original = cf.klines
+        cf.klines = fake_klines
+        cf.reset_for_tests()
+        try:
+            async def scenario():
+                first = await cf._live_for("GOODTRY")
+                second = await cf._live_for("GOODTRY")
+                bad_first = await cf._live_for("BADTRY")
+                bad_second = await cf._live_for("BADTRY")
+                return first, second, bad_first, bad_second
+
+            first, second, bad_first, bad_second = asyncio.run(scenario())
+            self.assertEqual(first["price"], second["price"])
+            self.assertEqual(calls["ok"], 1)  # TTL içinde tek çağrı
+            self.assertEqual(bad_first, {})
+            self.assertEqual(bad_second, {})
+            self.assertEqual(calls["bad"], 1)  # negatif önbellek: tekrar denenmedi
+        finally:
+            cf.klines = original
+            cf.reset_for_tests()
