@@ -5579,6 +5579,14 @@ _CHART_EVIDENCE_TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_continuation_outlook",
+            "description": "Yükseliş devamı görünümü: trend puanı (1h/4h EMA+MACD), ilk engel fiyatı ve yüzdesi, sembolün son 7 gündeki taban oranı ve geçersizlik seviyesi. 'Yükselir mi, nereye kadar?' sorusunda kullan.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 _CHART_EVIDENCE_NAMES = {tool["function"]["name"] for tool in _CHART_EVIDENCE_TOOLS}
 
@@ -5684,6 +5692,10 @@ async def _quick_price_levels(symbol: str, reference: float | None) -> dict:
 async def _execute_chart_evidence(name: str, symbol: str, *, refresh=False) -> dict:
     if not re.fullmatch(r"[A-Z0-9]{4,20}", symbol):
         return {"status": "unavailable"}
+    if name == "get_continuation_outlook":
+        from app.continuation_outlook import build as build_continuation_outlook
+
+        return await build_continuation_outlook(symbol)
     if name == "get_chart_price_levels":
         ticker = market.get_ticker(symbol) or {}
         age = _quick_price_age(ticker)
@@ -5806,10 +5818,15 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
     )
     from app.derivatives_service import chart_open_interest
 
-    levels, book, futures_oi = await asyncio.gather(
+    from app.continuation_outlook import build as build_continuation_outlook
+
+    # 2026-11-28: "yükselir mi, nereye kadar?" sorusuna hazır sayı vermek için
+    # trend/momentum + ilk engel + sembolün kendi taban oranı birlikte hesaplanır.
+    levels, book, futures_oi, outlook = await asyncio.gather(
         _quick_price_levels(sym, reference),
         _get_orderbook_pressure_tool({"symbol": sym}),
         chart_open_interest(sym),
+        build_continuation_outlook(sym),
     )
     if (
         not price
@@ -5861,6 +5878,12 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
                 " verisi hiç üretilmez' de; `no_oi_history` ise 'sözleşme var ama OI geçmişi yayınlanmıyor' de."
                 " Bu durumlarda 'veri eksik' demek yanlış: veri kaynağı bu sembol için hiç yok."
                 " orderbook_pressure.ok false ise 'tahta anlık alınamadı' de ve fiyat/akış yorumunu tahta iddiası olmadan yap."
+                " YÜKSELİŞ SORUSU: continuation_outlook.status ok ise verdict/sentence alanlarını KULLAN ve sayıları aynen aktar"
+                " (trend puanı, ilk engel fiyatı + yüzdesi, taban oranı %, geçersizlik fiyatı)."
+                " 'DEVAM_EDER' ise 'yükseliş devam edebilir, ilk engel X (+%Y), son 7 günde bu mesafe 24 saatte %Z görülmüş' de;"
+                " 'DONUS_RISKI' ise 'istek var ama RSI/hacim yorulmuş, dönüş riski yüksek' de;"
+                " 'ZAYIF' ise 'yükselme isteği zayıf' de. Kendi uydurduğun hedef/olasılık EKLEME."
+                " continuation_outlook.status ok değilse yalnız gerekçesini söyle ve hedef verme."
                 if (body or {}).get("chart_assistant")
                 else ""
             )
@@ -5869,6 +5892,7 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None, user_role
         "price_levels": levels,
         "orderbook_pressure": book if book["ok"] else {"ok": False},
         "futures_open_interest": futures_oi,
+        "continuation_outlook": outlook,
         "price_status": "fresh" if reference else ("stale_or_unverified" if price else "unavailable"),
     }
     if price:
