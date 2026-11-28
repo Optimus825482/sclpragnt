@@ -108,3 +108,15 @@ def test_threshold_boundary(monkeypatch, min_atr, should_pass, atr):
              "source": "velocity", "atr_pct": atr}
     _s, block, _sym, _rule = asyncio.run(ap._entry_context(notif))
     assert (block is None) is should_pass, f"atr={atr} min={min_atr} beklenen={should_pass}"
+
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _channel_unrestricted(monkeypatch):
+    """2026-11-25 TEK KANAL kapısı kapalı: bu dosya yalnız kapı
+    davranışını sınar; kanal kısıtı ayrı testlerde (test_super_scan_channel) korunur."""
+    from app.config import config as _config
+
+    monkeypatch.setattr(_config, "SUPER_SCAN_ONLY", False, raising=False)

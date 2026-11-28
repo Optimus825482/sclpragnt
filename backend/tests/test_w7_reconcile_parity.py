@@ -59,6 +59,11 @@ class _ReconcileConn:
         self.statements.append(s)
         if "PORTFOLIO_RESET_AT" in s:
             return _Cursor([(self.cutoff,)] if self.cutoff else [])
+        # 2026-11-28: `_combined_realized_pnl_sync` tek sorguda iki defteri toplar
+        # (COALESCE((SELECT SUM(pnl) FROM trades...)) + ...). Sahte bağlantı bunu
+        # alt dize eşlemesiyle tanımıyordu → realized 0 dönüyordu.
+        if "SUM(PNL) FROM TRADES" in s and "SUM(PNL) FROM AUTO_PAPER_TRADES" in s:
+            return _Cursor([(self.main_realized + self.auto_realized,)])
         if "COALESCE(SUM(PNL),0) FROM AUTO_PAPER_TRADES" in s:
             return _Cursor([(self.auto_realized,)])
         if "COALESCE(SUM(ORDER_VALUE_TRY),0) FROM AUTO_PAPER_TRADES" in s:

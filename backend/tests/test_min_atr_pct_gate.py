@@ -119,10 +119,10 @@ def test_rule_signals_exempt(monkeypatch):
         s["min_atr_pct"] = 5.0
         return s
     monkeypatch.setattr(ap, "get_auto_paper_settings", _settings)
+    # Kural sinyalinin kendi açma anahtarı varsayılan KAPALI olabilir
+    # (ör. N7_AUTO_PAPER_ENABLED); muafiyet testi için anahtar açılır.
     src = next(iter(ap._RULE_SIGNAL_SOURCES))
-    for s in ap._RULE_SIGNAL_SOURCES:
-        monkeypatch.setitem(getattr(ap.config, ap._RULE_SIGNAL_SWITCHES[s], None) or {}, s, True) \
-            if False else None
+    monkeypatch.setattr(ap.config, ap._RULE_SIGNAL_SWITCHES[src], True, raising=False)
     _s, block, _sym, rule = _run(ap._entry_context(_notif(source=src, atr_pct=0.1)))
     assert rule is True
     assert block is None, f"kural sinyali ATR yüzünden engellendi: {block}"
@@ -166,3 +166,15 @@ def test_block_reason_is_human_readable():
     src = _pl.Path(ap.__file__).read_text(encoding="utf-8")
     assert '"atr_below_min":' in src, "reason_tr_map'te atr_below_min anahtarı yok"
     assert "Volatilite tabanının altında" in src, "okunur engel metni yok"
+
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _channel_unrestricted(monkeypatch):
+    """2026-11-25 TEK KANAL kapısı kapalı: bu dosya yalnız kapı
+    davranışını sınar; kanal kısıtı ayrı testlerde (test_super_scan_channel) korunur."""
+    from app.config import config as _config
+
+    monkeypatch.setattr(_config, "SUPER_SCAN_ONLY", False, raising=False)

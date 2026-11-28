@@ -396,6 +396,12 @@ class HeartbeatTests(unittest.TestCase):
 
     def setUp(self):
         from app.config import config
+        # 2026-11-25 TEK KANAL kapısı: `_notify` yalnız `super_scan` adaylarını
+        # geçirir. Bu testler NABIZ davranışını sınıyor; kanal kısıtı için
+        # modülün kendi test anahtarı kullanılır (üretimde False kalır).
+        p_channel = patch.object(monitoring, "NOTIFY_SOURCES_UNRESTRICTED", True)
+        p_channel.start()
+        self.addCleanup(p_channel.stop)
         for name, val in (("RADAR_NOTIFY_CONFIRM_RULE_ENABLED", True),
                           ("RADAR_NOTIFY_SINGLE_SOURCE_MIN_SCORE", 0.0),
                           ("RADAR_NOTIFY_HEARTBEAT_MINUTES", 15),

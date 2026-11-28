@@ -86,3 +86,15 @@ def test_opposite_signs_documented():
     assert "−0,592" in doc or "-0.592" in doc, "sabit model sonucu yok"
     assert "+0,421" in doc or "+0.421" in doc, "trailing sonucu yok"
     assert "BAĞIMLI" in doc or "BAGIMLI" in doc
+
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _channel_unrestricted(monkeypatch):
+    """2026-11-25 TEK KANAL kapısı kapalı: bu dosya yalnız kapı
+    davranışını sınar; kanal kısıtı ayrı testlerde (test_super_scan_channel) korunur."""
+    from app.config import config as _config
+
+    monkeypatch.setattr(_config, "SUPER_SCAN_ONLY", False, raising=False)

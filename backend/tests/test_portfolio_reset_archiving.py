@@ -310,6 +310,9 @@ class _ReconcileRoutedConn:
             return _Cursor(rowcount=0)
         if "portfolio_reset_at" in s:
             return _Cursor([])  # cutoff yok
+        if "SUM(pnl) FROM trades" in s and "SUM(pnl) FROM auto_paper_trades" in s:
+            # 2026-11-28: birleşik realized sorgusu (iki defter tek SELECT'te)
+            return _Cursor([(self.realized,)])
         if "SUM(pnl),0) FROM trades" in s:
             return _Cursor([(self.realized,)])
         if "SUM(pnl),0) FROM auto_paper_trades" in s:

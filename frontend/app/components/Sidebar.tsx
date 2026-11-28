@@ -25,6 +25,7 @@ const MENU_ITEMS = [
     { href: "/chat", label: "Chat", icon: "💬", desc: "Uzman trader LLM asistanı" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu", adminOnly: true },
     { href: "/admin", label: "Yönetim", icon: "🛠️", desc: "Veritabanı, kayıtlar, MACD monitör", requiresStaff: true },
+    { href: "/signal-insights", label: "Sinyal İzleme", icon: "🎯", desc: "Ölçülmüş kanıt, canlı sayaçlar ve işlem sonuçları" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Sinyal ve işlem raporları" },
 ];
 const formatNotificationDate = (value: unknown) => {

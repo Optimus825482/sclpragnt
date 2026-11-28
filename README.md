@@ -26,7 +26,7 @@ main.py (app kurulumu + lifecycle + WS) ──► WebSocket /ws üzerinden front
 
 ### Modüler API yapısı
 
-Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **25** modül dosyası vardır ve bunların **22**'si `APIRouter` tanımlar ve `main.py` içinde **23** adet `include_router` kaydı yapılır. `ai_trading_suite_routes.py` iki router tanımlar ve iki kez kaydedilir. Tablo `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır. `runtime.py` arka plan döngülerini ve yardımcıları, `global_radar.py` Binance Global tarama döngüsünü, `llm_position_tools.py` LLM araç şemalarını içerir.
+Eski monolitik `app/main.py` FastAPI `APIRouter` modüllerine bölünmüştür. `app/routers/` altında **26** modül dosyası vardır ve bunların **23**'si `APIRouter` tanımlar ve `main.py` içinde **24** adet `include_router` kaydı yapılır. `ai_trading_suite_routes.py` iki router tanımlar ve iki kez kaydedilir. Tablo `backend/tests/test_readme_router_table.py` ile CI'da doğrulanır. `runtime.py` arka plan döngülerini ve yardımcıları, `global_radar.py` Binance Global tarama döngüsünü, `llm_position_tools.py` LLM araç şemalarını içerir.
 
 | Modül | Sorumluluk |
 |---|---|
@@ -51,6 +51,7 @@ Süper Tarama'dan açılan ve `short_squeeze` ailesi bulunan paper işlemlerinin
 | `app/routers/_diag.py` | Auth'suz SALT-OKUNUR teşhis ucu (`/_diag/paper`): token zorunlu, yalnız toplulaştırılmış paper ölçümü (2026-11-10) |
 | `app/routers/binance_trade.py` | Kullanıcı Binance TR işlemleri: Risk Merkezi ayarları, işlem planı (RR önerisi), idempotent pozisyon açma + OCO koruması, anahtar silme |
 | `app/routers/global_radar.py` | Binance Global (USDT) spot piyasasını TR ile aynı velocity dedektöründen tarayan görünmez erken-tespit döngüsü (`APIRouter` yok; `main.py` döngüyü başlatır) |
+| `app/routers/confirmed_flow.py` | CVD onay katmanı: canlı tape (Binance TR 1m) + kesinleşmiş saatlik taker akışını birleştirip uyum/uyumsuzluk hükmü döndürür (`GET /api/confirmed-flow`, `/{symbol}`, `/{symbol}/hours`); veri `backend/work/cvd_confirmed.jsonl` (collector: `backend/scripts/cvd_confirm_collector.py`) |
 | `app/routers/snapback.py` | Snapback Dip Avcısı (`/api/signals/snapback`) ve makro rejim kalkanı (`/api/signals/macro-regime`) |
 | `app/routers/user_prefs.py` | Kullanıcı başına bildirim tercihleri (uygulama-içi, ses, WhatsApp) ve maskeli WhatsApp telefon numarası |
 | `app/routers/journal.py` | Kullanıcıya özel işlem günlüğü (scalping disiplin notları, strateji etiketi); salt-not, emir/pozisyon değiştirmez |

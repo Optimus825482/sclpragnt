@@ -43,7 +43,7 @@ class MiniTickerCacheTests(unittest.TestCase):
         })
         self.assertEqual(market.mini_tickers["BTCTRY"], {
             "last_price": 100.0, "quote_volume": 1000.0, "timestamp": 5_000,
-            "source": "ws:miniTicker@arr"})
+            "source": "ws:miniTicker@arr", "exchange_event_time_ms": 5_000})
         self.assertEqual(market.mini_tickers["ETHTRY"]["last_price"], 50.5)
         self.assertNotIn("BADTRY", market.mini_tickers)
         # 2026-11-10 (davranış değişikliği): izlenmeyen sembol `tickers`a hâlâ

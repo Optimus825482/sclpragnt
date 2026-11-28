@@ -989,7 +989,7 @@ def _combined_realized_pnl_sync(conn, cutoff: float) -> float:
                      WHERE status = 'closed' AND (? = 0 OR exit_time > ?)), 0)""",
         (cutoff, cutoff, cutoff, cutoff),
     ).fetchone()
-    return float(row[0] or 0)
+    return float(row[0] or 0) if row is not None else 0.0
 
 
 def _portfolio_reconcile_figures(conn, cutoff: float) -> _ReconcileFigures:
