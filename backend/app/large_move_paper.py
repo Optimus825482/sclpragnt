@@ -538,6 +538,176 @@ async def save_marks(updates):
         await database._run_db(write)
 
 
+# 2026-11-28: Bildirim sonrası TEPE takibi.
+#   * `peak_pct` = bildirim (watch) anından itibaren görülen en yüksek fiyatın
+#     watch_price'a göre yüzdesi. Monitor tablosunda "bildirimden sonra tepe"
+#     olarak gösterilir.
+#   * Tepe oluşurken eşik geçilirse (3/5/8/12/20) DÖNÜŞ BEKLEMEDEN bildirim
+#     gider; aynı eşik bir daha gönderilmez (peak_notified_pct).
+PEAK_MILESTONES = (3.0, 5.0, 8.0, 12.0, 20.0)
+PEAK_TRACK_HOURS = 6
+PEAK_CHECK_SEC = 20.0
+
+
+def next_peak_milestone(previous: float | None, pct: float) -> float | None:
+    """Yeni geçilen en yüksek tepe eşiği (yoksa None). Saf fonksiyon."""
+    if pct is None:
+        return None
+    crossed = [m for m in PEAK_MILESTONES if pct >= m and (previous is None or m > previous)]
+    return crossed[-1] if crossed else None
+
+
+def peak_notification(
+    symbol: str, seed_ms: int, peak_price: float, peak_pct: float, milestone: float, watch_price: float
+) -> dict:
+    return {
+        "id": f"large-move-peak-{symbol}-{seed_ms}-{int(milestone)}",
+        "kind": "large_move_peak",
+        "symbol": symbol,
+        "message": (
+            f"Yeni tepe: bildirimden sonra +%{peak_pct:.1f} ({peak_price:.8g} TRY, bildirim fiyatı {watch_price:.8g})."
+        ),
+        "price": peak_price,
+        "peak_pct": round(peak_pct, 2),
+        "milestone_pct": milestone,
+        "triggered_at": time.time(),
+    }
+
+
+async def update_peaks(prices: dict, now: float | None = None) -> list[dict]:
+    """İzlenen satırların tepesini günceller; yeni eşik geçildiyse olay döner."""
+    stamp = float(now if now is not None else time.time())
+    since_ms = int((stamp - PEAK_TRACK_HOURS * 3600) * 1000)
+
+    def write(conn):
+        rows = conn.execute(
+            """SELECT symbol, seed_ms, watch_ms, watch_price, peak_price, peak_pct, peak_notified_pct
+               FROM large_move_early_watch WHERE watch_ms >= ?""",
+            (since_ms,),
+        ).fetchall()
+        events = []
+        for row in rows:
+            price = prices.get(row["symbol"])
+            if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+                continue
+            watch_price = float(row["watch_price"] or 0)
+            if watch_price <= 0:
+                continue
+            peak = max(float(price), float(row["peak_price"] or 0))
+            pct = (peak / watch_price - 1) * 100
+            if (
+                row["peak_price"] is None
+                or peak > float(row["peak_price"])
+                or pct > float(row["peak_pct"] or (pct - 1))
+            ):
+                conn.execute(
+                    """UPDATE large_move_early_watch SET peak_price = ?, peak_pct = ?, peak_at = ?
+                       WHERE symbol = ? AND seed_ms = ?""",
+                    (peak, pct, stamp, row["symbol"], row["seed_ms"]),
+                )
+            milestone = next_peak_milestone(row["peak_notified_pct"], pct)
+            if milestone is None:
+                continue
+            conn.execute(
+                """UPDATE large_move_early_watch SET peak_notified_pct = ?
+                   WHERE symbol = ? AND seed_ms = ?""",
+                (milestone, row["symbol"], row["seed_ms"]),
+            )
+            events.append(peak_notification(row["symbol"], row["seed_ms"], peak, pct, milestone, watch_price))
+        return events
+
+    return await database._run_db(write)
+
+
+async def refresh_peaks_and_notify(market) -> list[dict]:
+    """Fiyatları taze ticker'dan toplayıp tepe güncellemesi + bildirim yapar."""
+
+    def watched(conn):
+        return [
+            dict(r)
+            for r in conn.execute(
+                """SELECT symbol FROM large_move_early_watch WHERE watch_ms >= ? GROUP BY symbol""",
+                (int((time.time() - PEAK_TRACK_HOURS * 3600) * 1000),),
+            ).fetchall()
+        ]
+
+    symbols = [row["symbol"] for row in await database._run_db(watched)]
+    prices: dict[str, float] = {}
+    for symbol in symbols:
+        ticker = market.get_ticker(symbol) or {}
+        price = ticker.get("last_price")
+        if (
+            isinstance(price, (int, float))
+            and math.isfinite(price)
+            and price > 0
+            and market.ticker_freshness(symbol, max_age_sec=90)["fresh"]
+        ):
+            prices[symbol] = float(price)
+    if not prices:
+        return []
+    events = await update_peaks(prices)
+    for event in events:
+        try:
+            await alerting.deliver_alert_push(
+                event["message"],
+                title=f"{event['symbol']} yeni tepe (+%{event['peak_pct']:.1f})",
+                url="/monitor",
+                tag=event["id"],
+                extra={
+                    "symbol": event["symbol"],
+                    "source": "large_move_peak",
+                    "peak_pct": event["peak_pct"],
+                    "milestone_pct": event["milestone_pct"],
+                },
+            )
+        except Exception:
+            logger.exception("Large-move peak push failed for %s", event["symbol"])
+        await ws_manager.broadcast({"type": "large_move_alert", "data": event})
+    return events
+
+
+# 2026-11-28: tahta (book) alınamadığında pozisyon SONSUZA KADAR "open" kalıyordu.
+# mark_exit yalnız yeterli bid derinliğiyle fiyat üretir; derinlik hiç gelmezse
+# `save_marks` boş döner ve satır kapanmaz -> Monitor "Paper açık" der ama
+# yönetilen bir pozisyon yoktur. Aşağıdaki fonksiyon vadesi geçmiş ve 5 dakikadır
+# kapatılamayan satırları son bilinen mark (yoksa giriş) fiyatıyla kapatır.
+FORCE_CLOSE_GRACE_SEC = 300.0
+
+
+async def force_close_overdue(now: float | None = None, grace_sec: float = FORCE_CLOSE_GRACE_SEC) -> int:
+    """Vadesi geçmiş ama tahta yüzünden kapatılamamış açık satırları kapatır."""
+    stamp = float(now if now is not None else time.time())
+
+    def write(conn):
+        rows = conn.execute(
+            """SELECT symbol, seed_ms, entry_price, entry_cost, fee_rate, quantity, mark_price
+               FROM large_move_paper
+               WHERE status = 'open' AND exit_due_at IS NOT NULL AND exit_due_at <= ?""",
+            (stamp - grace_sec,),
+        ).fetchall()
+        closed = 0
+        for row in rows:
+            price = row["mark_price"] or row["entry_price"]
+            cost = row["entry_cost"] or 0.0
+            fee = row["fee_rate"] or FEE
+            quantity = row["quantity"] or 0.0
+            if not price or price <= 0 or not cost:
+                continue
+            net = quantity * price * (1 - fee) - cost if quantity else -cost * fee
+            conn.execute(
+                """UPDATE large_move_paper
+                   SET status = 'closed', closed_at = ?, exit_price = ?, net_pnl_try = ?,
+                       net_pnl_pct = ?, mark_price = ?, mark_net_pct = ?,
+                       reason = COALESCE(reason, 'time_nobook')
+                   WHERE symbol = ? AND seed_ms = ? AND status = 'open'""",
+                (stamp, price, net, 100 * net / cost, price, 100 * net / cost, row["symbol"], row["seed_ms"]),
+            )
+            closed += 1
+        return closed
+
+    return await database._run_db(write)
+
+
 def followup_path(rows, start_ms, end_ms, base_price=None):
     """Summarize consecutive complete minutes and a late threshold crossing if applicable."""
     candles = {}
@@ -663,6 +833,20 @@ def derive_monitor_metrics(row: dict, now_ms: int) -> dict:
         start = row.get("early_watch_ms") or seed
         out["age_min"] = round(max(0.0, (now_ms - start) / MINUTE), 1)
         out["remaining_min"] = round(max(0.0, (seed + WINDOW - now_ms) / MINUTE), 1)
+    # Bildirimden sonra görülen tepe ve tepeden geri çekilme (2026-11-28).
+    peak_price = row.get("peak_price")
+    out["peak_pct_from_watch"] = round(float(row["peak_pct"]), 2) if row.get("peak_pct") is not None else None
+    out["from_peak_pct"] = (
+        round((price / float(peak_price) - 1) * 100, 2)
+        if isinstance(price, (int, float)) and price > 0 and peak_price
+        else None
+    )
+    # Paper satırlarında sinyal sonrası en yüksek fiyat da raporlanır.
+    signal_price = row.get("signal_price")
+    followup_high = row.get("followup_high")
+    out["peak_pct_from_signal"] = (
+        round((float(followup_high) / float(signal_price) - 1) * 100, 2) if followup_high and signal_price else None
+    )
     return out
 
 
@@ -692,6 +876,7 @@ async def monitor_rows(market):
                )
                SELECT recent.symbol, recent.seed_ms, COALESCE(p.base_price, e.base_price) AS base_price,
                       e.watch_ms AS early_watch_ms, e.watch_price AS early_watch_price,
+                      e.peak_price, e.peak_pct, e.peak_at,
                       p.watch_ms, p.signal_ms, p.signal_price, p.entry_price, p.exit_price,
                       p.closed_at, p.net_pnl_pct, p.mark_net_pct,
                       recent.seed_ms + ? AS expires_at_ms,
@@ -912,11 +1097,18 @@ async def run(market):
                 return trade, price, net, pct, now
 
             async def manage():
+                last_sweep = 0.0
                 while True:
                     try:
                         trades = await open_trades()
                         marks = await asyncio.gather(*(update_trade(t) for t in trades))
                         await save_marks([m for m in marks if m is not None])
+                        # 30 sn'de bir: tahta/derinlik yüzünden kapanamayan satırları zorla kapat.
+                        if time.time() - last_sweep >= 30.0:
+                            last_sweep = time.time()
+                            forced = await force_close_overdue()
+                            if forced:
+                                logger.info("Large-move paper: %d satır tahta yokluğunda kapatıldı", forced)
                     except Exception:
                         logger.exception("Large-move paper position management failed")
                     await asyncio.sleep(DELAY)
@@ -945,6 +1137,16 @@ async def run(market):
                 tasks.create_task(process_entries())
             tasks.create_task(manage())
             tasks.create_task(track_followups())
+
+            async def track_peaks():
+                while True:
+                    try:
+                        await refresh_peaks_and_notify(market)
+                    except Exception:
+                        logger.exception("Large-move peak tracking failed")
+                    await asyncio.sleep(PEAK_CHECK_SEC)
+
+            tasks.create_task(track_peaks())
             tasks.create_task(scan_radar())
     finally:
         market.remove_bar_listener(on_bar)

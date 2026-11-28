@@ -237,7 +237,10 @@ export default function RadarAlertModal() {
   const meta = KIND_META[kind];
   const isLargeMoveWatch = item.kind === "large_move_watch";
   const isLargeMoveEarly = item.kind === "large_move_early";
-  const largeMoveEyebrow = isLargeMoveEarly
+  const isLargeMovePeak = item.kind === "large_move_peak";
+  const largeMoveEyebrow = isLargeMovePeak
+    ? "BÜYÜK HAREKET · YENİ TEPE"
+    : isLargeMoveEarly
     ? "BÜYÜK HAREKET · ERKEN İZLEME (+%5)"
     : isLargeMoveWatch
       ? "BÜYÜK HAREKET · İZLEMEYE ALINDI"

@@ -245,10 +245,11 @@ export default function Sidebar() {
                             {notifications.map((item, index) => {
                                 const isLargeMoveWatch = item.kind === "large_move_watch";
                                 const isLargeMoveEarly = item.kind === "large_move_early";
-                                const isLargeMove = isLargeMoveWatch || isLargeMoveEarly || item.kind === "large_move";
+                                const isLargeMovePeak = item.kind === "large_move_peak";
+                                const isLargeMove = isLargeMoveWatch || isLargeMoveEarly || isLargeMovePeak || item.kind === "large_move";
                                 return (
                                     <article key={item.id || index} className={`rounded-lg border bg-bunker-900/70 p-3 ${isLargeMove ? "large-move-notice" : "border-bunker-800"}`}>
-                                        {isLargeMove && <p className="large-move-notice-label mb-1 font-mono text-xs font-bold">{isLargeMoveEarly ? "Büyük Hareket · Erken izleme (+%5)" : isLargeMoveWatch ? "Büyük Hareket · İzlemeye alındı" : "Büyük Yükseliş"}</p>}
+                                        {isLargeMove && <p className="large-move-notice-label mb-1 font-mono text-xs font-bold">{isLargeMovePeak ? "Büyük Hareket · Yeni tepe" : isLargeMoveEarly ? "Büyük Hareket · Erken izleme (+%5)" : isLargeMoveWatch ? "Büyük Hareket · İzlemeye alındı" : "Büyük Yükseliş"}</p>}
                                         <div className="flex items-start justify-between gap-3">
                                             {item.symbol ? <SymbolLink symbol={item.symbol} timeframe={isLargeMove ? "1m" : undefined} className="font-bold text-neon-green hover:text-white" /> : <span className="font-mono text-sm font-bold text-neon-green">SİSTEM</span>}
                                             <time className="font-mono text-[10px] text-bunker-muted">{formatNotificationDate(item.triggered_at)}</time>

@@ -11,7 +11,9 @@ import { useVisibleInterval } from "../lib/useVisibleInterval";
 const statuses = {
   early: { label: "Erken izleme", tone: "text-cyan-300" },
   watch: { label: "+%10 teyit", tone: "text-amber-300" },
-  open: { label: "Paper açık", tone: "text-neon-green" },
+  // NOT: bu ledger "büyük hareket" deneyinin İZOLE defteridir; otonom paper
+  // portföyü (Sanal Portföy sayfası) ile aynı tablo DEĞİLDİR.
+  open: { label: "Paper açık (izole)", tone: "text-neon-green" },
   closed: { label: "Paper kapandı", tone: "text-white" },
   blocked: { label: "Paper açılmadı", tone: "text-rose-300" },
   expired: { label: "Pencere doldu", tone: "text-bunker-muted" },
@@ -45,6 +47,11 @@ type MonitorRow = {
   confirmed_cvd_pct?: number | null;
   flow_tag?: "AKIS_ALICI" | "AKIS_SATICI" | "DENGELI" | "BILINMIYOR";
   trap_risk?: boolean;
+  // Bildirim sonrası tepe takibi (2026-11-28)
+  peak_price?: number | null;
+  peak_pct_from_watch?: number | null;
+  peak_pct_from_signal?: number | null;
+  from_peak_pct?: number | null;
 };
 
 type MonitorSnapshot = { rows: MonitorRow[]; as_of_ms: number; hours: number; limit: number };
@@ -128,8 +135,15 @@ function MonitorView() {
             +%5 erken izleme + bildirim · +%10 teyit · +%15 paper giriş sinyali · kesinleşmiş saatlik CVD ile tuzak riski
           </p>
         </div>
-        <Link className="ui-button ui-button-secondary touch-target" href="/reports">Raporlar</Link>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link className="ui-button ui-button-secondary touch-target" href="/reports">Raporlar</Link>
+          <Link className="ui-button ui-button-secondary touch-target" href="/portfolio">Sanal Portföy</Link>
+        </div>
       </header>
+      <p className="rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-xs text-amber-200">
+        Buradaki <strong>Paper</strong> satırları yalnızca “Büyük Hareket” deneyinin izole defteridir (10 dk tutma, 1.000 TL notional).
+        Otonom paper işlemleri ve açık pozisyonlar <Link className="underline" href="/portfolio">Sanal Portföy</Link> sayfasındadır — iki defter birbirine karışmaz.
+      </p>
 
       <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {[
@@ -183,7 +197,7 @@ function MonitorView() {
                 <thead className="sticky top-0 z-20 bg-bunker-950">
                   <tr>
                     <th scope="col" className="sticky left-0 bg-bunker-950">Parite</th>
-                    {["Durum", "+%5 erken izleme", "+%10 teyit", "+%15 sinyali", "Güncel / bazdan", "Kalan", "Akış (kesin CVD)", "Paper"].map((label) => (
+                    {["Durum", "+%5 erken izleme", "+%10 teyit", "+%15 sinyali", "Güncel / bazdan", "Bildirimden sonra tepe", "Kalan", "Akış (kesin CVD)", "Paper"].map((label) => (
                       <th scope="col" key={label}>{label}</th>
                     ))}
                   </tr>
@@ -208,6 +222,21 @@ function MonitorView() {
                         <td>
                           {price(row.current_price)}
                           {change != null && <span className={`block text-xs ${change >= 0 ? "text-neon-green" : "text-rose-300"}`}>{percent.format(change)}</span>}
+                        </td>
+                        <td>
+                          {row.peak_pct_from_watch == null && row.peak_pct_from_signal == null ? "—" : (
+                            <span className="font-mono text-xs">
+                              {row.peak_price != null && <span className="block text-white">{price(row.peak_price)}</span>}
+                              {(row.peak_pct_from_watch ?? row.peak_pct_from_signal) != null && (
+                                <span className={`block ${(row.peak_pct_from_watch ?? row.peak_pct_from_signal)! >= 0 ? "text-neon-green" : "text-rose-300"}`}>
+                                  tepe {percent.format(((row.peak_pct_from_watch ?? row.peak_pct_from_signal)! / 100))}
+                                </span>
+                              )}
+                              {row.from_peak_pct != null && row.from_peak_pct < 0 && (
+                                <span className="block text-bunker-muted">tepeden {percent.format(row.from_peak_pct / 100)}</span>
+                              )}
+                            </span>
+                          )}
                         </td>
                         <td>
                           {row.to_watch_pct == null ? "—" : (

@@ -7,6 +7,31 @@ from unittest.mock import AsyncMock
 from pytest import approx, mark, raises
 
 from app import large_move_paper
+
+
+def _apply_peak_columns(conn):
+    """038_large_move_peak.sql'in sqlite karşılığı (PG'de IF NOT EXISTS var).
+
+    Güvenli: tablo henüz kurulmamışsa sessizce atlar; 037 uygulandıktan sonraki
+    çağrıda kolonları ekler.
+    """
+    try:
+        conn.execute("SELECT peak_price FROM large_move_early_watch LIMIT 1")
+        return
+    except sqlite3.OperationalError:
+        pass
+    for column in (
+        "peak_price DOUBLE PRECISION",
+        "peak_pct DOUBLE PRECISION",
+        "peak_at DOUBLE PRECISION",
+        "peak_notified_pct DOUBLE PRECISION",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE large_move_early_watch ADD COLUMN {column}")
+        except sqlite3.OperationalError:
+            pass
+
+
 from app.large_move_paper import (
     MINUTE,
     Alert,
@@ -128,6 +153,7 @@ async def test_worker_records_early_watch_silently_then_broadcasts_watch_and_sig
         conn.row_factory = sqlite3.Row
         for name in ("034_large_move_paper.sql", "037_large_move_early_watch.sql"):
             conn.executescript((migrations / name).read_text(encoding="utf-8"))
+            _apply_peak_columns(conn)
 
         early_recorded = asyncio.Event()
         save_early = large_move_paper.save_early_watch
@@ -214,6 +240,7 @@ async def test_monitor_joins_watch_stages_and_distinguishes_expired_rows(monkeyp
         conn.row_factory = sqlite3.Row
         for name in ("034_large_move_paper.sql", "037_large_move_early_watch.sql"):
             conn.executescript((migrations / name).read_text(encoding="utf-8"))
+            _apply_peak_columns(conn)
 
         async def run_db(operation):
             return operation(conn)
@@ -476,6 +503,7 @@ async def test_monitor_rows_add_cvd_confirmation_and_trap_risk(monkeypatch, tmp_
         conn.row_factory = sqlite3.Row
         for name in ("034_large_move_paper.sql", "037_large_move_early_watch.sql"):
             conn.executescript((migrations / name).read_text(encoding="utf-8"))
+            _apply_peak_columns(conn)
 
         async def run_db(operation):
             return operation(conn)
@@ -522,6 +550,7 @@ async def test_worker_pushes_early_watch_at_plus_5_when_enabled(monkeypatch):
         conn.row_factory = sqlite3.Row
         for name in ("034_large_move_paper.sql", "037_large_move_early_watch.sql"):
             conn.executescript((migrations / name).read_text(encoding="utf-8"))
+            _apply_peak_columns(conn)
 
         async def run_db(operation):
             return operation(conn)
@@ -564,6 +593,7 @@ async def test_in_app_notification_list_includes_early_watch_events(monkeypatch)
         conn.row_factory = sqlite3.Row
         for name in ("034_large_move_paper.sql", "037_large_move_early_watch.sql"):
             conn.executescript((migrations / name).read_text(encoding="utf-8"))
+            _apply_peak_columns(conn)
 
         async def run_db(operation):
             return operation(conn)
@@ -618,3 +648,90 @@ def test_sharp_pump_still_seeds_off_the_median():
     alert = tracker.observe(31 * MINUTE, 105.0, True)
     assert alert is not None and alert.level == 5
     assert alert.base == approx(100.0)
+
+
+@mark.asyncio
+async def test_force_close_overdue_closes_positions_left_open_without_a_book(monkeypatch):
+    """Tahta alınamadığında satır 'open' kalıyordu; vadesi geçenler kapatılmalı."""
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
+    now = 10_000.0
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript((migrations / "034_large_move_paper.sql").read_text(encoding="utf-8"))
+
+        async def run_db(operation):
+            return operation(conn)
+
+        monkeypatch.setattr(database, "_run_db", run_db)
+        conn.execute(
+            """INSERT INTO large_move_paper
+               (symbol, seed_ms, base_price, watch_ms, signal_ms, signal_price, status, opened_at,
+                entry_price, quantity, entry_cost, fee_rate, mark_price, mark_net_pct, exit_due_at)
+               VALUES ('AAA', 1, 1.0, 0, 0, 1.2, 'open', ?, 1.2, 833.33, 1002.0, 0.002, 1.25, 3.0, ?)""",
+            (now - 900, now - 400),  # 400 sn önce kapanmalıydı (grace 300 sn)
+        )
+        conn.execute(
+            """INSERT INTO large_move_paper
+               (symbol, seed_ms, base_price, watch_ms, signal_ms, signal_price, status, opened_at,
+                entry_price, quantity, entry_cost, fee_rate, exit_due_at)
+               VALUES ('BBB', 2, 1.0, 0, 0, 1.2, 'open', ?, 1.2, 833.33, 1002.0, 0.002, ?)""",
+            (now - 60, now + 600),  # henüz vadesi gelmedi
+        )
+
+        closed = await large_move_paper.force_close_overdue(now=now)
+        assert closed == 1
+        row = conn.execute(
+            "SELECT status, exit_price, net_pnl_pct, reason FROM large_move_paper WHERE symbol='AAA'"
+        ).fetchone()
+        assert row["status"] == "closed"
+        assert row["exit_price"] == approx(1.25)  # son bilinen mark kullanılır
+        assert row["net_pnl_pct"] != 0
+        assert row["reason"] == "time_nobook"
+        assert conn.execute("SELECT status FROM large_move_paper WHERE symbol='BBB'").fetchone()["status"] == "open"
+
+
+def test_next_peak_milestone_only_reports_new_crossings():
+    assert large_move_paper.next_peak_milestone(None, 1.0) is None
+    assert large_move_paper.next_peak_milestone(None, 3.4) == 3.0
+    assert large_move_paper.next_peak_milestone(None, 9.0) == 8.0
+    assert large_move_paper.next_peak_milestone(3.0, 5.6) == 5.0
+    assert large_move_paper.next_peak_milestone(5.0, 5.1) is None  # aynı eşik tekrar gitmez
+    assert large_move_paper.next_peak_milestone(12.0, 25.0) == 20.0
+
+
+@mark.asyncio
+async def test_update_peaks_tracks_high_and_reports_each_milestone_once(monkeypatch):
+    migrations = Path(__file__).resolve().parents[1] / "migrations"
+    now = 5_000.0
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript((migrations / "037_large_move_early_watch.sql").read_text(encoding="utf-8"))
+        _apply_peak_columns(conn)
+
+        async def run_db(operation):
+            return operation(conn)
+
+        monkeypatch.setattr(database, "_run_db", run_db)
+        seed = int((now - 600) * 1000)
+        await large_move_paper.save_early_watch("AAA", Alert(seed, 1.0, seed + 60_000, 1.05, 5))
+
+        events = await large_move_paper.update_peaks({"AAA": 1.05}, now=now)
+        assert events == []
+        row = conn.execute("SELECT peak_price, peak_pct FROM large_move_early_watch").fetchone()
+        assert row["peak_price"] == approx(1.05)
+        assert row["peak_pct"] == approx(0.0, abs=0.01)
+
+        events = await large_move_paper.update_peaks({"AAA": 1.10}, now=now + 20)
+        assert len(events) == 1 and events[0]["kind"] == "large_move_peak"
+        assert events[0]["milestone_pct"] == 3.0
+        assert events[0]["peak_pct"] == approx(4.76, abs=0.05)
+
+        # fiyat düşse bile tepe korunur, yeni eşik yoksa olay üretilmez
+        events = await large_move_paper.update_peaks({"AAA": 1.06}, now=now + 40)
+        assert events == []
+        row = conn.execute("SELECT peak_price, peak_notified_pct FROM large_move_early_watch").fetchone()
+        assert row["peak_price"] == approx(1.10)
+        assert row["peak_notified_pct"] == approx(3.0)
+
+        events = await large_move_paper.update_peaks({"AAA": 1.14}, now=now + 60)
+        assert len(events) == 1 and events[0]["milestone_pct"] == 8.0
