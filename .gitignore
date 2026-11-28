@@ -100,3 +100,8 @@ backend/work/rise/
 .claude/cache/codebase-index/
 # CocoIndex Code (ccc)
 /.cocoindex_code/
+
+# Yerel ajan/araç artefaktları (makineye özel; commit edilmez)
+.serena/
+.codex/
+graphify-out/
