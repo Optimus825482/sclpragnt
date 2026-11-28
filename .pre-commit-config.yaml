@@ -1,0 +1,62 @@
+# Yerel kalite kapıları (2026-11-28).
+#
+# Amaç: hataları CI'a gitmeden, DEĞİŞEN dosya üzerinde yakalamak. Tüm paket
+# testi (2.000+ test) pre-commit'e KONMAZ — dakikalar sürer ve her commit'i
+# kilitler. Testler için `scripts/fastcheck.sh` (pytest --lf) ve pre-push
+# kancasındaki hızlı tur kullanılır.
+#
+# Kurulum (bir kez):
+#   uv tool install pre-commit         # veya: pipx install pre-commit
+#   pre-commit install                 # commit öncesi
+#   pre-commit install --hook-type pre-push
+#
+# Elle çalıştırma:
+#   pre-commit run --all-files         # her şey
+#   pre-commit run ruff-check --files backend/app/confirmed_flow.py
+#
+# Not: `uv run --with ...` kullanılıyor → pre-commit kendi sanal ortamını
+# kurmaz (ağ beklemesi yok, sürüm repo ile aynı).
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check (backend)
+        entry: uv run --with ruff==0.16.9 ruff check --fix
+        language: system
+        files: ^backend/.*\.py$
+        stages: [pre-commit]
+
+      - id: ruff-format
+        name: ruff format (backend)
+        entry: uv run --with ruff==0.16.9 ruff format
+        language: system
+        files: ^backend/.*\.py$
+        stages: [pre-commit]
+
+      - id: eslint
+        name: eslint --fix (frontend)
+        # Yerel ikili doğrudan çağrılır: `npx --no-install` pre-commit'in kök
+        # dizininden çalıştığı için eslint'i bulamıyordu (ağ denemesi yapıyordu).
+        entry: node frontend/node_modules/eslint/bin/eslint.js --config frontend/eslint.config.mjs --fix
+        language: system
+        files: ^frontend/app/.*\.(ts|tsx)$
+        stages: [pre-commit]
+
+      # ---- pre-push: daha pahalı ama hâlâ hızlı kapılar ----
+      - id: tsc
+        name: tsc --noEmit (frontend)
+        entry: bash -c 'cd frontend && npx --no-install tsc --noEmit --incremental false'
+        language: system
+        pass_filenames: false
+        files: ^frontend/.*\.(ts|tsx)$
+        stages: [pre-push]
+
+      - id: pytest-last-failed
+        name: pytest --lf (backend, son kırılan testler)
+        entry: bash scripts/fastcheck.sh backend
+        language: system
+        pass_filenames: false
+        files: ^backend/.*\.py$
+        stages: [pre-push]
